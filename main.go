@@ -95,6 +95,9 @@ func indexDirectory(dirPath string, progressBar *widget.ProgressBar) ([]FileData
 	progressBar.Hide() // Hide the progress bar when done
 	return filesData, err
 }
+
+// ... [Other parts of the code remain unchanged]
+
 func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("BRODALF - Backup Explorer")

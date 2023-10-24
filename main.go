@@ -1,12 +1,14 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
 	"crypto/md5"
 	"encoding/hex"
+
+	"compress/gzip"
+	"encoding/json"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -14,6 +16,20 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
+
+func saveIndexToFile(data []FileData, filename string) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+
+	encoder := json.NewEncoder(gzWriter)
+	return encoder.Encode(data)
+}
 
 func calculateMD5(filePath string) (string, error) {
 	fileData, err := os.ReadFile(filePath)
@@ -47,8 +63,15 @@ type FileData struct {
 	Backups int // To track the number of backups for this file
 }
 
-func indexDirectory(dirPath string) ([]FileData, error) {
+func indexDirectory(dirPath string, progressBar *widget.ProgressBar) ([]FileData, error) {
 	var filesData []FileData
+
+	totalFiles, _ := filepath.Glob(dirPath + "/*") // Just an approximation
+	progressStep := 1.0 / float64(len(totalFiles))
+
+	// Show and reset the progress bar
+	progressBar.Show()
+	progressBar.SetValue(0)
 
 	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -62,21 +85,23 @@ func indexDirectory(dirPath string) ([]FileData, error) {
 			filesData = append(filesData, FileData{
 				Path:    path,
 				Hash:    hash,
-				Backups: 0, // We'll update this later when implementing backup functionality
+				Backups: 0,
 			})
+			progressBar.SetValue(progressBar.Value + progressStep)
 		}
 		return nil
 	})
 
-	if err != nil {
-		return nil, err
-	}
-	return filesData, nil
+	progressBar.Hide() // Hide the progress bar when done
+	return filesData, err
 }
 func main() {
 	myApp := app.New()
 	myWindow := myApp.NewWindow("BRODALF - Backup Explorer")
 	myWindow.Resize(fyne.NewSize(800, 600))
+
+	progressBar := widget.NewProgressBar()
+	progressBar.Hide() // Initially hidden, will be shown during indexing
 
 	// Button to build/index folder/file structure
 	buildIndexBtn := widget.NewButton("Build/Index Folder/File Structure", func() {
@@ -90,10 +115,21 @@ func main() {
 				return
 			}
 
-			// TODO: Use the selected directory (uri) to build and index the folder/file structure
-			fmt.Println("Selected directory:", uri.String())
-		}, myWindow)
+			// Index the selected directory
+			filesData, err := indexDirectory(uri.Path(), progressBar)
+			if err != nil {
+				dialog.ShowError(err, myWindow)
+				return
+			}
 
+			// For now, save the index data to a file named "index.gz" in the current directory
+			// This can be changed later based on user input or configuration
+			err = saveIndexToFile(filesData, "index.gz")
+			if err != nil {
+				dialog.ShowError(err, myWindow)
+				return
+			}
+		}, myWindow)
 	})
 
 	// Button to load the index file
@@ -105,6 +141,7 @@ func main() {
 	content := container.NewVBox(
 		buildIndexBtn,
 		loadIndexBtn,
+		progressBar,
 	)
 
 	myWindow.SetContent(content)

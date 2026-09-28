@@ -1,7 +1,7 @@
 /* Storage targets. Each drive (or folder) used by a catalog holds
  * <root>/BRODALF/<catalog uuid>/BRODALF.media, a small text file naming the
  * media ID. BRODALF recognises drives by that ID, never by drive letter. */
-#include "internal.h"
+#include "store.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -213,27 +213,21 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
     if (!stats) stats = &local;
     memset(stats, 0, sizeof(*stats));
 
-    char *root = bd_connected_root(cat, media_id);
-    if (!root) return bd_fail(cat, BD_ERR_NOT_FOUND, "that drive is not connected");
-    char *dir = bd_media_catalog_dir(cat, root);
-    free(root);
-    if (!dir) return BD_ERR_NOMEM;
-
     int encrypted = bd_media_encrypted(cat, media_id);
     const uint8_t *key = encrypted ? cat->key : NULL;
-    if (encrypted && full && !cat->have_key) {
-        free(dir);
+    if (encrypted && full && !cat->have_key)
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to check an encrypted drive");
-    }
+    bd_store *store = bd_store_open(cat, media_id);
+    if (!store) return BD_ERR_NOT_FOUND;
 
     sqlite3_stmt *q = NULL, *u = NULL;
     bd_status s = BD_OK;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash"
+                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, COALESCE(c.stored_rev,'')"
                            " FROM copies c JOIN versions v ON v.id=c.version_id WHERE c.media_id=?",
                            -1, &q, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
-                           "UPDATE copies SET state=?, stored_mtime_ns=?, last_quick_check_ms=?,"
+                           "UPDATE copies SET state=?, stored_mtime_ns=?, stored_rev=?, last_quick_check_ms=?,"
                            " last_full_check_ms=CASE WHEN ? THEN ? ELSE last_full_check_ms END WHERE id=?",
                            -1, &u, NULL) != SQLITE_OK) {
         s = bd_fail_db(cat, "prepare drive check");
@@ -248,32 +242,50 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
         int64_t stored_size = sqlite3_column_int64(q, 2);
         int64_t stored_mtime = sqlite3_column_int64(q, 3);
         const char *expected = (const char *)sqlite3_column_text(q, 4);
+        char stored_rev[160];
+        snprintf(stored_rev, sizeof(stored_rev), "%s", (const char *)sqlite3_column_text(q, 5));
         stats->copies++;
         bd_report(cat, full ? "full check" : "check", stats->copies, 0, rel, 0);
 
-        char *path = bd_path_join(dir, rel);
-        bd_stat_t st;
+        bd_remote_stat st;
+        int found = store->ops->stat(store, rel, &st);
+        if (found < 0) {
+            /* Could not ask (network trouble): leave the copy as it was. */
+            bd_logf(log, log_ctx, "cannot check %s: %s", rel, store->err);
+            stats->skipped++;
+            continue;
+        }
         const char *state = "ok";
         int hashed = 0;
         int64_t mtime = stored_mtime;
-        if (!path || bd_stat(path, &st) != 0 || !st.is_file) {
+        const char *rev = stored_rev;
+        /* Local drives: a changed time means reread. Cloud: a changed content hash. */
+        int touched = store->is_local ? st.mtime_ns != stored_mtime : (st.rev[0] && strcmp(st.rev, stored_rev) != 0);
+        if (found == 1) {
             state = "missing";
         } else if (st.size != stored_size) {
             state = "bad";
-        } else if (encrypted && !cat->have_key && st.mtime_ns != stored_mtime) {
+        } else if (encrypted && !cat->have_key && touched) {
             /* Touched since it was written, but reading it needs the key.
              * Leave its state alone until a check with the passphrase. */
-            free(path);
             stats->skipped++;
             continue;
-        } else if (full || st.mtime_ns != stored_mtime) {
+        } else if (full || touched) {
             char hash[BD_HASH_HEX_LEN + 1];
+            char *path = NULL;
+            int is_temp = 0;
             hashed = 1;
             stats->rehashed++;
-            if (bd_hash_copy(path, key, NULL, NULL, hash, NULL) != 0 || strcmp(hash, expected) != 0) state = "bad";
-            else mtime = st.mtime_ns;
+            int got = bd_store_fetch(store, rel, &path, &is_temp);
+            if (got < 0) {
+                bd_logf(log, log_ctx, "cannot read %s: %s", rel, store->err);
+                stats->skipped++;
+                continue;
+            }
+            if (got != 0 || bd_hash_copy(path, key, NULL, NULL, hash, NULL) != 0 || strcmp(hash, expected) != 0) state = "bad";
+            else { mtime = st.mtime_ns; if (st.rev[0]) rev = st.rev; }
+            bd_store_release(path, is_temp);
         }
-        free(path);
         if (strcmp(state, "ok") == 0) stats->ok++;
         else if (strcmp(state, "missing") == 0) { stats->missing++; bd_logf(log, log_ctx, "missing on drive: %s", rel); }
         else { stats->bad++; bd_logf(log, log_ctx, "damaged on drive: %s", rel); }
@@ -281,10 +293,11 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
         sqlite3_reset(u);
         sqlite3_bind_text(u, 1, state, -1, SQLITE_STATIC);
         sqlite3_bind_int64(u, 2, mtime);
-        sqlite3_bind_int64(u, 3, now);
-        sqlite3_bind_int(u, 4, hashed);
-        sqlite3_bind_int64(u, 5, now);
-        sqlite3_bind_int64(u, 6, copy_id);
+        sqlite3_bind_text(u, 3, rev, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(u, 4, now);
+        sqlite3_bind_int(u, 5, hashed);
+        sqlite3_bind_int64(u, 6, now);
+        sqlite3_bind_int64(u, 7, copy_id);
         if (sqlite3_step(u) != SQLITE_DONE) { s = bd_fail_db(cat, "record drive check"); break; }
     }
     if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit drive check");
@@ -292,7 +305,7 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
 done:
     sqlite3_finalize(q);
     sqlite3_finalize(u);
-    free(dir);
+    bd_store_close(store);
     return s;
 }
 
@@ -313,14 +326,41 @@ bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
     bd_status s = bd_catalog_save(cat);
     if (s != BD_OK) return s;
     int encrypt = bd_catalog_file_encrypted(cat) || bd_media_encrypted(cat, media_id);
-    char *root = bd_connected_root(cat, media_id);
-    if (!root) return bd_fail(cat, BD_ERR_NOT_FOUND, "that drive is not connected");
-    char *dir = bd_media_catalog_dir(cat, root);
-    free(root);
-    char *dst = dir ? bd_path_join(dir, "catalog-backup.brodalf") : NULL;
-    free(dir);
-    if (!dst) return BD_ERR_NOMEM;
-    s = bd_catalog_save_to(cat, dst, encrypt);
-    free(dst);
+    bd_store *store = bd_store_open(cat, media_id);
+    if (!store) return BD_ERR_NOT_FOUND;
+    const char *rel = "catalog-backup.brodalf";
+    char *staged = store->ops->staging_path(store, "catalog-backup.brodalf" BD_TMP_MARKER);
+    bd_remote_stat st;
+    if (!staged) s = bd_fail(cat, BD_ERR_IO, "cannot copy the catalog: %s", store->err);
+    else if ((s = bd_catalog_save_to(cat, staged, encrypt)) == BD_OK &&
+             store->ops->upload(store, staged, rel, &st) != 0)
+        s = bd_fail(cat, BD_ERR_IO, "cannot copy the catalog: %s", store->err);
+    if (staged && s != BD_OK) bd_remove(staged);
+    free(staged);
+    bd_store_close(store);
+    return s;
+}
+
+bd_store *bd_store_open(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT m.kind, k.root FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id WHERE m.id=?",
+                           -1, &q, NULL) != SQLITE_OK) {
+        bd_fail_db(cat, "find drive");
+        return NULL;
+    }
+    sqlite3_bind_int64(q, 1, media_id);
+    bd_store *s = NULL;
+    if (sqlite3_step(q) != SQLITE_ROW) {
+        bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
+    } else if (sqlite3_column_type(q, 1) == SQLITE_NULL) {
+        bd_fail(cat, BD_ERR_NOT_FOUND, "that drive is not connected");
+    } else if (strcmp((const char *)sqlite3_column_text(q, 0), "drive") == 0) {
+        s = bd_store_local(cat, media_id, (const char *)sqlite3_column_text(q, 1));
+        if (!s) bd_fail(cat, BD_ERR_NOMEM, "out of memory");
+    } else {
+        s = bd_cloud_store_open(cat, media_id);
+    }
+    sqlite3_finalize(q);
     return s;
 }

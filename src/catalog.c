@@ -20,7 +20,7 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 2
+#define BD_SCHEMA_VERSION 3
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -82,6 +82,7 @@ static const char *SCHEMA_SQL =
     "  encrypted INTEGER NOT NULL DEFAULT 0,"
     "  stored_size INTEGER NOT NULL,"
     "  stored_mtime_ns INTEGER NOT NULL,"
+    "  stored_rev TEXT,"                 /* cloud: the provider's content hash */
     "  written_ms INTEGER NOT NULL,"
     "  last_quick_check_ms INTEGER,"
     "  last_full_check_ms INTEGER,"
@@ -194,6 +195,11 @@ static bd_status open_db(bd_catalog *cat)
     if (sqlite3_prepare_v2(cat->db, "SELECT encrypted FROM media LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
         sqlite3_finalize(probe);
     else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Schema 2 catalogs have no copies.stored_rev column. */
+    if (sqlite3_prepare_v2(cat->db, "SELECT stored_rev FROM copies LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
+        sqlite3_finalize(probe);
+    else if (bd_exec(cat, "ALTER TABLE copies ADD COLUMN stored_rev TEXT") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");

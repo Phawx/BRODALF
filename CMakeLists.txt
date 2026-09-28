@@ -33,6 +33,8 @@ add_library(brodalf_core STATIC
     src/backup.c
     src/catalog.c
     src/crypto.c
+    src/cloud.c
+    src/store_local.c
     src/media.c
     src/platform_posix.c
     src/platform_win32.c

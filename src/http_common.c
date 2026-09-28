@@ -69,18 +69,38 @@ int bd_net_init(void)
 char *bd_http_wait_redirect(int port, int timeout_ms, const char *page_html, char *err, size_t err_cap)
 {
     if (bd_net_init() != 0) { snprintf(err, err_cap, "networking is not available"); return NULL; }
-    bd_socket ls = socket(AF_INET, SOCK_STREAM, 0);
-    if (ls == BD_BAD_SOCKET) { snprintf(err, err_cap, "cannot open a socket"); return NULL; }
+    /* Browsers may resolve localhost to 127.0.0.1 or ::1: listen on both. */
+    bd_socket ls[2] = {BD_BAD_SOCKET, BD_BAD_SOCKET};
     int one = 1;
-    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((unsigned short)port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(ls, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(ls, 4) != 0) {
+    ls[0] = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls[0] != BD_BAD_SOCKET) {
+        setsockopt(ls[0], SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((unsigned short)port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (bind(ls[0], (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(ls[0], 4) != 0) {
+            bd_closesocket(ls[0]);
+            ls[0] = BD_BAD_SOCKET;
+        }
+    }
+    ls[1] = socket(AF_INET6, SOCK_STREAM, 0);
+    if (ls[1] != BD_BAD_SOCKET) {
+        setsockopt(ls[1], SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+        setsockopt(ls[1], IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&one, sizeof(one));
+        struct sockaddr_in6 addr6;
+        memset(&addr6, 0, sizeof(addr6));
+        addr6.sin6_family = AF_INET6;
+        addr6.sin6_port = htons((unsigned short)port);
+        addr6.sin6_addr = in6addr_loopback;
+        if (bind(ls[1], (struct sockaddr *)&addr6, sizeof(addr6)) != 0 || listen(ls[1], 4) != 0) {
+            bd_closesocket(ls[1]);
+            ls[1] = BD_BAD_SOCKET;
+        }
+    }
+    if (ls[0] == BD_BAD_SOCKET && ls[1] == BD_BAD_SOCKET) {
         snprintf(err, err_cap, "port %d is busy; close other sign-in windows and try again", port);
-        bd_closesocket(ls);
         return NULL;
     }
     char *query = NULL;
@@ -90,10 +110,13 @@ char *bd_http_wait_redirect(int port, int timeout_ms, const char *page_html, cha
         if (left <= 0) { snprintf(err, err_cap, "sign-in timed out"); break; }
         fd_set rd;
         FD_ZERO(&rd);
-        FD_SET(ls, &rd);
+        int maxfd = 0;
+        for (int i = 0; i < 2; i++)
+            if (ls[i] != BD_BAD_SOCKET) { FD_SET(ls[i], &rd); if ((int)ls[i] > maxfd) maxfd = (int)ls[i]; }
         struct timeval tv = {(long)(left / 1000), (long)((left % 1000) * 1000)};
-        if (select((int)ls + 1, &rd, NULL, NULL, &tv) <= 0) continue;
-        bd_socket c = accept(ls, NULL, NULL);
+        if (select(maxfd + 1, &rd, NULL, NULL, &tv) <= 0) continue;
+        bd_socket ready = ls[0] != BD_BAD_SOCKET && FD_ISSET(ls[0], &rd) ? ls[0] : ls[1];
+        bd_socket c = accept(ready, NULL, NULL);
         if (c == BD_BAD_SOCKET) continue;
         char buf[8192];
         int got = 0;
@@ -120,6 +143,7 @@ char *bd_http_wait_redirect(int port, int timeout_ms, const char *page_html, cha
         if (resp) { send(c, resp, (int)strlen(resp), 0); free(resp); }
         bd_closesocket(c);
     }
-    bd_closesocket(ls);
+    for (int i = 0; i < 2; i++)
+        if (ls[i] != BD_BAD_SOCKET) bd_closesocket(ls[i]);
     return query;
 }

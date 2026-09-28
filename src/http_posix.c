@@ -64,14 +64,13 @@ static int once(const bd_http_req *req, const char *url, bd_http_resp *resp, cha
     memset(&hints, 0, sizeof(hints));
     hints.ai_socktype = SOCK_STREAM;
     if (getaddrinfo(host, port, &hints, &ai) != 0) { snprintf(err, err_cap, "cannot resolve %s", host); return -1; }
-    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-    if (fd < 0 || connect(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
-        freeaddrinfo(ai);
-        if (fd >= 0) close(fd);
-        snprintf(err, err_cap, "cannot connect to %s", host);
-        return -1;
+    int fd = -1;
+    for (struct addrinfo *a = ai; a && fd < 0; a = a->ai_next) { /* "localhost" may be ::1 or 127.0.0.1 */
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd >= 0 && connect(fd, a->ai_addr, a->ai_addrlen) != 0) { close(fd); fd = -1; }
     }
     freeaddrinfo(ai);
+    if (fd < 0) { snprintf(err, err_cap, "cannot connect to %s", host); return -1; }
 
     int64_t body_len = req->body_file ? req->file_len : (int64_t)req->body_len;
     buf_t head = {0};

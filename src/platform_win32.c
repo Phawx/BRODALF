@@ -278,4 +278,9 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
     return 0;
 }
 
+void bd_sleep_ms(int ms)
+{
+    Sleep((DWORD)ms);
+}
+
 #endif

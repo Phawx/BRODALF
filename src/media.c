@@ -6,14 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
-    char media_uuid[37];
-    char catalog_uuid[37];
-    char label[256];
-    int encrypted;
-} media_file;
-
-static int read_media_file(const char *path, media_file *mf)
+int bd_media_file_read(const char *path, bd_media_file *mf)
 {
     memset(mf, 0, sizeof(*mf));
     FILE *f = bd_fopen(path, "rb");
@@ -36,7 +29,7 @@ static int read_media_file(const char *path, media_file *mf)
     return (magic && strlen(mf->media_uuid) == 36) ? 0 : -1;
 }
 
-static int write_media_file(const char *path, const media_file *mf)
+int bd_media_file_write(const char *path, const bd_media_file *mf)
 {
     char *tmp = bd_sprintf("%s" BD_TMP_MARKER, path);
     if (!tmp) return -1;
@@ -59,7 +52,7 @@ static int write_media_file(const char *path, const media_file *mf)
     return rc;
 }
 
-static bd_status media_file_path(bd_catalog *cat, const char *root, char **out)
+static bd_status bd_media_file_path(bd_catalog *cat, const char *root, char **out)
 {
     char *dir = bd_media_catalog_dir(cat, root);
     *out = dir ? bd_path_join(dir, BD_MEDIA_FILE) : NULL;
@@ -67,7 +60,7 @@ static bd_status media_file_path(bd_catalog *cat, const char *root, char **out)
     return *out ? BD_OK : BD_ERR_NOMEM;
 }
 
-static bd_status record_connected(bd_catalog *cat, int64_t media_id, const char *root)
+bd_status bd_media_record_connected(bd_catalog *cat, int64_t media_id, const char *root)
 {
     int64_t total = 0, freeb = 0;
     int have_space = bd_disk_space(root, &total, &freeb) == 0;
@@ -95,7 +88,7 @@ static bd_status record_connected(bd_catalog *cat, int64_t media_id, const char 
     return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "record connected drive");
 }
 
-static int64_t media_id_for_uuid(bd_catalog *cat, const char *uuid)
+int64_t bd_media_id_for_uuid(bd_catalog *cat, const char *uuid)
 {
     sqlite3_stmt *q;
     int64_t id = 0;
@@ -106,15 +99,16 @@ static int64_t media_id_for_uuid(bd_catalog *cat, const char *uuid)
     return id;
 }
 
-static int64_t insert_media(bd_catalog *cat, const char *uuid, const char *label, int encrypted)
+int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, const char *label, int encrypted)
 {
     sqlite3_stmt *ins;
-    if (sqlite3_prepare_v2(cat->db, "INSERT INTO media(uuid, kind, label, added_ms, encrypted) VALUES(?, 'drive', ?, ?, ?)", -1, &ins, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(cat->db, "INSERT INTO media(uuid, kind, label, added_ms, encrypted) VALUES(?, ?, ?, ?, ?)", -1, &ins, NULL) != SQLITE_OK)
         return 0;
     sqlite3_bind_text(ins, 1, uuid, -1, SQLITE_STATIC);
-    sqlite3_bind_text(ins, 2, label, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(ins, 3, bd_now_ms());
-    sqlite3_bind_int(ins, 4, encrypted);
+    sqlite3_bind_text(ins, 2, kind, -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins, 3, label, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(ins, 4, bd_now_ms());
+    sqlite3_bind_int(ins, 5, encrypted);
     int64_t id = sqlite3_step(ins) == SQLITE_DONE ? sqlite3_last_insert_rowid(cat->db) : 0;
     sqlite3_finalize(ins);
     return id;
@@ -131,9 +125,9 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     if (!label || !*label) return bd_fail(cat, BD_ERR_INVALID, "give the drive a label");
 
     char *path;
-    if (media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
-    media_file mf;
-    if (read_media_file(path, &mf) == 0) {
+    if (bd_media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
+    bd_media_file mf;
+    if (bd_media_file_read(path, &mf) == 0) {
         free(path);
         return bd_fail(cat, BD_ERR_EXISTS, "%s is already set up for this catalog as \"%s\"", root, mf.label);
     }
@@ -153,9 +147,9 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     for (char *p = mf.label; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
     mf.encrypted = encrypted;
 
-    int64_t id = insert_media(cat, mf.media_uuid, mf.label, encrypted);
+    int64_t id = bd_media_insert(cat, mf.media_uuid, "drive", mf.label, encrypted);
     if (!id) { free(path); return bd_fail_db(cat, "add drive"); }
-    if (write_media_file(path, &mf) != 0) {
+    if (bd_media_file_write(path, &mf) != 0) {
         free(path);
         sqlite3_stmt *d;
         if (sqlite3_prepare_v2(cat->db, "DELETE FROM media WHERE id=?", -1, &d, NULL) == SQLITE_OK) {
@@ -166,7 +160,7 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
         return bd_fail(cat, BD_ERR_IO, "cannot write the drive ID file on %s", root);
     }
     free(path);
-    bd_status s = record_connected(cat, id, root);
+    bd_status s = bd_media_record_connected(cat, id, root);
     if (s == BD_OK && out_media_id) *out_media_id = id;
     return s;
 }
@@ -175,23 +169,23 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
                            bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     char *path;
-    if (media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
-    media_file mf;
-    int rc = read_media_file(path, &mf);
+    if (bd_media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
+    bd_media_file mf;
+    int rc = bd_media_file_read(path, &mf);
     free(path);
     if (rc != 0) return bd_fail(cat, BD_ERR_NOT_FOUND, "%s has no BRODALF drive ID for this catalog", root);
     if (strcmp(mf.catalog_uuid, cat->uuid) != 0)
         return bd_fail(cat, BD_ERR_INVALID, "the drive ID on %s belongs to a different catalog", root);
 
-    int64_t id = media_id_for_uuid(cat, mf.media_uuid);
+    int64_t id = bd_media_id_for_uuid(cat, mf.media_uuid);
     if (!id) {
         /* The drive knows this catalog but the catalog lost the drive, for
          * example after restoring an older catalog backup. Re-register it. */
-        id = insert_media(cat, mf.media_uuid, mf.label[0] ? mf.label : "Recovered drive", mf.encrypted);
+        id = bd_media_insert(cat, mf.media_uuid, "drive", mf.label[0] ? mf.label : "Recovered drive", mf.encrypted);
         if (!id) return bd_fail_db(cat, "re-register drive");
         bd_logf(log, log_ctx, "re-registered drive \"%s\"", mf.label);
     }
-    bd_status s = record_connected(cat, id, root);
+    bd_status s = bd_media_record_connected(cat, id, root);
     if (s != BD_OK) return s;
     if (out_media_id) *out_media_id = id;
     return bd_media_check(cat, id, 0, stats, log, log_ctx);

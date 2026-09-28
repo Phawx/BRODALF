@@ -47,6 +47,7 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx);
 
 int bd_random_bytes(void *buf, size_t n);
 int64_t bd_now_ms(void);
+void bd_sleep_ms(int ms);
 
 /* Writes the system temp directory (no trailing separator). 0 on success. */
 int bd_temp_dir(char *out, size_t out_len);

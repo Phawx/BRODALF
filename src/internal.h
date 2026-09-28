@@ -26,6 +26,7 @@ struct bd_catalog {
     int64_t progress_last_ms;
     uint8_t key[32];  /* master key while unlocked */
     int have_key;
+    void *clouds;     /* signed-in cloud sessions (cloud.c) */
 };
 
 /* Record an error message on the catalog and return status. */
@@ -78,6 +79,28 @@ void bd_catalog_set_key(bd_catalog *cat, const uint8_t key[32]);
 void bd_wipe(void *p, size_t n);
 
 int bd_media_encrypted(bd_catalog *cat, int64_t media_id);
+
+/* The BRODALF.media file that identifies a drive or cloud folder. */
+typedef struct {
+    char media_uuid[37];
+    char catalog_uuid[37];
+    char label[256];
+    int encrypted;
+} bd_media_file;
+int bd_media_file_read(const char *path, bd_media_file *mf);
+int bd_media_file_write(const char *path, const bd_media_file *mf);
+bd_status bd_media_record_connected(bd_catalog *cat, int64_t media_id, const char *root);
+int64_t bd_media_id_for_uuid(bd_catalog *cat, const char *uuid);
+int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, const char *label, int encrypted);
+
+/* Cloud sessions live on the catalog; forget them on close. */
+void bd_cloud_forget_all(bd_catalog *cat);
+
+/* Saved secrets (Credential Manager on Windows). */
+int bd_secret_set(const char *name, const char *value);
+char *bd_secret_get(const char *name);
+int bd_secret_delete(const char *name);
+int bd_net_init(void);
 
 /* Save a copy of the catalog to dest, encrypted or not. */
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);

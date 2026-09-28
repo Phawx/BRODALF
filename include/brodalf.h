@@ -140,6 +140,34 @@ void bd_media_disconnect(bd_catalog *cat, int64_t media_id);
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
                          bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
+/* ---- Cloud storage --------------------------------------------------- */
+
+/* OneDrive and Dropbox accounts work like drives. BRODALF keeps its files in
+ * the service's app folder (Apps/BRODALF) and can see nothing else there.
+ * Signing in happens once in the browser; the refresh token is saved in
+ * Windows Credential Manager and the catalog records only the provider,
+ * the account name and where the credential is. */
+typedef enum { BD_CLOUD_ONEDRIVE = 1, BD_CLOUD_DROPBOX = 2 } bd_cloud_provider;
+typedef struct bd_signin bd_signin;
+
+/* Start signing in: returns the address to open in a browser. The
+ * provider sends the browser back to http://localhost:53682/. */
+bd_status bd_cloud_signin_begin(bd_catalog *cat, bd_cloud_provider provider, bd_signin **out, const char **url_out);
+/* Wait for the browser to come back, then finish signing in. */
+bd_status bd_cloud_signin_finish(bd_catalog *cat, bd_signin *signin, int timeout_ms);
+/* The account's name ("you@example.com"), once signed in. */
+const char *bd_cloud_signin_account(const bd_signin *signin);
+void bd_cloud_signin_free(bd_signin *signin);
+
+/* Use the signed-in account as storage. flags as for bd_media_init. */
+bd_status bd_cloud_add(bd_catalog *cat, bd_signin *signin, const char *label, unsigned flags, int64_t *out_media_id);
+
+/* Connect a cloud account with its saved sign-in and run a quick check. */
+bd_status bd_cloud_connect(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* Forget the saved sign-in (the files in the cloud stay). */
+bd_status bd_cloud_sign_out(bd_catalog *cat, int64_t media_id);
+
 /* ---- Backup and restore ---------------------------------------------- */
 
 typedef struct {

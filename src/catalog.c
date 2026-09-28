@@ -145,6 +145,7 @@ static void remove_work_files(bd_catalog *cat)
 static void catalog_free(bd_catalog *cat, int owns_lock)
 {
     if (!cat) return;
+    bd_cloud_forget_all(cat);
     if (cat->db) sqlite3_close(cat->db);
     bd_wipe(cat->key, sizeof(cat->key));
     remove_work_files(cat);

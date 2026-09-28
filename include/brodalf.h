@@ -54,6 +54,12 @@ const char *bd_open_error(void);
 const char *bd_catalog_uuid(const bd_catalog *cat);
 const char *bd_status_name(bd_status status);
 
+/* Progress for long jobs (scan, backup, check, restore), called at most
+ * about ten times a second from the thread running the job. files_done and
+ * bytes_done count up from zero; current is the file being worked on. */
+typedef void (*bd_progress_fn)(void *ctx, const char *phase, int64_t files_done, int64_t bytes_done, const char *current);
+void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
+
 /* ---- Sources and scanning -------------------------------------------- */
 
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
@@ -155,6 +161,10 @@ typedef struct {
     int64_t source_id;
     const char *name;
     const char *path;
+    bd_node_state state;     /* AVAILABLE, PARTIAL, OFFLINE or NO_COPY, as for folders */
+    int64_t files_total;     /* live files in the source */
+    int64_t files_available;
+    const char *offline_media_label; /* OFFLINE: a drive to plug in */
 } bd_source_info;
 
 typedef struct {
@@ -186,6 +196,21 @@ typedef struct {
     int connected;
     int64_t last_check_ms;
 } bd_copy_info;
+
+typedef struct {
+    int64_t media_id;
+    const char *label;
+    const char *kind;        /* "drive" for now; "onedrive", "dropbox" later */
+    const char *last_root;   /* where it was last seen, e.g. "E:\" */
+    int connected;
+    int64_t total_bytes;     /* 0 if unknown */
+    int64_t free_bytes;
+    int64_t last_seen_ms;
+    int64_t copies;          /* copies BRODALF has recorded on it */
+} bd_media_info;
+
+typedef int (*bd_media_fn)(void *ctx, const bd_media_info *info);
+bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx);
 
 typedef int (*bd_source_fn)(void *ctx, const bd_source_info *info);
 typedef int (*bd_node_fn)(void *ctx, const bd_node_info *info);

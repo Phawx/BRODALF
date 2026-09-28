@@ -5,20 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
-{
-    sqlite3_stmt *q;
-    if (sqlite3_prepare_v2(cat->db, "SELECT id, name, path FROM sources ORDER BY name COLLATE NOCASE", -1, &q, NULL) != SQLITE_OK)
-        return bd_fail_db(cat, "list sources");
-    while (sqlite3_step(q) == SQLITE_ROW) {
-        bd_source_info info = {sqlite3_column_int64(q, 0), (const char *)sqlite3_column_text(q, 1),
-                               (const char *)sqlite3_column_text(q, 2)};
-        if (fn(ctx, &info) != 0) break;
-    }
-    sqlite3_finalize(q);
-    return BD_OK;
-}
-
 /* Per-file availability, shared by children listing and folder totals. */
 #define CUR_AVAILABLE \
     "EXISTS(SELECT 1 FROM copies c JOIN temp.connected k ON k.media_id=c.media_id" \
@@ -40,6 +26,44 @@ static bd_node_state file_state(int deleted, int cur_avail, int any_avail, int b
     if (bad_connected) return BD_STATE_BAD;
     if (any_copy) return BD_STATE_OFFLINE;
     return BD_STATE_NO_COPY;
+}
+
+static bd_node_state folder_state(int64_t total, int64_t available, int64_t with_copy)
+{
+    if (available == total) return BD_STATE_AVAILABLE;
+    if (available > 0) return BD_STATE_PARTIAL;
+    if (with_copy > 0) return BD_STATE_OFFLINE;
+    return BD_STATE_NO_COPY;
+}
+
+bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT s.id, s.name, s.path,"
+                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0),"
+                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " CUR_AVAILABLE "),"
+                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " ANY_COPY "),"
+                           " (SELECT m.label FROM nodes n JOIN copies c ON c.version_id=n.current_version_id"
+                           "   JOIN media m ON m.id=c.media_id WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0"
+                           "   AND c.state='ok' LIMIT 1)"
+                           " FROM sources s ORDER BY s.name COLLATE NOCASE",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list sources");
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_source_info info;
+        memset(&info, 0, sizeof(info));
+        info.source_id = sqlite3_column_int64(q, 0);
+        info.name = (const char *)sqlite3_column_text(q, 1);
+        info.path = (const char *)sqlite3_column_text(q, 2);
+        info.files_total = sqlite3_column_int64(q, 3);
+        info.files_available = sqlite3_column_int64(q, 4);
+        info.state = folder_state(info.files_total, info.files_available, sqlite3_column_int64(q, 5));
+        if (info.state == BD_STATE_OFFLINE) info.offline_media_label = (const char *)sqlite3_column_text(q, 6);
+        if (fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
 }
 
 bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_node_id, bd_node_fn fn, void *ctx)
@@ -107,11 +131,8 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
                 with_copy = sqlite3_column_int64(agg, 2);
                 label_copy = bd_strdup((const char *)sqlite3_column_text(agg, 3));
             }
-            if (deleted) info.state = BD_STATE_DELETED;
-            else if (info.files_available == info.files_total) info.state = BD_STATE_AVAILABLE;
-            else if (info.files_available > 0) info.state = BD_STATE_PARTIAL;
-            else if (with_copy > 0) { info.state = BD_STATE_OFFLINE; info.offline_media_label = label_copy; }
-            else info.state = BD_STATE_NO_COPY;
+            info.state = deleted ? BD_STATE_DELETED : folder_state(info.files_total, info.files_available, with_copy);
+            if (info.state == BD_STATE_OFFLINE) info.offline_media_label = label_copy;
         }
         int stop = fn(ctx, &info);
         free(label_copy);
@@ -176,6 +197,33 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
         info.copy_state = (const char *)sqlite3_column_text(q, 9);
         info.connected = sqlite3_column_int(q, 10);
         info.last_check_ms = sqlite3_column_int64(q, 11);
+        if (fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
+}
+
+bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT m.id, m.label, m.kind, COALESCE(k.root, m.last_root), k.media_id IS NOT NULL,"
+                           " COALESCE(m.total_bytes,0), COALESCE(m.free_bytes,0), COALESCE(m.last_seen_ms,0),"
+                           " (SELECT COUNT(*) FROM copies c WHERE c.media_id=m.id)"
+                           " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id ORDER BY m.label COLLATE NOCASE",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list drives");
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_media_info info;
+        info.media_id = sqlite3_column_int64(q, 0);
+        info.label = (const char *)sqlite3_column_text(q, 1);
+        info.kind = (const char *)sqlite3_column_text(q, 2);
+        info.last_root = (const char *)sqlite3_column_text(q, 3);
+        info.connected = sqlite3_column_int(q, 4);
+        info.total_bytes = sqlite3_column_int64(q, 5);
+        info.free_bytes = sqlite3_column_int64(q, 6);
+        info.last_seen_ms = sqlite3_column_int64(q, 7);
+        info.copies = sqlite3_column_int64(q, 8);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);

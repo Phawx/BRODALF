@@ -1,0 +1,37 @@
+#include <windows.h>
+#include "resource.h"
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "brodalf.manifest"
+
+IDD_LABEL DIALOGEX 0, 0, 240, 78
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Name this drive"
+FONT 9, "Segoe UI", 0, 0, 1
+BEGIN
+    LTEXT "Give the drive a name you will recognise on its label, like ""Blue WD 4TB"".", IDC_LABEL_TEXT, 8, 8, 224, 18
+    EDITTEXT IDC_LABEL_EDIT, 8, 30, 224, 14, ES_AUTOHSCROLL
+    DEFPUSHBUTTON "Set up drive", IDOK, 118, 56, 60, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 182, 56, 50, 14
+END
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "BRODALF backup catalog"
+            VALUE "ProductName", "BRODALF"
+            VALUE "FileVersion", "0.1.0"
+            VALUE "ProductVersion", "0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

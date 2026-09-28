@@ -87,8 +87,24 @@ Chosen per target. One key per catalog from a passphrase (Argon2id), files
 encrypted with XChaCha20-Poly1305 via libsodium. The catalog stores a key check
 value, never the key. The `.brodalf` file can be encrypted too (flag bit 0).
 
-## GUI (next)
+## GUI
 
-Native Win32. The tree view shows the states above with greyed items; a detail
-panel lists every version and where each copy lives. Drive plug-in is detected
-with `WM_DEVICECHANGE`.
+Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
+
+- Startup: a task dialog offers the last catalog (kept in
+  `HKCU\Software\BRODALF\LastCatalog`), another one, or a new one. A path on
+  the command line opens directly. A stale lock can be removed after a crash.
+- The tree loads folders lazily and draws each state with custom draw: grey
+  italic for no reachable copy, amber for older version only, red bold for a
+  bad copy, strikethrough for deleted. Folder and source rows show "x of y
+  available" and, when offline, the drive that holds the copies.
+- The detail panel lists every version and each copy: drive, state, last
+  checked, size and path on the drive.
+- Scan, backup, check and restore run one at a time on a worker thread, which
+  reports progress to the status bar and log and saves the catalog after each
+  job. The tree is refreshed when a job ends and cannot be expanded while one
+  runs, since the catalog belongs to the worker then.
+- Drives: on startup and on `WM_DEVICECHANGE`, drives that disappeared are
+  disconnected, every drive letter with a `BRODALF.media` for this catalog is
+  connected (with a quick check), and folders or shares used as storage are
+  retried where they were last seen.

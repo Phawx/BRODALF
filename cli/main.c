@@ -135,7 +135,10 @@ static int print_node(void *ctx, const bd_node_info *n)
 static int print_tree_source(void *ctx, const bd_source_info *info)
 {
     bd_catalog *cat = ctx;
-    printf("%s  (%s)\n", info->name, info->path);
+    printf("%s  (%s)  %lld of %lld available", info->name, info->path, (long long)info->files_available,
+           (long long)info->files_total);
+    if (info->offline_media_label) printf(", copies on %s", info->offline_media_label);
+    printf("\n");
     tree_ctx t = {cat, 1};
     bd_list_children(cat, info->source_id, 0, print_node, &t);
     return 0;

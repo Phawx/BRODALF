@@ -166,6 +166,21 @@ int bd_exec(bd_catalog *cat, const char *sql)
     return sqlite3_exec(cat->db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
 }
 
+void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx)
+{
+    cat->progress = fn;
+    cat->progress_ctx = ctx;
+}
+
+void bd_report(bd_catalog *cat, const char *phase, int64_t files, int64_t bytes, const char *current, int force)
+{
+    if (!cat->progress) return;
+    int64_t now = bd_now_ms();
+    if (!force && now - cat->progress_last_ms < 100) return;
+    cat->progress_last_ms = now;
+    cat->progress(cat->progress_ctx, phase, files, bytes, current ? current : "");
+}
+
 const char *bd_status_name(bd_status s)
 {
     switch (s) {

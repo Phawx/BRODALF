@@ -183,6 +183,7 @@ static void finish_job(bd_catalog *cat, int64_t job_id, const char *status, int6
 static void backup_one(bd_catalog *cat, int64_t media_id, const char *catdir, const backup_item *it,
                        bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
+    bd_report(cat, "backup", stats->files_copied, stats->bytes_copied, it->rel, 0);
     char *src = bd_path_join(it->source_path, it->rel);
     char *dest_rel = bd_sprintf("%s/%s", it->source_name, it->rel);
     char *dest = dest_rel ? bd_path_join(catdir, dest_rel) : NULL;
@@ -364,6 +365,7 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
         }
     }
     free(r2);
+    bd_report(cat, "backup", stats->files_copied, stats->bytes_copied, NULL, 1);
     finish_job(cat, job, stats->files_failed ? "partial" : "done", stats->files_copied, stats->files_failed, stats->bytes_copied);
     return BD_OK;
 }
@@ -426,6 +428,7 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
             char *dest = rel_out ? bd_path_join(dest_root, rel_out) : NULL;
             free(rel_out);
             if (!dest) { stats->files_failed++; continue; }
+            bd_report(cat, "restore", stats->files_restored, stats->bytes_restored, it->rel, 0);
             if (it->is_dir) {
                 bd_mkdirs(dest);
                 free(dest);

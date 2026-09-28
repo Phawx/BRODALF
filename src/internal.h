@@ -21,6 +21,9 @@ struct bd_catalog {
     char *work_path;  /* unpacked SQLite working copy */
     char uuid[37];
     char err[1024];
+    bd_progress_fn progress;
+    void *progress_ctx;
+    int64_t progress_last_ms;
 };
 
 /* Record an error message on the catalog and return status. */
@@ -49,5 +52,8 @@ char *bd_media_catalog_dir(const bd_catalog *cat, const char *root);
 char *bd_connected_root(bd_catalog *cat, int64_t media_id);
 
 int bd_exec(bd_catalog *cat, const char *sql);
+
+/* Report progress, throttled unless force is set. */
+void bd_report(bd_catalog *cat, const char *phase, int64_t files, int64_t bytes, const char *current, int force);
 
 #endif

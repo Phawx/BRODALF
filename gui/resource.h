@@ -1,0 +1,3 @@
+#define IDD_LABEL 101
+#define IDC_LABEL_EDIT 1001
+#define IDC_LABEL_TEXT 1002

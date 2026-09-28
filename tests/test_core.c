@@ -102,6 +102,26 @@ static int count_copies(void *ctx, const bd_copy_info *c)
     return 0;
 }
 
+typedef struct { bd_node_state state; int64_t total, available; char label[128]; } source_totals;
+
+static int get_totals(void *ctx, const bd_source_info *info)
+{
+    source_totals *t = ctx;
+    t->state = info->state;
+    t->total = info->files_total;
+    t->available = info->files_available;
+    snprintf(t->label, sizeof(t->label), "%s", info->offline_media_label ? info->offline_media_label : "");
+    return 1;
+}
+
+static source_totals totals(bd_catalog *cat)
+{
+    source_totals t;
+    memset(&t, 0, sizeof(t));
+    bd_list_sources(cat, get_totals, &t);
+    return t;
+}
+
 static void quiet(void *ctx, const char *msg)
 {
     (void)ctx;
@@ -135,6 +155,7 @@ int main(void)
     /* Everything starts greyed out. */
     CHECK(lookup(cat, src, 0, "a.txt").state == BD_STATE_NO_COPY);
     CHECK(lookup(cat, src, 0, "sub").state == BD_STATE_NO_COPY);
+    CHECK(totals(cat).state == BD_STATE_NO_COPY && totals(cat).total == 2);
 
     /* A second window cannot open the same catalog. */
     bd_catalog *other = NULL;
@@ -162,6 +183,7 @@ int main(void)
     CHECK(a.state == BD_STATE_OFFLINE);
     CHECK(strcmp(a.label, "Test Drive") == 0);
     CHECK(lookup(cat, src, 0, "sub").state == BD_STATE_OFFLINE);
+    CHECK(totals(cat).state == BD_STATE_OFFLINE && strcmp(totals(cat).label, "Test Drive") == 0);
 
     /* The catalog survives a save and reopen. */
     REQUIRE_OK(bd_catalog_save(cat), cat);
@@ -179,6 +201,7 @@ int main(void)
     a = lookup(cat, src, 0, "a.txt");
     CHECK(a.state == BD_STATE_AVAILABLE_OLDER);
     CHECK(a.version_no == 2);
+    CHECK(totals(cat).state == BD_STATE_PARTIAL && totals(cat).available == 1);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
     CHECK(bs.versions_moved == 1);

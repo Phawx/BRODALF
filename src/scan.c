@@ -166,6 +166,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 
     if (st->is_dir) c->stats->dirs_seen++;
     else c->stats->files_seen++;
+    bd_report(c->cat, "scan", c->stats->files_seen, c->stats->bytes_hashed, rel, 0);
 
     if (!node_id) {
         sqlite3_reset(c->insert_node);
@@ -371,5 +372,6 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     }
     for (size_t i = 0; i < len; i++) free(list[i].path);
     free(list);
+    bd_report(cat, "scan", stats->files_seen, stats->bytes_hashed, NULL, 1);
     return s;
 }

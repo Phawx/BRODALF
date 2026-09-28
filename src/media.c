@@ -233,6 +233,7 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
         int64_t stored_mtime = sqlite3_column_int64(q, 3);
         const char *expected = (const char *)sqlite3_column_text(q, 4);
         stats->copies++;
+        bd_report(cat, full ? "full check" : "check", stats->copies, 0, rel, 0);
 
         char *path = bd_path_join(dir, rel);
         bd_stat_t st;

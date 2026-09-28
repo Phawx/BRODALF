@@ -15,7 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          "-DBRODALF_ONEDRIVE_CLIENT_ID=${{ vars.BRODALF_ONEDRIVE_CLIENT_ID }}"
+          "-DBRODALF_DROPBOX_CLIENT_ID=${{ vars.BRODALF_DROPBOX_CLIENT_ID }}"
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test

@@ -32,10 +32,12 @@ target_include_directories(brodalf_monocypher PUBLIC third_party/monocypher)
 add_library(brodalf_cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(brodalf_cjson PUBLIC third_party/cjson)
 
-# Cloud app registrations. The IDs are public (sign-in uses PKCE), so they
-# can be baked in at build time or supplied through environment variables.
+# Cloud app registrations. They are not secrets (sign-in uses PKCE), but they
+# are kept out of the source: release builds get them from the CI variables
+# BRODALF_ONEDRIVE_CLIENT_ID and BRODALF_DROPBOX_CLIENT_ID, and local builds
+# can pass -D... or set environment variables of the same names at run time.
 set(BRODALF_ONEDRIVE_CLIENT_ID "" CACHE STRING "Microsoft Entra application (client) ID")
-set(BRODALF_DROPBOX_CLIENT_ID "2u8hchxcmyyiyw7" CACHE STRING "Dropbox app key")
+set(BRODALF_DROPBOX_CLIENT_ID "" CACHE STRING "Dropbox app key")
 
 if(WIN32)
     set(BRODALF_HTTP_SRC src/http_win32.c)

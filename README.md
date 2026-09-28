@@ -103,11 +103,13 @@ sign in with the same account; BRODALF recognises it and keeps its copies.
 
 ### App registrations
 
-The Dropbox app key is built in. The OneDrive app ID is still to come; until
-then OneDrive says "this build of BRODALF has no OneDrive app ID yet". Either
-can be set at build time (`-DBRODALF_ONEDRIVE_CLIENT_ID=...`,
-`-DBRODALF_DROPBOX_CLIENT_ID=...`) or overridden with environment variables of
-the same names. These IDs are not secrets: sign-in uses PKCE, so no client
+The app IDs are not in the source. CI builds the released `brodalf.exe` with
+the repository's Actions variables `BRODALF_DROPBOX_CLIENT_ID` and
+`BRODALF_ONEDRIVE_CLIENT_ID`; a build without them says "this build of BRODALF
+has no ... app ID yet" for that service. For your own build, pass
+`-DBRODALF_DROPBOX_CLIENT_ID=...` (and the OneDrive one) to CMake, or set
+environment variables of the same names before running BRODALF. These IDs are
+not secrets: sign-in uses PKCE, so no client
 secret ships with BRODALF.
 
 - **Microsoft Entra**: an app for personal and work accounts, platform

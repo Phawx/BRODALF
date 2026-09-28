@@ -9,7 +9,7 @@ data. It records every file and folder you protect, every version BRODALF has
 seen, and every place a copy of each version was written. The main targets are
 hard drives that are usually offline; OneDrive and Dropbox come later as
 optional hooks. Windows is the main platform and the GUI is the main way to use
-it. Encryption is optional.
+it. Encryption is optional, per drive (see below).
 
 ## Flow
 
@@ -81,11 +81,36 @@ refresh token in Windows Credential Manager and the catalog only keeps a
 reference to it. A local synced OneDrive or Dropbox folder can also be used as
 a plain drive today.
 
-## Encryption (next)
+## Encryption
 
-Chosen per target. One key per catalog from a passphrase (Argon2id), files
-encrypted with XChaCha20-Poly1305 via libsodium. The catalog stores a key check
-value, never the key. The `.brodalf` file can be encrypted too (flag bit 0).
+Optional, per drive, and it encrypts file contents only: names and folders
+stay readable so a drive can still be browsed (Phawx's call, 2026-09-28).
+Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
+
+- A catalog can have one passphrase. It protects a random 32-byte master key:
+  Argon2id (64 MiB, 3 passes) turns the passphrase into a key that wraps the
+  master key with XChaCha20-Poly1305. The wrapped key (the 96-byte "key
+  block": salt, cost, nonce, MAC, wrapped key) is kept in `settings`. A wrong
+  passphrase fails to unwrap. Changing the passphrase rewraps the same master
+  key, so nothing on the drives needs rewriting.
+- A drive set up as encrypted (`media.encrypted`, and `encrypted=1` in
+  `BRODALF.media`) stores every copy as `<name>.bdenc`. Older versions in
+  `.versions` become `<stem>.v<N><ext>.bdenc`. This can't be changed later.
+- An encrypted file is a 40-byte header (`BRDLFENC`, version, chunk size,
+  random 24-byte nonce), then 64 KiB chunks, each with a 16-byte MAC. Every
+  chunk is authenticated with the header and a "last chunk" flag, and the
+  stream rekeys after each chunk, so tampering, reordering and truncation all
+  show up as a damaged copy.
+- Hashes in the catalog are always of the plaintext, so a copy on an
+  encrypted drive and one on a plain drive are the same version.
+- The key is needed to write, full-check or restore an encrypted copy, not to
+  see it in the tree. A quick check works without it (size and time), and a
+  copy that was touched since it was written is left as it was until a check
+  with the passphrase.
+- The `.brodalf` file can be encrypted too (flag bit 0 in the header). The
+  header is then followed by the key block, and the zstd stream is sealed with
+  the master key in the same chunk format. The catalog backup on an encrypted
+  drive is always written encrypted.
 
 ## GUI
 

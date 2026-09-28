@@ -3,7 +3,11 @@
  *
  *   bytes 0-7   magic "BRODALF\x1a"
  *   bytes 8-11  format version, little endian (currently 1)
- *   bytes 12-15 flags, little endian (bit 0 reserved for encryption)
+ *   bytes 12-15 flags, little endian (bit 0: encrypted)
+ *
+ * An encrypted catalog continues with the 96-byte key block (the master key
+ * wrapped by the passphrase, see crypto.c), and the zstd stream is sealed
+ * with the master key.
  *
  * While open, the database lives in a working copy in the temp folder and a
  * "<file>.lock" file sits next to the catalog. */
@@ -16,7 +20,9 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 1
+#define BD_SCHEMA_VERSION 2
+#define BD_STR2(x) #x
+#define BD_STR(x) BD_STR2(x)
 
 static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -59,7 +65,8 @@ static const char *SCHEMA_SQL =
     "  total_bytes INTEGER,"
     "  free_bytes INTEGER,"
     "  added_ms INTEGER NOT NULL,"
-    "  last_seen_ms INTEGER);"
+    "  last_seen_ms INTEGER,"
+    "  encrypted INTEGER NOT NULL DEFAULT 0);"
     "CREATE TABLE IF NOT EXISTS cloud_accounts("
     "  id INTEGER PRIMARY KEY,"
     "  media_id INTEGER NOT NULL UNIQUE REFERENCES media(id) ON DELETE CASCADE,"
@@ -138,6 +145,7 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
 {
     if (!cat) return;
     if (cat->db) sqlite3_close(cat->db);
+    bd_wipe(cat->key, sizeof(cat->key));
     remove_work_files(cat);
     if (owns_lock) bd_remove(cat->lock_path);
     free(cat->path);
@@ -181,6 +189,12 @@ static bd_status open_db(bd_catalog *cat)
     if (bd_exec(cat, "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") != 0)
         return bd_fail_db(cat, "cannot configure database");
     if (bd_exec(cat, SCHEMA_SQL) != 0) return bd_fail_db(cat, "cannot create catalog tables");
+    /* Schema 1 catalogs have no media.encrypted column. */
+    sqlite3_stmt *probe;
+    if (sqlite3_prepare_v2(cat->db, "SELECT encrypted FROM media LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
+        sqlite3_finalize(probe);
+    else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
@@ -212,7 +226,7 @@ static int meta_set(bd_catalog *cat, const char *key, const char *value)
     return rc;
 }
 
-static bd_status decompress_to(bd_catalog *cat, FILE *in, const char *out_path)
+static bd_status decompress_to(bd_catalog *cat, bd_source *in, const char *out_path)
 {
     FILE *out = bd_fopen(out_path, "wb");
     if (!out) return bd_fail(cat, BD_ERR_IO, "cannot create working copy %s", out_path);
@@ -223,8 +237,11 @@ static bd_status decompress_to(bd_catalog *cat, FILE *in, const char *out_path)
     size_t last = 1;
     if (!dctx || !ibuf || !obuf) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
     for (;;) {
-        size_t n = fread(ibuf, 1, in_cap, in);
-        if (n == 0) break;
+        long got = bd_source_read(in, ibuf, in_cap);
+        if (got == -3) { status = bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", cat->path); goto done; }
+        if (got < 0) { status = bd_fail(cat, BD_ERR_IO, "cannot read %s", cat->path); goto done; }
+        if (got == 0) break;
+        size_t n = (size_t)got;
         ZSTD_inBuffer ib = {ibuf, n, 0};
         while (ib.pos < ib.size) {
             ZSTD_outBuffer ob = {obuf, out_cap, 0};
@@ -239,8 +256,7 @@ static bd_status decompress_to(bd_catalog *cat, FILE *in, const char *out_path)
             }
         }
     }
-    if (ferror(in)) status = bd_fail(cat, BD_ERR_IO, "cannot read %s", cat->path);
-    else if (last != 0) status = bd_fail(cat, BD_ERR_FORMAT, "%s is truncated", cat->path);
+    if (last != 0) status = bd_fail(cat, BD_ERR_FORMAT, "%s is truncated", cat->path);
 done:
     ZSTD_freeDCtx(dctx);
     free(ibuf);
@@ -249,7 +265,7 @@ done:
     return status;
 }
 
-static bd_status compress_to(bd_catalog *cat, const char *in_path, FILE *out)
+static bd_status compress_to(bd_catalog *cat, const char *in_path, bd_sink *out)
 {
     FILE *in = bd_fopen(in_path, "rb");
     if (!in) return bd_fail(cat, BD_ERR_IO, "cannot read snapshot %s", in_path);
@@ -274,7 +290,7 @@ static bd_status compress_to(bd_catalog *cat, const char *in_path, FILE *out)
                 status = bd_fail(cat, BD_ERR_IO, "compression failed: %s", ZSTD_getErrorName(remaining));
                 goto done;
             }
-            if (fwrite(obuf, 1, ob.pos, out) != ob.pos) { status = bd_fail(cat, BD_ERR_IO, "cannot write catalog"); goto done; }
+            if (bd_sink_write(out, obuf, ob.pos) != 0) { status = bd_fail(cat, BD_ERR_IO, "cannot write catalog"); goto done; }
             finished = last ? (remaining == 0) : (ib.pos == ib.size);
         } while (!finished);
         if (last) break;
@@ -287,13 +303,17 @@ done:
     return status;
 }
 
-bd_status bd_catalog_save(bd_catalog *cat)
+bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
+    uint8_t block[BD_KEY_BLOCK];
+    if (encrypt && (!cat->have_key || bd_catalog_key_block(cat, block) != 0))
+        return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to save an encrypted catalog");
     char *snapshot = bd_sprintf("%s.snapshot", cat->work_path);
-    char *saving = bd_sprintf("%s.saving", cat->path);
+    char *saving = bd_sprintf("%s.saving", dest);
     bd_status status = BD_OK;
     FILE *out = NULL;
+    bd_sink sink = {NULL, NULL};
     if (!snapshot || !saving) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
     bd_remove(snapshot);
 
@@ -309,21 +329,38 @@ bd_status bd_catalog_save(bd_catalog *cat)
     unsigned char header[16];
     memcpy(header, BD_MAGIC, 8);
     put_u32(header + 8, BD_FORMAT_VERSION);
-    put_u32(header + 12, 0);
-    if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) { status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving); goto done; }
-    status = compress_to(cat, snapshot, out);
+    put_u32(header + 12, encrypt ? 1u : 0u);
+    if (fwrite(header, 1, sizeof(header), out) != sizeof(header) ||
+        (encrypt && fwrite(block, 1, sizeof(block), out) != sizeof(block))) {
+        status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving);
+        goto done;
+    }
+    sink.file = out;
+    if (encrypt && !(sink.sealer = bd_seal_begin(out, cat->key))) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
+    status = compress_to(cat, snapshot, &sink);
+    if (sink.sealer) {
+        if (bd_seal_end(sink.sealer) != 0 && status == BD_OK) status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving);
+        sink.sealer = NULL;
+    }
     if (status != BD_OK) goto done;
     if (bd_fsync(out) != 0) { status = bd_fail(cat, BD_ERR_IO, "cannot flush %s to disk", saving); goto done; }
-    fclose(out);
+    if (fclose(out) != 0) { out = NULL; status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving); goto done; }
     out = NULL;
-    if (bd_rename_replace(saving, cat->path) != 0) status = bd_fail(cat, BD_ERR_IO, "cannot replace %s", cat->path);
+    if (bd_rename_replace(saving, dest) != 0) status = bd_fail(cat, BD_ERR_IO, "cannot replace %s", dest);
 
 done:
+    if (sink.sealer) bd_seal_end(sink.sealer);
     if (out) fclose(out);
     if (status != BD_OK && saving) bd_remove(saving);
     if (snapshot) { bd_remove(snapshot); free(snapshot); }
     free(saving);
     return status;
+}
+
+bd_status bd_catalog_save(bd_catalog *cat)
+{
+    if (!cat || !cat->db) return BD_ERR_INVALID;
+    return bd_catalog_save_to(cat, cat->path, bd_catalog_file_encrypted(cat));
 }
 
 bd_status bd_catalog_create(const char *path, bd_catalog **out)
@@ -360,7 +397,23 @@ bd_status bd_catalog_create(const char *path, bd_catalog **out)
     return BD_OK;
 }
 
+int bd_catalog_file_needs_passphrase(const char *path)
+{
+    FILE *in = bd_fopen(path, "rb");
+    if (!in) return 0;
+    unsigned char header[16];
+    int enc = fread(header, 1, sizeof(header), in) == sizeof(header) && memcmp(header, BD_MAGIC, 8) == 0 &&
+              (get_u32(header + 12) & 1u);
+    fclose(in);
+    return enc;
+}
+
 bd_status bd_catalog_open(const char *path, bd_catalog **out)
+{
+    return bd_catalog_open_with(path, NULL, out);
+}
+
+bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out)
 {
     *out = NULL;
     g_open_error[0] = '\0';
@@ -377,11 +430,39 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out)
         return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is not a BRODALF catalog", path), 1);
     }
     uint32_t version = get_u32(header + 8), flags = get_u32(header + 12);
-    if (version > BD_FORMAT_VERSION || (flags & 1u)) {
+    if (version > BD_FORMAT_VERSION || (flags & ~1u)) {
         fclose(in);
-        return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer or encrypted format this build cannot read", path), 1);
+        return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format this build cannot read", path), 1);
     }
-    s = decompress_to(cat, in, cat->work_path);
+    bd_source src = {in, NULL};
+    uint8_t key[32];
+    if (flags & 1u) {
+        uint8_t block[BD_KEY_BLOCK];
+        if (fread(block, 1, sizeof(block), in) != sizeof(block)) {
+            fclose(in);
+            return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path), 1);
+        }
+        if (!passphrase) {
+            fclose(in);
+            return fail_open(cat, bd_fail(cat, BD_ERR_PASSPHRASE, "%s is encrypted; enter its passphrase", path), 1);
+        }
+        int rc = bd_unwrap_key_block(passphrase, block, key);
+        if (rc != 0) {
+            fclose(in);
+            return fail_open(cat, rc == -1 ? bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key")
+                                           : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong passphrase for %s", path), 1);
+        }
+        src.opener = bd_open_begin(in, key);
+        if (!src.opener) {
+            bd_wipe(key, sizeof(key));
+            fclose(in);
+            return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path), 1);
+        }
+        bd_catalog_set_key(cat, key);
+        bd_wipe(key, sizeof(key));
+    }
+    s = decompress_to(cat, &src, cat->work_path);
+    bd_open_end(src.opener);
     fclose(in);
     if (s == BD_OK) s = open_db(cat);
     if (s == BD_OK && !meta_get(cat, "catalog_uuid", cat->uuid, sizeof(cat->uuid)))
@@ -390,6 +471,8 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out)
         char v[32];
         if (meta_get(cat, "schema_version", v, sizeof(v)) && atoi(v) > BD_SCHEMA_VERSION)
             s = bd_fail(cat, BD_ERR_FORMAT, "%s was made by a newer BRODALF", path);
+        else if (meta_set(cat, "schema_version", BD_STR(BD_SCHEMA_VERSION)) != 0)
+            s = bd_fail_db(cat, "cannot upgrade catalog");
     }
     if (s != BD_OK) return fail_open(cat, s, 1);
     *out = cat;

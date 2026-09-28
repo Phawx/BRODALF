@@ -27,7 +27,8 @@ typedef enum {
     BD_ERR_EXISTS,
     BD_ERR_NOT_FOUND,
     BD_ERR_INVALID,
-    BD_ERR_NOMEM
+    BD_ERR_NOMEM,
+    BD_ERR_PASSPHRASE /* a passphrase is needed, or the one given is wrong */
 } bd_status;
 
 typedef void (*bd_log_fn)(void *ctx, const char *message);
@@ -39,8 +40,16 @@ typedef void (*bd_log_fn)(void *ctx, const char *message);
 bd_status bd_catalog_create(const char *path, bd_catalog **out);
 
 /* Open an existing catalog. It is unpacked to a working copy in the temp
- * folder and a "<path>.lock" file is created next to it. */
+ * folder and a "<path>.lock" file is created next to it. An encrypted
+ * catalog file fails with BD_ERR_PASSPHRASE; use bd_catalog_open_with. */
 bd_status bd_catalog_open(const char *path, bd_catalog **out);
+
+/* Open with a passphrase. For an encrypted catalog file the catalog comes
+ * back unlocked; for a plain one the passphrase is ignored. */
+bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
+
+/* 1 if the file at path is an encrypted catalog (needs a passphrase). */
+int bd_catalog_file_needs_passphrase(const char *path);
 
 /* Write the working copy back to the .brodalf file atomically. */
 bd_status bd_catalog_save(bd_catalog *cat);
@@ -53,6 +62,26 @@ const char *bd_catalog_error(const bd_catalog *cat);
 const char *bd_open_error(void);
 const char *bd_catalog_uuid(const bd_catalog *cat);
 const char *bd_status_name(bd_status status);
+
+/* ---- Encryption ------------------------------------------------------ */
+
+/* A catalog can have a passphrase. It protects a random master key that
+ * encrypts file contents on encrypted drives (names stay readable) and,
+ * optionally, the .brodalf file itself. Losing the passphrase means losing
+ * access to everything encrypted with it. */
+int bd_catalog_has_passphrase(bd_catalog *cat);
+int bd_catalog_is_unlocked(bd_catalog *cat);
+/* Set the first passphrase, or change it (the catalog must be unlocked).
+ * At least 8 characters. Leaves the catalog unlocked. */
+bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase);
+/* BD_ERR_PASSPHRASE if wrong. */
+bd_status bd_catalog_unlock(bd_catalog *cat, const char *passphrase);
+/* Forget the master key until the next unlock. */
+void bd_catalog_lock_key(bd_catalog *cat);
+/* Encrypt the .brodalf file from the next save on. Needs an unlocked
+ * catalog to turn on. */
+bd_status bd_catalog_set_file_encrypted(bd_catalog *cat, int on);
+int bd_catalog_file_encrypted(bd_catalog *cat);
 
 /* Progress for long jobs (scan, backup, check, restore), called at most
  * about ten times a second from the thread running the job. files_done and
@@ -82,8 +111,11 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
 /* ---- Storage (media) ------------------------------------------------- */
 
 /* Prepare a drive or folder as storage for this catalog. Writes
- * <root>/BRODALF/<catalog-uuid>/BRODALF.media with a new media ID. */
-bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, int64_t *out_media_id);
+ * <root>/BRODALF/<catalog-uuid>/BRODALF.media with a new media ID.
+ * BD_MEDIA_ENCRYPTED makes every copy on it encrypted (the catalog must
+ * have a passphrase and be unlocked); this cannot be changed later. */
+#define BD_MEDIA_ENCRYPTED 1u
+bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, unsigned flags, int64_t *out_media_id);
 
 /* Tell BRODALF a known drive is connected at root. Identifies it by its
  * BRODALF.media file (not by drive letter), records the mount and free
@@ -95,6 +127,7 @@ typedef struct {
     int64_t missing;
     int64_t bad;
     int64_t rehashed;
+    int64_t skipped;   /* encrypted copies that need the passphrase to check */
 } bd_check_stats;
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id,
@@ -126,7 +159,8 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                     bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* Save the catalog and put a copy of it on the drive as
- * BRODALF/<catalog-uuid>/catalog-backup.brodalf. */
+ * BRODALF/<catalog-uuid>/catalog-backup.brodalf. The copy is encrypted
+ * when the catalog file or the drive is. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
 
 typedef struct {
@@ -134,6 +168,7 @@ typedef struct {
     int64_t files_offline;    /* copies exist but no drive holding one is connected */
     int64_t files_no_copy;
     int64_t files_failed;
+    int64_t files_need_passphrase; /* only on an encrypted drive, and the catalog is locked */
     int64_t bytes_restored;
 } bd_restore_stats;
 
@@ -195,6 +230,7 @@ typedef struct {
     const char *copy_state;  /* "ok", "missing", "bad" */
     int connected;
     int64_t last_check_ms;
+    int encrypted;           /* the copy is on an encrypted drive */
 } bd_copy_info;
 
 typedef struct {
@@ -207,6 +243,7 @@ typedef struct {
     int64_t free_bytes;
     int64_t last_seen_ms;
     int64_t copies;          /* copies BRODALF has recorded on it */
+    int encrypted;
 } bd_media_info;
 
 typedef int (*bd_media_fn)(void *ctx, const bd_media_info *info);

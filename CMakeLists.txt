@@ -25,9 +25,14 @@ add_library(brodalf_zstd STATIC third_party/zstd/zstd.c)
 target_include_directories(brodalf_zstd PUBLIC third_party/zstd)
 target_compile_definitions(brodalf_zstd PRIVATE ZSTD_DISABLE_ASM)
 
+# Argon2id and XChaCha20-Poly1305 for optional encryption.
+add_library(brodalf_monocypher STATIC third_party/monocypher/monocypher.c)
+target_include_directories(brodalf_monocypher PUBLIC third_party/monocypher)
+
 add_library(brodalf_core STATIC
     src/backup.c
     src/catalog.c
+    src/crypto.c
     src/media.c
     src/platform_posix.c
     src/platform_win32.c
@@ -35,7 +40,7 @@ add_library(brodalf_core STATIC
     src/scan.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)
-target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd)
+target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd brodalf_monocypher)
 if(WIN32)
     target_link_libraries(brodalf_core PUBLIC bcrypt)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)
@@ -59,6 +64,10 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_core PRIVATE brodalf_core)
     target_include_directories(test_core PRIVATE src)
     add_test(NAME core COMMAND test_core)
+    add_executable(test_crypto tests/test_crypto.c)
+    target_link_libraries(test_crypto PRIVATE brodalf_core)
+    target_include_directories(test_crypto PRIVATE src)
+    add_test(NAME crypto COMMAND test_crypto)
 endif()
 
 if(WIN32)

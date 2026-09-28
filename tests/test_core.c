@@ -163,8 +163,8 @@ int main(void)
 
     /* Set up a drive and back up. */
     int64_t drive;
-    REQUIRE_OK(bd_media_init(cat, at("drive"), "Test Drive", &drive), cat);
-    CHECK(bd_media_init(cat, at("drive"), "Again", NULL) == BD_ERR_EXISTS);
+    REQUIRE_OK(bd_media_init(cat, at("drive"), "Test Drive", 0, &drive), cat);
+    CHECK(bd_media_init(cat, at("drive"), "Again", 0, NULL) == BD_ERR_EXISTS);
     bd_backup_stats bs;
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 2);

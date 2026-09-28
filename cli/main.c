@@ -10,6 +10,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <termios.h>
+#include <unistd.h>
 #endif
 
 static void usage(void)
@@ -20,7 +23,8 @@ static void usage(void)
          "  add      <catalog> <folder>...             add folders to protect\n"
          "  sources  <catalog>                         list protected folders\n"
          "  scan     <catalog>                         record files, sizes and checksums\n"
-         "  drive    <catalog> <root> <label>          set up a drive or folder as storage\n"
+         "  drive    <catalog> <root> <label> [--encrypt]\n"
+         "                                             set up a drive or folder as storage\n"
          "  backup   <catalog> <root> [--source NAME]  copy what is missing to a drive\n"
          "  check    <catalog> <root> [--full]         check the copies on a drive\n"
          "  tree     <catalog> [--drive ROOT]...       show the ghost tree\n"
@@ -28,9 +32,14 @@ static void usage(void)
          "                                             show versions and copies of a file\n"
          "  restore  <catalog> <dest> [--source NAME] [--path REL] --drive ROOT...\n"
          "                                             restore current versions from drives\n"
+         "  passphrase <catalog>                       set or change the passphrase\n"
+         "  encrypt-catalog <catalog> on|off           encrypt the .brodalf file itself\n"
          "\n"
          "--drive connects a drive for this command. Files are shown as available\n"
-         "only when a correct copy is on a connected drive.");
+         "only when a correct copy is on a connected drive.\n"
+         "\n"
+         "Passphrases are asked for on the terminal, or taken from the environment\n"
+         "variables BRODALF_PASSPHRASE and (when setting one) BRODALF_NEW_PASSPHRASE.");
 }
 
 static void log_line(void *ctx, const char *msg)
@@ -58,6 +67,85 @@ static const char *opt(int argc, char **argv, const char *name)
     for (int i = 0; i + 1 < argc; i++)
         if (strcmp(argv[i], name) == 0) return argv[i + 1];
     return NULL;
+}
+
+/* Read a line from the terminal without echo. */
+static int read_secret(const char *prompt, char *buf, size_t cap)
+{
+    fprintf(stderr, "%s", prompt);
+    fflush(stderr);
+    buf[0] = '\0';
+#ifdef _WIN32
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    int console = GetConsoleMode(in, &mode);
+    if (console) {
+        SetConsoleMode(in, mode & ~(DWORD)ENABLE_ECHO_INPUT);
+        wchar_t wbuf[512];
+        DWORD n = 0;
+        BOOL ok = ReadConsoleW(in, wbuf, 511, &n, NULL);
+        SetConsoleMode(in, mode);
+        fputc('\n', stderr);
+        if (!ok) return -1;
+        while (n > 0 && (wbuf[n - 1] == L'\n' || wbuf[n - 1] == L'\r')) n--;
+        wbuf[n] = 0;
+        int len = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, (int)cap, NULL, NULL);
+        SecureZeroMemory(wbuf, sizeof(wbuf));
+        return len > 0 ? 0 : -1;
+    }
+#else
+    struct termios old, quiet_t;
+    int tty = tcgetattr(STDIN_FILENO, &old) == 0;
+    if (tty) {
+        quiet_t = old;
+        quiet_t.c_lflag &= ~(tcflag_t)ECHO;
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet_t);
+    }
+#endif
+    char *got = fgets(buf, (int)cap, stdin);
+#ifndef _WIN32
+    if (tty) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &old);
+        fputc('\n', stderr);
+    }
+#endif
+    if (!got) return -1;
+    buf[strcspn(buf, "\r\n")] = '\0';
+    return 0;
+}
+
+static int get_passphrase(char *buf, size_t cap)
+{
+    const char *env = getenv("BRODALF_PASSPHRASE");
+    if (env) { snprintf(buf, cap, "%s", env); return 0; }
+    return read_secret("Passphrase: ", buf, cap);
+}
+
+static int get_new_passphrase(char *buf, size_t cap)
+{
+    const char *env = getenv("BRODALF_NEW_PASSPHRASE");
+    if (env) { snprintf(buf, cap, "%s", env); return 0; }
+    char again[512];
+    if (read_secret("New passphrase (at least 8 characters): ", buf, cap) != 0 ||
+        read_secret("Type it again: ", again, sizeof(again)) != 0)
+        return -1;
+    int same = strcmp(buf, again) == 0;
+    memset(again, 0, sizeof(again));
+    if (!same) { fprintf(stderr, "brodalf: the passphrases do not match\n"); return -1; }
+    fprintf(stderr, "Write it down somewhere safe. Without it, encrypted copies cannot be read.\n");
+    return 0;
+}
+
+/* Unlock the catalog if it has a passphrase and is locked. 0 on success. */
+static int ensure_unlocked(bd_catalog *cat)
+{
+    if (!bd_catalog_has_passphrase(cat) || bd_catalog_is_unlocked(cat)) return 0;
+    char pass[512];
+    if (get_passphrase(pass, sizeof(pass)) != 0) return -1;
+    bd_status s = bd_catalog_unlock(cat, pass);
+    memset(pass, 0, sizeof(pass));
+    if (s != BD_OK) { fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat)); return -1; }
+    return 0;
 }
 
 typedef struct { const char *name; int64_t id; } find_source_ctx;
@@ -148,7 +236,8 @@ static int print_copy(void *ctx, const bd_copy_info *c)
 {
     (void)ctx;
     printf("v%-3d %s %12lld bytes  %.16s...", c->version_no, c->is_current ? "current" : "       ", (long long)c->size, c->hash);
-    if (c->media_id) printf("  on %s (%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline", c->path_on_media);
+    if (c->media_id) printf("  on %s (%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
+                            c->encrypted ? ", encrypted" : "", c->path_on_media);
     else printf("  no copy");
     printf("\n");
     return 0;
@@ -167,7 +256,15 @@ static int run(int argc, char **argv)
         return 0;
     }
 
-    if (bd_catalog_open(path, &cat) != BD_OK) return die(NULL, "cannot open catalog");
+    if (bd_catalog_file_needs_passphrase(path)) {
+        char pass[512];
+        if (get_passphrase(pass, sizeof(pass)) != 0) return 1;
+        bd_status s = bd_catalog_open_with(path, pass, &cat);
+        memset(pass, 0, sizeof(pass));
+        if (s != BD_OK) return die(NULL, "cannot open catalog");
+    } else if (bd_catalog_open(path, &cat) != BD_OK) {
+        return die(NULL, "cannot open catalog");
+    }
     int save = 0;
 
     if (strcmp(cmd, "add") == 0) {
@@ -189,8 +286,41 @@ static int run(int argc, char **argv)
     } else if (strcmp(cmd, "drive") == 0) {
         if (argc < 5) { usage(); bd_catalog_close(cat); return 1; }
         int64_t id;
-        if (bd_media_init(cat, argv[3], argv[4], &id) != BD_OK) return die(cat, "cannot set up drive");
-        printf("set up %s as \"%s\"\n", argv[3], argv[4]);
+        int encrypt = has_flag(argc, argv, "--encrypt");
+        if (encrypt && !bd_catalog_has_passphrase(cat)) {
+            char pass[512];
+            if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
+            bd_status s = bd_catalog_set_passphrase(cat, pass);
+            memset(pass, 0, sizeof(pass));
+            if (s != BD_OK) return die(cat, "cannot set passphrase");
+        } else if (encrypt && ensure_unlocked(cat) != 0) {
+            bd_catalog_close(cat);
+            return 1;
+        }
+        if (bd_media_init(cat, argv[3], argv[4], encrypt ? BD_MEDIA_ENCRYPTED : 0, &id) != BD_OK)
+            return die(cat, "cannot set up drive");
+        printf("set up %s as \"%s\"%s\n", argv[3], argv[4], encrypt ? ", encrypted" : "");
+        save = 1;
+    } else if (strcmp(cmd, "passphrase") == 0) {
+        if (ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
+        char pass[512];
+        if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
+        bd_status s = bd_catalog_set_passphrase(cat, pass);
+        memset(pass, 0, sizeof(pass));
+        if (s != BD_OK) return die(cat, "cannot set passphrase");
+        puts("passphrase set");
+        save = 1;
+    } else if (strcmp(cmd, "encrypt-catalog") == 0) {
+        if (argc < 4 || (strcmp(argv[3], "on") != 0 && strcmp(argv[3], "off") != 0)) { usage(); bd_catalog_close(cat); return 1; }
+        int on = strcmp(argv[3], "on") == 0;
+        if (on && !bd_catalog_has_passphrase(cat)) {
+            fprintf(stderr, "brodalf: set a passphrase first (brodalf-cli passphrase %s)\n", path);
+            bd_catalog_close(cat);
+            return 1;
+        }
+        if (on && ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
+        if (bd_catalog_set_file_encrypted(cat, on) != BD_OK) return die(cat, "cannot change catalog encryption");
+        printf("the catalog file is %s\n", on ? "encrypted from now on" : "no longer encrypted");
         save = 1;
     } else if (strcmp(cmd, "backup") == 0 || strcmp(cmd, "check") == 0) {
         if (argc < 4) { usage(); bd_catalog_close(cat); return 1; }
@@ -199,9 +329,12 @@ static int run(int argc, char **argv)
         if (bd_media_connect(cat, argv[3], &media_id, &cs, log_line, NULL) != BD_OK) return die(cat, "cannot use drive");
         if (strcmp(cmd, "check") == 0) {
             int full = has_flag(argc, argv, "--full");
-            if (full && bd_media_check(cat, media_id, 1, &cs, log_line, NULL) != BD_OK) return die(cat, "check failed");
+            bd_status s = full ? bd_media_check(cat, media_id, 1, &cs, log_line, NULL) : BD_OK;
+            if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_media_check(cat, media_id, 1, &cs, log_line, NULL);
+            if (s != BD_OK) return die(cat, "check failed");
             printf("%s check: %lld copies, %lld ok, %lld missing, %lld damaged\n", full ? "full" : "quick",
                    (long long)cs.copies, (long long)cs.ok, (long long)cs.missing, (long long)cs.bad);
+            if (cs.skipped) printf("%lld encrypted copies changed on the drive; run check --full to read them\n", (long long)cs.skipped);
         } else {
             int64_t source_id = 0;
             const char *name = opt(argc, argv, "--source");
@@ -211,7 +344,9 @@ static int run(int argc, char **argv)
                 return 1;
             }
             bd_backup_stats bs;
-            if (bd_backup(cat, media_id, source_id, &bs, log_line, NULL) != BD_OK) return die(cat, "backup failed");
+            bd_status s = bd_backup(cat, media_id, source_id, &bs, log_line, NULL);
+            if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup(cat, media_id, source_id, &bs, log_line, NULL);
+            if (s != BD_OK) return die(cat, "backup failed");
             printf("backup: %lld copied (%lld bytes), %lld already there, %lld failed, %lld older copies kept in .versions\n",
                    (long long)bs.files_copied, (long long)bs.bytes_copied, (long long)bs.files_already_there,
                    (long long)bs.files_failed, (long long)bs.versions_moved);
@@ -241,6 +376,7 @@ static int run(int argc, char **argv)
             bd_catalog_close(cat);
             return 1;
         }
+        if (ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
         bd_restore_stats rs;
         if (bd_restore(cat, source_id, opt(argc, argv, "--path"), argv[3], &rs, log_line, NULL) != BD_OK)
             return die(cat, "restore failed");

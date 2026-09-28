@@ -90,40 +90,7 @@ const char *bd_rel_basename(const char *rel)
 
 int bd_hash_file(const char *path, FILE *copy_to, char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out)
 {
-    FILE *f = bd_fopen(path, "rb");
-    if (!f) return -1;
-    blake3_hasher h;
-    blake3_hasher_init(&h);
-    enum { BUF = 1 << 20 };
-    unsigned char *buf = malloc(BUF);
-    if (!buf) { fclose(f); return -1; }
-    int64_t total = 0;
-    int rc = 0;
-    for (;;) {
-        size_t n = fread(buf, 1, BUF, f);
-        if (n > 0) {
-            blake3_hasher_update(&h, buf, n);
-            total += (int64_t)n;
-            if (copy_to && fwrite(buf, 1, n, copy_to) != n) { rc = -2; break; }
-        }
-        if (n < BUF) {
-            if (ferror(f)) rc = -1;
-            break;
-        }
-    }
-    free(buf);
-    fclose(f);
-    if (rc != 0) return rc;
-    uint8_t out[BLAKE3_OUT_LEN];
-    blake3_hasher_finalize(&h, out, BLAKE3_OUT_LEN);
-    static const char hex[] = "0123456789abcdef";
-    for (int i = 0; i < BLAKE3_OUT_LEN; i++) {
-        hex_out[i * 2] = hex[out[i] >> 4];
-        hex_out[i * 2 + 1] = hex[out[i] & 15];
-    }
-    hex_out[BD_HASH_HEX_LEN] = '\0';
-    if (size_out) *size_out = total;
-    return 0;
+    return bd_hash_copy(path, NULL, copy_to, NULL, hex_out, size_out);
 }
 
 void bd_uuid_v4(char out[37])
@@ -193,6 +160,7 @@ const char *bd_status_name(bd_status s)
     case BD_ERR_NOT_FOUND: return "not found";
     case BD_ERR_INVALID: return "invalid argument";
     case BD_ERR_NOMEM: return "out of memory";
+    case BD_ERR_PASSPHRASE: return "passphrase needed or wrong";
     }
     return "unknown error";
 }

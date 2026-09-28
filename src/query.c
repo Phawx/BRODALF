@@ -175,7 +175,7 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT v.version_no, v.id=n.current_version_id, v.hash, v.size, v.mtime_ns, v.first_seen_ms,"
                            " COALESCE(c.media_id,0), m.label, c.path_on_media, c.state, k.media_id IS NOT NULL,"
-                           " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0))"
+                           " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(m.encrypted,0)"
                            " FROM versions v JOIN nodes n ON n.id=v.node_id"
                            " LEFT JOIN copies c ON c.version_id=v.id LEFT JOIN media m ON m.id=c.media_id"
                            " LEFT JOIN temp.connected k ON k.media_id=c.media_id"
@@ -197,6 +197,7 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
         info.copy_state = (const char *)sqlite3_column_text(q, 9);
         info.connected = sqlite3_column_int(q, 10);
         info.last_check_ms = sqlite3_column_int64(q, 11);
+        info.encrypted = sqlite3_column_int(q, 12);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
@@ -209,7 +210,7 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT m.id, m.label, m.kind, COALESCE(k.root, m.last_root), k.media_id IS NOT NULL,"
                            " COALESCE(m.total_bytes,0), COALESCE(m.free_bytes,0), COALESCE(m.last_seen_ms,0),"
-                           " (SELECT COUNT(*) FROM copies c WHERE c.media_id=m.id)"
+                           " (SELECT COUNT(*) FROM copies c WHERE c.media_id=m.id), m.encrypted"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list drives");
@@ -224,6 +225,7 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.free_bytes = sqlite3_column_int64(q, 6);
         info.last_seen_ms = sqlite3_column_int64(q, 7);
         info.copies = sqlite3_column_int64(q, 8);
+        info.encrypted = sqlite3_column_int(q, 9);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);

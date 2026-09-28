@@ -24,6 +24,8 @@ struct bd_catalog {
     bd_progress_fn progress;
     void *progress_ctx;
     int64_t progress_last_ms;
+    uint8_t key[32];  /* master key while unlocked */
+    int have_key;
 };
 
 /* Record an error message on the catalog and return status. */
@@ -43,6 +45,45 @@ const char *bd_rel_basename(const char *rel);
  * there. hex_out receives 64 hex chars plus NUL. 0 on success; on failure
  * -1 for read errors, -2 for write errors. */
 int bd_hash_file(const char *path, FILE *copy_to, char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out);
+
+/* Like bd_hash_file, but the source can be a sealed (encrypted) file when
+ * src_key is set, and the copy is sealed when dst_key is set. The hash is
+ * always of the plaintext. -3 means the sealed source is damaged or was
+ * sealed with another key. */
+int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const uint8_t *dst_key,
+                 char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out);
+
+/* Streaming encryption (see crypto.c for the format). */
+typedef struct bd_sealer bd_sealer;
+typedef struct bd_opener bd_opener;
+bd_sealer *bd_seal_begin(FILE *out, const uint8_t key[32]);
+int bd_seal_write(bd_sealer *s, const void *data, size_t n); /* 0 or -2 */
+int bd_seal_end(bd_sealer *s);                                /* writes the last chunk, frees */
+bd_opener *bd_open_begin(FILE *in, const uint8_t key[32]);   /* NULL: not a sealed stream */
+long bd_open_read(bd_opener *o, void *buf, size_t cap);       /* bytes, 0 at end, -1 I/O, -3 damaged */
+void bd_open_end(bd_opener *o);
+
+/* Write to a file, sealed or not; read likewise. */
+typedef struct { FILE *file; bd_sealer *sealer; } bd_sink;
+typedef struct { FILE *file; bd_opener *opener; } bd_source;
+int bd_sink_write(bd_sink *k, const void *data, size_t n);
+long bd_source_read(bd_source *k, void *buf, size_t cap);
+
+/* The passphrase-wrapped master key, as stored in settings and in the
+ * header of an encrypted .brodalf file. */
+#define BD_KEY_BLOCK 96
+int bd_catalog_key_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK]);
+int bd_unwrap_key_block(const char *pass, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]); /* -1 nomem, -3 wrong */
+void bd_catalog_set_key(bd_catalog *cat, const uint8_t key[32]);
+void bd_wipe(void *p, size_t n);
+
+int bd_media_encrypted(bd_catalog *cat, int64_t media_id);
+
+/* Save a copy of the catalog to dest, encrypted or not. */
+bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);
+
+/* Encrypted copies on a drive carry this suffix. */
+#define BD_SEALED_SUFFIX ".bdenc"
 
 void bd_uuid_v4(char out[37]);
 

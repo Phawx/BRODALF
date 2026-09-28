@@ -45,6 +45,10 @@ enum {
     ID_BTN_BACKUP,
     ID_BTN_CHECK,
     ID_BTN_RESTORE,
+    ID_BTN_SECURITY,
+    ID_MENU_SET_PASS = 910,
+    ID_MENU_ENCRYPT_CATALOG,
+    ID_MENU_LOCK,
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
     ID_MENU_OTHER = 900
 };
@@ -113,7 +117,8 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 
 static HINSTANCE g_inst;
 static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives;
-static HWND g_buttons[5];
+#define N_BUTTONS 6
+static HWND g_buttons[N_BUTTONS];
 static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
 static int g_dpi = 96;
 static bd_catalog *g_cat;
@@ -131,10 +136,12 @@ typedef struct job {
     int64_t media_id;   /* backup/check: a connected drive, or 0 with root */
     char *root;         /* backup to a drive given by folder */
     char *label;        /* set up a new drive with this name first */
+    unsigned flags;     /* for the new drive: BD_MEDIA_ENCRYPTED */
     int64_t source_id;  /* restore */
     char *rel;          /* restore */
     char *dest;         /* restore */
     int problems;
+    bd_status status;
     wchar_t summary[512];
     struct job *next;
 } job;
@@ -288,7 +295,10 @@ static DWORD WINAPI worker(LPVOID arg)
     }
     case JOB_BACKUP: {
         int64_t id = j->media_id;
-        if (j->label) s = bd_media_init(g_cat, j->root, j->label, &id);
+        if (j->label) {
+            s = bd_media_init(g_cat, j->root, j->label, j->flags, &id);
+            if (s == BD_OK) { free(j->label); j->label = NULL; j->media_id = id; } /* a retry must not set it up again */
+        }
         else if (!id) s = try_connect(j, j->root, &id) ? BD_OK : BD_ERR_NOT_FOUND;
         if (s == BD_OK) {
             bd_backup_stats bs;
@@ -315,9 +325,14 @@ static DWORD WINAPI worker(LPVOID arg)
         swprintf(j->summary, 512, L"Restore done: %lld files (%ls), %lld on drives that are not plugged in, %lld never backed up, %lld failed.",
                  (long long)rs.files_restored, size, (long long)rs.files_offline, (long long)rs.files_no_copy,
                  (long long)rs.files_failed);
+        if (rs.files_need_passphrase) {
+            size_t len = wcslen(j->summary);
+            swprintf(j->summary + len, 512 - len, L" %lld need the passphrase.", (long long)rs.files_need_passphrase);
+        }
         break;
     }
     }
+    j->status = s;
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         swprintf(j->summary, 512, L"Stopped: %ls", e ? e : L"unknown error");
@@ -336,7 +351,7 @@ static DWORD WINAPI worker(LPVOID arg)
 static void set_busy(int busy)
 {
     InterlockedExchange(&g_busy, busy);
-    for (int i = 0; i < 5; i++) EnableWindow(g_buttons[i], !busy);
+    for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy);
 }
 
 static void start_next_job(void)
@@ -629,9 +644,10 @@ static int add_copy_row(void *ctx, const bd_copy_info *c)
     it.pszText = buf;
     SendMessageW(g_list, LVM_INSERTITEMW, 0, (LPARAM)&it);
 
-    wchar_t *where = widen(c->media_id ? c->media_label : "no copy yet");
+    wchar_t *where = widen(c->media_id ? c->media_label : "no copy yet"), where_buf[300];
+    swprintf(where_buf, 300, L"%ls%ls", where ? where : L"", c->media_id && c->encrypted ? L" (encrypted)" : L"");
     it.iSubItem = 1;
-    it.pszText = where;
+    it.pszText = where_buf;
     SendMessageW(g_list, LVM_SETITEMTEXTW, *row, (LPARAM)&it);
     free(where);
 
@@ -751,6 +767,7 @@ static char *pick_folder(HWND owner, const wchar_t *title)
 }
 
 static wchar_t g_label_buf[256];
+static int g_label_encrypt;
 
 static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -764,6 +781,7 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) == IDOK) {
             GetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf, 256);
             if (!g_label_buf[0]) { MessageBeep(MB_ICONWARNING); return TRUE; }
+            g_label_encrypt = IsDlgButtonChecked(dlg, IDC_LABEL_ENCRYPT) == BST_CHECKED;
             EndDialog(dlg, IDOK);
             return TRUE;
         }
@@ -771,6 +789,154 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
     return FALSE;
+}
+
+/* ---- Passphrase prompts ------------------------------------------------- */
+
+static wchar_t g_pass_buf[512];
+static const wchar_t *g_pass_text;
+static int g_pass_catalog;
+
+static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SetDlgItemTextW(dlg, IDC_PASS_TEXT, g_pass_text);
+        SetFocus(GetDlgItem(dlg, IDC_PASS_EDIT));
+        return FALSE;
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            GetDlgItemTextW(dlg, IDC_PASS_EDIT, g_pass_buf, 512);
+            if (GetDlgItem(dlg, IDC_PASS_EDIT2)) {
+                wchar_t again[512];
+                GetDlgItemTextW(dlg, IDC_PASS_EDIT2, again, 512);
+                int same = wcscmp(again, g_pass_buf) == 0;
+                SecureZeroMemory(again, sizeof(again));
+                if (wcslen(g_pass_buf) < 8) {
+                    MessageBoxW(dlg, L"Use at least 8 characters. A few unrelated words make a good passphrase.", APP_NAME, MB_ICONWARNING);
+                    return TRUE;
+                }
+                if (!same) {
+                    MessageBoxW(dlg, L"The two passphrases are different. Type them again.", APP_NAME, MB_ICONWARNING);
+                    return TRUE;
+                }
+                g_pass_catalog = IsDlgButtonChecked(dlg, IDC_PASS_CATALOG) == BST_CHECKED;
+            }
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        break;
+    }
+    return FALSE;
+}
+
+/* Ask for a passphrase; returns UTF-8 (caller wipes and frees) or NULL. */
+static char *ask_passphrase(HWND owner, int dialog, const wchar_t *text)
+{
+    g_pass_text = text;
+    g_pass_catalog = 0;
+    INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(dialog), owner, pass_proc);
+    char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
+    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+    return p;
+}
+
+static void free_secret(char *p)
+{
+    if (!p) return;
+    SecureZeroMemory(p, strlen(p));
+    free(p);
+}
+
+/* Make sure the key is available. Only while no job runs. 1 if unlocked. */
+static int unlock_ui(const wchar_t *why)
+{
+    if (!bd_catalog_has_passphrase(g_cat) || bd_catalog_is_unlocked(g_cat)) return 1;
+    for (;;) {
+        char *p = ask_passphrase(g_main, IDD_PASSPHRASE, why);
+        if (!p) return 0;
+        SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
+        bd_status s = bd_catalog_unlock(g_cat, p);
+        free_secret(p);
+        if (s == BD_OK) return 1;
+        MessageBoxW(g_main, L"That passphrase is not right. Try again.", APP_NAME, MB_ICONWARNING);
+    }
+}
+
+/* Set the first passphrase, or change it. 1 on success. */
+static int set_passphrase_ui(void)
+{
+    int changing = bd_catalog_has_passphrase(g_cat);
+    if (changing && !unlock_ui(L"Enter the current passphrase first.")) return 0;
+    char *p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE,
+                             L"The passphrase protects encrypted drives and, if you choose, this catalog. "
+                             L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone.");
+    if (!p) return 0;
+    SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
+    bd_status s = bd_catalog_set_passphrase(g_cat, p);
+    free_secret(p);
+    if (s == BD_OK && g_pass_catalog) s = bd_catalog_set_file_encrypted(g_cat, 1);
+    if (s == BD_OK) s = bd_catalog_save(g_cat);
+    if (s != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        MessageBoxW(g_main, e ? e : L"Could not set the passphrase.", APP_NAME, MB_ICONERROR);
+        free(e);
+        return 0;
+    }
+    log_append(changing ? L"Passphrase changed." : L"Passphrase set.");
+    return 1;
+}
+
+typedef struct { int64_t id; int encrypted; int any_connected_encrypted; } enc_ctx;
+
+static int enc_cb(void *ctx, const bd_media_info *m)
+{
+    enc_ctx *c = ctx;
+    if (m->media_id == c->id) c->encrypted = m->encrypted;
+    if (m->connected && m->encrypted) c->any_connected_encrypted = 1;
+    return 0;
+}
+
+static enc_ctx media_encryption(int64_t media_id)
+{
+    enc_ctx c = {media_id, 0, 0};
+    bd_list_media(g_cat, enc_cb, &c);
+    return c;
+}
+
+static void cmd_security(void)
+{
+    int has = bd_catalog_has_passphrase(g_cat), unlocked = bd_catalog_is_unlocked(g_cat);
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, ID_MENU_SET_PASS, has ? L"Change the passphrase..." : L"Set a passphrase...");
+    AppendMenuW(m, MF_STRING | (has ? 0 : MF_GRAYED) | (bd_catalog_file_encrypted(g_cat) ? MF_CHECKED : 0),
+                ID_MENU_ENCRYPT_CATALOG, L"Encrypt the catalog file");
+    AppendMenuW(m, MF_STRING | (has && unlocked ? 0 : MF_GRAYED), ID_MENU_LOCK, L"Forget the passphrase until it is needed");
+    RECT r;
+    GetWindowRect(g_buttons[5], &r);
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
+    DestroyMenu(m);
+    if (cmd == ID_MENU_SET_PASS) {
+        set_passphrase_ui();
+    } else if (cmd == ID_MENU_ENCRYPT_CATALOG) {
+        int on = !bd_catalog_file_encrypted(g_cat);
+        if (on && !unlock_ui(L"Enter the passphrase to encrypt the catalog file.")) return;
+        bd_status s = bd_catalog_set_file_encrypted(g_cat, on);
+        if (s == BD_OK) s = bd_catalog_save(g_cat);
+        if (s != BD_OK) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(g_main, e ? e : L"Could not change it.", APP_NAME, MB_ICONERROR);
+            free(e);
+            return;
+        }
+        log_append(on ? L"The catalog file is now encrypted. BRODALF will ask for the passphrase when it opens."
+                      : L"The catalog file is no longer encrypted.");
+    } else if (cmd == ID_MENU_LOCK) {
+        bd_catalog_lock_key(g_cat);
+        log_append(L"Passphrase forgotten. BRODALF will ask for it again when it needs it.");
+    }
 }
 
 /* ---- Commands ----------------------------------------------------------- */
@@ -803,7 +969,7 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
     if (!m->connected) return 0;
     wchar_t *l = widen(m->label), *root = widen(m->last_root), text[512], freeb[64];
     format_bytes(m->free_bytes, freeb, 64);
-    swprintf(text, 512, L"%ls (%ls), %ls free", l, root, freeb);
+    swprintf(text, 512, L"%ls (%ls), %ls free%ls", l, root, freeb, m->encrypted ? L", encrypted" : L"");
     AppendMenuW(c->menu, MF_STRING, (UINT_PTR)(ID_MENU_DRIVE_BASE + m->media_id), text);
     c->count++;
     free(l);
@@ -852,7 +1018,17 @@ static void cmd_backup(void)
             free(w);
             if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }
             j->label = narrow(g_label_buf);
+            if (g_label_encrypt) {
+                int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(L"Enter the passphrase to set up an encrypted drive.")
+                                                          : set_passphrase_ui();
+                if (!ok) { job_free(j); return; }
+                j->flags = BD_MEDIA_ENCRYPTED;
+            }
         }
+    }
+    if (id > 0 && media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) {
+        job_free(j);
+        return;
     }
     enqueue(j);
 }
@@ -861,6 +1037,7 @@ static void cmd_check(void)
 {
     int64_t id = choose_drive(g_buttons[3], 0);
     if (id <= 0) return;
+    if (media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to check its copies.")) return;
     job *j = new_job(JOB_CHECK);
     if (!j) return;
     j->media_id = id;
@@ -874,6 +1051,8 @@ static void cmd_restore(void)
         MessageBoxW(g_main, L"Select a protected folder, a folder inside it, or a file to restore.", APP_NAME, MB_ICONINFORMATION);
         return;
     }
+    if (media_encryption(0).any_connected_encrypted && !unlock_ui(L"Some copies are on an encrypted drive. Enter the passphrase to restore them."))
+        return;
     char *dest = pick_folder(g_main, L"Choose where to put the restored files. They go into a subfolder named after the protected folder.");
     if (!dest) return;
     job *j = new_job(JOB_RESTORE);
@@ -898,8 +1077,8 @@ static void layout(void)
     int pad = S(8), bar = S(30), log_h = S(110);
 
     int x = pad;
-    int widths[5] = {S(96), S(70), S(96), S(112), S(90)};
-    for (int i = 0; i < 5; i++) {
+    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(104)};
+    for (int i = 0; i < N_BUTTONS; i++) {
         MoveWindow(g_buttons[i], x, pad, widths[i], bar, TRUE);
         x += widths[i] + S(6);
     }
@@ -968,6 +1147,7 @@ static void create_children(HWND hwnd)
     g_buttons[2] = make_button(L"Back up...", ID_BTN_BACKUP);
     g_buttons[3] = make_button(L"Check drive...", ID_BTN_CHECK);
     g_buttons[4] = make_button(L"Restore...", ID_BTN_RESTORE);
+    g_buttons[5] = make_button(L"Passphrase...", ID_BTN_SECURITY);
 
     g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
@@ -1032,6 +1212,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_BACKUP: cmd_backup(); break;
         case ID_BTN_CHECK: cmd_check(); break;
         case ID_BTN_RESTORE: cmd_restore(); break;
+        case ID_BTN_SECURITY: cmd_security(); break;
         }
         return 0;
     case WM_NOTIFY: {
@@ -1077,6 +1258,17 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         set_busy(0);
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
         log_append(j->summary);
+        if (j->status == BD_ERR_PASSPHRASE && (j->kind == JOB_BACKUP || j->kind == JOB_CHECK) &&
+            unlock_ui(L"This drive is encrypted. Enter the passphrase to continue.")) {
+            job *again = new_job(j->kind);
+            if (again) {
+                again->media_id = j->media_id;
+                again->root = xstrdup(j->root);
+                again->label = xstrdup(j->label);
+                again->flags = j->flags;
+                enqueue(again);
+            }
+        }
         job_free(j);
         update_drives_label();
         rebuild_tree();
@@ -1185,6 +1377,21 @@ static int ask_remove_lock(const wchar_t *path)
     return MessageBoxW(NULL, msg, APP_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES;
 }
 
+/* Open a catalog, asking for the passphrase if the file is encrypted.
+ * A cancelled prompt returns BD_ERR_PASSPHRASE with no message. */
+static bd_status open_maybe_encrypted(const char *path)
+{
+    if (!bd_catalog_file_needs_passphrase(path)) return bd_catalog_open(path, &g_cat);
+    for (;;) {
+        char *p = ask_passphrase(NULL, IDD_PASSPHRASE, L"This catalog is encrypted. Enter its passphrase to open it.");
+        if (!p) return BD_ERR_PASSPHRASE;
+        bd_status s = bd_catalog_open_with(path, p, &g_cat);
+        free_secret(p);
+        if (s != BD_ERR_PASSPHRASE) return s;
+        MessageBoxW(NULL, L"That passphrase is not right. Try again.", APP_NAME, MB_ICONWARNING);
+    }
+}
+
 /* given: a catalog named on the command line (double-click), tried first. */
 static int open_catalog(const wchar_t *given)
 {
@@ -1209,13 +1416,13 @@ static int open_catalog(const wchar_t *given)
             if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) DeleteFileW(path); /* the save dialog asked to replace it */
             s = bd_catalog_create(p, &g_cat);
         } else {
-            s = bd_catalog_open(p, &g_cat);
+            s = open_maybe_encrypted(p);
             if (s == BD_ERR_LOCKED && ask_remove_lock(path)) {
                 wchar_t lock[MAX_PATH * 2 + 8];
                 swprintf(lock, MAX_PATH * 2 + 8, L"%ls.lock", path);
                 DeleteFileW(lock);
-                s = bd_catalog_open(p, &g_cat);
-            } else if (s == BD_ERR_LOCKED) {
+                s = open_maybe_encrypted(p);
+            } else if (s == BD_ERR_LOCKED || s == BD_ERR_PASSPHRASE) { /* declined */
                 free(p);
                 continue;
             }

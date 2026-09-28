@@ -4,7 +4,10 @@
  * When a file changes, the new copy is written to a temp file and checked
  * against the catalog hash first. Only then is the previous copy moved to
  * .versions/<source name>/<folder>/<name>.v<N><ext> and the new copy renamed
- * into place, so a failed write never loses a good copy. */
+ * into place, so a failed write never loses a good copy.
+ *
+ * On an encrypted drive each copy is sealed with the catalog's master key
+ * and named <name>.bdenc; names stay readable. */
 #include "internal.h"
 
 #include <stdlib.h>
@@ -28,9 +31,21 @@ static void free_items(backup_item *items, size_t n)
     }
 }
 
-/* "<dir>/<stem>.v<N><ext>" under .versions, or with a tag instead of vN. */
+/* "<dir>/<stem>.v<N><ext>" under .versions, or with a tag instead of vN.
+ * A .bdenc suffix stays last: "a.txt.bdenc" becomes "a.v1.txt.bdenc". */
 static char *versions_rel_path(const char *dest_rel, const char *tag)
 {
+    size_t len = strlen(dest_rel), slen = strlen(BD_SEALED_SUFFIX);
+    if (len > slen && strcmp(dest_rel + len - slen, BD_SEALED_SUFFIX) == 0) {
+        char *plain = bd_strdup(dest_rel);
+        if (!plain) return NULL;
+        plain[len - slen] = '\0';
+        char *inner = versions_rel_path(plain, tag);
+        free(plain);
+        char *r = inner ? bd_sprintf("%s%s", inner, BD_SEALED_SUFFIX) : NULL;
+        free(inner);
+        return r;
+    }
     char *dir = bd_rel_dirname(dest_rel);
     const char *base = bd_rel_basename(dest_rel);
     const char *dot = strrchr(base, '.');
@@ -132,9 +147,11 @@ static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, co
 }
 
 /* Copy src to a temp file next to dest while hashing; keep the temp file
- * only if the hash matches. Returns 0 and sets *tmp_out on success,
- * 1 on hash mismatch, -1 on I/O error. */
-static int copy_verified(const char *src, const char *dest, const char *expected, char **tmp_out, int64_t *bytes)
+ * only if the hash matches. src_key decrypts the source, dst_key encrypts
+ * the copy. Returns 0 and sets *tmp_out on success, 1 on hash mismatch or
+ * a damaged encrypted source, -1 on I/O error. */
+static int copy_verified(const char *src, const uint8_t *src_key, const char *dest, const uint8_t *dst_key,
+                         const char *expected, char **tmp_out, int64_t *bytes)
 {
     *tmp_out = NULL;
     char *tmp = bd_sprintf("%s" BD_TMP_MARKER, dest);
@@ -142,7 +159,8 @@ static int copy_verified(const char *src, const char *dest, const char *expected
     FILE *out = bd_fopen(tmp, "wb");
     if (!out) { free(tmp); return -1; }
     char hash[BD_HASH_HEX_LEN + 1];
-    int rc = bd_hash_file(src, out, hash, bytes);
+    int rc = bd_hash_copy(src, src_key, out, dst_key, hash, bytes);
+    if (rc == -3) rc = 1;
     if (rc == 0 && bd_fsync(out) != 0) rc = -1;
     if (fclose(out) != 0) rc = -1;
     if (rc == 0 && strcmp(hash, expected) != 0) rc = 1;
@@ -180,12 +198,12 @@ static void finish_job(bd_catalog *cat, int64_t job_id, const char *status, int6
     sqlite3_finalize(u);
 }
 
-static void backup_one(bd_catalog *cat, int64_t media_id, const char *catdir, const backup_item *it,
+static void backup_one(bd_catalog *cat, int64_t media_id, const char *catdir, const uint8_t *key, const backup_item *it,
                        bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_report(cat, "backup", stats->files_copied, stats->bytes_copied, it->rel, 0);
     char *src = bd_path_join(it->source_path, it->rel);
-    char *dest_rel = bd_sprintf("%s/%s", it->source_name, it->rel);
+    char *dest_rel = bd_sprintf("%s/%s%s", it->source_name, it->rel, key ? BD_SEALED_SUFFIX : "");
     char *dest = dest_rel ? bd_path_join(catdir, dest_rel) : NULL;
     char *tmp = NULL;
     if (!src || !dest) { stats->files_failed++; goto done; }
@@ -225,7 +243,7 @@ static void backup_one(bd_catalog *cat, int64_t media_id, const char *catdir, co
             /* Probably written by a backup whose catalog was never saved.
              * If it is exactly this version, adopt it instead of copying. */
             char hash[BD_HASH_HEX_LEN + 1];
-            if (bd_hash_file(dest, NULL, hash, NULL) == 0 && strcmp(hash, it->hash) == 0) {
+            if (bd_hash_copy(dest, key, NULL, NULL, hash, NULL) == 0 && strcmp(hash, it->hash) == 0) {
                 if (record_copy(cat, it->version_id, media_id, dest_rel, dest) == 0) stats->files_already_there++;
                 else stats->files_failed++;
                 goto done;
@@ -248,7 +266,7 @@ static void backup_one(bd_catalog *cat, int64_t media_id, const char *catdir, co
     }
 
     int64_t bytes = 0;
-    int rc = copy_verified(src, dest, it->hash, &tmp, &bytes);
+    int rc = copy_verified(src, NULL, dest, key, it->hash, &tmp, &bytes);
     if (rc == 1) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "changed while copying, scan again: %s", src);
@@ -302,6 +320,14 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
 
     char *root = bd_connected_root(cat, media_id);
     if (!root) return bd_fail(cat, BD_ERR_NOT_FOUND, "that drive is not connected");
+    const uint8_t *key = NULL;
+    if (bd_media_encrypted(cat, media_id)) {
+        if (!cat->have_key) {
+            free(root);
+            return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to back up to an encrypted drive");
+        }
+        key = cat->key;
+    }
     char *catdir = bd_media_catalog_dir(cat, root);
     free(root);
     if (!catdir) return BD_ERR_NOMEM;
@@ -346,7 +372,7 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
         }
         sqlite3_reset(q);
         if (rows == 0) break;
-        for (size_t i = 0; i < n; i++) backup_one(cat, media_id, catdir, &items[i], stats, log, log_ctx);
+        for (size_t i = 0; i < n; i++) backup_one(cat, media_id, catdir, key, &items[i], stats, log, log_ctx);
         free_items(items, n);
     }
     sqlite3_finalize(q);
@@ -393,8 +419,9 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
                            " ORDER BY n.id LIMIT 256",
                            -1, &q, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
-                           "SELECT c.path_on_media, k.root FROM copies c JOIN temp.connected k ON k.media_id=c.media_id"
-                           " WHERE c.version_id=? AND c.state='ok' LIMIT 1",
+                           "SELECT c.path_on_media, k.root, m.encrypted FROM copies c JOIN temp.connected k ON k.media_id=c.media_id"
+                           " JOIN media m ON m.id=c.media_id WHERE c.version_id=? AND c.state='ok'"
+                           " ORDER BY m.encrypted LIMIT 1",
                            -1, &find, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db, "SELECT 1 FROM copies WHERE version_id=? AND state='ok' LIMIT 1", -1, &any, NULL) != SQLITE_OK) {
         s = bd_fail_db(cat, "prepare restore");
@@ -446,14 +473,21 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
                 free(dest);
                 continue;
             }
+            int sealed = sqlite3_column_int(find, 2);
             char *catdir = bd_media_catalog_dir(cat, (const char *)sqlite3_column_text(find, 1));
             char *src = catdir ? bd_path_join(catdir, (const char *)sqlite3_column_text(find, 0)) : NULL;
             sqlite3_reset(find);
             free(catdir);
+            if (sealed && !cat->have_key) {
+                stats->files_need_passphrase++;
+                free(src);
+                free(dest);
+                continue;
+            }
 
             char *tmp = NULL;
             int64_t bytes = 0;
-            int rc = src ? copy_verified(src, dest, it->hash, &tmp, &bytes) : -1;
+            int rc = src ? copy_verified(src, sealed ? cat->key : NULL, dest, NULL, it->hash, &tmp, &bytes) : -1;
             if (rc == 0 && bd_rename_replace(tmp, dest) != 0) { bd_remove(tmp); rc = -1; }
             if (rc == 0) {
                 stats->files_restored++;

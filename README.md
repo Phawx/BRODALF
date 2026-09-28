@@ -14,8 +14,8 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 ## Status
 
 The C core library, the Windows app (`brodalf.exe`) and a command-line
-harness (`brodalf-cli`) work. Optional encryption and the cloud hooks come
-next. The Go files
+harness (`brodalf-cli`) work, with optional encryption. OneDrive and
+Dropbox come next. The Go files
 at the top of the repo are the earlier prototype and are not part of the C
 build.
 
@@ -62,6 +62,24 @@ After a backup, everything on the drive lights up:
 
 ![The ghost tree after a backup](docs/images/gui-after-backup.png)
 
+### Encrypted drives
+
+When you set up a new drive, tick **Encrypt the files on this drive**. The
+first time, BRODALF asks you to choose a passphrase. File contents on that
+drive are encrypted (XChaCha20-Poly1305, key from Argon2id), while file and
+folder names stay readable so you can still find things in Explorer. Encrypted
+copies end in `.bdenc`. Each drive is plain or encrypted from the day it is
+set up.
+
+The **Passphrase** button lets you change the passphrase, encrypt the catalog
+file itself (BRODALF then asks for the passphrase when it opens), or make
+BRODALF forget the passphrase until it next needs it.
+
+**Write the passphrase down somewhere safe.** Without it, nobody can read the
+encrypted copies, including you.
+
+![An encrypted drive in the versions panel](docs/images/gui-encryption.png)
+
 ## Try it from the command line
 
 ```sh
@@ -75,7 +93,14 @@ brodalf-cli tree  family.brodalf --drive E:\          # backed-up files light up
 brodalf-cli versions family.brodalf Pictures "2024/IMG_0412.jpg" --drive E:\
 brodalf-cli check family.brodalf E:\ --full
 brodalf-cli restore family.brodalf D:\restored --drive E:\
+
+brodalf-cli drive family.brodalf F:\ "Red Vault" --encrypt   # asks for a new passphrase
+brodalf-cli encrypt-catalog family.brodalf on
+brodalf-cli passphrase family.brodalf                        # change it
 ```
+
+Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
+(and `BRODALF_NEW_PASSPHRASE` when setting one).
 
 ## Layout
 
@@ -86,6 +111,7 @@ brodalf-cli restore family.brodalf D:\restored --drive E:\
 | `src/scan.c` | Scanning source folders, versions |
 | `src/media.c` | Drive IDs, connecting drives, quick and full checks |
 | `src/backup.c` | Backup with kept versions, restore |
+| `src/crypto.c` | Passphrase, master key, encrypted file streams |
 | `src/query.c` | Ghost-tree state for the GUI |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |
@@ -97,4 +123,5 @@ brodalf-cli restore family.brodalf D:\restored --drive E:\
 `third_party/` holds unmodified copies of
 [SQLite](https://sqlite.org) 3.45.0 (public domain),
 [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) 1.5.4 (CC0 / Apache-2.0) and
-[zstd](https://github.com/facebook/zstd) 1.5.6 (BSD, single-file build).
+[zstd](https://github.com/facebook/zstd) 1.5.6 (BSD, single-file build) and
+[Monocypher](https://monocypher.org) 4.0.2 (CC0 / BSD-2-Clause).

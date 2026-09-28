@@ -50,13 +50,16 @@ enum {
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
-    ID_MENU_OTHER = 900
+    ID_MENU_OTHER = 900,
+    ID_MENU_ONEDRIVE,
+    ID_MENU_DROPBOX
 };
 
 enum {
     WM_APP_LOG = WM_APP + 1,  /* lParam: malloc'd wide string */
     WM_APP_PROGRESS,          /* lParam: malloc'd wide string */
-    WM_APP_DONE               /* lParam: job* */
+    WM_APP_DONE,              /* lParam: job* */
+    WM_APP_OPEN_URL           /* lParam: malloc'd wide string */
 };
 
 /* ---- Small helpers ------------------------------------------------------ */
@@ -137,6 +140,7 @@ typedef struct job {
     char *root;         /* backup to a drive given by folder */
     char *label;        /* set up a new drive with this name first */
     unsigned flags;     /* for the new drive: BD_MEDIA_ENCRYPTED */
+    int provider;       /* sign in to this cloud and add it first (bd_cloud_provider) */
     int64_t source_id;  /* restore */
     char *rel;          /* restore */
     char *dest;         /* restore */
@@ -211,8 +215,29 @@ typedef struct { char *roots[256]; int n; } root_list;
 static int offline_root_cb(void *ctx, const bd_media_info *info)
 {
     root_list *l = ctx;
-    if (!info->connected && info->last_root && info->last_root[0] && l->n < 256) l->roots[l->n++] = xstrdup(info->last_root);
+    if (!info->connected && strcmp(info->kind, "drive") == 0 && info->last_root && info->last_root[0] && l->n < 256)
+        l->roots[l->n++] = xstrdup(info->last_root);
     return 0;
+}
+
+typedef struct { int64_t ids[64]; char *labels[64]; int n; } cloud_list;
+
+static int offline_cloud_cb(void *ctx, const bd_media_info *info)
+{
+    cloud_list *l = ctx;
+    if (!info->connected && strcmp(info->kind, "drive") != 0 && l->n < 64) {
+        l->ids[l->n] = info->media_id;
+        l->labels[l->n++] = xstrdup(info->label);
+    }
+    return 0;
+}
+
+static char *bd_sprintf_gui(const char *fmt, const char *a, const char *b)
+{
+    size_t n = strlen(fmt) + strlen(a) + strlen(b) + 1;
+    char *out = malloc(n);
+    if (out) snprintf(out, n, fmt, a, b);
+    return out;
 }
 
 static void run_drives(job *j)
@@ -238,7 +263,23 @@ static void run_drives(job *j)
         if (l.roots[i] && is_brodalf_drive(l.roots[i]) && try_connect(j, l.roots[i], &id)) found++;
         free(l.roots[i]);
     }
-    swprintf(j->summary, 512, found ? L"Found %d BRODALF drive(s)." : L"No BRODALF drives are plugged in.", found);
+    /* Cloud accounts, with their saved sign-ins. */
+    cloud_list c;
+    c.n = 0;
+    bd_list_media(g_cat, offline_cloud_cb, &c);
+    int clouds = 0;
+    for (int i = 0; i < c.n; i++) {
+        bd_check_stats cs;
+        if (bd_cloud_connect(g_cat, c.ids[i], &cs, job_log, j) == BD_OK) {
+            clouds++;
+        } else {
+            char *msg = bd_sprintf_gui("%s: %s", c.labels[i], bd_catalog_error(g_cat));
+            if (msg) { job_log(j, msg); free(msg); }
+        }
+        free(c.labels[i]);
+    }
+    if (clouds) swprintf(j->summary, 512, L"Found %d BRODALF drive(s) and connected %d cloud account(s).", found, clouds);
+    else swprintf(j->summary, 512, found ? L"Found %d BRODALF drive(s)." : L"No BRODALF drives are plugged in.", found);
 }
 
 typedef struct { int64_t ids[256]; char *roots[256]; int n; } media_snapshot;
@@ -246,7 +287,7 @@ typedef struct { int64_t ids[256]; char *roots[256]; int n; } media_snapshot;
 static int snapshot_cb(void *ctx, const bd_media_info *info)
 {
     media_snapshot *s = ctx;
-    if (info->connected && s->n < 256) {
+    if (info->connected && strcmp(info->kind, "drive") == 0 && s->n < 256) {
         s->ids[s->n] = info->media_id;
         s->roots[s->n] = xstrdup(info->last_root);
         s->n++;
@@ -295,7 +336,29 @@ static DWORD WINAPI worker(LPVOID arg)
     }
     case JOB_BACKUP: {
         int64_t id = j->media_id;
-        if (j->label) {
+        if (j->provider) {
+            bd_signin *si = NULL;
+            const char *url;
+            s = bd_cloud_signin_begin(g_cat, (bd_cloud_provider)j->provider, &si, &url);
+            if (s == BD_OK) {
+                wchar_t *w = widen(url);
+                if (w) { post_text(WM_APP_OPEN_URL, w); free(w); }
+                post_text(WM_APP_PROGRESS, L"Waiting for you to sign in with your browser...");
+                s = bd_cloud_signin_finish(g_cat, si, 5 * 60 * 1000);
+            }
+            if (s == BD_OK) s = bd_cloud_add(g_cat, si, j->label, j->flags, &id);
+            if (s == BD_OK) {
+                wchar_t *acct = widen(bd_cloud_signin_account(si)), line[512];
+                swprintf(line, 512, L"Signed in as %ls.", acct ? acct : L"");
+                post_text(WM_APP_LOG, line);
+                free(acct);
+                j->provider = 0; /* a retry must not sign in again */
+                free(j->label);
+                j->label = NULL;
+                j->media_id = id;
+            }
+            bd_cloud_signin_free(si);
+        } else if (j->label) {
             s = bd_media_init(g_cat, j->root, j->label, j->flags, &id);
             if (s == BD_OK) { free(j->label); j->label = NULL; j->media_id = id; } /* a retry must not set it up again */
         }
@@ -338,7 +401,7 @@ static DWORD WINAPI worker(LPVOID arg)
         swprintf(j->summary, 512, L"Stopped: %ls", e ? e : L"unknown error");
         free(e);
     }
-    if (bd_catalog_save(g_cat) != BD_OK) {
+    if (bd_catalog_save_all(g_cat, job_log, j) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         post_text(WM_APP_LOG, L"Could not save the catalog:");
         if (e) { post_text(WM_APP_LOG, e); free(e); }
@@ -768,6 +831,7 @@ static char *pick_folder(HWND owner, const wchar_t *title)
 
 static wchar_t g_label_buf[256];
 static int g_label_encrypt;
+static int g_label_cloud; /* naming a cloud account rather than a drive */
 
 static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -775,6 +839,12 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_INITDIALOG:
         SetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf);
+        if (g_label_cloud) {
+            SetWindowTextW(dlg, L"Add cloud storage");
+            SetDlgItemTextW(dlg, IDC_LABEL_TEXT, L"Name this storage. Your browser opens next so you can sign in; BRODALF only sees its own Apps/BRODALF folder.");
+            SetDlgItemTextW(dlg, IDC_LABEL_ENCRYPT, L"Encrypt the files stored there (needs a passphrase)");
+            SetDlgItemTextW(dlg, IDOK, L"Sign in");
+        }
         SendDlgItemMessageW(dlg, IDC_LABEL_EDIT, EM_SETSEL, 0, -1);
         return TRUE;
     case WM_COMMAND:
@@ -977,7 +1047,10 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
     return 0;
 }
 
-/* Returns a media id, 0 for "another drive or folder", -1 if cancelled. */
+/* Returns a media id, 0 for "another drive or folder", -1 if cancelled,
+ * CHOSE_ONEDRIVE or CHOSE_DROPBOX to add a cloud account. */
+#define CHOSE_ONEDRIVE (-2)
+#define CHOSE_DROPBOX (-3)
 static int64_t choose_drive(HWND button, int allow_other)
 {
     menu_ctx c = {CreatePopupMenu(), 0};
@@ -985,6 +1058,9 @@ static int64_t choose_drive(HWND button, int allow_other)
     if (allow_other) {
         if (c.count) AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(c.menu, MF_STRING, ID_MENU_OTHER, L"Another drive or folder...");
+        AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(c.menu, MF_STRING, ID_MENU_ONEDRIVE, L"OneDrive...");
+        AppendMenuW(c.menu, MF_STRING, ID_MENU_DROPBOX, L"Dropbox...");
     } else if (!c.count) {
         DestroyMenu(c.menu);
         MessageBoxW(g_main, L"Plug in a backup drive first.", APP_NAME, MB_ICONINFORMATION);
@@ -995,13 +1071,36 @@ static int64_t choose_drive(HWND button, int allow_other)
     int cmd = TrackPopupMenu(c.menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
     DestroyMenu(c.menu);
     if (cmd == ID_MENU_OTHER) return 0;
+    if (cmd == ID_MENU_ONEDRIVE) return CHOSE_ONEDRIVE;
+    if (cmd == ID_MENU_DROPBOX) return CHOSE_DROPBOX;
     if (cmd >= ID_MENU_DRIVE_BASE) return cmd - ID_MENU_DRIVE_BASE;
     return -1;
+}
+
+static void cmd_add_cloud(bd_cloud_provider prov)
+{
+    wcscpy(g_label_buf, prov == BD_CLOUD_ONEDRIVE ? L"OneDrive" : L"Dropbox");
+    g_label_cloud = 1;
+    INT_PTR ok = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc);
+    g_label_cloud = 0;
+    if (ok != IDOK) return;
+    job *j = new_job(JOB_BACKUP);
+    if (!j) return;
+    j->provider = prov;
+    j->label = narrow(g_label_buf);
+    if (g_label_encrypt) {
+        int unlocked = bd_catalog_has_passphrase(g_cat) ? unlock_ui(L"Enter the passphrase to set up encrypted cloud storage.")
+                                                        : set_passphrase_ui();
+        if (!unlocked) { job_free(j); return; }
+        j->flags = BD_MEDIA_ENCRYPTED;
+    }
+    enqueue(j);
 }
 
 static void cmd_backup(void)
 {
     int64_t id = choose_drive(g_buttons[2], 1);
+    if (id == CHOSE_ONEDRIVE || id == CHOSE_DROPBOX) { cmd_add_cloud(id == CHOSE_ONEDRIVE ? BD_CLOUD_ONEDRIVE : BD_CLOUD_DROPBOX); return; }
     if (id < 0) return;
     job *j = new_job(JOB_BACKUP);
     if (!j) return;
@@ -1247,6 +1346,14 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         free(text);
         return 0;
     }
+    case WM_APP_OPEN_URL: {
+        wchar_t *url = (wchar_t *)lp;
+        ShellExecuteW(g_main, L"open", url, NULL, NULL, SW_SHOWNORMAL);
+        log_append(L"Sign in with your browser. If it did not open, visit:");
+        log_append(url);
+        free(url);
+        return 0;
+    }
     case WM_APP_PROGRESS: {
         wchar_t *text = (wchar_t *)lp;
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)text);
@@ -1266,6 +1373,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 again->root = xstrdup(j->root);
                 again->label = xstrdup(j->label);
                 again->flags = j->flags;
+                again->provider = j->provider;
                 enqueue(again);
             }
         }

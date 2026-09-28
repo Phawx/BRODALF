@@ -73,13 +73,37 @@ writes a new file and swaps it in atomically.
 Tables: `sources`, `nodes`, `versions`, `media`, `cloud_accounts`, `copies`,
 `jobs`, `settings`, `meta`.
 
-## Cloud (next)
+## Cloud
 
-OneDrive and Dropbox first. The catalog records provider, username and root
-path. Sign-in goes through the provider's browser login; BRODALF saves the
-refresh token in Windows Credential Manager and the catalog only keeps a
-reference to it. A local synced OneDrive or Dropbox folder can also be used as
-a plain drive today.
+OneDrive and Dropbox, each in its app folder (`Apps/BRODALF`), so BRODALF can
+see nothing else in the account. A cloud account is a row in `media` (kind
+`onedrive` or `dropbox`) plus one in `cloud_accounts` (provider, account name,
+root path, and `credential_ref`, the name of the saved sign-in). Files go to
+`BRODALF/<catalog uuid>/...` with the same layout as a drive, including
+`BRODALF.media`, `.versions` and `catalog-backup.brodalf`.
+
+- Sign-in: OAuth 2 authorization code with PKCE (S256) through the system
+  browser, redirected to a one-shot listener on `http://localhost:53682/`. No
+  client secret. The refresh token goes to Windows Credential Manager
+  (`BRODALF/cloud-<media uuid>`, split into 2 KB parts if needed); Microsoft
+  rotates it on every refresh and BRODALF saves the new one each time.
+- Signing in to an account that is already storage for the catalog signs it
+  in again instead of adding it twice.
+- All storage goes through one interface (`src/store.h`): stat, download,
+  upload, move, remove, space. Backup uploads to `<name>.brodalf-tmp`, moves
+  the old copy into `.versions`, then moves the new one into place.
+- Uploads: OneDrive up to 4 MiB in one PUT, larger through an upload session
+  in 10 MiB chunks; Dropbox up to 8 MiB in one call, larger through an upload
+  session in 8 MiB chunks.
+- Each copy records the provider's content hash (`quickXorHash`, Dropbox
+  `content_hash`) in `copies.stored_rev`. A quick check compares size and
+  hash; a full check downloads and verifies BLAKE3.
+- Expired access tokens are refreshed once on a 401; 429 and 5xx wait for
+  Retry-After (or back off) and retry.
+- Every catalog save also uploads `catalog-backup.brodalf` to each connected
+  cloud account (Phawx, 2026-09-28). A failure there is logged, not fatal.
+- A local synced OneDrive or Dropbox folder can still be used as a plain
+  drive.
 
 ## Encryption
 

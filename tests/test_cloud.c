@@ -189,12 +189,23 @@ static void run_provider(bd_cloud_provider prov, const char *name, const char *t
     int64_t media;
     if (encrypt) REQUIRE_OK(bd_catalog_set_passphrase(cat, "correct horse"), cat);
     REQUIRE_OK(bd_cloud_add(cat, si, "My Cloud", encrypt ? BD_MEDIA_ENCRYPTED : 0, &media), cat);
+    CHECK(strcmp(bd_cloud_signin_account(si), expect_account) == 0); /* still readable after add */
     bd_cloud_signin_free(si);
 
     /* A second sign-in to the same account is recognised. */
+    int64_t again = 0;
     si = sign_in(cat, prov);
-    CHECK(bd_cloud_add(cat, si, "Again", 0, NULL) == BD_ERR_EXISTS);
+    REQUIRE_OK(bd_cloud_add(cat, si, "Again", 0, &again), cat);
+    CHECK(again == media);
     bd_cloud_signin_free(si);
+
+    /* Saving the catalog also puts a copy in every connected cloud. */
+    REQUIRE_OK(bd_catalog_save_all(cat, quiet, NULL), cat);
+    char cq[256];
+    snprintf(cq, sizeof(cq), "tree?provider=%s&p=BRODALF/%s/catalog-backup.brodalf", tree_key, bd_catalog_uuid(cat));
+    char *ct = control(cq);
+    CHECK(strstr(ct, "catalog-backup.brodalf\": ") != NULL);
+    free(ct);
 
     /* Back up, with the API throttling us once along the way. */
     free(control("throttle?n=1"));
@@ -273,14 +284,17 @@ static void run_provider(bd_cloud_provider prov, const char *name, const char *t
     snprintf(a2, sizeof(a2), "%s/restore/Docs/a.txt", dir);
     CHECK(same_file(at(a1), at(a2)));
 
-    /* Signing in again to the same account finds it already set up. */
-    si = sign_in(cat, prov);
-    CHECK(bd_cloud_add(cat, si, "Again", 0, NULL) == BD_ERR_EXISTS);
-    bd_cloud_signin_free(si);
-
     /* Sign out: the saved sign-in is gone, reconnecting asks to sign in. */
     REQUIRE_OK(bd_cloud_sign_out(cat, media), cat);
     CHECK(bd_cloud_connect(cat, media, &cs, quiet, NULL) == BD_ERR_PASSPHRASE);
+
+    /* Signing in again brings it back, with its copies. */
+    si = sign_in(cat, prov);
+    REQUIRE_OK(bd_cloud_add(cat, si, "ignored", 0, &again), cat);
+    bd_cloud_signin_free(si);
+    CHECK(again == media);
+    REQUIRE_OK(bd_media_check(cat, media, 0, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 4 && cs.bad == 0);
     bd_catalog_close(cat);
 }
 

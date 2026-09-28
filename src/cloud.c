@@ -1033,6 +1033,7 @@ struct bd_signin {
     char verifier[64];
     char state[32];
     char *url;
+    char account[256]; /* kept after bd_cloud_add takes the session */
 };
 
 bd_status bd_cloud_signin_begin(bd_catalog *cat, bd_cloud_provider provider_id, bd_signin **out, const char **url_out)
@@ -1105,6 +1106,7 @@ bd_status bd_cloud_signin_finish(bd_catalog *cat, bd_signin *si, int timeout_ms)
         if (!form || token_request(s, form) != 0) st = bd_fail(cat, BD_ERR_IO, "%s", s->err);
         else if (!s->refresh_token) st = bd_fail(cat, BD_ERR_IO, "%s gave no lasting sign-in", s->prov.title);
         else if ((s->prov.id == BD_CLOUD_ONEDRIVE ? od_account(s) : db_account(s)) != 0) st = bd_fail(cat, BD_ERR_IO, "%s", s->err);
+        else snprintf(si->account, sizeof(si->account), "%s", s->account);
         free(c);
         free(r);
         free(cid);
@@ -1118,7 +1120,7 @@ bd_status bd_cloud_signin_finish(bd_catalog *cat, bd_signin *si, int timeout_ms)
 
 const char *bd_cloud_signin_account(const bd_signin *si)
 {
-    return si && si->sess ? si->sess->account : "";
+    return si ? si->account : "";
 }
 
 void bd_cloud_signin_free(bd_signin *si)
@@ -1163,8 +1165,39 @@ bd_status bd_cloud_add(bd_catalog *cat, bd_signin *si, const char *label, unsign
     bd_media_file mf;
     int there = read_remote_media(cat, s, &mf);
     if (there < 0) return bd_fail(cat, BD_ERR_IO, "%s", s->err);
-    if (there == 0 && strcmp(mf.catalog_uuid, cat->uuid) == 0 && bd_media_id_for_uuid(cat, mf.media_uuid))
-        return bd_fail(cat, BD_ERR_EXISTS, "this %s account is already set up for this catalog as \"%s\"", s->prov.title, mf.label);
+    if (there == 0 && strcmp(mf.catalog_uuid, cat->uuid) != 0)
+        return bd_fail(cat, BD_ERR_INVALID, "the BRODALF folder in this %s account belongs to another catalog", s->prov.title);
+    int64_t known = there == 0 ? bd_media_id_for_uuid(cat, mf.media_uuid) : 0;
+    if (known) {
+        /* Already set up: this is signing in again. Keep the new sign-in. */
+        sqlite3_stmt *q;
+        char *secret = NULL;
+        if (sqlite3_prepare_v2(cat->db, "SELECT credential_ref FROM cloud_accounts WHERE media_id=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, known);
+            if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0)) secret = bd_strdup((const char *)sqlite3_column_text(q, 0));
+            sqlite3_finalize(q);
+        }
+        if (!secret) return bd_fail(cat, BD_ERR_INVALID, "\"%s\" is not a cloud account in this catalog", mf.label);
+        if (bd_secret_set(secret, s->refresh_token) != 0) {
+            free(secret);
+            return bd_fail(cat, BD_ERR_IO, "cannot save the sign-in in Credential Manager");
+        }
+        if (sqlite3_prepare_v2(cat->db, "UPDATE cloud_accounts SET username=? WHERE media_id=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(q, 1, s->account, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(q, 2, known);
+            sqlite3_step(q);
+            sqlite3_finalize(q);
+        }
+        si->sess = NULL;
+        s->media_id = known;
+        s->secret_name = secret;
+        keep_session(cat, s);
+        char *root = display_root(s);
+        bd_status st = bd_media_record_connected(cat, known, root ? root : s->prov.title);
+        free(root);
+        if (st == BD_OK && out_media_id) *out_media_id = known;
+        return st;
+    }
 
     if (there != 0) {
         memset(&mf, 0, sizeof(mf));

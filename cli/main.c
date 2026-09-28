@@ -32,11 +32,15 @@ static void usage(void)
          "                                             show versions and copies of a file\n"
          "  restore  <catalog> <dest> [--source NAME] [--path REL] --drive ROOT...\n"
          "                                             restore current versions from drives\n"
+         "  cloud-add <catalog> onedrive|dropbox <label> [--encrypt]\n"
+         "                                             sign in and use a cloud account as storage\n"
+         "  cloud-signout <catalog> <label>            forget a cloud account's saved sign-in\n"
          "  passphrase <catalog>                       set or change the passphrase\n"
          "  encrypt-catalog <catalog> on|off           encrypt the .brodalf file itself\n"
          "\n"
          "--drive connects a drive for this command. Files are shown as available\n"
-         "only when a correct copy is on a connected drive.\n"
+         "only when a correct copy is on a connected drive. Wherever a drive root\n"
+         "goes, cloud:LABEL names a cloud account added with cloud-add.\n"
          "\n"
          "Passphrases are asked for on the terminal, or taken from the environment\n"
          "variables BRODALF_PASSPHRASE and (when setting one) BRODALF_NEW_PASSPHRASE.");
@@ -171,13 +175,53 @@ static int print_source(void *ctx, const bd_source_info *info)
     return 0;
 }
 
+typedef struct { const char *label; int64_t id; int cloud; } find_media_ctx;
+
+static int find_media_cb(void *ctx, const bd_media_info *info)
+{
+    find_media_ctx *f = ctx;
+    if (strcmp(info->label, f->label) == 0 && strcmp(info->kind, "drive") != 0) { f->id = info->media_id; return 1; }
+    return 0;
+}
+
+static void open_browser(const char *url)
+{
+#ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, 0, url, -1, NULL, 0);
+    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)n);
+    if (w) {
+        MultiByteToWideChar(CP_UTF8, 0, url, -1, w, n);
+        ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL);
+        free(w);
+    }
+#else
+    (void)url; /* the address is printed; open it by hand */
+#endif
+}
+
+/* Connect a drive root, or a cloud account given as cloud:LABEL. */
+static bd_status connect_target(bd_catalog *cat, const char *target, int64_t *id, bd_check_stats *cs)
+{
+    if (strncmp(target, "cloud:", 6) != 0) return bd_media_connect(cat, target, id, cs, log_line, NULL);
+    find_media_ctx f = {target + 6, 0, 0};
+    bd_list_media(cat, find_media_cb, &f);
+    if (!f.id) {
+        fprintf(stderr, "brodalf: no cloud storage labelled \"%s\"\n", target + 6);
+        return BD_ERR_NOT_FOUND;
+    }
+    *id = f.id;
+    bd_status s = bd_cloud_connect(cat, f.id, cs, log_line, NULL);
+    if (s != BD_OK) fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+    return s;
+}
+
 static int connect_drives(bd_catalog *cat, int argc, char **argv)
 {
     for (int i = 0; i + 1 < argc; i++) {
         if (strcmp(argv[i], "--drive") != 0) continue;
         bd_check_stats cs;
         int64_t id;
-        if (bd_media_connect(cat, argv[i + 1], &id, &cs, log_line, NULL) != BD_OK) {
+        if (connect_target(cat, argv[i + 1], &id, &cs) != BD_OK) {
             fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
             return -1;
         }
@@ -301,6 +345,44 @@ static int run(int argc, char **argv)
             return die(cat, "cannot set up drive");
         printf("set up %s as \"%s\"%s\n", argv[3], argv[4], encrypt ? ", encrypted" : "");
         save = 1;
+    } else if (strcmp(cmd, "cloud-add") == 0) {
+        if (argc < 5) { usage(); bd_catalog_close(cat); return 1; }
+        bd_cloud_provider prov = strcmp(argv[3], "onedrive") == 0 ? BD_CLOUD_ONEDRIVE
+                                 : strcmp(argv[3], "dropbox") == 0 ? BD_CLOUD_DROPBOX : 0;
+        if (!prov) { usage(); bd_catalog_close(cat); return 1; }
+        int encrypt = has_flag(argc, argv, "--encrypt");
+        if (encrypt && !bd_catalog_has_passphrase(cat)) {
+            char pass[512];
+            if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
+            bd_status s = bd_catalog_set_passphrase(cat, pass);
+            memset(pass, 0, sizeof(pass));
+            if (s != BD_OK) return die(cat, "cannot set passphrase");
+        } else if (encrypt && ensure_unlocked(cat) != 0) {
+            bd_catalog_close(cat);
+            return 1;
+        }
+        bd_signin *si;
+        const char *url;
+        if (bd_cloud_signin_begin(cat, prov, &si, &url) != BD_OK) return die(cat, "cannot sign in");
+        printf("Sign in with your browser. If it does not open, visit:\n\n  %s\n\n", url);
+        fflush(stdout);
+        open_browser(url);
+        int64_t id;
+        bd_status s = bd_cloud_signin_finish(cat, si, 5 * 60 * 1000);
+        if (s == BD_OK) printf("signed in as %s\n", bd_cloud_signin_account(si));
+        if (s == BD_OK) s = bd_cloud_add(cat, si, argv[4], encrypt ? BD_MEDIA_ENCRYPTED : 0, &id);
+        bd_cloud_signin_free(si);
+        if (s != BD_OK) return die(cat, "cannot add cloud storage");
+        printf("added %s as \"%s\"%s; use it as cloud:%s\n", argv[3], argv[4], encrypt ? ", encrypted" : "", argv[4]);
+        save = 1;
+    } else if (strcmp(cmd, "cloud-signout") == 0) {
+        if (argc < 4) { usage(); bd_catalog_close(cat); return 1; }
+        find_media_ctx f = {argv[3], 0, 0};
+        bd_list_media(cat, find_media_cb, &f);
+        if (!f.id) { fprintf(stderr, "brodalf: no cloud storage labelled \"%s\"\n", argv[3]); bd_catalog_close(cat); return 1; }
+        if (bd_cloud_sign_out(cat, f.id) != BD_OK) return die(cat, "cannot sign out");
+        printf("signed out of \"%s\"; its files stay in the cloud\n", argv[3]);
+        save = 1;
     } else if (strcmp(cmd, "passphrase") == 0) {
         if (ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
         char pass[512];
@@ -326,7 +408,7 @@ static int run(int argc, char **argv)
         if (argc < 4) { usage(); bd_catalog_close(cat); return 1; }
         int64_t media_id;
         bd_check_stats cs;
-        if (bd_media_connect(cat, argv[3], &media_id, &cs, log_line, NULL) != BD_OK) return die(cat, "cannot use drive");
+        if (connect_target(cat, argv[3], &media_id, &cs) != BD_OK) return die(cat, "cannot use storage");
         if (strcmp(cmd, "check") == 0) {
             int full = has_flag(argc, argv, "--full");
             bd_status s = full ? bd_media_check(cat, media_id, 1, &cs, log_line, NULL) : BD_OK;
@@ -391,7 +473,7 @@ static int run(int argc, char **argv)
     }
 
     int rc = 0;
-    if (save && bd_catalog_save(cat) != BD_OK) {
+    if (save && bd_catalog_save_all(cat, log_line, NULL) != BD_OK) {
         fprintf(stderr, "brodalf: cannot save catalog: %s\n", bd_catalog_error(cat));
         rc = 1;
     }

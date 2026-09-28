@@ -315,10 +315,38 @@ int bd_media_encrypted(bd_catalog *cat, int64_t media_id)
 }
 
 /* The catalog backup on an encrypted drive is always encrypted. */
+static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id);
+
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
 {
     bd_status s = bd_catalog_save(cat);
+    return s == BD_OK ? put_catalog_copy(cat, media_id) : s;
+}
+
+bd_status bd_catalog_save_all(bd_catalog *cat, bd_log_fn log, void *log_ctx)
+{
+    bd_status s = bd_catalog_save(cat);
     if (s != BD_OK) return s;
+    int64_t ids[64];
+    int n = 0;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT m.id FROM media m JOIN temp.connected k ON k.media_id=m.id WHERE m.kind<>'drive'",
+                           -1, &q, NULL) != SQLITE_OK)
+        return BD_OK;
+    while (n < 64 && sqlite3_step(q) == SQLITE_ROW) ids[n++] = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    for (int i = 0; i < n; i++) {
+        if (put_catalog_copy(cat, ids[i]) != BD_OK && log) {
+            char *msg = bd_sprintf("catalog not copied to the cloud: %s", bd_catalog_error(cat));
+            if (msg) { log(log_ctx, msg); free(msg); }
+        }
+    }
+    return BD_OK;
+}
+
+static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
+{
+    bd_status s = BD_OK;
     int encrypt = bd_catalog_file_encrypted(cat) || bd_media_encrypted(cat, media_id);
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) return BD_ERR_NOT_FOUND;

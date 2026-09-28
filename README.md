@@ -2,7 +2,7 @@
 
 BRODALF keeps track of where every copy of your files lives. It is built for
 backups on hard drives that spend most of their time unplugged in a drawer,
-with consumer cloud storage (OneDrive and Dropbox first) to follow.
+and on OneDrive and Dropbox.
 
 The catalog, a `.brodalf` file, holds no file data. It records every file and
 folder you protect, every version BRODALF has seen, and every drive a copy of
@@ -14,8 +14,8 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 ## Status
 
 The C core library, the Windows app (`brodalf.exe`) and a command-line
-harness (`brodalf-cli`) work, with optional encryption. OneDrive and
-Dropbox come next. The Go files
+harness (`brodalf-cli`) work, with optional encryption and OneDrive and
+Dropbox as storage. The Go files
 at the top of the repo are the earlier prototype and are not part of the C
 build.
 
@@ -80,6 +80,43 @@ encrypted copies, including you.
 
 ![An encrypted drive in the versions panel](docs/images/gui-encryption.png)
 
+### OneDrive and Dropbox
+
+**Back up** also offers **OneDrive...** and **Dropbox...**. Name the storage,
+optionally tick encryption, and your browser opens to sign in. BRODALF only
+gets its own app folder (`Apps/BRODALF`) and cannot see anything else in the
+account. The sign-in is saved in Windows Credential Manager, so the account
+reconnects by itself whenever BRODALF opens; the catalog records only the
+provider, the account name and where the saved sign-in is. From then on the
+account works like a drive that is always plugged in: backups, `.versions`,
+checks (quick checks compare the provider's own content hash, full checks
+download and verify) and restores.
+
+Every time the catalog is saved, a copy of it also goes to every connected
+cloud account (`BRODALF/<catalog id>/catalog-backup.brodalf`), encrypted if
+the catalog or that storage is.
+
+![Adding cloud storage](docs/images/gui-cloud-menu.png)
+
+To sign in again after a sign-in expires, choose the same provider again and
+sign in with the same account; BRODALF recognises it and keeps its copies.
+
+### App registrations
+
+The Dropbox app key is built in. The OneDrive app ID is still to come; until
+then OneDrive says "this build of BRODALF has no OneDrive app ID yet". Either
+can be set at build time (`-DBRODALF_ONEDRIVE_CLIENT_ID=...`,
+`-DBRODALF_DROPBOX_CLIENT_ID=...`) or overridden with environment variables of
+the same names. These IDs are not secrets: sign-in uses PKCE, so no client
+secret ships with BRODALF.
+
+- **Microsoft Entra**: an app for personal and work accounts, platform
+  "Mobile and desktop applications" with redirect URI `http://localhost`,
+  delegated permissions `Files.ReadWrite.AppFolder` and `User.Read`.
+- **Dropbox**: "App folder" access, redirect URI `http://localhost:53682/`,
+  permissions `files.content.read/write`, `files.metadata.read/write`,
+  `account_info.read`.
+
 ## Try it from the command line
 
 ```sh
@@ -97,6 +134,11 @@ brodalf-cli restore family.brodalf D:\restored --drive E:\
 brodalf-cli drive family.brodalf F:\ "Red Vault" --encrypt   # asks for a new passphrase
 brodalf-cli encrypt-catalog family.brodalf on
 brodalf-cli passphrase family.brodalf                        # change it
+
+brodalf-cli cloud-add family.brodalf dropbox "Dropbox"       # opens the browser to sign in
+brodalf-cli backup family.brodalf cloud:Dropbox
+brodalf-cli restore family.brodalf D:\restored --drive cloud:Dropbox
+brodalf-cli cloud-signout family.brodalf Dropbox
 ```
 
 Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
@@ -112,11 +154,15 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `src/media.c` | Drive IDs, connecting drives, quick and full checks |
 | `src/backup.c` | Backup with kept versions, restore |
 | `src/crypto.c` | Passphrase, master key, encrypted file streams |
+| `src/store*.c`, `src/store.h` | Storage interface: local drives and folders |
+| `src/cloud.c` | OneDrive and Dropbox: sign-in, uploads, checks |
+| `src/http_*.c`, `src/secrets.c` | WinHTTP client, sign-in redirect, Credential Manager |
 | `src/query.c` | Ghost-tree state for the GUI |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |
 | `cli/main.c` | `brodalf-cli` |
 | `tests/test_core.c` | End-to-end test |
+| `tests/test_cloud.c`, `tests/mock_cloud.py` | Cloud test against a local mock of OneDrive and Dropbox |
 
 ## Third-party code
 

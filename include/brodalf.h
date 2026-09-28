@@ -159,7 +159,9 @@ bd_status bd_cloud_signin_finish(bd_catalog *cat, bd_signin *signin, int timeout
 const char *bd_cloud_signin_account(const bd_signin *signin);
 void bd_cloud_signin_free(bd_signin *signin);
 
-/* Use the signed-in account as storage. flags as for bd_media_init. */
+/* Use the signed-in account as storage. flags as for bd_media_init. If the
+ * account is already storage for this catalog, this signs it in again
+ * (label and flags are ignored) and returns its media id. */
 bd_status bd_cloud_add(bd_catalog *cat, bd_signin *signin, const char *label, unsigned flags, int64_t *out_media_id);
 
 /* Connect a cloud account with its saved sign-in and run a quick check. */
@@ -190,6 +192,11 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
  * BRODALF/<catalog-uuid>/catalog-backup.brodalf. The copy is encrypted
  * when the catalog file or the drive is. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
+
+/* Save the catalog, then put a copy of it on every connected cloud account
+ * (BRODALF/<catalog-uuid>/catalog-backup.brodalf there). A cloud copy that
+ * fails is logged and does not fail the save. */
+bd_status bd_catalog_save_all(bd_catalog *cat, bd_log_fn log, void *log_ctx);
 
 typedef struct {
     int64_t files_restored;
@@ -264,7 +271,7 @@ typedef struct {
 typedef struct {
     int64_t media_id;
     const char *label;
-    const char *kind;        /* "drive" for now; "onedrive", "dropbox" later */
+    const char *kind;        /* "drive", "onedrive" or "dropbox" */
     const char *last_root;   /* where it was last seen, e.g. "E:\" */
     int connected;
     int64_t total_bytes;     /* 0 if unknown */

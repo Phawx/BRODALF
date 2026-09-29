@@ -29,7 +29,7 @@ int bd_media_file_read(const char *path, bd_media_file *mf)
     return (magic && strlen(mf->media_uuid) == 36) ? 0 : -1;
 }
 
-int bd_media_file_write(const char *path, const bd_media_file *mf)
+static int media_file_put(const char *path, const bd_media_file *mf, int replace)
 {
     char *tmp = bd_sprintf("%s" BD_TMP_MARKER, path);
     if (!tmp) return -1;
@@ -46,10 +46,16 @@ int bd_media_file_write(const char *path, const bd_media_file *mf)
             mf->media_uuid, mf->catalog_uuid, mf->label, mf->encrypted, (long long)bd_now_ms());
     int rc = bd_fsync(f);
     if (fclose(f) != 0) rc = -1;
-    if (rc == 0) rc = bd_rename_noreplace(tmp, path);
+    if (rc == 0) rc = replace ? bd_rename_replace(tmp, path) : bd_rename_noreplace(tmp, path);
     if (rc != 0) bd_remove(tmp);
     free(tmp);
     return rc;
+}
+
+/* Never replaces an existing ID file. */
+int bd_media_file_write(const char *path, const bd_media_file *mf)
+{
+    return media_file_put(path, mf, 0);
 }
 
 static bd_status bd_media_file_path(bd_catalog *cat, const char *root, char **out)
@@ -114,6 +120,95 @@ int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, con
     return id;
 }
 
+static void text_or_null(sqlite3_stmt *st, int col, const char *s)
+{
+    if (s && *s) sqlite3_bind_text(st, col, s, -1, SQLITE_TRANSIENT);
+    else sqlite3_bind_null(st, col);
+}
+
+static void num_or_null(sqlite3_stmt *st, int col, int64_t v)
+{
+    if (v >= 0) sqlite3_bind_int64(st, col, v);
+    else sqlite3_bind_null(st, col);
+}
+
+void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw, bd_log_fn log, void *log_ctx)
+{
+    sqlite3_stmt *q;
+    if (hw->serial[0] &&
+        sqlite3_prepare_v2(cat->db, "SELECT h.serial, h.model, m.label FROM media_hardware h JOIN media m ON m.id=h.media_id WHERE h.media_id=?",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, media_id);
+        if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0) &&
+            strcmp((const char *)sqlite3_column_text(q, 0), hw->serial) != 0)
+            bd_logf(log, log_ctx, "\"%s\" is on a different disk than last time (serial %s, was %s %s)",
+                    (const char *)sqlite3_column_text(q, 2), hw->serial,
+                    sqlite3_column_text(q, 1) ? (const char *)sqlite3_column_text(q, 1) : "",
+                    (const char *)sqlite3_column_text(q, 0));
+        sqlite3_finalize(q);
+    }
+    if (sqlite3_prepare_v2(cat->db,
+                           "INSERT OR REPLACE INTO media_hardware(media_id, read_ms, vendor, model, serial, firmware, bus, disk_bytes,"
+                           " volume_name, volume_serial, filesystem, smart, health, temperature_c, power_on_hours, power_cycles,"
+                           " reallocated, pending, uncorrectable, percent_used, note)"
+                           " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           -1, &q, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int64(q, 2, bd_now_ms());
+    text_or_null(q, 3, hw->vendor);
+    text_or_null(q, 4, hw->model);
+    text_or_null(q, 5, hw->serial);
+    text_or_null(q, 6, hw->firmware);
+    text_or_null(q, 7, hw->bus);
+    num_or_null(q, 8, hw->disk_bytes);
+    text_or_null(q, 9, hw->volume_name);
+    text_or_null(q, 10, hw->volume_serial);
+    text_or_null(q, 11, hw->filesystem);
+    sqlite3_bind_int(q, 12, hw->smart);
+    text_or_null(q, 13, hw->health);
+    num_or_null(q, 14, hw->temperature_c);
+    num_or_null(q, 15, hw->power_on_hours);
+    num_or_null(q, 16, hw->power_cycles);
+    num_or_null(q, 17, hw->reallocated_sectors);
+    num_or_null(q, 18, hw->pending_sectors);
+    num_or_null(q, 19, hw->uncorrectable_sectors);
+    num_or_null(q, 20, hw->percent_used);
+    text_or_null(q, 21, hw->note);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+}
+
+static void read_hardware(bd_catalog *cat, int64_t media_id, const char *root, bd_log_fn log, void *log_ctx)
+{
+    bd_drive_hw hw;
+    if (bd_drive_hw_read(root, &hw) == 0) bd_media_store_hw(cat, media_id, &hw, log, log_ctx);
+}
+
+static bd_status set_text(bd_catalog *cat, const char *sql, int64_t media_id, const char *text)
+{
+    sqlite3_stmt *u;
+    if (sqlite3_prepare_v2(cat->db, sql, -1, &u, NULL) != SQLITE_OK) return bd_fail_db(cat, "update drive");
+    if (text && *text) sqlite3_bind_text(u, 1, text, -1, SQLITE_STATIC);
+    else sqlite3_bind_null(u, 1);
+    sqlite3_bind_int64(u, 2, media_id);
+    int rc = sqlite3_step(u);
+    sqlite3_finalize(u);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "update drive");
+    return sqlite3_changes(cat->db) ? BD_OK : bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
+}
+
+bd_status bd_media_set_location(bd_catalog *cat, int64_t media_id, const char *location)
+{
+    return set_text(cat, "UPDATE media SET location=? WHERE id=?", media_id, location);
+}
+
+bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label)
+{
+    if (!label || !*label) return bd_fail(cat, BD_ERR_INVALID, "give the drive a label");
+    return set_text(cat, "UPDATE media SET label=? WHERE id=?", media_id, label);
+}
+
 bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, unsigned flags, int64_t *out_media_id)
 {
     int encrypted = (flags & BD_MEDIA_ENCRYPTED) != 0;
@@ -161,6 +256,7 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     }
     free(path);
     bd_status s = bd_media_record_connected(cat, id, root);
+    if (s == BD_OK) read_hardware(cat, id, root, NULL, NULL);
     if (s == BD_OK && out_media_id) *out_media_id = id;
     return s;
 }
@@ -187,6 +283,19 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
     }
     bd_status s = bd_media_record_connected(cat, id, root);
     if (s != BD_OK) return s;
+    /* A rename in the app reaches the drive's ID file here. */
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT label FROM media WHERE id=?", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, id);
+        if (sqlite3_step(q) == SQLITE_ROW && strcmp((const char *)sqlite3_column_text(q, 0), mf.label) != 0) {
+            snprintf(mf.label, sizeof(mf.label), "%s", (const char *)sqlite3_column_text(q, 0));
+            char *p = NULL;
+            if (bd_media_file_path(cat, root, &p) == BD_OK) media_file_put(p, &mf, 1);
+            free(p);
+        }
+        sqlite3_finalize(q);
+    }
+    read_hardware(cat, id, root, log, log_ctx);
     if (out_media_id) *out_media_id = id;
     return bd_media_check(cat, id, 0, stats, log, log_ctx);
 }

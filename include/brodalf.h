@@ -134,6 +134,14 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
                            bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 void bd_media_disconnect(bd_catalog *cat, int64_t media_id);
 
+/* Where a drive is kept, or what is written on it ("Box A", "top shelf").
+ * Optional; "" or NULL clears it. */
+bd_status bd_media_set_location(bd_catalog *cat, int64_t media_id, const char *location);
+
+/* Rename a drive. The new name is also written to its BRODALF.media file
+ * the next time the drive is plugged in. */
+bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
+
 /* Re-check every copy on a connected drive. full=0 checks existence, size
  * and modified time (rehashing only when the time differs); full=1 rehashes
  * every copy. */
@@ -266,7 +274,34 @@ typedef struct {
     int connected;
     int64_t last_check_ms;
     int encrypted;           /* the copy is on an encrypted drive */
+    const char *media_location; /* where that drive is kept; "" if not set */
 } bd_copy_info;
+
+/* What a drive says about itself, read whenever it is plugged in. Strings
+ * are "" and numbers -1 when unknown. SMART data needs a drive and
+ * connection that pass it through: many USB enclosures do not, and some
+ * drives only answer when BRODALF runs as administrator (note says why). */
+typedef struct {
+    char vendor[64];
+    char model[128];
+    char serial[128];
+    char firmware[32];
+    char bus[32];            /* "USB", "SATA", "NVMe", ... */
+    int64_t disk_bytes;      /* the whole disk, not just this volume */
+    char volume_name[64];
+    char volume_serial[16];  /* "1A2B-3C4D" */
+    char filesystem[32];
+    int smart;               /* 1 when health data was read */
+    char health[16];         /* "good", "warning", "failing", or "" */
+    int temperature_c;
+    int64_t power_on_hours;
+    int64_t power_cycles;
+    int64_t reallocated_sectors;
+    int64_t pending_sectors;
+    int64_t uncorrectable_sectors;
+    int percent_used;        /* SSD wear, 0-100+ */
+    char note[160];
+} bd_drive_hw;
 
 typedef struct {
     int64_t media_id;
@@ -279,7 +314,16 @@ typedef struct {
     int64_t last_seen_ms;
     int64_t copies;          /* copies BRODALF has recorded on it */
     int encrypted;
+    const char *location;    /* where it is kept, e.g. "Box A"; "" if not set */
+    const bd_drive_hw *hw;   /* last hardware reading, NULL if none */
+    int64_t hw_read_ms;
+    int64_t added_ms;
 } bd_media_info;
+
+/* Read make, model, serial and SMART data for the disk holding root. 0 on
+ * success (even if only some fields could be read), -1 if nothing is known
+ * (not Windows, a network share, or the disk refused every query). */
+int bd_drive_hw_read(const char *root, bd_drive_hw *out);
 
 typedef int (*bd_media_fn)(void *ctx, const bd_media_info *info);
 bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx);

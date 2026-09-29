@@ -80,6 +80,13 @@ void bd_wipe(void *p, size_t n);
 
 int bd_media_encrypted(bd_catalog *cat, int64_t media_id);
 
+/* Save a hardware reading for a drive. Logs when the drive ID turns up on a
+ * different disk than last time (a copied or moved BRODALF folder). */
+/* SMART parsing, exposed for tests (src/drive_hw.c). */
+int bd_drive_hw_parse_ata(bd_drive_hw *hw, const unsigned char data[512], int predicted_failure);
+int bd_drive_hw_parse_nvme(bd_drive_hw *hw, const unsigned char log[512]);
+void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw, bd_log_fn log, void *log_ctx);
+
 /* The BRODALF.media file that identifies a drive or cloud folder. */
 typedef struct {
     char media_uuid[37];

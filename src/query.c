@@ -175,7 +175,8 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT v.version_no, v.id=n.current_version_id, v.hash, v.size, v.mtime_ns, v.first_seen_ms,"
                            " COALESCE(c.media_id,0), m.label, c.path_on_media, c.state, k.media_id IS NOT NULL,"
-                           " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(m.encrypted,0)"
+                           " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(m.encrypted,0),"
+                           " COALESCE(m.location,'')"
                            " FROM versions v JOIN nodes n ON n.id=v.node_id"
                            " LEFT JOIN copies c ON c.version_id=v.id LEFT JOIN media m ON m.id=c.media_id"
                            " LEFT JOIN temp.connected k ON k.media_id=c.media_id"
@@ -198,10 +199,22 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
         info.connected = sqlite3_column_int(q, 10);
         info.last_check_ms = sqlite3_column_int64(q, 11);
         info.encrypted = sqlite3_column_int(q, 12);
+        info.media_location = info.media_id ? (const char *)sqlite3_column_text(q, 13) : "";
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
     return BD_OK;
+}
+
+static void col_text(sqlite3_stmt *q, int col, char *out, size_t cap)
+{
+    const unsigned char *t = sqlite3_column_text(q, col);
+    snprintf(out, cap, "%s", t ? (const char *)t : "");
+}
+
+static int64_t col_num(sqlite3_stmt *q, int col)
+{
+    return sqlite3_column_type(q, col) == SQLITE_NULL ? -1 : sqlite3_column_int64(q, col);
 }
 
 bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
@@ -210,8 +223,12 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT m.id, m.label, m.kind, COALESCE(k.root, m.last_root), k.media_id IS NOT NULL,"
                            " COALESCE(m.total_bytes,0), COALESCE(m.free_bytes,0), COALESCE(m.last_seen_ms,0),"
-                           " (SELECT COUNT(*) FROM copies c WHERE c.media_id=m.id), m.encrypted"
-                           " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id ORDER BY m.label COLLATE NOCASE",
+                           " (SELECT COUNT(*) FROM copies c WHERE c.media_id=m.id), m.encrypted, COALESCE(m.location,''), m.added_ms,"
+                           " h.read_ms, h.vendor, h.model, h.serial, h.firmware, h.bus, h.disk_bytes, h.volume_name, h.volume_serial,"
+                           " h.filesystem, h.smart, h.health, h.temperature_c, h.power_on_hours, h.power_cycles, h.reallocated,"
+                           " h.pending, h.uncorrectable, h.percent_used, h.note"
+                           " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
+                           " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list drives");
     while (sqlite3_step(q) == SQLITE_ROW) {
@@ -226,6 +243,35 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.last_seen_ms = sqlite3_column_int64(q, 7);
         info.copies = sqlite3_column_int64(q, 8);
         info.encrypted = sqlite3_column_int(q, 9);
+        info.location = (const char *)sqlite3_column_text(q, 10);
+        info.added_ms = sqlite3_column_int64(q, 11);
+        bd_drive_hw hw;
+        info.hw = NULL;
+        info.hw_read_ms = 0;
+        if (sqlite3_column_type(q, 12) != SQLITE_NULL) {
+            memset(&hw, 0, sizeof(hw));
+            info.hw_read_ms = sqlite3_column_int64(q, 12);
+            col_text(q, 13, hw.vendor, sizeof(hw.vendor));
+            col_text(q, 14, hw.model, sizeof(hw.model));
+            col_text(q, 15, hw.serial, sizeof(hw.serial));
+            col_text(q, 16, hw.firmware, sizeof(hw.firmware));
+            col_text(q, 17, hw.bus, sizeof(hw.bus));
+            hw.disk_bytes = col_num(q, 18);
+            col_text(q, 19, hw.volume_name, sizeof(hw.volume_name));
+            col_text(q, 20, hw.volume_serial, sizeof(hw.volume_serial));
+            col_text(q, 21, hw.filesystem, sizeof(hw.filesystem));
+            hw.smart = sqlite3_column_int(q, 22);
+            col_text(q, 23, hw.health, sizeof(hw.health));
+            hw.temperature_c = (int)col_num(q, 24);
+            hw.power_on_hours = col_num(q, 25);
+            hw.power_cycles = col_num(q, 26);
+            hw.reallocated_sectors = col_num(q, 27);
+            hw.pending_sectors = col_num(q, 28);
+            hw.uncorrectable_sectors = col_num(q, 29);
+            hw.percent_used = (int)col_num(q, 30);
+            col_text(q, 31, hw.note, sizeof(hw.note));
+            info.hw = &hw;
+        }
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);

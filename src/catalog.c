@@ -20,7 +20,7 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 3
+#define BD_SCHEMA_VERSION 4
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -66,7 +66,15 @@ static const char *SCHEMA_SQL =
     "  free_bytes INTEGER,"
     "  added_ms INTEGER NOT NULL,"
     "  last_seen_ms INTEGER,"
-    "  encrypted INTEGER NOT NULL DEFAULT 0);"
+    "  encrypted INTEGER NOT NULL DEFAULT 0,"
+    "  location TEXT);"
+    "CREATE TABLE IF NOT EXISTS media_hardware("  /* last reading when plugged in */
+    "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
+    "  read_ms INTEGER NOT NULL,"
+    "  vendor TEXT, model TEXT, serial TEXT, firmware TEXT, bus TEXT, disk_bytes INTEGER,"
+    "  volume_name TEXT, volume_serial TEXT, filesystem TEXT,"
+    "  smart INTEGER, health TEXT, temperature_c INTEGER, power_on_hours INTEGER, power_cycles INTEGER,"
+    "  reallocated INTEGER, pending INTEGER, uncorrectable INTEGER, percent_used INTEGER, note TEXT);"
     "CREATE TABLE IF NOT EXISTS cloud_accounts("
     "  id INTEGER PRIMARY KEY,"
     "  media_id INTEGER NOT NULL UNIQUE REFERENCES media(id) ON DELETE CASCADE,"
@@ -201,6 +209,11 @@ static bd_status open_db(bd_catalog *cat)
     if (sqlite3_prepare_v2(cat->db, "SELECT stored_rev FROM copies LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
         sqlite3_finalize(probe);
     else if (bd_exec(cat, "ALTER TABLE copies ADD COLUMN stored_rev TEXT") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Schema 3 catalogs have no media.location column. */
+    if (sqlite3_prepare_v2(cat->db, "SELECT location FROM media LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
+        sqlite3_finalize(probe);
+    else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN location TEXT") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");

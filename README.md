@@ -58,6 +58,14 @@ Run `brodalf.exe`, or double-click a `.brodalf` file after associating it.
    one. **Check drive** re-reads every copy. **Restore** writes the selected
    file or folder back out. Plugging in a drive is noticed on its own.
 
+Clicking a file shows what it is (size, modified time, checksum, how many
+versions) and every drive that holds it: the drive's name, where it is kept,
+when and where it was last plugged in, and what the disk said about itself.
+That works just the same when none of those drives are plugged in, so you know
+which box to go and get.
+
+![A file whose drive is in a box](docs/images/gui-file-details.png)
+
 After a backup, everything on the drive lights up:
 
 ![The ghost tree after a backup](docs/images/gui-after-backup.png)
@@ -79,6 +87,30 @@ BRODALF forget the passphrase until it next needs it.
 encrypted copies, including you.
 
 ![An encrypted drive in the versions panel](docs/images/gui-encryption.png)
+
+### Drives: identity, health and where they are kept
+
+A drive is recognised by the `BRODALF.media` file on it, not by its letter.
+Each time it is plugged in BRODALF also reads what the disk says about itself
+and keeps the latest reading in the catalog:
+
+- make, model, serial number, firmware, bus (USB, SATA, NVMe...) and size;
+- the volume name, serial and file system;
+- SMART health: the drive's own failure prediction, temperature, hours
+  powered on, power cycles, reallocated/pending/unreadable sectors, and SSD
+  wear. Internal SATA and NVMe drives answer without extra rights; some
+  drives need BRODALF to be run as administrator once, and many USB
+  enclosures do not pass SMART through at all (BRODALF says which).
+
+If the same drive ID ever turns up on a disk with a different serial number
+(a copied or moved BRODALF folder), the log says so.
+
+Every drive can also have a free-text **where it is kept** label, such as
+"Label A" or "Box 3, garage shelf". Enter it when setting up a drive, or any
+time from **Drives...**, which shows everything BRODALF knows about each
+drive and lets you rename it.
+
+![Drive details](docs/images/gui-drive-details.png)
 
 ### OneDrive and Dropbox
 
@@ -133,7 +165,9 @@ brodalf-cli versions family.brodalf Pictures "2024/IMG_0412.jpg" --drive E:\
 brodalf-cli check family.brodalf E:\ --full
 brodalf-cli restore family.brodalf D:\restored --drive E:\
 
-brodalf-cli drive family.brodalf F:\ "Red Vault" --encrypt   # asks for a new passphrase
+brodalf-cli drive family.brodalf F:\ "Red Vault" --encrypt --location "Label A"
+brodalf-cli drives family.brodalf                            # make, model, serial, health, where kept
+brodalf-cli drive-location family.brodalf "Red Vault" "Box 3, garage"
 brodalf-cli encrypt-catalog family.brodalf on
 brodalf-cli passphrase family.brodalf                        # change it
 
@@ -160,6 +194,7 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `src/cloud.c` | OneDrive and Dropbox: sign-in, uploads, checks |
 | `src/http_*.c`, `src/secrets.c` | WinHTTP client, sign-in redirect, Credential Manager |
 | `src/query.c` | Ghost-tree state for the GUI |
+| `src/drive_hw.c` | Disk make, model, serial and SMART health |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |
 | `cli/main.c` | `brodalf-cli` |

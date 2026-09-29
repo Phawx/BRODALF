@@ -23,7 +23,7 @@ static void usage(void)
          "  add      <catalog> <folder>...             add folders to protect\n"
          "  sources  <catalog>                         list protected folders\n"
          "  scan     <catalog>                         record files, sizes and checksums\n"
-         "  drive    <catalog> <root> <label> [--encrypt]\n"
+         "  drive    <catalog> <root> <label> [--encrypt] [--location TEXT]\n"
          "                                             set up a drive or folder as storage\n"
          "  backup   <catalog> <root> [--source NAME]  copy what is missing to a drive\n"
          "  check    <catalog> <root> [--full]         check the copies on a drive\n"
@@ -35,6 +35,9 @@ static void usage(void)
          "  cloud-add <catalog> onedrive|dropbox <label> [--encrypt]\n"
          "                                             sign in and use a cloud account as storage\n"
          "  cloud-signout <catalog> <label>            forget a cloud account's saved sign-in\n"
+         "  drives   <catalog>                         list drives with make, model, serial, health, location\n"
+         "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
+         "  drive-rename <catalog> <label> <new label> rename a drive\n"
          "  passphrase <catalog>                       set or change the passphrase\n"
          "  encrypt-catalog <catalog> on|off           encrypt the .brodalf file itself\n"
          "\n"
@@ -177,6 +180,67 @@ static int print_source(void *ctx, const bd_source_info *info)
 
 typedef struct { const char *label; int64_t id; int cloud; } find_media_ctx;
 
+static int find_any_media_cb(void *ctx, const bd_media_info *info)
+{
+    find_media_ctx *f = ctx;
+    if (strcmp(info->label, f->label) == 0) { f->id = info->media_id; return 1; }
+    return 0;
+}
+
+static int64_t media_id_by_label(bd_catalog *cat, const char *label)
+{
+    find_media_ctx f = {label, 0, 0};
+    bd_list_media(cat, find_any_media_cb, &f);
+    if (!f.id) fprintf(stderr, "brodalf: no drive labelled \"%s\"\n", label);
+    return f.id;
+}
+
+static void human_bytes(int64_t n, char *out, size_t cap)
+{
+    const char *units[] = {"bytes", "KB", "MB", "GB", "TB", "PB"};
+    double v = (double)n;
+    int u = 0;
+    while (v >= 1000 && u < 5) { v /= 1000; u++; }
+    snprintf(out, cap, u ? "%.1f %s" : "%.0f %s", v, units[u]);
+}
+
+static int print_drive(void *ctx, const bd_media_info *m)
+{
+    (void)ctx;
+    printf("%s%s%s\n", m->label, m->connected ? "  (connected)" : "", m->encrypted ? "  [encrypted]" : "");
+    if (m->location && *m->location) printf("  kept in:   %s\n", m->location);
+    printf("  kind:      %s, last seen at %s\n", m->kind, m->last_root ? m->last_root : "?");
+    const bd_drive_hw *h = m->hw;
+    if (h) {
+        char size[32] = "";
+        if (h->disk_bytes > 0) human_bytes(h->disk_bytes, size, sizeof(size));
+        char name[200];
+        snprintf(name, sizeof(name), "%s%s%s", h->vendor, h->vendor[0] && h->model[0] ? " " : "", h->model);
+        const char *parts[3] = {name, size, h->bus};
+        char line[300] = "";
+        for (int i = 0; i < 3; i++)
+            if (parts[i][0]) snprintf(line + strlen(line), sizeof(line) - strlen(line), "%s%s", line[0] ? ", " : "", parts[i]);
+        if (line[0]) printf("  disk:      %s\n", line);
+        if (h->serial[0]) printf("  serial:    %s%s%s\n", h->serial, h->firmware[0] ? ", firmware " : "", h->firmware);
+        if (h->volume_serial[0] || h->volume_name[0])
+            printf("  volume:    %s %s %s\n", h->volume_name[0] ? h->volume_name : "(no name)", h->volume_serial, h->filesystem);
+        if (h->smart) {
+            printf("  health:    %s", h->health[0] ? h->health : "unknown");
+            if (h->temperature_c >= 0) printf(", %d C", h->temperature_c);
+            if (h->power_on_hours >= 0) printf(", %lld hours on", (long long)h->power_on_hours);
+            if (h->power_cycles >= 0) printf(", %lld power cycles", (long long)h->power_cycles);
+            if (h->reallocated_sectors >= 0) printf(", %lld reallocated", (long long)h->reallocated_sectors);
+            if (h->pending_sectors >= 0) printf(", %lld pending", (long long)h->pending_sectors);
+            if (h->uncorrectable_sectors >= 0) printf(", %lld uncorrectable", (long long)h->uncorrectable_sectors);
+            if (h->percent_used >= 0) printf(", %d%% worn", h->percent_used);
+            printf("\n");
+        }
+        if (h->note[0]) printf("  note:      %s\n", h->note);
+    }
+    printf("  copies:    %lld\n\n", (long long)m->copies);
+    return 0;
+}
+
 static int find_media_cb(void *ctx, const bd_media_info *info)
 {
     find_media_ctx *f = ctx;
@@ -280,8 +344,9 @@ static int print_copy(void *ctx, const bd_copy_info *c)
 {
     (void)ctx;
     printf("v%-3d %s %12lld bytes  %.16s...", c->version_no, c->is_current ? "current" : "       ", (long long)c->size, c->hash);
-    if (c->media_id) printf("  on %s (%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
-                            c->encrypted ? ", encrypted" : "", c->path_on_media);
+    if (c->media_id) printf("  on %s (%s%s%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
+                            c->encrypted ? ", encrypted" : "", c->media_location[0] ? ", kept in " : "", c->media_location,
+                            c->path_on_media);
     else printf("  no copy");
     printf("\n");
     return 0;
@@ -343,7 +408,22 @@ static int run(int argc, char **argv)
         }
         if (bd_media_init(cat, argv[3], argv[4], encrypt ? BD_MEDIA_ENCRYPTED : 0, &id) != BD_OK)
             return die(cat, "cannot set up drive");
+        const char *location = opt(argc, argv, "--location");
+        if (location && bd_media_set_location(cat, id, location) != BD_OK) return die(cat, "cannot set location");
         printf("set up %s as \"%s\"%s\n", argv[3], argv[4], encrypt ? ", encrypted" : "");
+        save = 1;
+    } else if (strcmp(cmd, "drives") == 0) {
+        bd_list_media(cat, print_drive, NULL);
+    } else if (strcmp(cmd, "drive-location") == 0 || strcmp(cmd, "drive-rename") == 0) {
+        int rename = strcmp(cmd, "drive-rename") == 0;
+        if (argc < (rename ? 5 : 4)) { usage(); bd_catalog_close(cat); return 1; }
+        int64_t id = media_id_by_label(cat, argv[3]);
+        if (!id) { bd_catalog_close(cat); return 1; }
+        bd_status s = rename ? bd_media_rename(cat, id, argv[4]) : bd_media_set_location(cat, id, argc > 4 ? argv[4] : NULL);
+        if (s != BD_OK) return die(cat, "cannot change the drive");
+        if (rename) printf("renamed \"%s\" to \"%s\"\n", argv[3], argv[4]);
+        else if (argc > 4) printf("\"%s\" is kept in: %s\n", argv[3], argv[4]);
+        else printf("cleared where \"%s\" is kept\n", argv[3]);
         save = 1;
     } else if (strcmp(cmd, "cloud-add") == 0) {
         if (argc < 5) { usage(); bd_catalog_close(cat); return 1; }

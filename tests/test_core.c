@@ -128,6 +128,37 @@ static void quiet(void *ctx, const char *msg)
     (void)msg;
 }
 
+typedef struct {
+    char location[128];
+    int has_hw;
+    bd_drive_hw hw;
+    int64_t want;
+} media_snapshot_t;
+
+static int snap_media(void *ctx, const bd_media_info *m)
+{
+    media_snapshot_t *s = ctx;
+    if (m->media_id != s->want) return 0;
+    snprintf(s->location, sizeof(s->location), "%s", m->location ? m->location : "(null)");
+    s->has_hw = m->hw != NULL;
+    if (m->hw) s->hw = *m->hw;
+    return 1;
+}
+
+static media_snapshot_t media_of(bd_catalog *cat, int64_t id)
+{
+    media_snapshot_t s;
+    memset(&s, 0, sizeof(s));
+    s.want = id;
+    bd_list_media(cat, snap_media, &s);
+    return s;
+}
+
+static void count_log(void *ctx, const char *msg)
+{
+    if (strstr(msg, "different disk")) (*(int *)ctx)++;
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -274,6 +305,69 @@ int main(void)
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_deleted == 1);
     CHECK(lookup(cat, src, 0, "c.txt").state == BD_STATE_DELETED);
+
+    /* Where a drive is kept, renaming, and what the disk said about itself. */
+    REQUIRE_OK(bd_media_set_location(cat, drive, "Box A, top shelf"), cat);
+    CHECK(strcmp(media_of(cat, drive).location, "Box A, top shelf") == 0);
+    bd_drive_hw hw;
+    memset(&hw, 0, sizeof(hw));
+    snprintf(hw.vendor, sizeof(hw.vendor), "WD");
+    snprintf(hw.model, sizeof(hw.model), "Elements 25A3");
+    snprintf(hw.serial, sizeof(hw.serial), "WX11A1234567");
+    snprintf(hw.bus, sizeof(hw.bus), "USB");
+    hw.disk_bytes = 4000787030016LL;
+    hw.smart = 1;
+    snprintf(hw.health, sizeof(hw.health), "good");
+    hw.temperature_c = 31;
+    hw.power_on_hours = 2345;
+    hw.power_cycles = 120;
+    hw.reallocated_sectors = 0;
+    hw.pending_sectors = -1;
+    hw.uncorrectable_sectors = -1;
+    hw.percent_used = -1;
+    bd_media_store_hw(cat, drive, &hw, quiet, NULL);
+    media_snapshot_t m = media_of(cat, drive);
+    CHECK(m.has_hw && strcmp(m.hw.model, "Elements 25A3") == 0 && strcmp(m.hw.serial, "WX11A1234567") == 0);
+    CHECK(m.hw.power_on_hours == 2345 && m.hw.temperature_c == 31 && m.hw.pending_sectors == -1);
+    CHECK(strcmp(m.hw.health, "good") == 0 && m.hw.disk_bytes == 4000787030016LL);
+    /* Same drive ID on another disk: logged. */
+    snprintf(hw.serial, sizeof(hw.serial), "OTHER999");
+    int logged = 0;
+    bd_media_store_hw(cat, drive, &hw, count_log, &logged);
+    CHECK(logged == 1);
+    REQUIRE_OK(bd_media_set_location(cat, drive, ""), cat);
+    CHECK(strcmp(media_of(cat, drive).location, "") == 0);
+    REQUIRE_OK(bd_media_rename(cat, drive, "Blue WD 4TB"), cat);
+    bd_media_disconnect(cat, drive);
+    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, &cs, quiet, NULL), cat);
+    char pm[1200];
+    snprintf(pm, sizeof(pm), "%s/BRODALF.media", drive_dir);
+    bd_media_file mfile;
+    CHECK(bd_media_file_read(at(pm), &mfile) == 0 && strcmp(mfile.label, "Blue WD 4TB") == 0);
+    CHECK(bd_media_rename(cat, 9999, "x") == BD_ERR_NOT_FOUND);
+
+    /* SMART parsing: an ATA attribute table and an NVMe health log. */
+    unsigned char ata[512] = {0};
+    const unsigned char attrs[][12] = {
+        {5, 0x33, 0, 100, 100, 3, 0, 0, 0, 0, 0, 0},       /* 3 reallocated */
+        {9, 0x32, 0, 95, 95, 0x39, 0x30, 0, 0, 0, 0, 0},   /* 12345 hours */
+        {194, 0x22, 0, 110, 100, 36, 0, 0, 0, 0, 0, 0},    /* 36 C */
+    };
+    for (int i = 0; i < 3; i++) memcpy(ata + 2 + i * 12, attrs[i], 12);
+    CHECK(bd_drive_hw_parse_ata(&hw, ata, 0) == 0);
+    CHECK(hw.reallocated_sectors == 3 && hw.power_on_hours == 12345 && hw.temperature_c == 36);
+    CHECK(strcmp(hw.health, "warning") == 0);
+    CHECK(bd_drive_hw_parse_ata(&hw, ata, 1) == 0 && strcmp(hw.health, "failing") == 0);
+    unsigned char nvme[512] = {0};
+    nvme[1] = (unsigned char)(310 & 0xFF);
+    nvme[2] = (unsigned char)(310 >> 8); /* 310 K = 37 C */
+    nvme[5] = 4;                          /* 4% used */
+    nvme[112] = 50;                       /* power cycles */
+    nvme[128] = 0xE8;
+    nvme[129] = 0x03;                     /* 1000 hours */
+    bd_drive_hw_parse_nvme(&hw, nvme);
+    CHECK(hw.temperature_c == 37 && hw.percent_used == 4 && hw.power_cycles == 50 && hw.power_on_hours == 1000);
+    CHECK(strcmp(hw.health, "good") == 0);
 
     REQUIRE_OK(bd_catalog_copy_to_media(cat, drive), cat);
     char pc[1200];

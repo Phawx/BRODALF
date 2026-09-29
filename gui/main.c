@@ -21,6 +21,7 @@
 #include <dbt.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <stdarg.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +47,7 @@ enum {
     ID_BTN_CHECK,
     ID_BTN_RESTORE,
     ID_BTN_SECURITY,
+    ID_BTN_DRIVES,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
@@ -120,7 +122,7 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 
 static HINSTANCE g_inst;
 static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives;
-#define N_BUTTONS 6
+#define N_BUTTONS 7
 static HWND g_buttons[N_BUTTONS];
 static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
 static int g_dpi = 96;
@@ -139,6 +141,7 @@ typedef struct job {
     int64_t media_id;   /* backup/check: a connected drive, or 0 with root */
     char *root;         /* backup to a drive given by folder */
     char *label;        /* set up a new drive with this name first */
+    char *location;     /* and say where it is kept */
     unsigned flags;     /* for the new drive: BD_MEDIA_ENCRYPTED */
     int provider;       /* sign in to this cloud and add it first (bd_cloud_provider) */
     int64_t source_id;  /* restore */
@@ -157,6 +160,7 @@ static void job_free(job *j)
     if (!j) return;
     free(j->root);
     free(j->label);
+    free(j->location);
     free(j->rel);
     free(j->dest);
     free(j);
@@ -360,7 +364,12 @@ static DWORD WINAPI worker(LPVOID arg)
             bd_cloud_signin_free(si);
         } else if (j->label) {
             s = bd_media_init(g_cat, j->root, j->label, j->flags, &id);
-            if (s == BD_OK) { free(j->label); j->label = NULL; j->media_id = id; } /* a retry must not set it up again */
+            if (s == BD_OK) {
+                if (j->location && *j->location) bd_media_set_location(g_cat, id, j->location);
+                free(j->label);
+                j->label = NULL; /* a retry must not set it up again */
+                j->media_id = id;
+            }
         }
         else if (!id) s = try_connect(j, j->root, &id) ? BD_OK : BD_ERR_NOT_FOUND;
         if (s == BD_OK) {
@@ -756,22 +765,349 @@ static const wchar_t *state_words(bd_node_state s)
     return L"";
 }
 
+/* A copy of what bd_list_media reports, kept past the callback. */
+typedef struct {
+    int64_t id;
+    char label[256], kind[16], root[512], location[256];
+    int connected, encrypted, has_hw;
+    int64_t last_seen_ms, hw_read_ms, total, freeb, copies, added_ms;
+    bd_drive_hw hw;
+} drive_snap;
+
+typedef struct { drive_snap *items; int n, cap; } drive_list;
+
+static int drive_snap_cb(void *ctx, const bd_media_info *m)
+{
+    drive_list *l = ctx;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 16;
+        drive_snap *grown = realloc(l->items, sizeof(drive_snap) * (size_t)cap);
+        if (!grown) return 1;
+        l->items = grown;
+        l->cap = cap;
+    }
+    drive_snap *d = &l->items[l->n++];
+    memset(d, 0, sizeof(*d));
+    d->id = m->media_id;
+    snprintf(d->label, sizeof(d->label), "%s", m->label);
+    snprintf(d->kind, sizeof(d->kind), "%s", m->kind);
+    snprintf(d->root, sizeof(d->root), "%s", m->last_root ? m->last_root : "");
+    snprintf(d->location, sizeof(d->location), "%s", m->location ? m->location : "");
+    d->connected = m->connected;
+    d->encrypted = m->encrypted;
+    d->last_seen_ms = m->last_seen_ms;
+    d->total = m->total_bytes;
+    d->freeb = m->free_bytes;
+    d->copies = m->copies;
+    d->added_ms = m->added_ms;
+    if (m->hw) { d->has_hw = 1; d->hw = *m->hw; d->hw_read_ms = m->hw_read_ms; }
+    return 0;
+}
+
+static drive_list load_drives(void)
+{
+    drive_list l = {NULL, 0, 0};
+    bd_list_media(g_cat, drive_snap_cb, &l);
+    return l;
+}
+
+static const drive_snap *find_drive(const drive_list *l, int64_t id)
+{
+    for (int i = 0; i < l->n; i++)
+        if (l->items[i].id == id) return &l->items[i];
+    return NULL;
+}
+
+/* Growing wide-text buffer. */
+typedef struct { wchar_t *p; size_t len, cap; } wtext;
+
+static void wadd(wtext *t, const wchar_t *fmt, ...)
+{
+    wchar_t line[2048];
+    va_list ap;
+    va_start(ap, fmt);
+    vswprintf(line, 2048, fmt, ap);
+    va_end(ap);
+    size_t n = wcslen(line);
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap * 2 : 4096;
+        while (cap < t->len + n + 1) cap *= 2;
+        wchar_t *grown = realloc(t->p, cap * sizeof(wchar_t));
+        if (!grown) return;
+        t->p = grown;
+        t->cap = cap;
+    }
+    wcscpy(t->p + t->len, line);
+    t->len += n;
+}
+
+/* "WD Elements 25A3, 4.0 TB, USB" and the rest of what the disk said. */
+static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent)
+{
+    wchar_t when[64], a[64], b[64];
+    if (strcmp(d->kind, "drive") != 0) {
+        wchar_t *root = widen(d->root);
+        wadd(t, L"%lsCloud storage: %ls\r\n", indent, root);
+        free(root);
+        return;
+    }
+    if (!d->has_hw) {
+        wadd(t, L"%lsNo hardware details yet; they are read the next time the drive is plugged in.\r\n", indent);
+        return;
+    }
+    const bd_drive_hw *h = &d->hw;
+    wchar_t *vendor = widen(h->vendor), *model = widen(h->model), *bus = widen(h->bus), *serial = widen(h->serial);
+    wchar_t *fw = widen(h->firmware), *vname = widen(h->volume_name), *vser = widen(h->volume_serial), *fs = widen(h->filesystem);
+    wchar_t *health = widen(h->health), *note = widen(h->note);
+    a[0] = 0;
+    if (h->disk_bytes > 0) format_bytes(h->disk_bytes, a, 64);
+    wchar_t name[256], line[512] = L"";
+    swprintf(name, 256, L"%ls%ls%ls", vendor, *vendor && *model ? L" " : L"", model);
+    const wchar_t *parts[3] = {name, a, bus};
+    for (int i = 0; i < 3; i++)
+        if (*parts[i]) swprintf(line + wcslen(line), 512 - wcslen(line), L"%ls%ls", *line ? L", " : L"", parts[i]);
+    if (*line) wadd(t, L"%lsDisk: %ls\r\n", indent, line);
+    if (*serial) wadd(t, L"%lsSerial number %ls%ls%ls\r\n", indent, serial, *fw ? L", firmware " : L"", fw);
+    if (*vser) wadd(t, L"%lsVolume \"%ls\" (%ls, serial %ls)\r\n", indent, *vname ? vname : L"no name", fs, vser);
+    if (h->smart) {
+        wadd(t, L"%lsHealth: %ls", indent, *health ? health : L"unknown");
+        if (h->temperature_c >= 0) wadd(t, L", %d \x00B0" L"C", h->temperature_c);
+        if (h->power_on_hours >= 0) wadd(t, L", %lld hours powered on", (long long)h->power_on_hours);
+        if (h->power_cycles >= 0) wadd(t, L", %lld power cycles", (long long)h->power_cycles);
+        if (h->percent_used >= 0) wadd(t, L", %d%% worn", h->percent_used);
+        wadd(t, L"\r\n");
+        if (h->reallocated_sectors > 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
+            wadd(t, L"%ls%lld reallocated, %lld waiting to be reallocated, %lld unreadable sectors\r\n", indent,
+                 (long long)(h->reallocated_sectors > 0 ? h->reallocated_sectors : 0),
+                 (long long)(h->pending_sectors > 0 ? h->pending_sectors : 0),
+                 (long long)(h->uncorrectable_sectors > 0 ? h->uncorrectable_sectors : 0));
+    } else if (h->temperature_c >= 0) {
+        wadd(t, L"%lsTemperature %d \x00B0" L"C\r\n", indent, h->temperature_c);
+    }
+    if (*note) wadd(t, L"%ls(%ls)\r\n", indent, note);
+    format_time_ms(d->hw_read_ms, when, 64);
+    wadd(t, L"%lsRead from the drive %ls\r\n", indent, when);
+    if (d->total > 0) {
+        format_bytes(d->freeb, a, 64);
+        format_bytes(d->total, b, 64);
+        wadd(t, L"%ls%ls free of %ls when last seen\r\n", indent, a, b);
+    }
+    free(vendor); free(model); free(bus); free(serial); free(fw); free(vname); free(vser); free(fs); free(health); free(note);
+}
+
+/* One drive: its name, where it is kept, whether it is plugged in. */
+static void add_drive_heading(wtext *t, const drive_snap *d, const wchar_t *indent)
+{
+    wchar_t when[64];
+    wchar_t *label = widen(d->label), *loc = widen(d->location), *root = widen(d->root);
+    format_time_ms(d->last_seen_ms, when, 64);
+    wadd(t, L"%ls%ls%ls\r\n", indent, label, d->encrypted ? L" (encrypted)" : L"");
+    if (*loc) wadd(t, L"%ls    Kept in: %ls\r\n", indent, loc);
+    if (d->connected) wadd(t, L"%ls    Plugged in now at %ls\r\n", indent, root);
+    else wadd(t, L"%ls    Not plugged in. Last seen %ls%ls%ls\r\n", indent, when, *root ? L" at " : L"", root);
+    free(label); free(loc); free(root);
+}
+
+typedef struct { bd_copy_info c; char hash[80], label[256], path[1024], state[16], location[256]; } copy_snap;
+typedef struct { copy_snap *items; int n, cap; } copy_list;
+
+static int copy_snap_cb(void *ctx, const bd_copy_info *c)
+{
+    copy_list *l = ctx;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 16;
+        copy_snap *grown = realloc(l->items, sizeof(copy_snap) * (size_t)cap);
+        if (!grown) return 1;
+        l->items = grown;
+        l->cap = cap;
+    }
+    copy_snap *s = &l->items[l->n++];
+    s->c = *c;
+    snprintf(s->hash, sizeof(s->hash), "%s", c->hash ? c->hash : "");
+    snprintf(s->label, sizeof(s->label), "%s", c->media_label ? c->media_label : "");
+    snprintf(s->path, sizeof(s->path), "%s", c->path_on_media ? c->path_on_media : "");
+    snprintf(s->state, sizeof(s->state), "%s", c->copy_state ? c->copy_state : "");
+    snprintf(s->location, sizeof(s->location), "%s", c->media_location ? c->media_location : "");
+    return 0;
+}
+
+/* Point the copied row at its own strings (the list may have moved). */
+static const bd_copy_info *copy_of(copy_snap *s)
+{
+    s->c.hash = s->hash;
+    s->c.media_label = s->label;
+    s->c.path_on_media = s->path;
+    s->c.copy_state = s->state;
+    s->c.media_location = s->location;
+    return &s->c;
+}
+
+static void format_ns(int64_t ns, wchar_t *out, size_t n)
+{
+    format_time_ms(ns / 1000000, out, n);
+}
+
 static void show_detail(void)
 {
     SendMessageW(g_list, LVM_DELETEALLITEMS, 0, 0);
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
-    if (!r) { SetWindowTextW(g_detail, L"Select a file to see its versions and where each copy is."); return; }
+    if (!r) { SetWindowTextW(g_detail, L"Select a file to see what it is, its versions, and which drives hold it."); return; }
     wchar_t *rel = widen(r->rel && *r->rel ? r->rel : "(whole folder)");
-    wchar_t text[1200];
-    if (r->is_dir) {
-        swprintf(text, 1200, L"%ls\r\n%ls", rel, state_words(r->state));
-    } else {
-        swprintf(text, 1200, L"%ls\r\n%ls", rel, state_words(r->state));
-        int row = 0;
-        bd_list_copies(g_cat, r->node_id, add_copy_row, &row);
-    }
-    SetWindowTextW(g_detail, text);
+    wtext t = {NULL, 0, 0};
+    wadd(&t, L"%ls\r\n%ls\r\n", rel, state_words(r->state));
     free(rel);
+    if (!r->is_dir) {
+        copy_list cl = {NULL, 0, 0};
+        bd_list_copies(g_cat, r->node_id, copy_snap_cb, &cl);
+        drive_list dl = load_drives();
+        int versions = 0, current = 0;
+        for (int i = 0; i < cl.n; i++) {
+            if (cl.items[i].c.version_no > versions) versions = cl.items[i].c.version_no;
+            if (cl.items[i].c.is_current) current = cl.items[i].c.version_no;
+        }
+        for (int i = 0; i < cl.n; i++) {
+            if (!cl.items[i].c.is_current) continue;
+            const bd_copy_info *c = &cl.items[i].c;
+            wchar_t size[64], mod[64], seen[64];
+            format_bytes(c->size, size, 64);
+            format_ns(c->mtime_ns, mod, 64);
+            format_time_ms(c->first_seen_ms, seen, 64);
+            wchar_t *hash = widen(cl.items[i].hash);
+            wadd(&t, L"\r\nFile\r\n    Size %ls, modified %ls\r\n    Version %d of %d, first seen %ls\r\n    BLAKE3 %ls\r\n",
+                 size, mod, current, versions, seen, hash);
+            free(hash);
+            break;
+        }
+        /* Where the current version is. */
+        int any = 0;
+        wadd(&t, L"\r\nCopies of this version\r\n");
+        for (int i = 0; i < cl.n; i++) {
+            const bd_copy_info *c = &cl.items[i].c;
+            if (!c->is_current || !c->media_id) continue;
+            const drive_snap *d = find_drive(&dl, c->media_id);
+            if (!d) continue;
+            any = 1;
+            add_drive_heading(&t, d, L"    ");
+            wchar_t *path = widen(cl.items[i].path);
+            wadd(&t, L"        Copy %ls, at %ls\r\n",
+                 strcmp(cl.items[i].state, "ok") == 0 ? L"good" : strcmp(cl.items[i].state, "missing") == 0 ? L"missing" : L"damaged",
+                 path);
+            free(path);
+            add_drive_lines(&t, d, L"        ");
+        }
+        if (!any) wadd(&t, L"    None yet. Back up to put a copy on a drive.\r\n");
+        /* Drives holding only older versions. */
+        int header = 0;
+        for (int i = 0; i < cl.n; i++) {
+            const bd_copy_info *c = &cl.items[i].c;
+            if (c->is_current || !c->media_id) continue;
+            int dup = 0;
+            for (int k = 0; k < i; k++) if (!cl.items[k].c.is_current && cl.items[k].c.media_id == c->media_id) dup = 1;
+            if (dup) continue;
+            const drive_snap *d = find_drive(&dl, c->media_id);
+            if (!d) continue;
+            if (!header) { wadd(&t, L"\r\nOlder versions are also on\r\n"); header = 1; }
+            add_drive_heading(&t, d, L"    ");
+        }
+        for (int i = 0; i < cl.n; i++) {
+            int row = i;
+            add_copy_row(&row, copy_of(&cl.items[i]));
+        }
+        free(cl.items);
+        free(dl.items);
+    }
+    SetWindowTextW(g_detail, t.p ? t.p : L"");
+    free(t.p);
+}
+
+/* ---- Drive details dialog ------------------------------------------------ */
+
+static void update_drives_label(void);
+
+static const drive_snap *g_edit_drive;
+static wchar_t g_edit_name[256], g_edit_location[256];
+
+static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch (msg) {
+    case WM_INITDIALOG: {
+        const drive_snap *d = g_edit_drive;
+        wtext t = {NULL, 0, 0};
+        wchar_t added[64], copies[32];
+        add_drive_heading(&t, d, L"");
+        format_time_ms(d->added_ms, added, 64);
+        swprintf(copies, 32, L"%lld", (long long)d->copies);
+        wadd(&t, L"    Set up %ls, %ls copies recorded\r\n\r\n", added, copies);
+        add_drive_lines(&t, d, L"");
+        SetDlgItemTextW(dlg, IDC_DRIVE_INFO, t.p ? t.p : L"");
+        free(t.p);
+        wchar_t *name = widen(d->label), *loc = widen(d->location);
+        SetDlgItemTextW(dlg, IDC_DRIVE_NAME, name);
+        SetDlgItemTextW(dlg, IDC_DRIVE_LOCATION, loc);
+        free(name);
+        free(loc);
+        SetFocus(GetDlgItem(dlg, IDC_DRIVE_LOCATION));
+        return FALSE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            GetDlgItemTextW(dlg, IDC_DRIVE_NAME, g_edit_name, 256);
+            GetDlgItemTextW(dlg, IDC_DRIVE_LOCATION, g_edit_location, 256);
+            if (!g_edit_name[0]) { MessageBeep(MB_ICONWARNING); return TRUE; }
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        break;
+    }
+    return FALSE;
+}
+
+static void cmd_drives(void)
+{
+    drive_list dl = load_drives();
+    if (!dl.n) {
+        MessageBoxW(g_main, L"No drives yet. Use Back up to set one up.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    HMENU m = CreatePopupMenu();
+    for (int i = 0; i < dl.n; i++) {
+        const drive_snap *d = &dl.items[i];
+        wchar_t *label = widen(d->label), *loc = widen(d->location), text[600];
+        swprintf(text, 600, L"%ls%ls%ls%ls", label, *loc ? L"  (" : L"", loc, *loc ? L")" : L"");
+        if (d->connected) wcsncat(text, L"  - plugged in", 599 - wcslen(text));
+        AppendMenuW(m, MF_STRING, (UINT_PTR)(ID_MENU_DRIVE_BASE + i), text);
+        free(label);
+        free(loc);
+    }
+    RECT r;
+    GetWindowRect(g_buttons[5], &r);
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
+    DestroyMenu(m);
+    if (cmd >= ID_MENU_DRIVE_BASE && cmd - ID_MENU_DRIVE_BASE < dl.n) {
+        g_edit_drive = &dl.items[cmd - ID_MENU_DRIVE_BASE];
+        if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_DRIVE), g_main, drive_proc) == IDOK) {
+            char *name = narrow(g_edit_name), *loc = narrow(g_edit_location);
+            int64_t id = g_edit_drive->id;
+            bd_status st = BD_OK;
+            if (name && strcmp(name, g_edit_drive->label) != 0) st = bd_media_rename(g_cat, id, name);
+            if (st == BD_OK) st = bd_media_set_location(g_cat, id, loc);
+            if (st == BD_OK) st = bd_catalog_save(g_cat);
+            if (st != BD_OK) {
+                wchar_t *e = widen(bd_catalog_error(g_cat));
+                MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
+                free(e);
+            }
+            free(name);
+            free(loc);
+            update_drives_label();
+            rebuild_tree();
+            show_detail();
+        }
+        g_edit_drive = NULL;
+    }
+    free(dl.items);
 }
 
 /* ---- Drives label ------------------------------------------------------- */
@@ -832,6 +1168,7 @@ static char *pick_folder(HWND owner, const wchar_t *title)
 static wchar_t g_label_buf[256];
 static int g_label_encrypt;
 static int g_label_cloud; /* naming a cloud account rather than a drive */
+static wchar_t g_label_location[256];
 
 static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -839,7 +1176,10 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_INITDIALOG:
         SetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf);
+        g_label_location[0] = 0;
         if (g_label_cloud) {
+            ShowWindow(GetDlgItem(dlg, IDC_LABEL_LOC_TEXT), SW_HIDE);
+            ShowWindow(GetDlgItem(dlg, IDC_LABEL_LOCATION), SW_HIDE);
             SetWindowTextW(dlg, L"Add cloud storage");
             SetDlgItemTextW(dlg, IDC_LABEL_TEXT, L"Name this storage. Your browser opens next so you can sign in; BRODALF only sees its own Apps/BRODALF folder.");
             SetDlgItemTextW(dlg, IDC_LABEL_ENCRYPT, L"Encrypt the files stored there (needs a passphrase)");
@@ -852,6 +1192,7 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             GetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf, 256);
             if (!g_label_buf[0]) { MessageBeep(MB_ICONWARNING); return TRUE; }
             g_label_encrypt = IsDlgButtonChecked(dlg, IDC_LABEL_ENCRYPT) == BST_CHECKED;
+            GetDlgItemTextW(dlg, IDC_LABEL_LOCATION, g_label_location, 256);
             EndDialog(dlg, IDOK);
             return TRUE;
         }
@@ -1117,6 +1458,7 @@ static void cmd_backup(void)
             free(w);
             if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }
             j->label = narrow(g_label_buf);
+            j->location = narrow(g_label_location);
             if (g_label_encrypt) {
                 int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(L"Enter the passphrase to set up an encrypted drive.")
                                                           : set_passphrase_ui();
@@ -1176,7 +1518,7 @@ static void layout(void)
     int pad = S(8), bar = S(30), log_h = S(110);
 
     int x = pad;
-    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(104)};
+    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(80), S(104)};
     for (int i = 0; i < N_BUTTONS; i++) {
         MoveWindow(g_buttons[i], x, pad, widths[i], bar, TRUE);
         x += widths[i] + S(6);
@@ -1188,8 +1530,9 @@ static void layout(void)
     int tree_w = (w - pad * 3) * 55 / 100;
     MoveWindow(g_tree, pad, top, tree_w, body_h, TRUE);
     int rx = pad * 2 + tree_w, rw = w - rx - pad;
-    MoveWindow(g_detail, rx, top, rw, S(44), TRUE);
-    MoveWindow(g_list, rx, top + S(48), rw, body_h - S(48), TRUE);
+    int detail_h = body_h * 58 / 100;
+    MoveWindow(g_detail, rx, top, rw, detail_h, TRUE);
+    MoveWindow(g_list, rx, top + detail_h + S(6), rw, body_h - detail_h - S(6), TRUE);
     MoveWindow(g_log, pad, top + body_h + pad, w - pad * 2, log_h, TRUE);
 }
 
@@ -1246,7 +1589,8 @@ static void create_children(HWND hwnd)
     g_buttons[2] = make_button(L"Back up...", ID_BTN_BACKUP);
     g_buttons[3] = make_button(L"Check drive...", ID_BTN_CHECK);
     g_buttons[4] = make_button(L"Restore...", ID_BTN_RESTORE);
-    g_buttons[5] = make_button(L"Passphrase...", ID_BTN_SECURITY);
+    g_buttons[5] = make_button(L"Drives...", ID_BTN_DRIVES);
+    g_buttons[6] = make_button(L"Passphrase...", ID_BTN_SECURITY);
 
     g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
@@ -1259,8 +1603,9 @@ static void create_children(HWND hwnd)
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)g_font, TRUE);
     TreeView_SetExtendedStyle(g_tree, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
 
-    g_detail = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, 0, 0, 10, 10, hwnd,
-                               (HMENU)ID_DETAIL, g_inst, NULL);
+    g_detail = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
+                               WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10,
+                               hwnd, (HMENU)ID_DETAIL, g_inst, NULL);
     SendMessageW(g_detail, WM_SETFONT, (WPARAM)g_font, TRUE);
 
     g_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER,
@@ -1308,6 +1653,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         switch (LOWORD(wp)) {
         case ID_BTN_ADD: cmd_add_folder(); break;
         case ID_BTN_SCAN: enqueue(new_job(JOB_SCAN)); break;
+        case ID_BTN_DRIVES: cmd_drives(); break;
         case ID_BTN_BACKUP: cmd_backup(); break;
         case ID_BTN_CHECK: cmd_check(); break;
         case ID_BTN_RESTORE: cmd_restore(); break;
@@ -1372,6 +1718,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 again->media_id = j->media_id;
                 again->root = xstrdup(j->root);
                 again->label = xstrdup(j->label);
+                again->location = xstrdup(j->location);
                 again->flags = j->flags;
                 again->provider = j->provider;
                 enqueue(again);

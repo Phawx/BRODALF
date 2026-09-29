@@ -73,6 +73,23 @@ writes a new file and swaps it in atomically.
 Tables: `sources`, `nodes`, `versions`, `media`, `cloud_accounts`, `copies`,
 `jobs`, `settings`, `meta`.
 
+## Drive hardware
+
+`media.location` holds the optional "where it is kept" text. `media_hardware`
+holds the last reading of each drive, taken whenever it is plugged in
+(`src/drive_hw.c`): on Windows the volume is mapped to its physical disk
+(`IOCTL_STORAGE_GET_DEVICE_NUMBER`), then `IOCTL_STORAGE_QUERY_PROPERTY` gives
+vendor, model, firmware, serial and bus; `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`
+the size; the temperature property the temperature;
+`IOCTL_STORAGE_PREDICT_FAILURE` the failure prediction and the ATA SMART
+attribute table (ids 5, 9, 12, 190/194, 197, 198, 231); the NVMe health log
+page through the protocol-specific query; and, as a fallback that needs
+administrator rights, `SMART_RCV_DRIVE_DATA`. Health is "failing" when the
+drive predicts failure, "warning" with any reallocated, pending or
+unreadable sectors, NVMe critical-warning bits or 100% wear, else "good".
+The drive's identity stays the `BRODALF.media` UUID; a serial number that
+changes under the same UUID is logged. Schema version 4.
+
 ## Cloud
 
 OneDrive and Dropbox, each in its app folder (`Apps/BRODALF`), so BRODALF can

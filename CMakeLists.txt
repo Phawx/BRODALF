@@ -49,6 +49,7 @@ add_library(brodalf_core STATIC
     src/backup.c
     src/catalog.c
     src/crypto.c
+    src/drive_hw.c
     src/cloud.c
     src/http_common.c
     ${BRODALF_HTTP_SRC}

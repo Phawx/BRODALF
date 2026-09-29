@@ -513,3 +513,40 @@ const char *bd_catalog_uuid(const bd_catalog *cat)
 {
     return cat->uuid;
 }
+
+/* ---- Options ------------------------------------------------------------ */
+
+static const struct { const char *name; int def, min, max; } OPTIONS[] = {
+    {"auto_backup", 1, 0, 1},
+    {"check_days", 180, 0, 3650},
+};
+
+static int option_index(const char *name)
+{
+    for (size_t i = 0; name && i < sizeof(OPTIONS) / sizeof(OPTIONS[0]); i++)
+        if (strcmp(OPTIONS[i].name, name) == 0) return (int)i;
+    return -1;
+}
+
+int bd_option_get(bd_catalog *cat, const char *name)
+{
+    int i = option_index(name);
+    if (i < 0) return -1;
+    char key[64], v[32];
+    snprintf(key, sizeof(key), "option.%s", name);
+    if (!bd_setting_get(cat, key, v, sizeof(v))) return OPTIONS[i].def;
+    int n = atoi(v);
+    return n < OPTIONS[i].min || n > OPTIONS[i].max ? OPTIONS[i].def : n;
+}
+
+bd_status bd_option_set(bd_catalog *cat, const char *name, int value)
+{
+    int i = option_index(name);
+    if (i < 0) return bd_fail(cat, BD_ERR_INVALID, "there is no option called %s", name ? name : "");
+    if (value < OPTIONS[i].min || value > OPTIONS[i].max)
+        return bd_fail(cat, BD_ERR_INVALID, "%s must be between %d and %d", name, OPTIONS[i].min, OPTIONS[i].max);
+    char key[64], v[32];
+    snprintf(key, sizeof(key), "option.%s", name);
+    snprintf(v, sizeof(v), "%d", value);
+    return bd_setting_set(cat, key, v) == 0 ? BD_OK : bd_fail_db(cat, "save the option");
+}

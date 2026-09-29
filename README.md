@@ -130,6 +130,30 @@ same window.
 
 ![Files at risk](docs/images/gui-at-risk.png)
 
+### Plug in to back up, and check reminders
+
+When a backup drive is plugged in while BRODALF is open, it checks your
+folders for changes and backs up to that drive on its own (it asks for the
+passphrase first if the drive is encrypted). Turn this off under
+**Settings > Back up as soon as a drive is plugged in**.
+
+Copies sitting on a shelf can slowly go bad, so BRODALF keeps track of when
+each drive's copies were last read back by a full check. When a drive's
+oldest copy hasn't been read in 6 months, BRODALF lists it when it opens
+and offers a full check when that drive is plugged in. Change how often (3
+months, 6 months, a year, or never) under **Settings > Remind me to check
+each drive**.
+
+### Search
+
+Type in the box above the tree to find files and folders by name anywhere
+in your protected folders (every word must match, so `party 2024` works).
+Each result shows whether it is available and which drives hold it, with
+where each drive is kept, even when none of them are plugged in. Click a
+result to see its details; double-click it to go to it in the tree.
+
+![Search](docs/images/gui-search.png)
+
 ### OneDrive and Dropbox
 
 **Back up** also offers **OneDrive...** and **Dropbox...**. Name the storage,
@@ -205,6 +229,8 @@ brodalf-cli passphrase family.brodalf                        # change it
 
 brodalf-cli target  family.brodalf 2 2                       # 2 copies of everything, in 2 places
 brodalf-cli at-risk family.brodalf                           # what falls short, and which drive to plug in
+brodalf-cli search  family.brodalf party 2024                # find a file and the drive (and box) holding it
+brodalf-cli option  family.brodalf check_days 365            # remind to re-read each drive yearly
 
 brodalf-cli cloud-add family.brodalf dropbox "Dropbox"       # opens the browser to sign in
 brodalf-cli backup family.brodalf cloud:Dropbox

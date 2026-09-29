@@ -300,6 +300,115 @@ static void test_risk(void)
     bd_catalog_close(cat);
 }
 
+typedef struct { int n; char first[256]; char first_where[256]; int first_dir; bd_node_state first_state; } search_result;
+
+static int collect_search(void *ctx, const bd_search_info *r)
+{
+    search_result *sr = ctx;
+    if (sr->n++ == 0) {
+        snprintf(sr->first, sizeof(sr->first), "%s", r->rel_path);
+        snprintf(sr->first_where, sizeof(sr->first_where), "%s", r->where);
+        sr->first_dir = r->is_dir;
+        sr->first_state = r->state;
+    }
+    return 0;
+}
+
+static search_result search(bd_catalog *cat, const char *text)
+{
+    search_result sr;
+    memset(&sr, 0, sizeof(sr));
+    CHECK(bd_search(cat, text, 0, collect_search, &sr) == BD_OK);
+    return sr;
+}
+
+typedef struct { int64_t id; int due; int64_t oldest; } due_snap;
+
+static int snap_due(void *ctx, const bd_media_info *m)
+{
+    due_snap *d = ctx;
+    if (m->media_id == d->id) { d->due = m->check_due; d->oldest = m->oldest_check_ms; }
+    return 0;
+}
+
+static due_snap due_of(bd_catalog *cat, int64_t id)
+{
+    due_snap d = {id, -1, -1};
+    bd_list_media(cat, snap_due, &d);
+    return d;
+}
+
+/* Search by name, options, and check reminders. */
+static void test_search(void)
+{
+    write_file(at("find/src/Photos/2024/party.jpg"), "party");
+    write_file(at("find/src/Photos/beach.jpg"), "beach");
+    write_file(at("find/src/Docs/tax_2024.pdf"), "tax");
+    write_file(at("find/src/Docs/100%.txt"), "full");
+    bd_mkdirs(at("find/A"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("find/find.brodalf"), &cat), NULL);
+    int64_t src, a;
+    REQUIRE_OK(bd_source_add(cat, at("find/src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+
+    search_result r = search(cat, "party");
+    CHECK(r.n == 1 && strcmp(r.first, "Photos/2024/party.jpg") == 0 && r.first_where[0] == '\0' && r.first_state == BD_STATE_NO_COPY);
+
+    REQUIRE_OK(bd_media_init(cat, at("find/A"), "Drive A", 0, &a), cat);
+    REQUIRE_OK(bd_media_set_location(cat, a, "Box A"), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    bd_media_disconnect(cat, a);
+
+    r = search(cat, "PARTY");
+    CHECK(r.n == 1 && strcmp(r.first_where, "Drive A (Box A)") == 0 && r.first_state == BD_STATE_OFFLINE);
+    r = search(cat, "2024");
+    CHECK(r.n == 3 && r.first_dir && strcmp(r.first, "Photos/2024") == 0 && strcmp(r.first_where, "Drive A (Box A)") == 0);
+    CHECK(r.first_state == BD_STATE_OFFLINE);
+    CHECK(search(cat, "2024 jpg").n == 1);
+    r = search(cat, "100%");
+    CHECK(r.n == 1 && strcmp(r.first, "Docs/100%.txt") == 0);
+    r = search(cat, "_");
+    CHECK(r.n == 1 && strcmp(r.first, "Docs/tax_2024.pdf") == 0);
+    CHECK(search(cat, "photos\\2024").n == 2);
+    CHECK(search(cat, "   ").n == 0);
+    CHECK(search(cat, "nothing-like-this").n == 0);
+
+    /* Options. */
+    CHECK(bd_option_get(cat, "auto_backup") == 1 && bd_option_get(cat, "check_days") == 180);
+    CHECK(bd_option_get(cat, "no_such_option") == -1);
+    REQUIRE_OK(bd_option_set(cat, "auto_backup", 0), cat);
+    REQUIRE_OK(bd_option_set(cat, "check_days", 30), cat);
+    CHECK(bd_option_get(cat, "auto_backup") == 0 && bd_option_get(cat, "check_days") == 30);
+    CHECK(bd_option_set(cat, "check_days", -1) == BD_ERR_INVALID);
+    CHECK(bd_option_set(cat, "nope", 1) == BD_ERR_INVALID);
+
+    /* Fresh copies are not due; 40-day-old unchecked ones are; a full
+     * check makes them fresh again. */
+    due_snap d = due_of(cat, a);
+    CHECK(d.due == 0 && d.oldest > 0);
+    int64_t old = bd_now_ms() - (int64_t)40 * 24 * 3600 * 1000;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "UPDATE copies SET written_ms=%lld", (long long)old);
+    CHECK(sqlite3_exec(cat->db, sql, NULL, NULL, NULL) == SQLITE_OK);
+    d = due_of(cat, a);
+    CHECK(d.due == 1 && d.oldest == old);
+    REQUIRE_OK(bd_option_set(cat, "check_days", 0), cat);
+    CHECK(due_of(cat, a).due == 0);
+    REQUIRE_OK(bd_option_set(cat, "check_days", 30), cat);
+    int64_t again;
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_connect(cat, at("find/A"), &again, &cs, quiet, NULL), cat);
+    CHECK(due_of(cat, a).due == 1); /* a quick check is not a full one */
+    REQUIRE_OK(bd_media_check(cat, a, 1, &cs, quiet, NULL), cat);
+    CHECK(due_of(cat, a).due == 0);
+
+    bd_catalog_close(cat);
+}
+
 static void set_env(const char *name, const char *value)
 {
 #ifdef _WIN32
@@ -578,6 +687,7 @@ int main(void)
     CHECK(!exists(at("test.brodalf.lock")));
 
     test_risk();
+    test_search();
     test_report();
 
     if (failures) {

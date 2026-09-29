@@ -49,9 +49,16 @@ enum {
     ID_BTN_SECURITY,
     ID_BTN_DRIVES,
     ID_BTN_RISK,
+    ID_SEARCH,
+    ID_RESULTS,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
+    ID_MENU_AUTO_BACKUP,
+    ID_MENU_CHECK_90,
+    ID_MENU_CHECK_180,
+    ID_MENU_CHECK_365,
+    ID_MENU_CHECK_NEVER,
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
     ID_MENU_OTHER = 900,
     ID_MENU_ONEDRIVE,
@@ -122,7 +129,7 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 /* ---- Globals ------------------------------------------------------------ */
 
 static HINSTANCE g_inst;
-static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives;
+static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives, g_search, g_results;
 #define N_BUTTONS 8
 static HWND g_buttons[N_BUTTONS];
 static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
@@ -148,6 +155,10 @@ typedef struct job {
     int64_t source_id;  /* restore */
     char *rel;          /* restore */
     char *dest;         /* restore */
+    int auto_run;       /* drives: a drive was plugged in; backup: started by that */
+    int startup;        /* drives: the first look when BRODALF opens */
+    int64_t new_ids[16]; /* drives: drives connected by this job */
+    int n_new;
     int problems;
     bd_status status;
     wchar_t summary[512];
@@ -245,9 +256,27 @@ static char *bd_sprintf_gui(const char *fmt, const char *a, const char *b)
     return out;
 }
 
+typedef struct { int64_t ids[64]; int n; } id_list;
+
+static int connected_drive_cb(void *ctx, const bd_media_info *m)
+{
+    id_list *l = ctx;
+    if (m->connected && strcmp(m->kind, "drive") == 0 && l->n < 64) l->ids[l->n++] = m->media_id;
+    return 0;
+}
+
+static int id_in(const id_list *l, int64_t id)
+{
+    for (int i = 0; i < l->n; i++)
+        if (l->ids[i] == id) return 1;
+    return 0;
+}
+
 static void run_drives(job *j)
 {
     int found = 0;
+    id_list before = {{0}, 0}, after = {{0}, 0};
+    bd_list_media(g_cat, connected_drive_cb, &before);
     /* Drive letters first: a drive may come back under a different letter. */
     DWORD mask = GetLogicalDrives();
     for (int i = 2; i < 26; i++) { /* skip A: and B: */
@@ -283,6 +312,9 @@ static void run_drives(job *j)
         }
         free(c.labels[i]);
     }
+    bd_list_media(g_cat, connected_drive_cb, &after);
+    for (int i = 0; i < after.n && j->n_new < 16; i++)
+        if (!id_in(&before, after.ids[i])) j->new_ids[j->n_new++] = after.ids[i];
     if (clouds) swprintf(j->summary, 512, L"Found %d BRODALF drive(s) and connected %d cloud account(s).", found, clouds);
     else swprintf(j->summary, 512, found ? L"Found %d BRODALF drive(s)." : L"No BRODALF drives are plugged in.", found);
 }
@@ -453,7 +485,11 @@ static void enqueue(job *j)
     /* Don't stack up drive scans; one pending is enough. */
     if (j->kind == JOB_DRIVES)
         for (job *q = g_queue; q; q = q->next)
-            if (q->kind == JOB_DRIVES) { job_free(j); return; }
+            if (q->kind == JOB_DRIVES) { q->auto_run |= j->auto_run; job_free(j); return; }
+    /* Likewise folder scans: one waiting to run covers this one. */
+    if (j->kind == JOB_SCAN)
+        for (job *q = g_queue; q; q = q->next)
+            if (q->kind == JOB_SCAN) { job_free(j); return; }
     job **tail = &g_queue;
     while (*tail) tail = &(*tail)->next;
     *tail = j;
@@ -1589,6 +1625,128 @@ static void cmd_risk(void)
     enqueue(j);
 }
 
+/* ---- Plug-in backups and check reminders --------------------------------- */
+
+typedef struct { int64_t id; bd_media_info info; char label[256], location[256]; int found; } media_one;
+
+static int media_one_cb(void *ctx, const bd_media_info *m)
+{
+    media_one *o = ctx;
+    if (m->media_id != o->id) return 0;
+    o->info = *m;
+    snprintf(o->label, sizeof(o->label), "%s", m->label);
+    snprintf(o->location, sizeof(o->location), "%s", m->location ? m->location : "");
+    o->found = 1;
+    return 1;
+}
+
+/* "Blue WD 4TB (kept in Box A)" */
+static void drive_name(const char *label, const char *location, wchar_t *out, size_t cap)
+{
+    wchar_t *l = widen(label), *loc = widen(location);
+    if (loc && *loc) swprintf(out, cap, L"%ls (kept in %ls)", l ? l : L"", loc);
+    else swprintf(out, cap, L"%ls", l ? l : L"");
+    free(l);
+    free(loc);
+}
+
+static void enqueue_check(int64_t id)
+{
+    if (media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to check its copies.")) return;
+    job *c = new_job(JOB_CHECK);
+    if (!c) return;
+    c->media_id = id;
+    enqueue(c);
+}
+
+/* A drive that is plugged in and due for a full check: offer one. */
+static void offer_check(int64_t id)
+{
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    if (!o.found || !o.info.connected || !o.info.check_due) return;
+    wchar_t name[600], since[64], msg[1200];
+    drive_name(o.label, o.location, name, 600);
+    format_time_ms(o.info.oldest_check_ms, since, 64);
+    swprintf(msg, 1200,
+             L"Some copies on %ls have not been read back since %ls.\n\n"
+             L"A full check reads every copy on the drive to catch slow damage while other copies still exist. "
+             L"It can take a while on a big drive.\n\nCheck it now?",
+             name, since);
+    if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES) enqueue_check(id);
+}
+
+typedef struct { wtext text; int64_t connected[64]; int n_connected, n; } due_list;
+
+static int due_cb(void *ctx, const bd_media_info *m)
+{
+    due_list *d = ctx;
+    if (!m->check_due) return 0;
+    wchar_t name[600], since[64];
+    drive_name(m->label, m->location, name, 600);
+    format_time_ms(m->oldest_check_ms, since, 64);
+    wadd(&d->text, L"    %ls: not read back since %ls%ls\n", name, since, m->connected ? L" (plugged in)" : L"");
+    if (m->connected && d->n_connected < 64) d->connected[d->n_connected++] = m->media_id;
+    d->n++;
+    return 0;
+}
+
+/* When BRODALF opens: list the drives due for a full check. */
+static void remind_checks(void)
+{
+    due_list d;
+    memset(&d, 0, sizeof(d));
+    bd_list_media(g_cat, due_cb, &d);
+    if (!d.n) return;
+    wtext msg = {NULL, 0, 0};
+    wadd(&msg, L"%ls due for a full check, to catch slow damage to old copies:\n\n%ls\n",
+         d.n == 1 ? L"This drive is" : L"These drives are", d.text.p);
+    if (d.n_connected) {
+        wadd(&msg, L"Check the plugged-in %ls now?", d.n_connected == 1 ? L"one" : L"ones");
+        if (MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES)
+            for (int i = 0; i < d.n_connected; i++) enqueue_check(d.connected[i]);
+    } else {
+        wadd(&msg, L"Plug each one in and BRODALF will offer to check it. You can change how often under Settings.");
+        MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION);
+    }
+    free(msg.p);
+    free(d.text.p);
+}
+
+static void after_drives(job *j)
+{
+    if (j->startup) remind_checks();
+    if (!j->n_new || !j->auto_run) return;
+    if (bd_option_get(g_cat, "auto_backup") == 1) {
+        /* Ask for any passphrase first, before jobs start running. */
+        int64_t ids[16];
+        int n = 0;
+        for (int i = 0; i < j->n_new; i++) {
+            if (media_encryption(j->new_ids[i]).encrypted && !bd_catalog_is_unlocked(g_cat) &&
+                !unlock_ui(L"The drive you plugged in is encrypted. Enter the passphrase to back up to it.")) {
+                offer_check(j->new_ids[i]);
+                continue;
+            }
+            ids[n++] = j->new_ids[i];
+        }
+        if (!n) return;
+        log_append(L"A backup drive was plugged in. Checking your folders for changes, then backing up to it. "
+                   L"(Turn this off under Settings.)");
+        enqueue(new_job(JOB_SCAN));
+        for (int i = 0; i < n; i++) {
+            job *b = new_job(JOB_BACKUP);
+            if (!b) continue;
+            b->media_id = ids[i];
+            b->auto_run = 1;
+            enqueue(b);
+        }
+    } else {
+        for (int i = 0; i < j->n_new; i++) offer_check(j->new_ids[i]);
+    }
+}
+
 static void cmd_security(void)
 {
     int has = bd_catalog_has_passphrase(g_cat), unlocked = bd_catalog_is_unlocked(g_cat);
@@ -1597,8 +1755,18 @@ static void cmd_security(void)
     AppendMenuW(m, MF_STRING | (has ? 0 : MF_GRAYED) | (bd_catalog_file_encrypted(g_cat) ? MF_CHECKED : 0),
                 ID_MENU_ENCRYPT_CATALOG, L"Encrypt the catalog file");
     AppendMenuW(m, MF_STRING | (has && unlocked ? 0 : MF_GRAYED), ID_MENU_LOCK, L"Forget the passphrase until it is needed");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING | (bd_option_get(g_cat, "auto_backup") == 1 ? MF_CHECKED : 0), ID_MENU_AUTO_BACKUP,
+                L"Back up as soon as a drive is plugged in");
+    HMENU remind = CreatePopupMenu();
+    int days = bd_option_get(g_cat, "check_days");
+    AppendMenuW(remind, MF_STRING | (days == 90 ? MF_CHECKED : 0), ID_MENU_CHECK_90, L"Every 3 months");
+    AppendMenuW(remind, MF_STRING | (days == 180 ? MF_CHECKED : 0), ID_MENU_CHECK_180, L"Every 6 months");
+    AppendMenuW(remind, MF_STRING | (days == 365 ? MF_CHECKED : 0), ID_MENU_CHECK_365, L"Every year");
+    AppendMenuW(remind, MF_STRING | (days == 0 ? MF_CHECKED : 0), ID_MENU_CHECK_NEVER, L"Never");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)remind, L"Remind me to check each drive");
     RECT r;
-    GetWindowRect(g_buttons[5], &r);
+    GetWindowRect(g_buttons[6], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
     DestroyMenu(m);
     if (cmd == ID_MENU_SET_PASS) {
@@ -1619,6 +1787,21 @@ static void cmd_security(void)
     } else if (cmd == ID_MENU_LOCK) {
         bd_catalog_lock_key(g_cat);
         log_append(L"Passphrase forgotten. BRODALF will ask for it again when it needs it.");
+    } else if (cmd == ID_MENU_AUTO_BACKUP) {
+        int on = bd_option_get(g_cat, "auto_backup") != 1;
+        if (bd_option_set(g_cat, "auto_backup", on) == BD_OK && bd_catalog_save(g_cat) == BD_OK)
+            log_append(on ? L"BRODALF will back up to a drive as soon as it is plugged in."
+                          : L"BRODALF will only back up when you press Back up.");
+    } else if (cmd >= ID_MENU_CHECK_90 && cmd <= ID_MENU_CHECK_NEVER) {
+        static const int choice[] = {90, 180, 365, 0};
+        int d = choice[cmd - ID_MENU_CHECK_90];
+        if (bd_option_set(g_cat, "check_days", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+            wchar_t line[200];
+            if (d) swprintf(line, 200, L"BRODALF will remind you to check a drive whose copies have not been read in %d days.", d);
+            else wcscpy(line, L"BRODALF will not remind you to check drives.");
+            log_append(line);
+            update_drives_label();
+        }
     }
 }
 
@@ -1776,6 +1959,135 @@ static void cmd_restore(void)
     enqueue(j);
 }
 
+/* ---- Search ------------------------------------------------------------- */
+
+#define ID_SEARCH_TIMER 1
+
+typedef struct { int64_t source_id; char *rel; } search_hit;
+static search_hit *g_hits;
+static int g_hit_n, g_hit_cap;
+
+static void clear_hits(void)
+{
+    for (int i = 0; i < g_hit_n; i++) free(g_hits[i].rel);
+    g_hit_n = 0;
+}
+
+static const wchar_t *short_state(bd_node_state s)
+{
+    switch (s) {
+    case BD_STATE_AVAILABLE: return L"Available";
+    case BD_STATE_AVAILABLE_OLDER: return L"Changed since backup";
+    case BD_STATE_OFFLINE: return L"Drive not plugged in";
+    case BD_STATE_NO_COPY: return L"Not backed up";
+    case BD_STATE_BAD: return L"Copy damaged";
+    case BD_STATE_DELETED: return L"Deleted";
+    case BD_STATE_PARTIAL: return L"Partly available";
+    }
+    return L"";
+}
+
+static int search_cb(void *ctx, const bd_search_info *r)
+{
+    (void)ctx;
+    if (g_hit_n == g_hit_cap) {
+        int cap = g_hit_cap ? g_hit_cap * 2 : 64;
+        search_hit *h = realloc(g_hits, sizeof(search_hit) * (size_t)cap);
+        if (!h) return 1;
+        g_hits = h;
+        g_hit_cap = cap;
+    }
+    g_hits[g_hit_n].source_id = r->source_id;
+    g_hits[g_hit_n].rel = xstrdup(r->rel_path);
+    g_hit_n++;
+
+    wchar_t *name = widen(r->name), *src = widen(r->source_name), *rel = widen(r->rel_path), *where = widen(r->where);
+    wchar_t shown[600], folder[1200];
+    swprintf(shown, 600, L"%ls%ls", name ? name : L"", r->is_dir ? L"\\" : L"");
+    /* The folder it is in: the source, then the path without the name. */
+    swprintf(folder, 1200, L"%ls\\%ls", src ? src : L"", rel ? rel : L"");
+    wchar_t *cut = wcsrchr(folder, L'/');
+    if (cut) *cut = 0;
+    else if ((cut = wcschr(folder, L'\\')) != NULL) cut[0] = 0;
+    for (wchar_t *c = folder; *c; c++) if (*c == L'/') *c = L'\\';
+    const wchar_t *cells[] = {shown, folder, short_state(r->state), where && *where ? where : L"(no copies)"};
+    lv_row(g_results, cells, 4);
+    free(name);
+    free(src);
+    free(rel);
+    free(where);
+    return 0;
+}
+
+static void run_search(void)
+{
+    wchar_t text[256];
+    GetWindowTextW(g_search, text, 256);
+    const wchar_t *p = text;
+    while (*p == L' ') p++;
+    SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(g_results);
+    clear_hits();
+    if (!*p) {
+        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+        ShowWindow(g_results, SW_HIDE);
+        ShowWindow(g_tree, SW_SHOW);
+        return;
+    }
+    char *u = narrow(text);
+    if (u) bd_search(g_cat, u, 500, search_cb, NULL);
+    free(u);
+    if (!g_hit_n) {
+        const wchar_t *cells[] = {L"No files or folders match.", L"", L"", L""};
+        lv_row(g_results, cells, 4);
+    }
+    SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_results, NULL, TRUE);
+    ShowWindow(g_tree, SW_HIDE);
+    ShowWindow(g_results, SW_SHOW);
+}
+
+/* Open the tree down to a file or folder and select it, which also shows
+ * its details. */
+static void reveal_node(int64_t source_id, const char *rel)
+{
+    if (g_busy) return;
+    HTREEITEM h = TreeView_GetRoot(g_tree);
+    for (; h; h = TreeView_GetNextSibling(g_tree, h)) {
+        node_ref *r = item_ref(h);
+        if (r && r->source_id == source_id) break;
+    }
+    if (!h) return;
+    size_t n = strlen(rel);
+    for (size_t i = 1; i <= n; i++) {
+        if (rel[i] != '/' && rel[i] != '\0') continue;
+        node_ref *pr = item_ref(h);
+        if (pr && !pr->loaded) load_children(h, pr);
+        TreeView_Expand(g_tree, h, TVE_EXPAND);
+        HTREEITEM c = TreeView_GetChild(g_tree, h);
+        for (; c; c = TreeView_GetNextSibling(g_tree, c)) {
+            node_ref *cr = item_ref(c);
+            if (cr && cr->rel && strlen(cr->rel) == i && strncmp(cr->rel, rel, i) == 0) break;
+        }
+        if (!c) break;
+        h = c;
+    }
+    TreeView_SelectItem(g_tree, h);
+    TreeView_EnsureVisible(g_tree, h);
+}
+
+/* Leave the results for the tree, keeping what was picked selected. */
+static void end_search(void)
+{
+    KillTimer(g_main, ID_SEARCH_TIMER);
+    SetWindowTextW(g_search, L"");
+    KillTimer(g_main, ID_SEARCH_TIMER);
+    run_search();
+    SetFocus(g_tree);
+    HTREEITEM sel = TreeView_GetSelection(g_tree);
+    if (sel) TreeView_EnsureVisible(g_tree, sel);
+}
+
 /* ---- Layout and window procedure ---------------------------------------- */
 
 static void layout(void)
@@ -1790,7 +2102,7 @@ static void layout(void)
     int pad = S(8), bar = S(30), log_h = S(110);
 
     int x = pad;
-    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(80), S(104), S(104)};
+    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(80), S(90), S(104)};
     for (int i = 0; i < N_BUTTONS; i++) {
         MoveWindow(g_buttons[i], x, pad, widths[i], bar, TRUE);
         x += widths[i] + S(6);
@@ -1799,8 +2111,10 @@ static void layout(void)
 
     int top = pad + bar + pad;
     int body_h = h - top - log_h - pad * 2;
-    int tree_w = (w - pad * 3) * 55 / 100;
-    MoveWindow(g_tree, pad, top, tree_w, body_h, TRUE);
+    int tree_w = (w - pad * 3) * 55 / 100, search_h = S(24), below = search_h + S(6);
+    MoveWindow(g_search, pad, top, tree_w, search_h, TRUE);
+    MoveWindow(g_tree, pad, top + below, tree_w, body_h - below, TRUE);
+    MoveWindow(g_results, pad, top + below, tree_w, body_h - below, TRUE);
     int rx = pad * 2 + tree_w, rw = w - rx - pad;
     int detail_h = body_h * 58 / 100;
     MoveWindow(g_detail, rx, top, rw, detail_h, TRUE);
@@ -1862,7 +2176,7 @@ static void create_children(HWND hwnd)
     g_buttons[3] = make_button(L"Check drive...", ID_BTN_CHECK);
     g_buttons[4] = make_button(L"Restore...", ID_BTN_RESTORE);
     g_buttons[5] = make_button(L"Drives...", ID_BTN_DRIVES);
-    g_buttons[6] = make_button(L"Passphrase...", ID_BTN_SECURITY);
+    g_buttons[6] = make_button(L"Settings...", ID_BTN_SECURITY);
     g_buttons[7] = make_button(L"At risk...", ID_BTN_RISK);
 
     g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
@@ -1875,6 +2189,20 @@ static void create_children(HWND hwnd)
                              0, 0, 10, 10, hwnd, (HMENU)ID_TREE, g_inst, NULL);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)g_font, TRUE);
     TreeView_SetExtendedStyle(g_tree, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+
+    g_search = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10,
+                               hwnd, (HMENU)ID_SEARCH, g_inst, NULL);
+    SendMessageW(g_search, WM_SETFONT, (WPARAM)g_font, TRUE);
+    SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search files and folders by name");
+    g_results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 0, 0,
+                                10, 10, hwnd, (HMENU)ID_RESULTS, g_inst, NULL);
+    SendMessageW(g_results, WM_SETFONT, (WPARAM)g_font, TRUE);
+    {
+        static const wchar_t *cols[] = {L"Name", L"Folder", L"State", L"Where it is"};
+        static const int widths[] = {150, 130, 120, 320};
+        lv_columns(g_results, cols, widths, 4);
+    }
 
     g_detail = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
                                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10,
@@ -1922,6 +2250,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wp) == ID_SEARCH) {
+            if (HIWORD(wp) == EN_CHANGE) SetTimer(hwnd, ID_SEARCH_TIMER, 250, NULL);
+            return 0;
+        }
         if (g_busy) return 0;
         switch (LOWORD(wp)) {
         case ID_BTN_ADD: cmd_add_folder(); break;
@@ -1934,8 +2266,24 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_SECURITY: cmd_security(); break;
         }
         return 0;
+    case WM_TIMER:
+        if (wp == ID_SEARCH_TIMER) {
+            KillTimer(hwnd, ID_SEARCH_TIMER);
+            run_search();
+        }
+        return 0;
     case WM_NOTIFY: {
         NMHDR *nh = (NMHDR *)lp;
+        if (nh->idFrom == ID_RESULTS) {
+            if (nh->code == LVN_ITEMCHANGED) {
+                NMLISTVIEW *lv = (NMLISTVIEW *)lp;
+                if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED) && lv->iItem >= 0 && lv->iItem < g_hit_n)
+                    reveal_node(g_hits[lv->iItem].source_id, g_hits[lv->iItem].rel);
+            } else if ((nh->code == NM_DBLCLK || nh->code == NM_RETURN) && g_hit_n) {
+                end_search();
+            }
+            return 0;
+        }
         if (nh->idFrom == ID_TREE) {
             if (nh->code == NM_CUSTOMDRAW) return tree_custom_draw((NMTVCUSTOMDRAW *)lp);
             if (nh->code == TVN_ITEMEXPANDINGW) {
@@ -1999,17 +2347,26 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         } else if (j->status != BD_OK && j->status != BD_ERR_PASSPHRASE)
             report_error(hwnd, j->summary);
-        job_free(j);
         update_drives_label();
         rebuild_tree();
         show_detail();
+        if (GetWindowTextLengthW(g_search) > 0) run_search();
+        if (j->kind == JOB_DRIVES) after_drives(j);
+        else if (j->kind == JOB_BACKUP && j->auto_run && j->status == BD_OK) offer_check(j->media_id);
+        job_free(j);
         start_next_job();
         return 0;
     }
     case WM_DEVICECHANGE:
         if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
             DEV_BROADCAST_HDR *hdr = (DEV_BROADCAST_HDR *)lp;
-            if (hdr && hdr->dbch_devicetype == DBT_DEVTYP_VOLUME) enqueue(new_job(JOB_DRIVES));
+            if (hdr && hdr->dbch_devicetype == DBT_DEVTYP_VOLUME) {
+                job *dj = new_job(JOB_DRIVES);
+                if (dj) {
+                    dj->auto_run = wp == DBT_DEVICEARRIVAL;
+                    enqueue(dj);
+                }
+            }
         }
         return TRUE;
     case WM_CLOSE:
@@ -2263,7 +2620,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     rebuild_tree();
     show_detail();
     log_append(L"Catalog opened. Looking for backup drives, then checking your folders for changes.");
-    enqueue(new_job(JOB_DRIVES));
+    job *first = new_job(JOB_DRIVES);
+    if (first) {
+        first->startup = 1;
+        enqueue(first);
+    }
     enqueue(new_job(JOB_SCAN));
 
     MSG m;

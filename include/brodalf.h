@@ -318,6 +318,10 @@ typedef struct {
     const bd_drive_hw *hw;   /* last hardware reading, NULL if none */
     int64_t hw_read_ms;
     int64_t added_ms;
+    /* The oldest good copy on it by when it was last fully checked (or
+     * written, if never checked); 0 if it holds no copies. */
+    int64_t oldest_check_ms;
+    int check_due;           /* older than the check_days option */
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on
@@ -342,6 +346,42 @@ bd_status bd_find_node(bd_catalog *cat, int64_t source_id, const char *rel_path,
 
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);
+
+/* ---- Options ------------------------------------------------------------ */
+
+/* Settings kept in the catalog:
+ *   "auto_backup"  1 (default): scan and back up to a drive as soon as it
+ *                  is plugged in; 0: only when asked.
+ *   "check_days"   remind to run a full check on a drive whose oldest copy
+ *                  was last read this many days ago (default 180; 0: never).
+ * bd_option_get returns the default for an unset option and -1 for an
+ * unknown name. */
+int bd_option_get(bd_catalog *cat, const char *name);
+bd_status bd_option_set(bd_catalog *cat, const char *name, int value);
+
+/* ---- Search -------------------------------------------------------------- */
+
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    const char *name;
+    int is_dir;
+    int64_t size;            /* files only */
+    bd_node_state state;     /* as in the ghost tree */
+    /* Drives and accounts holding a good copy of the current version (for
+     * a folder: of any file inside), as "Label (kept in)" joined by "; ".
+     * "" if none. */
+    const char *where;
+} bd_search_info;
+
+typedef int (*bd_search_fn)(void *ctx, const bd_search_info *info);
+
+/* Files and folders whose path (within their source) contains every word
+ * of text, ignoring case. Names that match come first. Deleted files are
+ * included. At most limit results (0: 500). */
+bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn fn, void *ctx);
 
 /* ---- Protection target and files at risk ------------------------------- */
 

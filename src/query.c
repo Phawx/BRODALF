@@ -226,11 +226,15 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " (SELECT COUNT(*) FROM copies c WHERE c.media_id=m.id), m.encrypted, COALESCE(m.location,''), m.added_ms,"
                            " h.read_ms, h.vendor, h.model, h.serial, h.firmware, h.bus, h.disk_bytes, h.volume_name, h.volume_serial,"
                            " h.filesystem, h.smart, h.health, h.temperature_c, h.power_on_hours, h.power_cycles, h.reallocated,"
-                           " h.pending, h.uncorrectable, h.percent_used, h.note"
+                           " h.pending, h.uncorrectable, h.percent_used, h.note,"
+                           " (SELECT MIN(COALESCE(c.last_full_check_ms, c.written_ms)) FROM copies c"
+                           "   WHERE c.media_id=m.id AND c.state='ok')"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list drives");
+    int check_days = bd_option_get(cat, "check_days");
+    int64_t now = bd_now_ms();
     while (sqlite3_step(q) == SQLITE_ROW) {
         bd_media_info info;
         info.media_id = sqlite3_column_int64(q, 0);
@@ -245,6 +249,10 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.encrypted = sqlite3_column_int(q, 9);
         info.location = (const char *)sqlite3_column_text(q, 10);
         info.added_ms = sqlite3_column_int64(q, 11);
+        info.oldest_check_ms = col_num(q, 32);
+        if (info.oldest_check_ms < 0) info.oldest_check_ms = 0;
+        info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
+                         now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;
         bd_drive_hw hw;
         info.hw = NULL;
         info.hw_read_ms = 0;
@@ -276,4 +284,126 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
     }
     sqlite3_finalize(q);
     return BD_OK;
+}
+
+/* ---- Search ------------------------------------------------------------- */
+
+/* "Label (kept in)" for a medium m. */
+#define WHERE_TEXT "m.label || CASE WHEN trim(COALESCE(m.location,''))<>'' THEN ' ('||trim(m.location)||')' ELSE '' END"
+
+#define MAX_WORDS 8
+
+/* %word% with LIKE's wildcards escaped by '\'. */
+static char *like_pattern(const char *word, size_t n)
+{
+    char *p = malloc(n * 2 + 3);
+    if (!p) return NULL;
+    size_t j = 0;
+    p[j++] = '%';
+    for (size_t i = 0; i < n; i++) {
+        if (word[i] == '%' || word[i] == '_' || word[i] == '\\') p[j++] = '\\';
+        p[j++] = word[i];
+    }
+    p[j++] = '%';
+    p[j] = '\0';
+    return p;
+}
+
+bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn fn, void *ctx)
+{
+    char *pat[MAX_WORDS];
+    int nw = 0;
+    for (const char *p = text ? text : ""; *p && nw < MAX_WORDS;) {
+        while (*p == ' ' || *p == '\t') p++;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (p > start) {
+            /* Paths are stored with '/'; let people type either. */
+            char word[256];
+            size_t n = (size_t)(p - start) < sizeof(word) - 1 ? (size_t)(p - start) : sizeof(word) - 1;
+            memcpy(word, start, n);
+            word[n] = '\0';
+            for (char *c = word; *c; c++) if (*c == '\\') *c = '/';
+            char *w = like_pattern(word, n);
+            if (!w) break;
+            pat[nw++] = w;
+        }
+    }
+    if (nw == 0) return BD_OK;
+    if (limit <= 0) limit = 500;
+
+    char path_where[MAX_WORDS * 48], name_match[MAX_WORDS * 48];
+    path_where[0] = name_match[0] = '\0';
+    for (int i = 0; i < nw; i++) {
+        size_t a = strlen(path_where), b = strlen(name_match);
+        snprintf(path_where + a, sizeof(path_where) - a, "%sn.rel_path LIKE ?%d ESCAPE '\\'", i ? " AND " : "", i + 1);
+        snprintf(name_match + b, sizeof(name_match) - b, "%sn.name LIKE ?%d ESCAPE '\\'", i ? " AND " : "", i + 1);
+    }
+    char *sql = bd_sprintf(
+        "SELECT n.id, n.source_id, s.name, n.rel_path, n.name, n.is_dir, n.size, n.deleted,"
+        " " CUR_AVAILABLE ", " ANY_AVAILABLE ", " BAD_CONNECTED ", " ANY_COPY ","
+        " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w FROM copies c JOIN media m ON m.id=c.media_id"
+        "   WHERE c.version_id=n.current_version_id AND c.state='ok' ORDER BY 1)),"
+        " (%s) AS nm"
+        " FROM nodes n JOIN sources s ON s.id=n.source_id WHERE %s"
+        " ORDER BY nm DESC, n.deleted, n.is_dir DESC, s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE LIMIT %d",
+        name_match, path_where, limit);
+    sqlite3_stmt *q = NULL, *dir = NULL;
+    bd_status st = BD_OK;
+    if (!sql || sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) != SQLITE_OK) {
+        st = sql ? bd_fail_db(cat, "search") : BD_ERR_NOMEM;
+        goto done;
+    }
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT COUNT(*), COALESCE(SUM(" CUR_AVAILABLE "),0), COALESCE(SUM(" ANY_COPY "),0),"
+                           " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w"
+                           "   FROM nodes n2 JOIN copies c ON c.version_id=n2.current_version_id JOIN media m ON m.id=c.media_id"
+                           "   WHERE n2.source_id=?1 AND n2.is_dir=0 AND n2.deleted=0 AND c.state='ok'"
+                           "   AND substr(n2.rel_path,1,length(?2)+1)=?2||'/' ORDER BY 1))"
+                           " FROM nodes n WHERE n.source_id=?1 AND n.is_dir=0 AND n.deleted=0"
+                           " AND substr(n.rel_path,1,length(?2)+1)=?2||'/'",
+                           -1, &dir, NULL) != SQLITE_OK) {
+        st = bd_fail_db(cat, "search");
+        goto done;
+    }
+    for (int i = 0; i < nw; i++) sqlite3_bind_text(q, i + 1, pat[i], -1, SQLITE_STATIC);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_search_info info;
+        memset(&info, 0, sizeof(info));
+        info.node_id = sqlite3_column_int64(q, 0);
+        info.source_id = sqlite3_column_int64(q, 1);
+        info.source_name = (const char *)sqlite3_column_text(q, 2);
+        info.rel_path = (const char *)sqlite3_column_text(q, 3);
+        info.name = (const char *)sqlite3_column_text(q, 4);
+        info.is_dir = sqlite3_column_int(q, 5);
+        int deleted = sqlite3_column_int(q, 7);
+        char *where = NULL;
+        if (!info.is_dir) {
+            info.size = sqlite3_column_int64(q, 6);
+            info.state = file_state(deleted, sqlite3_column_int(q, 8), sqlite3_column_int(q, 9),
+                                    sqlite3_column_int(q, 10), sqlite3_column_int(q, 11));
+            where = bd_strdup(sqlite3_column_text(q, 12) ? (const char *)sqlite3_column_text(q, 12) : "");
+        } else {
+            sqlite3_reset(dir);
+            sqlite3_bind_int64(dir, 1, info.source_id);
+            sqlite3_bind_text(dir, 2, info.rel_path, -1, SQLITE_TRANSIENT);
+            info.state = BD_STATE_NO_COPY;
+            if (sqlite3_step(dir) == SQLITE_ROW) {
+                info.state = deleted ? BD_STATE_DELETED
+                                     : folder_state(sqlite3_column_int64(dir, 0), sqlite3_column_int64(dir, 1),
+                                                    sqlite3_column_int64(dir, 2));
+                where = bd_strdup(sqlite3_column_text(dir, 3) ? (const char *)sqlite3_column_text(dir, 3) : "");
+            }
+        }
+        info.where = where ? where : "";
+        int stop = fn(ctx, &info);
+        free(where);
+        if (stop) break;
+    }
+done:
+    sqlite3_finalize(q);
+    sqlite3_finalize(dir);
+    free(sql);
+    for (int i = 0; i < nw; i++) free(pat[i]);
+    return st;
 }

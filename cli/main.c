@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -37,6 +38,8 @@ static void usage(void)
          "  cloud-signout <catalog> <label>            forget a cloud account's saved sign-in\n"
          "  drives   <catalog>                         list drives with make, model, serial, health, location\n"
          "  target   <catalog> [copies places]         show or set how many copies, in how many places\n"
+         "  search   <catalog> <words>...              find files and folders by name, and which drive holds them\n"
+         "  option   <catalog> [name value]            show or set auto_backup and check_days\n"
          "  at-risk  <catalog> [--source NAME] [--all] files short of the target, and which drive helps\n"
          "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
          "  drive-rename <catalog> <label> <new label> rename a drive\n"
@@ -224,6 +227,14 @@ static void human_bytes(int64_t n, char *out, size_t cap)
     snprintf(out, cap, u ? "%.1f %s" : "%.0f %s", v, units[u]);
 }
 
+static int print_search(void *ctx, const bd_search_info *r)
+{
+    (*(int *)ctx)++;
+    printf("%s/%s%s  [%s]  %s\n", r->source_name, r->rel_path, r->is_dir ? "/" : "", bd_node_state_name(r->state),
+           r->where[0] ? r->where : "(no copies)");
+    return 0;
+}
+
 typedef struct { int shown, limit; } risk_print;
 
 static int print_risk(void *ctx, const bd_risk_info *r)
@@ -257,6 +268,12 @@ static int print_drive(void *ctx, const bd_media_info *m)
     printf("%s%s%s\n", m->label, m->connected ? "  (connected)" : "", m->encrypted ? "  [encrypted]" : "");
     if (m->location && *m->location) printf("  kept in:   %s\n", m->location);
     printf("  kind:      %s, last seen at %s\n", m->kind, m->last_root ? m->last_root : "?");
+    if (m->oldest_check_ms > 0) {
+        time_t t = (time_t)(m->oldest_check_ms / 1000);
+        char when[32];
+        strftime(when, sizeof(when), "%Y-%m-%d", localtime(&t));
+        printf("  checked:   oldest copy last read back %s%s\n", when, m->check_due ? "  (due for check --full)" : "");
+    }
     const bd_drive_hw *h = m->hw;
     if (h) {
         char size[32] = "";
@@ -463,6 +480,26 @@ static int run(int argc, char **argv)
         if (location && bd_media_set_location(cat, id, location) != BD_OK) return die(cat, "cannot set location");
         printf("set up %s as \"%s\"%s\n", argv[3], argv[4], encrypt ? ", encrypted" : "");
         save = 1;
+    } else if (strcmp(cmd, "option") == 0) {
+        if (argc >= 5) {
+            if (bd_option_set(cat, argv[3], atoi(argv[4])) != BD_OK) {
+                fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+                bd_catalog_close(cat);
+                return 1;
+            }
+            save = 1;
+        } else if (argc == 4) { usage(); bd_catalog_close(cat); return 1; }
+        printf("auto_backup %d   (1: back up as soon as a drive is plugged in, in the Windows app)\n", bd_option_get(cat, "auto_backup"));
+        printf("check_days  %d   (remind to check a drive whose copies were not read back in this many days; 0: never)\n",
+               bd_option_get(cat, "check_days"));
+    } else if (strcmp(cmd, "search") == 0) {
+        if (argc < 4) { usage(); bd_catalog_close(cat); return 1; }
+        char text[1024] = "";
+        for (int i = 3; i < argc; i++)
+            snprintf(text + strlen(text), sizeof(text) - strlen(text), "%s%s", i > 3 ? " " : "", argv[i]);
+        int found = 0;
+        if (bd_search(cat, text, 0, print_search, &found) != BD_OK) return die(cat, "search failed");
+        if (!found) puts("nothing matches");
     } else if (strcmp(cmd, "target") == 0) {
         bd_target t;
         bd_target_get(cat, &t);

@@ -151,6 +151,20 @@ secret ships with BRODALF.
   permissions `files.content.read/write`, `files.metadata.read/write`,
   `account_info.read`.
 
+### When something goes wrong
+
+BRODALF keeps a log in `%LOCALAPPDATA%\BRODALF\brodalf.log` (the older
+part moves to `brodalf.log.old` past about 1 MB). When a job stops with an
+error, the catalog cannot be saved or opened, or the app crashes, BRODALF
+shows the error and saves a report to
+`%LOCALAPPDATA%\BRODALF\reports\brodalf-error-<date>-<time>.txt`. The
+report starts with instructions for posting it as a new issue at
+https://github.com/Phawx/BRODALF/issues, then gives the error, the BRODALF
+version and build, the Windows version and the end of the log. Your user
+name, computer name, email addresses and sign-in tokens are replaced before
+the file is written. Nothing is sent anywhere. The command line does the
+same, printing where the report went.
+
 ## Try it from the command line
 
 ```sh

@@ -343,6 +343,42 @@ bd_status bd_find_node(bd_catalog *cat, int64_t source_id, const char *rel_path,
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);
 
+/* ---- App log and error reports -------------------------------------- */
+
+/* "0.2.0" or "0.2.0 (abc1234)" when the build knows its commit. */
+const char *bd_version(void);
+
+/* Where the app log goes by default: %LOCALAPPDATA%\BRODALF\brodalf.log on
+ * Windows, $XDG_STATE_HOME/brodalf/brodalf.log (or ~/.local/state/...)
+ * elsewhere. The environment variable BRODALF_LOG overrides it. malloc'd. */
+char *bd_applog_default_path(void);
+
+/* Start writing the app log to path (its folder is created). Each line gets
+ * a timestamp. When the file passes about 1 MB it is moved to path.old and a
+ * new one is started. Call these from one thread only. */
+bd_status bd_applog_open(const char *path);
+void bd_applog(const char *fmt, ...);
+const char *bd_applog_path(void);
+
+/* The text of a problem report: what happened, the BRODALF version and
+ * operating system, and the end of the app log. The user's name, computer
+ * name, email addresses and sign-in tokens are replaced before it is
+ * returned. malloc'd. */
+char *bd_report_body(const char *what_happened);
+
+/* Save an error report to a new text file in a "reports" folder next to
+ * the app log (or the temp folder). The file starts with instructions for
+ * posting it as a GitHub issue by hand, followed by bd_report_body. Nothing
+ * is sent anywhere. Returns the file's path (malloc'd) or NULL. */
+char *bd_report_save(const char *what_happened);
+
+/* The BRODALF issues page on GitHub. */
+const char *bd_issues_url(void);
+
+/* Replace the user's name, computer name, email addresses and tokens in text.
+ * malloc'd. */
+char *bd_redact(const char *text);
+
 #ifdef __cplusplus
 }
 #endif

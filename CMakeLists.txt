@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf C)
+project(brodalf VERSION 0.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -39,6 +39,9 @@ target_include_directories(brodalf_cjson PUBLIC third_party/cjson)
 set(BRODALF_ONEDRIVE_CLIENT_ID "" CACHE STRING "Microsoft Entra application (client) ID")
 set(BRODALF_DROPBOX_CLIENT_ID "" CACHE STRING "Dropbox app key")
 
+# CI passes the commit, so an error report says exactly which build it came from.
+set(BRODALF_BUILD_ID "" CACHE STRING "Commit the build came from")
+
 if(WIN32)
     set(BRODALF_HTTP_SRC src/http_win32.c)
 else()
@@ -59,13 +62,16 @@ add_library(brodalf_core STATIC
     src/platform_posix.c
     src/platform_win32.c
     src/query.c
+    src/report.c
     src/scan.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)
 target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd brodalf_monocypher brodalf_cjson)
 target_compile_definitions(brodalf_core PRIVATE
     BRODALF_ONEDRIVE_CLIENT_ID="${BRODALF_ONEDRIVE_CLIENT_ID}"
-    BRODALF_DROPBOX_CLIENT_ID="${BRODALF_DROPBOX_CLIENT_ID}")
+    BRODALF_DROPBOX_CLIENT_ID="${BRODALF_DROPBOX_CLIENT_ID}"
+    BRODALF_VERSION="${PROJECT_VERSION}"
+    BRODALF_BUILD_ID="${BRODALF_BUILD_ID}")
 if(WIN32)
     target_link_libraries(brodalf_core PUBLIC bcrypt winhttp ws2_32 advapi32 crypt32)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)

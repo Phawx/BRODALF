@@ -412,8 +412,14 @@ static DWORD WINAPI worker(LPVOID arg)
     }
     if (bd_catalog_save_all(g_cat, job_log, j) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        post_text(WM_APP_LOG, L"Could not save the catalog:");
-        if (e) { post_text(WM_APP_LOG, e); free(e); }
+        if (j->status == BD_OK) {
+            j->status = BD_ERR_IO;
+            swprintf(j->summary, 512, L"Could not save the catalog: %ls", e ? e : L"unknown error");
+        } else {
+            post_text(WM_APP_LOG, L"Could not save the catalog:");
+            if (e) post_text(WM_APP_LOG, e);
+        }
+        free(e);
     }
     bd_catalog_set_progress(g_cat, NULL, NULL);
     PostMessageW(g_main, WM_APP_DONE, 0, (LPARAM)j);
@@ -469,6 +475,57 @@ static void log_append(const wchar_t *text)
     SendMessageW(g_log, EM_SETSEL, len, len);
     SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)text);
     SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)L"\r\n");
+    char *u = narrow(text);
+    if (u) { bd_applog("%s", u); free(u); }
+}
+
+/* ---- Errors ------------------------------------------------------------- */
+
+/* Show an error, save a report file, and say how to post it as a GitHub
+ * issue. Nothing is sent anywhere. */
+static void report_error(HWND owner, const wchar_t *what)
+{
+    char *u = narrow(what);
+    bd_applog("ERROR: %s", u ? u : "");
+    char *path = bd_report_save(u);
+    free(u);
+    wchar_t *wpath = path ? widen(path) : NULL, *url = widen(bd_issues_url());
+    wchar_t msg[4096];
+    if (wpath)
+        swprintf(msg, 4096,
+                 L"%ls\n\nAn error report was saved to:\n%ls\n\n"
+                 L"To let the BRODALF developers know, post it as a new issue at %ls. "
+                 L"The report starts with step-by-step instructions.\n\nShow the report file now?",
+                 what, wpath, url ? url : L"");
+    else
+        swprintf(msg, 4096, L"%ls\n\nThe error report could not be saved.", what);
+    if (MessageBoxW(owner, msg, APP_NAME, MB_ICONERROR | (wpath ? MB_YESNO : MB_OK)) == IDYES) {
+        wchar_t args[MAX_PATH * 2 + 16];
+        swprintf(args, MAX_PATH * 2 + 16, L"/select,\"%ls\"", wpath);
+        ShellExecuteW(owner, NULL, L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+    }
+    free(path);
+    free(wpath);
+    free(url);
+}
+
+/* Last resort for a crash: record where it happened, then report it. */
+static LONG WINAPI on_crash(EXCEPTION_POINTERS *ep)
+{
+    static volatile LONG once;
+    if (InterlockedExchange(&once, 1)) return EXCEPTION_EXECUTE_HANDLER;
+    void *addr = ep->ExceptionRecord->ExceptionAddress;
+    HMODULE mod = NULL;
+    wchar_t name[MAX_PATH] = L"?";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)addr, &mod))
+        GetModuleFileNameW(mod, name, MAX_PATH);
+    const wchar_t *base = wcsrchr(name, L'\\');
+    wchar_t what[512];
+    swprintf(what, 512, L"BRODALF crashed (exception 0x%08lX in %ls at +0x%llx).",
+             (unsigned long)ep->ExceptionRecord->ExceptionCode, base ? base + 1 : name,
+             (unsigned long long)((uintptr_t)addr - (uintptr_t)mod));
+    report_error(NULL, what);
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 
 /* ---- Tree --------------------------------------------------------------- */
@@ -1292,7 +1349,7 @@ static int set_passphrase_ui(void)
     if (s == BD_OK) s = bd_catalog_save(g_cat);
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        MessageBoxW(g_main, e ? e : L"Could not set the passphrase.", APP_NAME, MB_ICONERROR);
+        report_error(g_main, e && e[0] ? e : L"Could not set the passphrase.");
         free(e);
         return 0;
     }
@@ -1338,7 +1395,7 @@ static void cmd_security(void)
         if (s == BD_OK) s = bd_catalog_save(g_cat);
         if (s != BD_OK) {
             wchar_t *e = widen(bd_catalog_error(g_cat));
-            MessageBoxW(g_main, e ? e : L"Could not change it.", APP_NAME, MB_ICONERROR);
+            report_error(g_main, e && e[0] ? e : L"Could not change the catalog encryption.");
             free(e);
             return;
         }
@@ -1723,7 +1780,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 again->provider = j->provider;
                 enqueue(again);
             }
-        }
+        } else if (j->status != BD_OK && j->status != BD_ERR_PASSPHRASE)
+            report_error(hwnd, j->summary);
         job_free(j);
         update_drives_label();
         rebuild_tree();
@@ -1889,7 +1947,10 @@ static int open_catalog(const wchar_t *given)
             return 1;
         }
         wchar_t *e = widen(bd_open_error());
-        MessageBoxW(NULL, e && e[0] ? e : L"The catalog could not be opened.", APP_NAME, MB_ICONERROR);
+        const wchar_t *why = e && e[0] ? e : L"The catalog could not be opened.";
+        /* Picking a file that is not a catalog is not a bug. */
+        if (s == BD_ERR_FORMAT || s == BD_ERR_NOT_FOUND || s == BD_ERR_EXISTS) MessageBoxW(NULL, why, APP_NAME, MB_ICONERROR);
+        else report_error(NULL, why);
         free(e);
     }
 }
@@ -1949,6 +2010,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     g_dpi = GetDeviceCaps(screen, LOGPIXELSY);
     ReleaseDC(NULL, screen);
     make_fonts();
+
+    char *log_path = bd_applog_default_path();
+    bd_applog_open(log_path);
+    free(log_path);
+    bd_applog("BRODALF %s started", bd_version());
+    SetUnhandledExceptionFilter(on_crash);
 
     int opened = open_catalog(argc > 1 && argv[1][0] ? argv[1] : NULL);
     LocalFree(argv);

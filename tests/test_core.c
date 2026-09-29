@@ -7,6 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 static int failures = 0;
 
 #define CHECK(cond)                                                            \
@@ -157,6 +162,66 @@ static media_snapshot_t media_of(bd_catalog *cat, int64_t id)
 static void count_log(void *ctx, const char *msg)
 {
     if (strstr(msg, "different disk")) (*(int *)ctx)++;
+}
+
+static void set_env(const char *name, const char *value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+    wchar_t wn[64], wv[256];
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, wn, 64);
+    MultiByteToWideChar(CP_UTF8, 0, value, -1, wv, 256);
+    SetEnvironmentVariableW(wn, wv);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+/* App log, redaction and the prefilled issue link. */
+static void test_report(void)
+{
+#ifdef _WIN32
+    set_env("USERNAME", "Zqxwolf");
+#else
+    set_env("USER", "Zqxwolf");
+#endif
+    char *r = bd_redact("C:\\Users\\zqxwolf\\Photos: signed in as jane.doe@example.com, Authorization: Bearer abc.DEF-123 ok");
+    CHECK(r && strstr(r, "C:\\Users\\<user>\\Photos") && strstr(r, "signed in as <email>,") && strstr(r, "Bearer <hidden> ok"));
+    CHECK(r && !strstr(r, "zqxwolf") && !strstr(r, "jane") && !strstr(r, "abc.DEF"));
+    free(r);
+
+    char log[2048];
+    snprintf(log, sizeof(log), "%s", at("logs/brodalf.log"));
+    REQUIRE_OK(bd_applog_open(log), NULL);
+    CHECK(exists(log));
+    bd_applog("first line from /home/Zqxwolf/x");
+    for (int i = 0; i < 5000; i++) bd_applog("line %d", i);
+    char *body = bd_report_body("Backup failed: disk full");
+    CHECK(body && strstr(body, "Backup failed: disk full") && strstr(body, "Recent log") && strstr(body, "line 4999\n"));
+    CHECK(body && strstr(body, bd_version()) && !strstr(body, "Zqxwolf"));
+    free(body);
+
+    char *saved = bd_report_save("Backup failed: disk full");
+    CHECK(saved != NULL);
+    if (saved) {
+        FILE *f = fopen(saved, "rb");
+        char text[4096] = "";
+        if (f) { text[fread(text, 1, sizeof(text) - 1, f)] = '\0'; fclose(f); }
+        CHECK(strstr(text, "https://github.com/Phawx/BRODALF/issues") && strstr(text, "Backup failed: disk full"));
+        CHECK(strstr(saved, "reports") && strstr(saved, "brodalf-error-"));
+        free(saved);
+    }
+
+    /* A long log moves to .old once it passes 1 MB. */
+    char big[1001];
+    memset(big, 'x', 1000);
+    big[1000] = '\0';
+    for (int i = 0; i < 1100; i++) bd_applog("%s", big);
+    char old[2100];
+    snprintf(old, sizeof(old), "%s.old", log);
+    CHECK(exists(old));
+    bd_applog_open(NULL);
+    CHECK(bd_applog_path() == NULL);
 }
 
 int main(void)
@@ -375,6 +440,8 @@ int main(void)
     CHECK(exists(at(pc)));
     bd_catalog_close(cat);
     CHECK(!exists(at("test.brodalf.lock")));
+
+    test_report();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

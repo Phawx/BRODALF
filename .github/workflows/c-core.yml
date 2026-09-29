@@ -19,6 +19,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           "-DBRODALF_ONEDRIVE_CLIENT_ID=${{ vars.BRODALF_ONEDRIVE_CLIENT_ID }}"
           "-DBRODALF_DROPBOX_CLIENT_ID=${{ vars.BRODALF_DROPBOX_CLIENT_ID }}"
+          "-DBRODALF_BUILD_ID=${{ github.sha }}"
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test

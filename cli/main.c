@@ -45,6 +45,11 @@ static void usage(void)
          "only when a correct copy is on a connected drive. Wherever a drive root\n"
          "goes, cloud:LABEL names a cloud account added with cloud-add.\n"
          "\n"
+         "When something fails, an error report is saved with instructions for\n"
+         "posting it as a GitHub issue. The app log is kept in the file named by\n"
+         "BRODALF_LOG, or %LOCALAPPDATA%\\BRODALF\\brodalf.log (Windows) and\n"
+         "~/.local/state/brodalf/brodalf.log (elsewhere).\n"
+         "\n"
          "Passphrases are asked for on the terminal, or taken from the environment\n"
          "variables BRODALF_PASSPHRASE and (when setting one) BRODALF_NEW_PASSPHRASE.");
 }
@@ -53,11 +58,24 @@ static void log_line(void *ctx, const char *msg)
 {
     (void)ctx;
     printf("  %s\n", msg);
+    bd_applog("%s", msg);
 }
 
+/* Print the error, save a report file and say how to post it. */
 static int die(bd_catalog *cat, const char *what)
 {
-    fprintf(stderr, "brodalf: %s: %s\n", what, cat ? bd_catalog_error(cat) : bd_open_error());
+    const char *why = cat ? bd_catalog_error(cat) : bd_open_error();
+    fprintf(stderr, "brodalf: %s: %s\n", what, why);
+    char *line = malloc(strlen(what) + strlen(why) + 3);
+    if (line) sprintf(line, "%s: %s", what, why);
+    bd_applog("ERROR: %s", line ? line : what);
+    char *report = bd_report_save(line ? line : what);
+    if (report)
+        fprintf(stderr, "An error report was saved to %s\n"
+                        "To let the developers know, post it as a new issue at %s\n"
+                        "(the report starts with step-by-step instructions).\n", report, bd_issues_url());
+    free(report);
+    free(line);
     if (cat) bd_catalog_close(cat);
     return 1;
 }
@@ -357,6 +375,10 @@ static int run(int argc, char **argv)
     if (argc < 3) { usage(); return argc < 2 ? 1 : (strcmp(argv[1], "help") == 0 ? 0 : 1); }
     const char *cmd = argv[1], *path = argv[2];
     bd_catalog *cat = NULL;
+    char *log_path = bd_applog_default_path();
+    bd_applog_open(log_path);
+    free(log_path);
+    bd_applog("brodalf-cli %s: %s %s", bd_version(), cmd, path);
 
     if (strcmp(cmd, "new") == 0) {
         if (bd_catalog_create(path, &cat) != BD_OK) return die(NULL, "cannot create catalog");
@@ -552,13 +574,9 @@ static int run(int argc, char **argv)
         return 1;
     }
 
-    int rc = 0;
-    if (save && bd_catalog_save_all(cat, log_line, NULL) != BD_OK) {
-        fprintf(stderr, "brodalf: cannot save catalog: %s\n", bd_catalog_error(cat));
-        rc = 1;
-    }
+    if (save && bd_catalog_save_all(cat, log_line, NULL) != BD_OK) return die(cat, "cannot save catalog");
     bd_catalog_close(cat);
-    return rc;
+    return 0;
 }
 
 #ifdef _WIN32

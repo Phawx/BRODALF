@@ -3,6 +3,7 @@ name: C core
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -32,3 +33,25 @@ jobs:
           path: |
             build/Release/brodalf.exe
             build/Release/brodalf-cli.exe
+
+  # A tag like v0.2.0 publishes the Windows app as a GitHub release.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: brodalf-windows
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp README.md dist/
+          (cd dist && zip -9 "../brodalf-${GITHUB_REF_NAME}-windows-x64.zip" *)
+          gh release create "$GITHUB_REF_NAME" "brodalf-${GITHUB_REF_NAME}-windows-x64.zip" \
+            --title "BRODALF ${GITHUB_REF_NAME}" --notes-file .github/release-notes.md

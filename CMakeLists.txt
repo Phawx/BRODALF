@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(brodalf VERSION 0.2.0 LANGUAGES C)
 
+# Link the C runtime statically so brodalf.exe runs on a PC without the
+# Visual C++ redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 

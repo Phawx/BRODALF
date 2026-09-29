@@ -310,7 +310,7 @@ static int from_hex(const char *s, uint8_t *b, size_t n)
     return 0;
 }
 
-static int setting_get(bd_catalog *cat, const char *key, char *out, size_t cap)
+int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap)
 {
     sqlite3_stmt *q;
     int found = 0;
@@ -324,7 +324,7 @@ static int setting_get(bd_catalog *cat, const char *key, char *out, size_t cap)
     return found;
 }
 
-static int setting_set(bd_catalog *cat, const char *key, const char *value)
+int bd_setting_set(bd_catalog *cat, const char *key, const char *value)
 {
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)", -1, &q, NULL) != SQLITE_OK)
@@ -339,7 +339,7 @@ static int setting_set(bd_catalog *cat, const char *key, const char *value)
 int bd_catalog_key_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK])
 {
     char hex[BD_KEY_BLOCK * 2 + 1];
-    if (!setting_get(cat, "key_block", hex, sizeof(hex))) return -1;
+    if (!bd_setting_get(cat, "key_block", hex, sizeof(hex))) return -1;
     return from_hex(hex, block, BD_KEY_BLOCK);
 }
 
@@ -364,7 +364,7 @@ static bd_status store_block(bd_catalog *cat, const uint8_t block[BD_KEY_BLOCK])
 {
     char hex[BD_KEY_BLOCK * 2 + 1];
     to_hex(block, BD_KEY_BLOCK, hex);
-    return setting_set(cat, "key_block", hex) == 0 ? BD_OK : bd_fail_db(cat, "store the encryption key");
+    return bd_setting_set(cat, "key_block", hex) == 0 ? BD_OK : bd_fail_db(cat, "store the encryption key");
 }
 
 bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase)
@@ -407,13 +407,13 @@ void bd_catalog_lock_key(bd_catalog *cat)
 int bd_catalog_file_encrypted(bd_catalog *cat)
 {
     char v[8];
-    return setting_get(cat, "encrypt_catalog", v, sizeof(v)) && strcmp(v, "1") == 0;
+    return bd_setting_get(cat, "encrypt_catalog", v, sizeof(v)) && strcmp(v, "1") == 0;
 }
 
 bd_status bd_catalog_set_file_encrypted(bd_catalog *cat, int on)
 {
     if (on && !cat->have_key) return bd_fail(cat, BD_ERR_PASSPHRASE, "set or enter the passphrase first");
-    return setting_set(cat, "encrypt_catalog", on ? "1" : "0") == 0 ? BD_OK : bd_fail_db(cat, "change catalog encryption");
+    return bd_setting_set(cat, "encrypt_catalog", on ? "1" : "0") == 0 ? BD_OK : bd_fail_db(cat, "change catalog encryption");
 }
 
 void bd_wipe(void *p, size_t n)

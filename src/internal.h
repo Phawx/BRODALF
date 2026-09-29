@@ -70,6 +70,10 @@ typedef struct { FILE *file; bd_opener *opener; } bd_source;
 int bd_sink_write(bd_sink *k, const void *data, size_t n);
 long bd_source_read(bd_source *k, void *buf, size_t cap);
 
+/* Catalog settings (the settings table). get: 1 if found. set: 0 on success. */
+int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap);
+int bd_setting_set(bd_catalog *cat, const char *key, const char *value);
+
 /* The passphrase-wrapped master key, as stored in settings and in the
  * header of an encrypted .brodalf file. */
 #define BD_KEY_BLOCK 96

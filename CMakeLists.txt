@@ -63,6 +63,7 @@ add_library(brodalf_core STATIC
     src/platform_win32.c
     src/query.c
     src/report.c
+    src/risk.c
     src/scan.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)

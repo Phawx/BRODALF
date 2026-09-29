@@ -343,6 +343,66 @@ bd_status bd_find_node(bd_catalog *cat, int64_t source_id, const char *rel_path,
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);
 
+/* ---- Protection target and files at risk ------------------------------- */
+
+/* How well every file should be protected. A copy counts when BRODALF last
+ * saw it good; each drive or cloud account counts once. A place is what a
+ * drive's "kept in" says (compared ignoring case and outer spaces); every
+ * cloud account is a place of its own, and drives with nothing set count
+ * together as one unknown place. */
+typedef struct {
+    int copies;  /* good copies of each file's current version (default 2) */
+    int places;  /* how many different places they must be in (default 2; 1 turns this off) */
+} bd_target;
+
+bd_status bd_target_get(bd_catalog *cat, bd_target *out);
+/* copies 1..16, places 1..copies. */
+bd_status bd_target_set(bd_catalog *cat, const bd_target *target);
+
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t size;
+    int copies;         /* good copies of the current version */
+    int places;         /* different places they are in */
+    int unknown_place;  /* one of those places is drives with no "kept in" set */
+    int older_copies;   /* copies exist, but only of older versions: changed since the last backup */
+} bd_risk_info;
+
+typedef struct {
+    int64_t files_total;    /* live files in the catalog (or the source) */
+    int64_t files_at_risk;  /* short of the target */
+    int64_t files_no_copy;  /* no good copy of the current version anywhere */
+    int64_t bytes_at_risk;
+} bd_risk_stats;
+
+typedef int (*bd_risk_fn)(void *ctx, const bd_risk_info *info);
+
+/* Live files whose current version falls short of the target, fewest copies
+ * first. source_id 0 means every source. fn may be NULL to only count;
+ * stats may be NULL. */
+bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, void *ctx, bd_risk_stats *stats);
+
+typedef struct {
+    int64_t media_id;
+    const char *label;
+    const char *kind;      /* "drive", "onedrive" or "dropbox" */
+    const char *location;  /* "" if not set */
+    int connected;
+    int64_t files;         /* at-risk files a backup here would bring closer to the target */
+    int64_t bytes;
+} bd_risk_help;
+
+typedef int (*bd_risk_help_fn)(void *ctx, const bd_risk_help *info);
+
+/* Which drive to plug in next: for every drive and cloud account, how many
+ * at-risk files a backup to it would help (it has no copy yet and adds a
+ * copy the file needs or a place it is missing). Most helpful first;
+ * drives that would not help are left out. */
+bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx);
+
 /* ---- App log and error reports -------------------------------------- */
 
 /* "0.2.0" or "0.2.0 (abc1234)" when the build knows its commit. */

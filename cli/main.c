@@ -36,6 +36,8 @@ static void usage(void)
          "                                             sign in and use a cloud account as storage\n"
          "  cloud-signout <catalog> <label>            forget a cloud account's saved sign-in\n"
          "  drives   <catalog>                         list drives with make, model, serial, health, location\n"
+         "  target   <catalog> [copies places]         show or set how many copies, in how many places\n"
+         "  at-risk  <catalog> [--source NAME] [--all] files short of the target, and which drive helps\n"
          "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
          "  drive-rename <catalog> <label> <new label> rename a drive\n"
          "  passphrase <catalog>                       set or change the passphrase\n"
@@ -220,6 +222,33 @@ static void human_bytes(int64_t n, char *out, size_t cap)
     int u = 0;
     while (v >= 1000 && u < 5) { v /= 1000; u++; }
     snprintf(out, cap, u ? "%.1f %s" : "%.0f %s", v, units[u]);
+}
+
+typedef struct { int shown, limit; } risk_print;
+
+static int print_risk(void *ctx, const bd_risk_info *r)
+{
+    risk_print *p = ctx;
+    if (p->limit && p->shown >= p->limit) return 1;
+    p->shown++;
+    char size[32];
+    human_bytes(r->size, size, sizeof(size));
+    if (r->copies == 0) printf("  no copy: ");
+    else printf("  %d %s in %d %s: ", r->copies, r->copies == 1 ? "copy" : "copies", r->places, r->places == 1 ? "place" : "places");
+    printf("%s/%s (%s)%s%s\n", r->source_name, r->rel_path, size,
+           r->older_copies ? ", changed since its last backup" : "",
+           r->unknown_place ? ", on a drive with no place set" : "");
+    return 0;
+}
+
+static int print_risk_help(void *ctx, const bd_risk_help *h)
+{
+    (void)ctx;
+    char size[32];
+    human_bytes(h->bytes, size, sizeof(size));
+    printf("  %s%s%s%s: would help %lld %s (%s)%s\n", h->label, h->location[0] ? " (kept in " : "", h->location,
+           h->location[0] ? ")" : "", (long long)h->files, h->files == 1 ? "file" : "files", size, h->connected ? "  [connected]" : "");
+    return 0;
 }
 
 static int print_drive(void *ctx, const bd_media_info *m)
@@ -434,6 +463,46 @@ static int run(int argc, char **argv)
         if (location && bd_media_set_location(cat, id, location) != BD_OK) return die(cat, "cannot set location");
         printf("set up %s as \"%s\"%s\n", argv[3], argv[4], encrypt ? ", encrypted" : "");
         save = 1;
+    } else if (strcmp(cmd, "target") == 0) {
+        bd_target t;
+        bd_target_get(cat, &t);
+        if (argc >= 5) {
+            t.copies = atoi(argv[3]);
+            t.places = atoi(argv[4]);
+            if (bd_target_set(cat, &t) != BD_OK) {
+                fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+                bd_catalog_close(cat);
+                return 1;
+            }
+            save = 1;
+        } else if (argc == 4) { usage(); bd_catalog_close(cat); return 1; }
+        printf("target: %d %s of every file, in %d different %s\n", t.copies, t.copies == 1 ? "copy" : "copies",
+               t.places, t.places == 1 ? "place" : "places");
+    } else if (strcmp(cmd, "at-risk") == 0) {
+        int64_t source_id = 0;
+        const char *name = opt(argc, argv, "--source");
+        if (name && !(source_id = source_id_by_name(cat, name))) {
+            fprintf(stderr, "brodalf: no protected folder named %s\n", name);
+            bd_catalog_close(cat);
+            return 1;
+        }
+        bd_target t;
+        bd_target_get(cat, &t);
+        bd_risk_stats st;
+        risk_print rp = {0, has_flag(argc, argv, "--all") ? 0 : 50};
+        if (bd_list_at_risk(cat, source_id, NULL, NULL, &st) != BD_OK) return die(cat, "cannot list files at risk");
+        char size[32];
+        human_bytes(st.bytes_at_risk, size, sizeof(size));
+        printf("target: %d %s in %d %s\n", t.copies, t.copies == 1 ? "copy" : "copies", t.places, t.places == 1 ? "place" : "places");
+        printf("%lld of %lld files are short of it (%s), %lld with no copy at all\n", (long long)st.files_at_risk,
+               (long long)st.files_total, size, (long long)st.files_no_copy);
+        if (st.files_at_risk) {
+            bd_list_at_risk(cat, source_id, print_risk, &rp, NULL);
+            if (rp.limit && st.files_at_risk > rp.shown)
+                printf("  ... and %lld more (--all lists them all)\n", (long long)(st.files_at_risk - rp.shown));
+            puts("back up to these next:");
+            bd_list_risk_help(cat, print_risk_help, NULL);
+        }
     } else if (strcmp(cmd, "drives") == 0) {
         bd_list_media(cat, print_drive, NULL);
     } else if (strcmp(cmd, "drive-location") == 0 || strcmp(cmd, "drive-rename") == 0) {

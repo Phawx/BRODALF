@@ -73,6 +73,18 @@ writes a new file and swaps it in atomically.
 Tables: `sources`, `nodes`, `versions`, `media`, `cloud_accounts`, `copies`,
 `jobs`, `settings`, `meta`.
 
+## Protection target
+
+The catalog's settings hold a target of N copies in M places (default 2 and
+2). For every live file, the current version's good copies are counted by
+distinct medium, and places by distinct place key: a drive's location
+(trimmed, ignoring case; empty for all drives with none set) or one key per
+cloud account. A file is at risk when copies < N or places < M. For "which
+drive next", a medium helps a file at risk when it has no good copy of the
+current version and either the file needs copies or the medium's place is
+not yet among the file's places. Offline copies count: the target is about
+what exists, not what is plugged in.
+
 ## Drive hardware
 
 `media.location` holds the optional "where it is kept" text. `media_hardware`

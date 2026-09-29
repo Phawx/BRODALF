@@ -164,6 +164,142 @@ static void count_log(void *ctx, const char *msg)
     if (strstr(msg, "different disk")) (*(int *)ctx)++;
 }
 
+typedef struct { int n; int64_t copies_sum; int older; int unknown; } risk_count;
+
+static int count_risk(void *ctx, const bd_risk_info *r)
+{
+    risk_count *c = ctx;
+    c->n++;
+    c->copies_sum += r->copies;
+    c->older += r->older_copies;
+    c->unknown += r->unknown_place;
+    return 0;
+}
+
+typedef struct { char labels[8][64]; int64_t files[8]; int n; } help_list;
+
+static int collect_help(void *ctx, const bd_risk_help *h)
+{
+    help_list *l = ctx;
+    if (l->n < 8) {
+        snprintf(l->labels[l->n], 64, "%s", h->label);
+        l->files[l->n++] = h->files;
+    }
+    return 0;
+}
+
+static bd_risk_stats risk_of(bd_catalog *cat, risk_count *c)
+{
+    bd_risk_stats st;
+    if (c) memset(c, 0, sizeof(*c));
+    CHECK(bd_list_at_risk(cat, 0, c ? count_risk : NULL, c, &st) == BD_OK);
+    return st;
+}
+
+static help_list help_of(bd_catalog *cat)
+{
+    help_list l;
+    memset(&l, 0, sizeof(l));
+    CHECK(bd_list_risk_help(cat, collect_help, &l) == BD_OK);
+    return l;
+}
+
+/* Copies, places and which drive to plug in next. */
+static void test_risk(void)
+{
+    write_file(at("risk/src/one.txt"), "1");
+    write_file(at("risk/src/two.txt"), "22");
+    write_file(at("risk/src/sub/three.txt"), "333");
+    write_file(at("risk/other/four.txt"), "4444");
+    bd_mkdirs(at("risk/A"));
+    bd_mkdirs(at("risk/B"));
+    bd_mkdirs(at("risk/C"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("risk/risk.brodalf"), &cat), NULL);
+    int64_t src, other;
+    REQUIRE_OK(bd_source_add(cat, at("risk/src"), &src), cat);
+    REQUIRE_OK(bd_source_add(cat, at("risk/other"), &other), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+
+    bd_target t;
+    REQUIRE_OK(bd_target_get(cat, &t), cat);
+    CHECK(t.copies == 2 && t.places == 2);
+
+    risk_count rc;
+    bd_risk_stats st = risk_of(cat, &rc);
+    CHECK(st.files_total == 4 && st.files_at_risk == 4 && st.files_no_copy == 4 && st.bytes_at_risk == 10);
+    CHECK(rc.n == 4 && rc.copies_sum == 0);
+    CHECK(help_of(cat).n == 0);
+
+    /* One drive, no place set: one copy each. */
+    int64_t a, b, c;
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_media_init(cat, at("risk/A"), "Drive A", 0, &a), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    st = risk_of(cat, &rc);
+    CHECK(st.files_at_risk == 4 && st.files_no_copy == 0 && rc.copies_sum == 4 && rc.unknown == 4);
+
+    /* A second drive with no place set helps with copies... */
+    REQUIRE_OK(bd_media_init(cat, at("risk/B"), "Drive B", 0, &b), cat);
+    help_list h = help_of(cat);
+    CHECK(h.n == 1 && strcmp(h.labels[0], "Drive B") == 0 && h.files[0] == 4);
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    /* ...but both are in the same unknown place. */
+    st = risk_of(cat, &rc);
+    CHECK(st.files_at_risk == 4 && rc.copies_sum == 8);
+    CHECK(help_of(cat).n == 0);
+
+    /* Saying where B is kept makes two places. */
+    REQUIRE_OK(bd_media_set_location(cat, b, "Box B"), cat);
+    st = risk_of(cat, NULL);
+    CHECK(st.files_total == 4 && st.files_at_risk == 0);
+
+    /* Raise the target; a third drive in B's place (different case and
+     * spacing) helps with copies. */
+    t.copies = 3;
+    t.places = 2;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    CHECK(risk_of(cat, NULL).files_at_risk == 4);
+    REQUIRE_OK(bd_media_init(cat, at("risk/C"), "Drive C", 0, &c), cat);
+    REQUIRE_OK(bd_media_set_location(cat, c, "  box b "), cat);
+    h = help_of(cat);
+    CHECK(h.n == 1 && strcmp(h.labels[0], "Drive C") == 0 && h.files[0] == 4);
+
+    /* Only places short: C (same place as B) no longer helps; A-place does. */
+    t.copies = 3;
+    t.places = 3;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    REQUIRE_OK(bd_backup(cat, c, 0, &bs, quiet, NULL), cat);
+    st = risk_of(cat, NULL);
+    CHECK(st.files_at_risk == 4);
+    CHECK(help_of(cat).n == 0);
+
+    t.copies = 2;
+    t.places = 3;
+    CHECK(bd_target_set(cat, &t) == BD_ERR_INVALID);
+    t.copies = 0;
+    CHECK(bd_target_set(cat, &t) == BD_ERR_INVALID);
+    t.copies = 2;
+    t.places = 2;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    CHECK(risk_of(cat, NULL).files_at_risk == 0);
+
+    /* A changed file has copies of its old version only. */
+    write_file(at("risk/src/two.txt"), "changed");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    st = risk_of(cat, &rc);
+    CHECK(st.files_at_risk == 1 && st.files_no_copy == 1 && rc.older == 1 && st.bytes_at_risk == 7);
+    bd_risk_stats one;
+    REQUIRE_OK(bd_list_at_risk(cat, other, NULL, NULL, &one), cat);
+    CHECK(one.files_total == 1 && one.files_at_risk == 0);
+    h = help_of(cat);
+    CHECK(h.n == 3 && h.files[0] == 1);
+
+    bd_catalog_close(cat);
+}
+
 static void set_env(const char *name, const char *value)
 {
 #ifdef _WIN32
@@ -441,6 +577,7 @@ int main(void)
     bd_catalog_close(cat);
     CHECK(!exists(at("test.brodalf.lock")));
 
+    test_risk();
     test_report();
 
     if (failures) {

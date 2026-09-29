@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include "resource.h"
 
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "brodalf.manifest"
@@ -31,6 +32,27 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 238, 230, 54, 14
 END
 
+IDD_RISK DIALOGEX 0, 0, 420, 304
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Files at risk"
+FONT 9, "Segoe UI", 0, 0, 1
+BEGIN
+    LTEXT "", IDC_RISK_SUMMARY, 8, 8, 404, 20
+    LTEXT "Keep", -1, 8, 34, 20, 10
+    EDITTEXT IDC_RISK_COPIES, 30, 32, 22, 13, ES_NUMBER
+    LTEXT "copies of every file, in", -1, 56, 34, 78, 10
+    EDITTEXT IDC_RISK_PLACES, 136, 32, 22, 13, ES_NUMBER
+    LTEXT "different places.", -1, 162, 34, 60, 10
+    PUSHBUTTON "Apply", IDC_RISK_APPLY, 226, 31, 44, 14
+    LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Each cloud account is a place of its own. Drives with no place set count as one place together.", -1, 8, 50, 404, 18
+    LTEXT "Back up to these next (double-click a plugged-in one to start):", -1, 8, 72, 330, 10
+    PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 352, 68, 60, 14
+    CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 84, 404, 56
+    LTEXT "Files short of the target, fewest copies first:", IDC_RISK_FILES_TEXT, 8, 146, 404, 10
+    CONTROL "", IDC_RISK_FILES, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 158, 404, 120
+    DEFPUSHBUTTON "Close", IDCANCEL, 362, 284, 50, 14
+END
+
 IDD_PASSPHRASE DIALOGEX 0, 0, 240, 78
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Enter the passphrase"
@@ -58,8 +80,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION 0,1,0,0
-PRODUCTVERSION 0,1,0,0
+FILEVERSION 0,2,0,0
+PRODUCTVERSION 0,2,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -69,8 +91,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "BRODALF backup catalog"
             VALUE "ProductName", "BRODALF"
-            VALUE "FileVersion", "0.1.0"
-            VALUE "ProductVersion", "0.1.0"
+            VALUE "FileVersion", "0.2.0"
+            VALUE "ProductVersion", "0.2.0"
         END
     END
     BLOCK "VarFileInfo"

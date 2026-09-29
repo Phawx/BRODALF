@@ -48,6 +48,7 @@ enum {
     ID_BTN_RESTORE,
     ID_BTN_SECURITY,
     ID_BTN_DRIVES,
+    ID_BTN_RISK,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
@@ -122,7 +123,7 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 
 static HINSTANCE g_inst;
 static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives;
-#define N_BUTTONS 7
+#define N_BUTTONS 8
 static HWND g_buttons[N_BUTTONS];
 static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
 static int g_dpi = 96;
@@ -1194,7 +1195,208 @@ static void update_drives_label(void)
     if (d.total == 0) wcscpy(d.text, L"No backup drives yet. Use Back up to set one up.");
     else if (d.connected == 0) swprintf(d.text, 1024, L"None of your %d backup drive(s) are plugged in.", d.total);
     SetWindowTextW(g_drives, d.text);
+    /* The button says how many files are short of the target. */
+    bd_risk_stats rs;
+    wchar_t risk[64] = L"At risk...";
+    if (bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK && rs.files_at_risk > 0)
+        swprintf(risk, 64, L"At risk (%lld)...", (long long)rs.files_at_risk);
+    SetWindowTextW(g_buttons[7], risk);
 }
+
+/* ---- Files at risk ------------------------------------------------------ */
+
+#define RISK_ROWS 2000
+
+static void lv_columns(HWND lv, const wchar_t **names, const int *widths, int n)
+{
+    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
+    for (int i = 0; i < n; i++) {
+        LVCOLUMNW c;
+        memset(&c, 0, sizeof(c));
+        c.mask = LVCF_TEXT | LVCF_WIDTH;
+        c.pszText = (wchar_t *)names[i];
+        c.cx = S(widths[i]);
+        ListView_InsertColumn(lv, i, &c);
+    }
+}
+
+static void lv_row(HWND lv, const wchar_t **cells, int n)
+{
+    LVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_TEXT;
+    it.iItem = ListView_GetItemCount(lv);
+    it.pszText = (wchar_t *)cells[0];
+    int row = (int)SendMessageW(lv, LVM_INSERTITEMW, 0, (LPARAM)&it);
+    for (int i = 1; i < n; i++) {
+        LVITEMW sub;
+        memset(&sub, 0, sizeof(sub));
+        sub.iSubItem = i;
+        sub.pszText = (wchar_t *)cells[i];
+        SendMessageW(lv, LVM_SETITEMTEXTW, (WPARAM)row, (LPARAM)&sub);
+    }
+}
+
+typedef struct { HWND lv; int rows; } risk_fill_ctx;
+
+/* Help rows: media ids and whether each is connected, by row. */
+static int64_t g_risk_media[64];
+static int g_risk_connected[64], g_risk_media_n;
+static wchar_t g_risk_media_name[64][128];
+static int64_t g_risk_pick;
+
+static int risk_file_cb(void *ctx, const bd_risk_info *r)
+{
+    risk_fill_ctx *f = ctx;
+    if (f->rows >= RISK_ROWS) return 1;
+    f->rows++;
+    wchar_t *src = widen(r->source_name), *rel = widen(r->rel_path), file[1200], copies[16], places[16], size[64], note[200];
+    swprintf(file, 1200, L"%ls\\%ls", src ? src : L"", rel ? rel : L"");
+    for (wchar_t *c = file; *c; c++) if (*c == L'/') *c = L'\\';
+    swprintf(copies, 16, L"%d", r->copies);
+    swprintf(places, 16, L"%d", r->places);
+    format_bytes(r->size, size, 64);
+    note[0] = 0;
+    if (r->older_copies) wcscat(note, L"Changed since its last backup. ");
+    if (r->unknown_place) wcscat(note, L"On a drive with no place set.");
+    const wchar_t *cells[] = {file, copies, places, size, note};
+    lv_row(f->lv, cells, 5);
+    free(src);
+    free(rel);
+    return 0;
+}
+
+static int risk_help_cb(void *ctx, const bd_risk_help *h)
+{
+    risk_fill_ctx *f = ctx;
+    wchar_t *label = widen(h->label), *loc = widen(h->location), name[300], files[32], size[64];
+    swprintf(name, 300, L"%ls%ls", label ? label : L"", h->connected ? L"  (plugged in)" : L"");
+    swprintf(files, 32, L"%lld file%ls", (long long)h->files, h->files == 1 ? L"" : L"s");
+    format_bytes(h->bytes, size, 64);
+    const wchar_t *kind = strcmp(h->kind, "drive") == 0 ? L"Drive" : strcmp(h->kind, "onedrive") == 0 ? L"OneDrive" : L"Dropbox";
+    const wchar_t *cells[] = {name, kind, loc && *loc ? loc : L"(not set)", files, size};
+    lv_row(f->lv, cells, 5);
+    if (g_risk_media_n < 64) {
+        g_risk_media[g_risk_media_n] = h->media_id;
+        g_risk_connected[g_risk_media_n] = h->connected;
+        swprintf(g_risk_media_name[g_risk_media_n], 128, L"%ls%ls%ls%ls", label ? label : L"", loc && *loc ? L" (kept in " : L"",
+                 loc && *loc ? loc : L"", loc && *loc ? L")" : L"");
+        g_risk_media_n++;
+    }
+    free(label);
+    free(loc);
+    f->rows++;
+    return 0;
+}
+
+static void risk_fill(HWND dlg)
+{
+    bd_target t;
+    bd_target_get(g_cat, &t);
+    bd_risk_stats st;
+    memset(&st, 0, sizeof(st));
+    bd_list_at_risk(g_cat, 0, NULL, NULL, &st);
+
+    wchar_t text[512], size[64];
+    format_bytes(st.bytes_at_risk, size, 64);
+    if (st.files_total == 0)
+        swprintf(text, 512, L"No files yet. Add a folder and scan it first.");
+    else if (st.files_at_risk == 0)
+        swprintf(text, 512, L"All %lld files have at least %d copies in %d different places.", (long long)st.files_total, t.copies, t.places);
+    else
+        swprintf(text, 512, L"%lld of %lld files (%ls) %ls fewer than %d copies in %d different places. %lld %ls no copy of %ls current version at all.",
+                 (long long)st.files_at_risk, (long long)st.files_total, size, st.files_at_risk == 1 ? L"has" : L"have", t.copies, t.places,
+                 (long long)st.files_no_copy, st.files_no_copy == 1 ? L"has" : L"have", st.files_no_copy == 1 ? L"its" : L"their");
+    SetDlgItemTextW(dlg, IDC_RISK_SUMMARY, text);
+    EnableWindow(GetDlgItem(dlg, IDC_RISK_BACKUP), st.files_at_risk > 0);
+
+    HWND help = GetDlgItem(dlg, IDC_RISK_HELP), files = GetDlgItem(dlg, IDC_RISK_FILES);
+    ListView_DeleteAllItems(help);
+    ListView_DeleteAllItems(files);
+    risk_fill_ctx hc = {help, 0};
+    g_risk_media_n = 0;
+    if (st.files_at_risk) bd_list_risk_help(g_cat, risk_help_cb, &hc);
+    if (st.files_at_risk && !hc.rows) {
+        const wchar_t *cells[] = {L"None of your drives would help. Set up another drive, or one kept somewhere else.", L"", L"", L"", L""};
+        lv_row(help, cells, 5);
+    }
+    risk_fill_ctx fc = {files, 0};
+    if (st.files_at_risk) bd_list_at_risk(g_cat, 0, risk_file_cb, &fc, NULL);
+    if (st.files_at_risk > fc.rows) {
+        wchar_t more[128];
+        swprintf(more, 128, L"... and %lld more", (long long)(st.files_at_risk - fc.rows));
+        const wchar_t *cells[] = {more, L"", L"", L"", L""};
+        lv_row(files, cells, 5);
+    }
+}
+
+static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_INITDIALOG: {
+        static const wchar_t *help_cols[] = {L"Drive", L"Kind", L"Kept in", L"Would help", L"Size"};
+        static const int help_w[] = {170, 60, 120, 90, 80};
+        static const wchar_t *file_cols[] = {L"File", L"Copies", L"Places", L"Size", L"Note"};
+        static const int file_w[] = {280, 56, 56, 70, 200};
+        lv_columns(GetDlgItem(dlg, IDC_RISK_HELP), help_cols, help_w, 5);
+        lv_columns(GetDlgItem(dlg, IDC_RISK_FILES), file_cols, file_w, 5);
+        bd_target t;
+        bd_target_get(g_cat, &t);
+        SetDlgItemInt(dlg, IDC_RISK_COPIES, (UINT)t.copies, FALSE);
+        SetDlgItemInt(dlg, IDC_RISK_PLACES, (UINT)t.places, FALSE);
+        risk_fill(dlg);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            /* Enter in one of the number boxes applies it. */
+            HWND f = GetFocus();
+            if (f == GetDlgItem(dlg, IDC_RISK_COPIES) || f == GetDlgItem(dlg, IDC_RISK_PLACES))
+                wp = MAKEWPARAM(IDC_RISK_APPLY, BN_CLICKED);
+        }
+        if (LOWORD(wp) == IDC_RISK_BACKUP) {
+            int row = ListView_GetNextItem(GetDlgItem(dlg, IDC_RISK_HELP), -1, LVNI_SELECTED);
+            if (row < 0 || row >= g_risk_media_n) {
+                MessageBoxW(dlg, L"Pick a drive in the list first.", APP_NAME, MB_ICONINFORMATION);
+                return TRUE;
+            }
+            if (!g_risk_connected[row]) {
+                wchar_t m[400];
+                swprintf(m, 400, L"Plug in %ls first. BRODALF will find it on its own.", g_risk_media_name[row]);
+                MessageBoxW(dlg, m, APP_NAME, MB_ICONINFORMATION);
+                return TRUE;
+            }
+            g_risk_pick = g_risk_media[row];
+            EndDialog(dlg, IDC_RISK_BACKUP);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDC_RISK_APPLY) {
+            bd_target t;
+            t.copies = (int)GetDlgItemInt(dlg, IDC_RISK_COPIES, NULL, FALSE);
+            t.places = (int)GetDlgItemInt(dlg, IDC_RISK_PLACES, NULL, FALSE);
+            bd_status s = bd_target_set(g_cat, &t);
+            if (s == BD_OK) s = bd_catalog_save(g_cat);
+            if (s != BD_OK) {
+                wchar_t *e = widen(bd_catalog_error(g_cat));
+                MessageBoxW(dlg, e ? e : L"Could not change the target.", APP_NAME, MB_ICONWARNING);
+                free(e);
+                return TRUE;
+            }
+            log_append(L"Protection target changed.");
+            risk_fill(dlg);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) { EndDialog(dlg, IDOK); return TRUE; }
+        break;
+    case WM_NOTIFY: {
+        NMHDR *nh = (NMHDR *)lp;
+        if (nh->idFrom == IDC_RISK_HELP && nh->code == NM_DBLCLK) SendMessageW(dlg, WM_COMMAND, IDC_RISK_BACKUP, 0);
+        return TRUE;
+    }
+    }
+    return FALSE;
+}
+
 
 /* ---- Folder and name prompts -------------------------------------------- */
 
@@ -1372,6 +1574,19 @@ static enc_ctx media_encryption(int64_t media_id)
     enc_ctx c = {media_id, 0, 0};
     bd_list_media(g_cat, enc_cb, &c);
     return c;
+}
+
+static void cmd_risk(void)
+{
+    g_risk_pick = 0;
+    INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_RISK), g_main, risk_proc);
+    update_drives_label();
+    if (r != IDC_RISK_BACKUP || g_risk_pick <= 0) return;
+    if (media_encryption(g_risk_pick).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) return;
+    job *j = new_job(JOB_BACKUP);
+    if (!j) return;
+    j->media_id = g_risk_pick;
+    enqueue(j);
 }
 
 static void cmd_security(void)
@@ -1575,7 +1790,7 @@ static void layout(void)
     int pad = S(8), bar = S(30), log_h = S(110);
 
     int x = pad;
-    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(80), S(104)};
+    int widths[N_BUTTONS] = {S(96), S(70), S(96), S(112), S(90), S(80), S(104), S(104)};
     for (int i = 0; i < N_BUTTONS; i++) {
         MoveWindow(g_buttons[i], x, pad, widths[i], bar, TRUE);
         x += widths[i] + S(6);
@@ -1648,6 +1863,7 @@ static void create_children(HWND hwnd)
     g_buttons[4] = make_button(L"Restore...", ID_BTN_RESTORE);
     g_buttons[5] = make_button(L"Drives...", ID_BTN_DRIVES);
     g_buttons[6] = make_button(L"Passphrase...", ID_BTN_SECURITY);
+    g_buttons[7] = make_button(L"At risk...", ID_BTN_RISK);
 
     g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
@@ -1711,6 +1927,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_ADD: cmd_add_folder(); break;
         case ID_BTN_SCAN: enqueue(new_job(JOB_SCAN)); break;
         case ID_BTN_DRIVES: cmd_drives(); break;
+        case ID_BTN_RISK: cmd_risk(); break;
         case ID_BTN_BACKUP: cmd_backup(); break;
         case ID_BTN_CHECK: cmd_check(); break;
         case ID_BTN_RESTORE: cmd_restore(); break;

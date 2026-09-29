@@ -112,6 +112,24 @@ drive and lets you rename it.
 
 ![Drive details](docs/images/gui-drive-details.png)
 
+### Files at risk
+
+BRODALF has a protection target: by default **2 copies of every file, in 2
+different places**. A place is what a drive's "where it is kept" says (so
+"Box A" and "Office shelf" are two places), every cloud account is a place
+of its own, and drives with no place set count together as one. A copy
+counts when BRODALF last saw it good, whether or not the drive is plugged in
+right now.
+
+The **At risk** button shows how many files fall short. It opens a list of
+those files, fewest copies first (a file changed since its last backup has
+no copy of its new version), and a list of the drives that would help most,
+with where each is kept. Double-click a plugged-in drive, or pick it and
+press **Back up to it**, to fill the gap. The target can be changed in the
+same window.
+
+![Files at risk](docs/images/gui-at-risk.png)
+
 ### OneDrive and Dropbox
 
 **Back up** also offers **OneDrive...** and **Dropbox...**. Name the storage,
@@ -184,6 +202,9 @@ brodalf-cli drives family.brodalf                            # make, model, seri
 brodalf-cli drive-location family.brodalf "Red Vault" "Box 3, garage"
 brodalf-cli encrypt-catalog family.brodalf on
 brodalf-cli passphrase family.brodalf                        # change it
+
+brodalf-cli target  family.brodalf 2 2                       # 2 copies of everything, in 2 places
+brodalf-cli at-risk family.brodalf                           # what falls short, and which drive to plug in
 
 brodalf-cli cloud-add family.brodalf dropbox "Dropbox"       # opens the browser to sign in
 brodalf-cli backup family.brodalf cloud:Dropbox

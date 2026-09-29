@@ -194,7 +194,9 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             } else {
                 bd_stat_t st;
                 fill_stat(&sb, &st);
-                if (cb(ctx, child_rel, &st) != 0) stop = 1;
+                int r = cb(ctx, child_rel, &st);
+                if (r == BD_WALK_SKIP) { /* leave the folder out */ }
+                else if (r != 0) stop = 1;
                 else if (st.is_dir && stack_push(&stack, child_rel) != 0) { rc = -1; stop = 1; }
             }
             free(child_rel);

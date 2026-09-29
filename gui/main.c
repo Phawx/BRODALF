@@ -59,6 +59,12 @@ enum {
     ID_MENU_CHECK_180,
     ID_MENU_CHECK_365,
     ID_MENU_CHECK_NEVER,
+    ID_MENU_KEEP_0,
+    ID_MENU_KEEP_1,
+    ID_MENU_KEEP_2,
+    ID_MENU_KEEP_3,
+    ID_MENU_KEEP_4,
+    ID_MENU_SKIP,
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
     ID_MENU_OTHER = 900,
     ID_MENU_ONEDRIVE,
@@ -159,6 +165,9 @@ typedef struct job {
     int startup;        /* drives: the first look when BRODALF opens */
     int64_t new_ids[16]; /* drives: drives connected by this job */
     int n_new;
+    int64_t span[BD_MAX_CONTINUE]; /* backup: only what is missing from these full drives */
+    int64_t no_room, bytes_no_room; /* backup: what did not fit */
+    int64_t offline;    /* restore: files on drives not plugged in */
     int problems;
     bd_status status;
     wchar_t summary[512];
@@ -369,6 +378,10 @@ static DWORD WINAPI worker(LPVOID arg)
         swprintf(j->summary, 512, L"Scan done: %lld files, %lld new, %lld changed, %lld deleted, %ls checksummed.",
                  (long long)st.files_seen, (long long)st.files_new, (long long)st.files_changed,
                  (long long)st.files_deleted, size);
+        if (st.skipped) {
+            size_t len = wcslen(j->summary);
+            swprintf(j->summary + len, 512 - len, L" %lld left out by the skip list.", (long long)st.skipped);
+        }
         break;
     }
     case JOB_BACKUP: {
@@ -407,12 +420,27 @@ static DWORD WINAPI worker(LPVOID arg)
         else if (!id) s = try_connect(j, j->root, &id) ? BD_OK : BD_ERR_NOT_FOUND;
         if (s == BD_OK) {
             bd_backup_stats bs;
-            s = bd_backup(g_cat, id, 0, &bs, job_log, j);
+            bd_backup_opts bo;
+            memset(&bo, 0, sizeof(bo));
+            memcpy(bo.only_missing_from, j->span, sizeof(bo.only_missing_from));
+            s = bd_backup_ex(g_cat, id, 0, &bo, &bs, job_log, j);
             if (s == BD_OK) s = bd_catalog_copy_to_media(g_cat, id);
             format_bytes(bs.bytes_copied, size, 64);
             swprintf(j->summary, 512, L"Backup done: %lld files copied (%ls), %lld already there, %lld failed, %lld older copies kept.",
                      (long long)bs.files_copied, size, (long long)bs.files_already_there, (long long)bs.files_failed,
                      (long long)bs.versions_moved);
+            size_t len = wcslen(j->summary);
+            if (bs.versions_pruned) {
+                swprintf(j->summary + len, 512 - len, L" %lld old versions cleaned up.", (long long)bs.versions_pruned);
+                len = wcslen(j->summary);
+            }
+            if (bs.files_no_room) {
+                format_bytes(bs.bytes_no_room, size, 64);
+                swprintf(j->summary + len, 512 - len, L" The drive is full: %lld file%ls (%ls) did not fit.", (long long)bs.files_no_room,
+                         bs.files_no_room == 1 ? L"" : L"s", size);
+            }
+            j->no_room = bs.files_no_room;
+            j->bytes_no_room = bs.bytes_no_room;
         }
         break;
     }
@@ -427,9 +455,10 @@ static DWORD WINAPI worker(LPVOID arg)
         bd_restore_stats rs;
         s = bd_restore(g_cat, j->source_id, j->rel, j->dest, &rs, job_log, j);
         format_bytes(rs.bytes_restored, size, 64);
-        swprintf(j->summary, 512, L"Restore done: %lld files (%ls), %lld on drives that are not plugged in, %lld never backed up, %lld failed.",
-                 (long long)rs.files_restored, size, (long long)rs.files_offline, (long long)rs.files_no_copy,
-                 (long long)rs.files_failed);
+        swprintf(j->summary, 512, L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed.",
+                 (long long)rs.files_restored, size, (long long)rs.files_already_there, (long long)rs.files_offline,
+                 (long long)rs.files_no_copy, (long long)rs.files_failed);
+        j->offline = rs.files_offline;
         if (rs.files_need_passphrase) {
             size_t len = wcslen(j->summary);
             swprintf(j->summary + len, 512 - len, L" %lld need the passphrase.", (long long)rs.files_need_passphrase);
@@ -774,7 +803,9 @@ static void rebuild_tree(void)
         wchar_t counts[512], text[1024];
         item_text(&as_folder, l.names[i], l.labels[i], counts, 512);
         wchar_t *wp = widen(l.paths[i]);
-        swprintf(text, 1024, L"%ls   [%ls]", counts, wp);
+        wchar_t bytes[64];
+        format_bytes(l.items[i].bytes_total, bytes, 64);
+        swprintf(text, 1024, L"%ls   %ls   [%ls]", counts, bytes, wp);
         HTREEITEM h = insert_item(TVI_ROOT, text, r, 1);
         if (first_build) keys_add(&expanded, r ? r->source_id : 0, 0);
         (void)h;
@@ -1715,10 +1746,185 @@ static void remind_checks(void)
     free(d.text.p);
 }
 
+/* ---- Full drives and restores across drives ---------------------------- */
+
+/* Drives that filled up, in order, and what is still waiting for room. */
+static int64_t g_full[BD_MAX_CONTINUE];
+static int g_full_n;
+static int64_t g_full_left, g_full_left_bytes;
+
+/* A restore that is waiting for more drives. */
+static struct { int active; int64_t source_id; char *rel, *dest; } g_pending;
+
+static int in_full_chain(int64_t id)
+{
+    for (int i = 0; i < g_full_n; i++)
+        if (g_full[i] == id) return 1;
+    return 0;
+}
+
+static void media_name(int64_t id, wchar_t *out, size_t cap)
+{
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    drive_name(o.found ? o.label : "the drive", o.found ? o.location : "", out, cap);
+}
+
+typedef struct { int64_t best; int64_t best_free; } other_ctx;
+
+static int other_drive_cb(void *ctx, const bd_media_info *m)
+{
+    other_ctx *o = ctx;
+    if (!m->connected || in_full_chain(m->media_id)) return 0;
+    if (!o->best || m->free_bytes > o->best_free) { o->best = m->media_id; o->best_free = m->free_bytes; }
+    return 0;
+}
+
+/* Ask whether a drive should take just what did not fit on the full ones.
+ * Fills j->span if so. */
+static void ask_continue(job *j, int64_t id, const wchar_t *name)
+{
+    if (!g_full_n || (id && in_full_chain(id))) return;
+    wchar_t full[600], size[64], msg[1600];
+    media_name(g_full[g_full_n - 1], full, 600);
+    format_bytes(g_full_left_bytes, size, 64);
+    swprintf(msg, 1600,
+             L"%ls filled up earlier and %lld files (%ls) were left over.\n\n"
+             L"Put just those on %ls, so the drives together hold everything?\n\n"
+             L"(No backs up everything that is missing from it.)",
+             full, (long long)g_full_left, size, name);
+    if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES)
+        memcpy(j->span, g_full, sizeof(j->span));
+}
+
+static void after_backup(job *j)
+{
+    wchar_t name[600];
+    media_name(j->media_id, name, 600);
+    if (j->no_room > 0) {
+        /* This drive joins the chain of full ones. */
+        g_full_n = 0;
+        for (int i = 0; i < BD_MAX_CONTINUE && j->span[i]; i++) g_full[g_full_n++] = j->span[i];
+        if (g_full_n < BD_MAX_CONTINUE) g_full[g_full_n++] = j->media_id;
+        g_full_left = j->no_room;
+        g_full_left_bytes = j->bytes_no_room;
+        wchar_t size[64], msg[1600];
+        format_bytes(j->bytes_no_room, size, 64);
+        other_ctx o = {0, 0};
+        bd_list_media(g_cat, other_drive_cb, &o);
+        if (o.best) {
+            wchar_t other[600];
+            media_name(o.best, other, 600);
+            swprintf(msg, 1600, L"%ls is full. %lld file%ls (%ls) did not fit.\n\nPut %ls on %ls now?", name,
+                     (long long)j->no_room, j->no_room == 1 ? L"" : L"s", size, j->no_room == 1 ? L"it" : L"them", other);
+            if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES) {
+                job *b = new_job(JOB_BACKUP);
+                if (b) {
+                    b->media_id = o.best;
+                    memcpy(b->span, g_full, sizeof(b->span));
+                    enqueue(b);
+                }
+            }
+        } else {
+            swprintf(msg, 1600,
+                     L"%ls is full. %lld file%ls (%ls) did not fit.\n\n"
+                     L"Plug in another backup drive, or set up a new one with Back up..., and BRODALF will offer to put %ls there.",
+                     name, (long long)j->no_room, j->no_room == 1 ? L"" : L"s", size, j->no_room == 1 ? L"it" : L"them");
+            MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+        }
+    } else if (j->span[0]) {
+        wchar_t line[800];
+        swprintf(line, 800, L"Everything left over from the full drive now has a copy on %ls.", name);
+        log_append(line);
+        g_full_n = 0;
+    }
+    if (j->auto_run) offer_check(j->media_id);
+}
+
+typedef struct { wtext t; int n; int any_offline; int64_t ids[64]; int nid; } plan_text;
+
+static int plan_text_cb(void *ctx, const bd_restore_step *st)
+{
+    plan_text *p = ctx;
+    wchar_t name[600], size[64];
+    drive_name(st->label, st->location, name, 600);
+    format_bytes(st->bytes, size, 64);
+    wadd(&p->t, L"    %d. %ls: %lld file%ls (%ls)%ls\n", ++p->n, name, (long long)st->files, st->files == 1 ? L"" : L"s",
+         size, st->connected ? L", plugged in" : L"");
+    if (!st->connected) p->any_offline = 1;
+    if (p->nid < 64) p->ids[p->nid++] = st->media_id;
+    return 0;
+}
+
+static void clear_pending(void)
+{
+    g_pending.active = 0;
+    free(g_pending.rel);
+    free(g_pending.dest);
+    g_pending.rel = g_pending.dest = NULL;
+}
+
+static void after_restore(job *j)
+{
+    if (j->offline <= 0) {
+        if (g_pending.active) log_append(L"The restore is complete: every file that has a copy is back.");
+        clear_pending();
+        return;
+    }
+    if (!g_pending.active) {
+        g_pending.active = 1;
+        g_pending.source_id = j->source_id;
+        g_pending.rel = xstrdup(j->rel);
+        g_pending.dest = xstrdup(j->dest);
+    }
+    plan_text p;
+    memset(&p, 0, sizeof(p));
+    bd_restore_plan(g_cat, j->source_id, j->rel, j->dest, plan_text_cb, &p, NULL, NULL);
+    if (p.t.p) {
+        wtext msg = {NULL, 0, 0};
+        wadd(&msg, L"%lld file%ls on drives that are not plugged in. Plug these in, one at a time; "
+                   L"BRODALF restores each one's files when it arrives:\r\n%ls",
+             (long long)j->offline, j->offline == 1 ? L" is" : L"s are", p.t.p);
+        for (wchar_t *c = msg.p; c && *c; c++) if (*c == L'\n' && (c == msg.p || c[-1] != L'\r')) *c = L' ';
+        log_append(msg.p);
+        free(msg.p);
+    }
+    free(p.t.p);
+}
+
+/* A drive arrived while a restore waits for it: restore its part. */
+static void resume_restore(const job *drives)
+{
+    if (!g_pending.active || !drives->n_new) return;
+    plan_text p;
+    memset(&p, 0, sizeof(p));
+    bd_restore_plan(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, plan_text_cb, &p, NULL, NULL);
+    free(p.t.p);
+    int helps = 0;
+    for (int i = 0; i < p.nid && !helps; i++)
+        for (int k = 0; k < drives->n_new; k++)
+            if (p.ids[i] == drives->new_ids[k]) helps = 1;
+    if (!helps) return;
+    for (int k = 0; k < drives->n_new; k++)
+        if (media_encryption(drives->new_ids[k]).encrypted && !bd_catalog_is_unlocked(g_cat) &&
+            !unlock_ui(L"The drive you plugged in is encrypted. Enter the passphrase to restore from it."))
+            return;
+    log_append(L"A drive the restore needs was plugged in. Restoring the files it holds.");
+    job *r = new_job(JOB_RESTORE);
+    if (!r) return;
+    r->source_id = g_pending.source_id;
+    r->rel = xstrdup(g_pending.rel);
+    r->dest = xstrdup(g_pending.dest);
+    enqueue(r);
+}
+
 static void after_drives(job *j)
 {
     if (j->startup) remind_checks();
     if (!j->n_new || !j->auto_run) return;
+    resume_restore(j);
     if (bd_option_get(g_cat, "auto_backup") == 1) {
         /* Ask for any passphrase first, before jobs start running. */
         int64_t ids[16];
@@ -1734,16 +1940,117 @@ static void after_drives(job *j)
         if (!n) return;
         log_append(L"A backup drive was plugged in. Checking your folders for changes, then backing up to it. "
                    L"(Turn this off under Settings.)");
-        enqueue(new_job(JOB_SCAN));
+        job *jobs[16];
         for (int i = 0; i < n; i++) {
-            job *b = new_job(JOB_BACKUP);
-            if (!b) continue;
-            b->media_id = ids[i];
-            b->auto_run = 1;
-            enqueue(b);
+            jobs[i] = new_job(JOB_BACKUP);
+            if (!jobs[i]) continue;
+            jobs[i]->media_id = ids[i];
+            jobs[i]->auto_run = 1;
+            wchar_t name[600];
+            media_name(ids[i], name, 600);
+            ask_continue(jobs[i], ids[i], name);
         }
+        enqueue(new_job(JOB_SCAN));
+        for (int i = 0; i < n; i++)
+            if (jobs[i]) enqueue(jobs[i]);
     } else {
-        for (int i = 0; i < j->n_new; i++) offer_check(j->new_ids[i]);
+        for (int i = 0; i < j->n_new; i++) {
+            /* Even without automatic backups, a waiting overflow is worth offering. */
+            if (g_full_n && !in_full_chain(j->new_ids[i])) {
+                job *b = new_job(JOB_BACKUP);
+                wchar_t name[600];
+                media_name(j->new_ids[i], name, 600);
+                if (b) {
+                    b->media_id = j->new_ids[i];
+                    ask_continue(b, j->new_ids[i], name);
+                    if (b->span[0]) enqueue(b);
+                    else job_free(b);
+                }
+            }
+            offer_check(j->new_ids[i]);
+        }
+    }
+}
+
+typedef struct { int versions, days; const wchar_t *text; } keep_preset;
+static const keep_preset KEEP_PRESETS[5] = {
+    {0, 0, L"Keep every old version"},
+    {10, 365, L"Keep the last 10, and everything from the past year"},
+    {5, 365, L"Keep the last 5, and everything from the past year"},
+    {3, 90, L"Keep the last 3, and everything from the past 3 months"},
+    {2, 0, L"Keep only the version before the current one"},
+};
+
+/* The skip list, with the edit box's \r\n line ends. */
+static wchar_t *skip_text_for_edit(const char *list)
+{
+    wtext t = {NULL, 0, 0};
+    wchar_t *w = widen(list);
+    for (wchar_t *c = w; c && *c; c++) {
+        if (*c == L'\r') continue;
+        if (*c == L'\n') wadd(&t, L"\r\n");
+        else wadd(&t, L"%lc", *c);
+    }
+    free(w);
+    return t.p ? t.p : _wcsdup(L"");
+}
+
+static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch (msg) {
+    case WM_INITDIALOG: {
+        char *list = bd_skip_list_get(g_cat);
+        wchar_t *w = skip_text_for_edit(list ? list : "");
+        SetDlgItemTextW(dlg, IDC_SKIP_EDIT, w);
+        free(w);
+        free(list);
+        SetFocus(GetDlgItem(dlg, IDC_SKIP_EDIT));
+        SendDlgItemMessageW(dlg, IDC_SKIP_EDIT, EM_SETSEL, 0, 0);
+        return FALSE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDC_SKIP_DEFAULT) {
+            wchar_t *w = skip_text_for_edit(bd_skip_list_default());
+            SetDlgItemTextW(dlg, IDC_SKIP_EDIT, w);
+            free(w);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDOK) {
+            int n = GetWindowTextLengthW(GetDlgItem(dlg, IDC_SKIP_EDIT));
+            wchar_t *w = calloc((size_t)n + 1, sizeof(wchar_t));
+            if (!w) return TRUE;
+            GetDlgItemTextW(dlg, IDC_SKIP_EDIT, w, n + 1);
+            char *u = narrow(w);
+            free(w);
+            if (u) {
+                char *o = u;
+                for (char *c = u; *c; c++) if (*c != '\r') *o++ = *c;
+                *o = '\0';
+            }
+            bd_status s = u ? bd_skip_list_set(g_cat, u) : BD_ERR_NOMEM;
+            free(u);
+            if (s == BD_OK) s = bd_catalog_save(g_cat);
+            if (s != BD_OK) {
+                wchar_t *e = widen(bd_catalog_error(g_cat));
+                MessageBoxW(dlg, e ? e : L"Could not save the list.", APP_NAME, MB_ICONWARNING);
+                free(e);
+                return TRUE;
+            }
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        break;
+    }
+    return FALSE;
+}
+
+static void cmd_skip(void)
+{
+    if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_SKIP), g_main, skip_proc) == IDOK) {
+        log_append(L"The skip list changed. Scanning your folders again.");
+        enqueue(new_job(JOB_SCAN));
     }
 }
 
@@ -1765,6 +2072,13 @@ static void cmd_security(void)
     AppendMenuW(remind, MF_STRING | (days == 365 ? MF_CHECKED : 0), ID_MENU_CHECK_365, L"Every year");
     AppendMenuW(remind, MF_STRING | (days == 0 ? MF_CHECKED : 0), ID_MENU_CHECK_NEVER, L"Never");
     AppendMenuW(m, MF_POPUP, (UINT_PTR)remind, L"Remind me to check each drive");
+    HMENU keep = CreatePopupMenu();
+    int kv = bd_option_get(g_cat, "keep_versions"), kd = bd_option_get(g_cat, "keep_days");
+    for (int i = 0; i < 5; i++)
+        AppendMenuW(keep, MF_STRING | (KEEP_PRESETS[i].versions == kv && (kv == 0 || KEEP_PRESETS[i].days == kd) ? MF_CHECKED : 0),
+                    (UINT_PTR)(ID_MENU_KEEP_0 + i), KEEP_PRESETS[i].text);
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)keep, L"Old versions on each drive");
+    AppendMenuW(m, MF_STRING, ID_MENU_SKIP, L"What to leave out...");
     RECT r;
     GetWindowRect(g_buttons[6], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
@@ -1792,6 +2106,16 @@ static void cmd_security(void)
         if (bd_option_set(g_cat, "auto_backup", on) == BD_OK && bd_catalog_save(g_cat) == BD_OK)
             log_append(on ? L"BRODALF will back up to a drive as soon as it is plugged in."
                           : L"BRODALF will only back up when you press Back up.");
+    } else if (cmd >= ID_MENU_KEEP_0 && cmd <= ID_MENU_KEEP_4) {
+        const keep_preset *k = &KEEP_PRESETS[cmd - ID_MENU_KEEP_0];
+        if (bd_option_set(g_cat, "keep_versions", k->versions) == BD_OK && bd_option_set(g_cat, "keep_days", k->days) == BD_OK &&
+            bd_catalog_save(g_cat) == BD_OK) {
+            wchar_t line[300];
+            swprintf(line, 300, L"Old versions: %ls. Older ones are cleaned up the next time you back up to each drive.", k->text);
+            log_append(line);
+        }
+    } else if (cmd == ID_MENU_SKIP) {
+        cmd_skip();
     } else if (cmd >= ID_MENU_CHECK_90 && cmd <= ID_MENU_CHECK_NEVER) {
         static const int choice[] = {90, 180, 365, 0};
         int d = choice[cmd - ID_MENU_CHECK_90];
@@ -1951,11 +2275,37 @@ static void cmd_restore(void)
         return;
     char *dest = pick_folder(g_main, L"Choose where to put the restored files. They go into a subfolder named after the protected folder.");
     if (!dest) return;
+
+    /* Which drives this needs, in order. */
+    plan_text p;
+    memset(&p, 0, sizeof(p));
+    int64_t total = 0, none = 0;
+    bd_restore_plan(g_cat, r->source_id, r->rel, dest, plan_text_cb, &p, &total, &none);
+    if (total == 0) {
+        free(p.t.p);
+        free(dest);
+        MessageBoxW(g_main, L"Everything here is already restored in that folder.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    if (p.n > 1 || p.any_offline || none) {
+        wtext msg = {NULL, 0, 0};
+        wadd(&msg, L"Restoring %lld file%ls needs these drives:\n\n%ls", (long long)total, total == 1 ? L"" : L"s",
+             p.t.p ? p.t.p : L"    (none)\n");
+        if (none) wadd(&msg, L"\n%lld file%ls no copy on any drive.\n", (long long)none, none == 1 ? L" has" : L"s have");
+        if (p.any_offline)
+            wadd(&msg, L"\nBRODALF restores what the plugged-in drives hold now. Then plug in each other drive; "
+                       L"its files are restored as soon as it arrives, while BRODALF is open.\n");
+        int go = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION | MB_OKCANCEL) == IDOK;
+        free(msg.p);
+        if (!go) { free(p.t.p); free(dest); return; }
+    }
+    free(p.t.p);
     job *j = new_job(JOB_RESTORE);
     if (!j) { free(dest); return; }
     j->source_id = r->source_id;
     j->rel = xstrdup(r->rel ? r->rel : "");
     j->dest = dest;
+    clear_pending();
     enqueue(j);
 }
 
@@ -2352,7 +2702,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         show_detail();
         if (GetWindowTextLengthW(g_search) > 0) run_search();
         if (j->kind == JOB_DRIVES) after_drives(j);
-        else if (j->kind == JOB_BACKUP && j->auto_run && j->status == BD_OK) offer_check(j->media_id);
+        else if (j->kind == JOB_BACKUP && j->status == BD_OK) after_backup(j);
+        else if (j->kind == JOB_RESTORE && j->status == BD_OK) after_restore(j);
         job_free(j);
         start_next_job();
         return 0;

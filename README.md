@@ -154,6 +154,51 @@ result to see its details; double-click it to go to it in the tree.
 
 ![Search](docs/images/gui-search.png)
 
+### Restoring a folder spread across drives
+
+When you restore a folder whose files live on several drives, BRODALF first
+shows which drives it needs, in order, with where each one is kept:
+"1. Drive B (kept in Box 7), plugged in; 2. Drive A (kept in Box 3)". It
+restores what the plugged-in drives hold right away, then restores each
+other drive's part as soon as you plug it in (while BRODALF is open).
+Files already in the destination with the right size and contents are
+skipped, so an interrupted restore just picks up where it stopped.
+
+![Restore plan](docs/images/gui-restore-plan.png)
+
+### When a drive fills up
+
+A backup never fills a drive to the last byte (it leaves 16 MB, or 0.5% of
+the drive, whichever is more). Files that don't fit are skipped and smaller
+ones still go on. BRODALF then offers to put what didn't fit on another
+plugged-in drive, or asks you to plug one in; that drive gets only the
+files the full drive(s) couldn't take, so a big folder spreads across as
+many drives as it needs. The tree shows how much space each protected
+folder needs next to its name.
+
+![Drive full](docs/images/gui-drive-full.png)
+
+### What to leave out
+
+Scans skip temp files, caches and things a program can rebuild, such as
+`*.tmp`, `~$*` Office lock files, `Thumbs.db`, `$RECYCLE.BIN`,
+`node_modules`, `__pycache__` and `.cache`. Change the list under
+**Settings > What to leave out...**: one pattern per line, `*` and `?` as
+wildcards, a trailing `/` for folders only, and a `/` in the middle (like
+`Photos/Exports/`) for a path inside a protected folder. Files that are
+left out and were never backed up drop out of the tree; ones that were
+backed up show as deleted, and their copies stay.
+
+### Old versions
+
+When a file changes, the previous copy moves into `.versions` on the drive.
+By default each drive keeps the last 5 old versions of a file, and every
+old version from the past year; anything older than both is removed at the
+start of the next backup to that drive. Pick another rule under
+**Settings > Old versions on each drive** (keep everything, last 10 or past
+year, last 3 or past 3 months, or only the version before the current one).
+The current version is never removed.
+
 ### OneDrive and Dropbox
 
 **Back up** also offers **OneDrive...** and **Dropbox...**. Name the storage,
@@ -231,6 +276,13 @@ brodalf-cli target  family.brodalf 2 2                       # 2 copies of every
 brodalf-cli at-risk family.brodalf                           # what falls short, and which drive to plug in
 brodalf-cli search  family.brodalf party 2024                # find a file and the drive (and box) holding it
 brodalf-cli option  family.brodalf check_days 365            # remind to re-read each drive yearly
+
+brodalf-cli restore-plan family.brodalf --source Pictures --dest D:\restored   # which drives, in which order
+brodalf-cli backup family.brodalf G:\ --continue-from "Blue WD 4TB"  # only what did not fit on the full drive
+brodalf-cli skip    family.brodalf --add "Downloads/"         # leave a folder out of scans
+brodalf-cli option  family.brodalf keep_versions 3           # keep the last 3 old versions ...
+brodalf-cli option  family.brodalf keep_days 90              # ... and anything from the past 90 days
+brodalf-cli prune   family.brodalf E:\                        # apply that now (backups also do it)
 
 brodalf-cli cloud-add family.brodalf dropbox "Dropbox"       # opens the browser to sign in
 brodalf-cli backup family.brodalf cloud:Dropbox

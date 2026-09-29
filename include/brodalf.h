@@ -102,7 +102,23 @@ typedef struct {
     int64_t bytes_hashed;
     int64_t skipped_links;
     int64_t errors;
+    int64_t skipped;         /* files and folders left out by the skip list */
 } bd_scan_stats;
+
+/* The skip list: files and folders a scan leaves out. One pattern per line,
+ * matched against names ignoring case, with * and ? as wildcards. A pattern
+ * ending in / matches folders only (and everything inside them). A pattern
+ * with a / elsewhere is matched against the whole path inside the protected
+ * folder, like "Photos/Exports/". Blank lines and lines starting with #
+ * are ignored. Files already in the catalog that are now skipped are
+ * dropped from it, or marked deleted if they have copies. */
+const char *bd_skip_list_default(void);
+/* The catalog's list (the default until one is set). malloc'd. */
+char *bd_skip_list_get(bd_catalog *cat);
+/* NULL goes back to the default; "" skips nothing. */
+bd_status bd_skip_list_set(bd_catalog *cat, const char *patterns);
+/* 1 if rel_path (inside a protected folder, '/'-separated) is skipped. */
+int bd_skip_match(const char *patterns, const char *rel_path, int is_dir);
 
 /* Scan every source folder. New or changed files are hashed (BLAKE3) and get
  * a new version. Unreadable entries are logged and skipped. */
@@ -187,14 +203,44 @@ typedef struct {
     int64_t files_failed;
     int64_t versions_moved;   /* older copies moved into .versions */
     int64_t bytes_copied;
+    int64_t files_no_room;    /* did not fit: the drive is full */
+    int64_t bytes_no_room;
+    int64_t versions_pruned;  /* old copies removed from .versions by the keep rule */
+    int64_t bytes_pruned;
 } bd_backup_stats;
+
+#define BD_MAX_CONTINUE 8
+typedef struct {
+    /* Only files with no good copy on any of these drives (0 ends the
+     * list): to carry on with what did not fit on full ones. Empty: every
+     * file missing from this drive. */
+    int64_t only_missing_from[BD_MAX_CONTINUE];
+} bd_backup_opts;
 
 /* Copy the current version of every file that has no good copy on this
  * drive. The drive must be connected. source_id 0 means all sources. The
  * previous copy of a changed file is kept under .versions, never
- * overwritten. */
+ * overwritten. Old copies in .versions are first cleaned up by the keep
+ * rule (bd_prune_versions). Files that would leave the drive nearly full
+ * are left for another drive and counted in files_no_room; smaller files
+ * after them are still copied. */
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                     bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
+bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, const bd_backup_opts *opts,
+                       bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* The keep rule for old versions, from the options "keep_versions"
+ * (default 5; 0 keeps every version) and "keep_days" (default 365): an old
+ * version's copy in .versions is removed once it is not among the newest
+ * keep_versions versions of its file AND it was replaced more than
+ * keep_days ago. Current versions are never touched. */
+typedef struct {
+    int64_t copies_removed;
+    int64_t bytes_freed;
+    int64_t failed;
+} bd_prune_stats;
+
+bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* Save the catalog and put a copy of it on the drive as
  * BRODALF/<catalog-uuid>/catalog-backup.brodalf. The copy is encrypted
@@ -213,13 +259,35 @@ typedef struct {
     int64_t files_failed;
     int64_t files_need_passphrase; /* only on an encrypted drive, and the catalog is locked */
     int64_t bytes_restored;
+    int64_t files_already_there;   /* the destination already holds this exact version */
 } bd_restore_stats;
 
 /* Restore the current version of every file in a source (optionally only
  * under rel_prefix) into dest_root/<source name>/..., from connected
- * storage. Every restored file is checked against its BLAKE3 hash. */
+ * storage. Every restored file is checked against its BLAKE3 hash. A file
+ * already at its destination with the right contents is left alone, so the
+ * same restore can be run again as each drive holding the rest arrives. */
 bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                      bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* Which drives a restore needs, in the order to plug them in: drives that
+ * are already plugged in first, then each drive that holds the most of
+ * what is still missing. Files already at dest_root (when given) are not
+ * counted. files_no_copy is set to the files no drive holds. */
+typedef struct {
+    int64_t media_id;
+    const char *label;
+    const char *kind;
+    const char *location;  /* "" if not set */
+    int connected;
+    int64_t files;         /* files this drive supplies in the plan */
+    int64_t bytes;
+} bd_restore_step;
+
+typedef int (*bd_restore_step_fn)(void *ctx, const bd_restore_step *step);
+
+bd_status bd_restore_plan(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                          bd_restore_step_fn fn, void *ctx, int64_t *files_total, int64_t *files_no_copy);
 
 /* ---- Ghost tree queries ---------------------------------------------- */
 
@@ -243,6 +311,7 @@ typedef struct {
     int64_t files_total;     /* live files in the source */
     int64_t files_available;
     const char *offline_media_label; /* OFFLINE: a drive to plug in */
+    int64_t bytes_total;     /* size of the current version of every live file */
 } bd_source_info;
 
 typedef struct {
@@ -354,6 +423,8 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
  *                  is plugged in; 0: only when asked.
  *   "check_days"   remind to run a full check on a drive whose oldest copy
  *                  was last read this many days ago (default 180; 0: never).
+ *   "keep_versions", "keep_days"  the keep rule for old versions (default
+ *                  5 and 365; see bd_prune_versions).
  * bd_option_get returns the default for an unset option and -1 for an
  * unknown name. */
 int bd_option_get(bd_catalog *cat, const char *name);

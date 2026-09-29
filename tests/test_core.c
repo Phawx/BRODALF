@@ -409,6 +409,164 @@ static void test_search(void)
     bd_catalog_close(cat);
 }
 
+static int count_hits(bd_catalog *cat, const char *text)
+{
+    return search(cat, text).n;
+}
+
+static int source_bytes(void *ctx, const bd_source_info *info)
+{
+    *(int64_t *)ctx += info->bytes_total;
+    return 0;
+}
+
+typedef struct { char labels[8][64]; int64_t files[8]; int connected[8]; int n; } plan_list;
+
+static int collect_plan(void *ctx, const bd_restore_step *st)
+{
+    plan_list *p = ctx;
+    if (p->n < 8) {
+        snprintf(p->labels[p->n], 64, "%s", st->label);
+        p->files[p->n] = st->files;
+        p->connected[p->n] = st->connected;
+        p->n++;
+    }
+    return 0;
+}
+
+/* Skip lists, full drives, the keep rule for old versions, restore plans. */
+static void test_drives_and_versions(void)
+{
+    const char *def = bd_skip_list_default();
+    CHECK(bd_skip_match(def, "node_modules/pkg/index.js", 0));
+    CHECK(bd_skip_match(def, "code/app/node_modules", 1));
+    CHECK(!bd_skip_match(def, "code/node_modules", 0)); /* a file with that name */
+    CHECK(bd_skip_match(def, "Report.TMP", 0) && bd_skip_match(def, "Docs/~$letter.docx", 0));
+    CHECK(!bd_skip_match(def, "Docs/letter.docx", 0) && !bd_skip_match(def, "notes.txt", 0));
+    CHECK(bd_skip_match("# mine\n  Photos/Exports/  \r\n*.bak\n", "Photos/Exports/a.jpg", 0));
+    CHECK(!bd_skip_match("Photos/Exports/\n", "Photos/a.jpg", 0));
+    CHECK(bd_skip_match("*.bak\n", "x/y/file.BAK", 0) && !bd_skip_match("", "file.bak", 0));
+
+    write_file(at("span/src/keep.txt"), "keep");
+    write_file(at("span/src/big.bin"), "0123456789012345678901234567890123456789");
+    write_file(at("span/src/scratch.tmp"), "tmp");
+    write_file(at("span/src/node_modules/pkg/index.js"), "js");
+    write_file(at("span/src/v.txt"), "1");
+    bd_mkdirs(at("span/D"));
+    bd_mkdirs(at("span/E"));
+    bd_mkdirs(at("span/out"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("span/span.brodalf"), &cat), NULL);
+    int64_t src, d, e;
+    REQUIRE_OK(bd_source_add(cat, at("span/src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.skipped == 2 && ss.files_seen == 3);
+    CHECK(count_hits(cat, "index") == 0 && count_hits(cat, "scratch") == 0 && count_hits(cat, "keep") == 1);
+
+    /* An empty list skips nothing; a new pattern drops what it now matches. */
+    REQUIRE_OK(bd_skip_list_set(cat, ""), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.skipped == 0 && count_hits(cat, "index.js") == 1);
+    REQUIRE_OK(bd_skip_list_set(cat, "*.js\nnode_modules/\n*.tmp\n"), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(count_hits(cat, "index") == 0 && count_hits(cat, "node_modules") == 0 && count_hits(cat, "scratch") == 0);
+    CHECK(ss.files_deleted == 0);
+    char *list = bd_skip_list_get(cat);
+    CHECK(list && strcmp(list, "*.js\nnode_modules/\n*.tmp\n") == 0);
+    free(list);
+    REQUIRE_OK(bd_skip_list_set(cat, NULL), cat);
+    list = bd_skip_list_get(cat);
+    CHECK(list && strcmp(list, def) == 0);
+    free(list);
+
+    /* What the folder needs on a drive: keep (4) + big (40) + v (1). */
+    int64_t need = 0;
+    CHECK(bd_list_sources(cat, source_bytes, &need) == BD_OK && need == 45);
+
+    /* A nearly full drive takes what fits and leaves the rest. */
+    REQUIRE_OK(bd_media_init(cat, at("span/D"), "Drive D", 0, &d), cat);
+    bd_backup_stats bs;
+    bd_test_free_bytes = 20;
+    REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
+    bd_test_free_bytes = -1;
+    CHECK(bs.files_copied == 2 && bs.files_no_room == 1 && bs.bytes_no_room == 40);
+
+    /* Carry on onto another drive with only what did not fit. */
+    REQUIRE_OK(bd_media_init(cat, at("span/E"), "Drive E", 0, &e), cat);
+    REQUIRE_OK(bd_media_set_location(cat, e, "Box 7"), cat);
+    bd_backup_opts opts = {{d}};
+    REQUIRE_OK(bd_backup_ex(cat, e, 0, &opts, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.bytes_copied == 40 && bs.files_no_room == 0);
+
+    /* Restore plan: both unplugged, D holds more, so D first. */
+    bd_media_disconnect(cat, d);
+    bd_media_disconnect(cat, e);
+    plan_list p;
+    memset(&p, 0, sizeof(p));
+    int64_t total = 0, none = 0;
+    REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
+    CHECK(total == 3 && none == 0 && p.n == 2);
+    CHECK(strcmp(p.labels[0], "Drive D") == 0 && p.files[0] == 2 && strcmp(p.labels[1], "Drive E") == 0 && p.files[1] == 1);
+
+    /* E plugged in: it comes first. Restore its part now. */
+    int64_t again;
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_connect(cat, at("span/E"), &again, &cs, quiet, NULL), cat);
+    memset(&p, 0, sizeof(p));
+    REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
+    CHECK(p.n == 2 && strcmp(p.labels[0], "Drive E") == 0 && p.connected[0] && !p.connected[1]);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, NULL, at("span/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && rs.files_offline == 2);
+
+    /* Then D arrives: the rest comes back, E's file is left alone. */
+    REQUIRE_OK(bd_media_connect(cat, at("span/D"), &again, &cs, quiet, NULL), cat);
+    memset(&p, 0, sizeof(p));
+    REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
+    CHECK(total == 2 && p.n == 1 && strcmp(p.labels[0], "Drive D") == 0);
+    REQUIRE_OK(bd_restore(cat, src, NULL, at("span/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2 && rs.files_already_there == 1 && rs.files_offline == 0);
+    CHECK(file_equals(at("span/out/src/big.bin"), "0123456789012345678901234567890123456789"));
+    REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
+    CHECK(total == 0);
+
+    /* Old versions: the default rule (5 versions or a year) keeps them all. */
+    const char *contents[] = {"22", "333", "4444"};
+    for (int i = 0; i < 3; i++) {
+        write_file(at("span/src/v.txt"), contents[i]);
+        REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+        REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
+        CHECK(bs.versions_pruned == 0);
+    }
+    CHECK(exists(at("span/D/BRODALF")));
+    char vdir[1400];
+    snprintf(vdir, sizeof(vdir), "span/D/BRODALF/%s/.versions/src", bd_catalog_uuid(cat));
+    char v1[1500], v3[1500];
+    snprintf(v1, sizeof(v1), "%s/v.v1.txt", vdir);
+    snprintf(v3, sizeof(v3), "%s/v.v3.txt", vdir);
+    CHECK(exists(at(v1)) && exists(at(v3)));
+
+    /* Keep 2 versions, no matter how recent: v1 and v2 go, v3 stays. */
+    REQUIRE_OK(bd_option_set(cat, "keep_versions", 2), cat);
+    REQUIRE_OK(bd_option_set(cat, "keep_days", 0), cat);
+    bd_prune_stats ps;
+    REQUIRE_OK(bd_prune_versions(cat, d, &ps, quiet, NULL), cat);
+    CHECK(ps.copies_removed == 2 && ps.bytes_freed == 3 && ps.failed == 0);
+    CHECK(!exists(at(v1)) && exists(at(v3)));
+    REQUIRE_OK(bd_prune_versions(cat, d, &ps, quiet, NULL), cat);
+    CHECK(ps.copies_removed == 0);
+    /* 0 keeps everything. */
+    REQUIRE_OK(bd_option_set(cat, "keep_versions", 0), cat);
+    write_file(at("span/src/v.txt"), "55555");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.versions_pruned == 0 && bs.files_copied == 1);
+
+    bd_catalog_close(cat);
+}
+
 static void set_env(const char *name, const char *value)
 {
 #ifdef _WIN32
@@ -688,6 +846,7 @@ int main(void)
 
     test_risk();
     test_search();
+    test_drives_and_versions();
     test_report();
 
     if (failures) {

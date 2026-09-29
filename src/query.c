@@ -46,7 +46,8 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
                            " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " ANY_COPY "),"
                            " (SELECT m.label FROM nodes n JOIN copies c ON c.version_id=n.current_version_id"
                            "   JOIN media m ON m.id=c.media_id WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0"
-                           "   AND c.state='ok' LIMIT 1)"
+                           "   AND c.state='ok' LIMIT 1),"
+                           " (SELECT COALESCE(SUM(n.size),0) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0)"
                            " FROM sources s ORDER BY s.name COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list sources");
@@ -60,6 +61,7 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
         info.files_available = sqlite3_column_int64(q, 4);
         info.state = folder_state(info.files_total, info.files_available, sqlite3_column_int64(q, 5));
         if (info.state == BD_STATE_OFFLINE) info.offline_media_label = (const char *)sqlite3_column_text(q, 6);
+        info.bytes_total = sqlite3_column_int64(q, 7);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);

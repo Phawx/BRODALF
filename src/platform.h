@@ -39,8 +39,10 @@ int bd_fsync(FILE *f);
 int bd_create_exclusive(const char *path);
 
 /* Directory walk. The callback gets the path relative to the root, joined
- * with '/'. Return non-zero from the callback to stop the walk. Entries that
- * cannot be read are reported through err_cb and skipped. */
+ * with '/'. Return BD_WALK_SKIP for a folder to leave out what is inside it,
+ * any other non-zero value to stop the walk. Entries that cannot be read
+ * are reported through err_cb and skipped. */
+#define BD_WALK_SKIP 2
 typedef int (*bd_walk_cb)(void *ctx, const char *rel_path, const bd_stat_t *st);
 typedef void (*bd_walk_err_cb)(void *ctx, const char *path, const char *message);
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx);

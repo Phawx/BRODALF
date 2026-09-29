@@ -63,6 +63,22 @@ destroy a good copy. A file already at the destination that the catalog does
 not know about is adopted if its hash matches (for example after a crash
 before the catalog was saved), otherwise it is moved aside, never overwritten.
 
+Before copying, a backup removes old versions the keep rule no longer needs
+(settings `keep_versions`, default 5, and `keep_days`, default 365: an old
+version goes only when at least that many newer versions exist and it was
+replaced longer ago than that; 0 keeps everything). It never writes into the
+last max(16 MB, 0.5%) of the drive: a file that doesn't fit is counted as
+"no room" and skipped. A follow-up backup to another drive can be limited to
+files missing from up to 8 full drives (`only_missing_from`), so a large
+folder spans drives. A restore plan orders the drives a restore needs,
+plugged-in ones first, then by how many files each covers; restores skip
+destination files that already have the right size and hash.
+
+Scans apply a skip list (setting `skip_list`, default: temp files, system
+files and rebuildable caches such as `node_modules/`). Patterns are
+case-insensitive globs matched against each name, or against the path from
+the protected folder when they contain a `/`; a trailing `/` means folders.
+
 ## The .brodalf file
 
 16-byte header (`BRODALF\x1a`, format version, flags) followed by one zstd

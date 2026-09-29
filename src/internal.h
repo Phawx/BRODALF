@@ -70,6 +70,9 @@ typedef struct { FILE *file; bd_opener *opener; } bd_source;
 int bd_sink_write(bd_sink *k, const void *data, size_t n);
 long bd_source_read(bd_source *k, void *buf, size_t cap);
 
+/* Tests only: pretend every drive has this much free space (-1: ask it). */
+extern int64_t bd_test_free_bytes;
+
 /* Catalog settings (the settings table). get: 1 if found. set: 0 on success. */
 int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap);
 int bd_setting_set(bd_catalog *cat, const char *key, const char *value);

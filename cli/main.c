@@ -26,7 +26,9 @@ static void usage(void)
          "  scan     <catalog>                         record files, sizes and checksums\n"
          "  drive    <catalog> <root> <label> [--encrypt] [--location TEXT]\n"
          "                                             set up a drive or folder as storage\n"
-         "  backup   <catalog> <root> [--source NAME]  copy what is missing to a drive\n"
+         "  backup   <catalog> <root> [--source NAME] [--continue-from LABEL]...\n"
+         "                                             copy what is missing to a drive (or only what\n"
+         "                                             is missing from full drives LABEL...)\n"
          "  check    <catalog> <root> [--full]         check the copies on a drive\n"
          "  tree     <catalog> [--drive ROOT]...       show the ghost tree\n"
          "  versions <catalog> <source> <path> [--drive ROOT]...\n"
@@ -39,7 +41,12 @@ static void usage(void)
          "  drives   <catalog>                         list drives with make, model, serial, health, location\n"
          "  target   <catalog> [copies places]         show or set how many copies, in how many places\n"
          "  search   <catalog> <words>...              find files and folders by name, and which drive holds them\n"
-         "  option   <catalog> [name value]            show or set auto_backup and check_days\n"
+         "  option   <catalog> [name value]            show or set auto_backup, check_days, keep_versions, keep_days\n"
+         "  skip     <catalog> [--add PATTERN | --set FILE | --reset]\n"
+         "                                             show or change what scans leave out\n"
+         "  prune    <catalog> <root>                  remove old versions the keep rule no longer needs\n"
+         "  restore-plan <catalog> [--source NAME] [--path REL] [--dest DIR]\n"
+         "                                             which drives a restore needs, in order\n"
          "  at-risk  <catalog> [--source NAME] [--all] files short of the target, and which drive helps\n"
          "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
          "  drive-rename <catalog> <label> <new label> rename a drive\n"
@@ -194,10 +201,44 @@ static int64_t source_id_by_name(bd_catalog *cat, const char *name)
     return f.id;
 }
 
+static void human_bytes(int64_t n, char *out, size_t cap);
+
 static int print_source(void *ctx, const bd_source_info *info)
 {
     (void)ctx;
-    printf("%-20s %s\n", info->name, info->path);
+    char size[32];
+    human_bytes(info->bytes_total, size, sizeof(size));
+    printf("%-20s %-10s %s\n", info->name, size, info->path);
+    return 0;
+}
+
+typedef struct { int64_t id; char label[256]; } label_ctx;
+
+static int label_cb(void *ctx, const bd_media_info *m)
+{
+    label_ctx *l = ctx;
+    if (m->media_id != l->id) return 0;
+    snprintf(l->label, sizeof(l->label), "%s", m->label);
+    return 1;
+}
+
+static const char *label_of(bd_catalog *cat, int64_t id)
+{
+    static label_ctx l;
+    l.id = id;
+    l.label[0] = '\0';
+    bd_list_media(cat, label_cb, &l);
+    return l.label;
+}
+
+static int print_plan_step(void *ctx, const bd_restore_step *st)
+{
+    int *n = ctx;
+    char size[32];
+    human_bytes(st->bytes, size, sizeof(size));
+    printf("  %d. %s%s%s%s: %lld %s (%s)%s\n", ++*n, st->label, st->location[0] ? " (kept in " : "", st->location,
+           st->location[0] ? ")" : "", (long long)st->files, st->files == 1 ? "file" : "files", size,
+           st->connected ? "  [connected]" : "");
     return 0;
 }
 
@@ -456,9 +497,9 @@ static int run(int argc, char **argv)
     } else if (strcmp(cmd, "scan") == 0) {
         bd_scan_stats st;
         if (bd_scan(cat, &st, log_line, NULL) != BD_OK) return die(cat, "scan failed");
-        printf("scanned %lld files in %lld folders: %lld new, %lld changed, %lld deleted, %lld errors\n",
+        printf("scanned %lld files in %lld folders: %lld new, %lld changed, %lld deleted, %lld skipped, %lld errors\n",
                (long long)st.files_seen, (long long)st.dirs_seen, (long long)st.files_new,
-               (long long)st.files_changed, (long long)st.files_deleted, (long long)st.errors);
+               (long long)st.files_changed, (long long)st.files_deleted, (long long)st.skipped, (long long)st.errors);
         save = 1;
     } else if (strcmp(cmd, "drive") == 0) {
         if (argc < 5) { usage(); bd_catalog_close(cat); return 1; }
@@ -492,6 +533,8 @@ static int run(int argc, char **argv)
         printf("auto_backup %d   (1: back up as soon as a drive is plugged in, in the Windows app)\n", bd_option_get(cat, "auto_backup"));
         printf("check_days  %d   (remind to check a drive whose copies were not read back in this many days; 0: never)\n",
                bd_option_get(cat, "check_days"));
+        printf("keep_versions %d (old versions kept on each drive; 0: all)\n", bd_option_get(cat, "keep_versions"));
+        printf("keep_days   %d   (and anything replaced within this many days)\n", bd_option_get(cat, "keep_days"));
     } else if (strcmp(cmd, "search") == 0) {
         if (argc < 4) { usage(); bd_catalog_close(cat); return 1; }
         char text[1024] = "";
@@ -633,13 +676,31 @@ static int run(int argc, char **argv)
                 bd_catalog_close(cat);
                 return 1;
             }
+            bd_backup_opts bo;
+            memset(&bo, 0, sizeof(bo));
+            /* --continue-from LABEL, as many times as needed. */
+            for (int i = 3, k = 0; i + 1 < argc && k < BD_MAX_CONTINUE; i++) {
+                if (strcmp(argv[i], "--continue-from") != 0) continue;
+                if (!(bo.only_missing_from[k++] = media_id_by_label(cat, argv[i + 1]))) { bd_catalog_close(cat); return 1; }
+            }
             bd_backup_stats bs;
-            bd_status s = bd_backup(cat, media_id, source_id, &bs, log_line, NULL);
-            if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup(cat, media_id, source_id, &bs, log_line, NULL);
+            bd_status s = bd_backup_ex(cat, media_id, source_id, &bo, &bs, log_line, NULL);
+            if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup_ex(cat, media_id, source_id, &bo, &bs, log_line, NULL);
             if (s != BD_OK) return die(cat, "backup failed");
             printf("backup: %lld copied (%lld bytes), %lld already there, %lld failed, %lld older copies kept in .versions\n",
                    (long long)bs.files_copied, (long long)bs.bytes_copied, (long long)bs.files_already_there,
                    (long long)bs.files_failed, (long long)bs.versions_moved);
+            if (bs.versions_pruned) printf("removed %lld old versions by the keep rule\n", (long long)bs.versions_pruned);
+            if (bs.files_no_room) {
+                char size[32];
+                human_bytes(bs.bytes_no_room, size, sizeof(size));
+                printf("the drive is full: %lld file%s (%s) did not fit. Put %s on another drive with\n"
+                       "  backup <catalog> <other drive>", (long long)bs.files_no_room,
+                       bs.files_no_room == 1 ? "" : "s", size, bs.files_no_room == 1 ? "it" : "them");
+                for (int k = 0; k < BD_MAX_CONTINUE && bo.only_missing_from[k]; k++)
+                    printf(" --continue-from \"%s\"", label_of(cat, bo.only_missing_from[k]));
+                printf(" --continue-from \"%s\"\n", label_of(cat, media_id));
+            }
             if (bd_catalog_copy_to_media(cat, media_id) != BD_OK) fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
         }
         save = 1;
@@ -670,10 +731,73 @@ static int run(int argc, char **argv)
         bd_restore_stats rs;
         if (bd_restore(cat, source_id, opt(argc, argv, "--path"), argv[3], &rs, log_line, NULL) != BD_OK)
             return die(cat, "restore failed");
-        printf("restore: %lld restored (%lld bytes), %lld on drives that are not connected, %lld never backed up, %lld failed\n",
-               (long long)rs.files_restored, (long long)rs.bytes_restored, (long long)rs.files_offline,
-               (long long)rs.files_no_copy, (long long)rs.files_failed);
+        printf("restore: %lld restored (%lld bytes), %lld already there, %lld on drives that are not connected, %lld never backed up, %lld failed\n",
+               (long long)rs.files_restored, (long long)rs.bytes_restored, (long long)rs.files_already_there,
+               (long long)rs.files_offline, (long long)rs.files_no_copy, (long long)rs.files_failed);
+        if (rs.files_offline) puts("run the same restore again with the other drives (restore-plan says which); what is there is kept");
         save = 1;
+    } else if (strcmp(cmd, "restore-plan") == 0) {
+        if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
+        int64_t source_id = 0;
+        const char *name = opt(argc, argv, "--source");
+        if (name && !(source_id = source_id_by_name(cat, name))) {
+            fprintf(stderr, "brodalf: no protected folder named %s\n", name);
+            bd_catalog_close(cat);
+            return 1;
+        }
+        int64_t total = 0, none = 0;
+        int steps = 0;
+        puts("plug these in, in this order:");
+        if (bd_restore_plan(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), print_plan_step, &steps,
+                            &total, &none) != BD_OK)
+            return die(cat, "cannot plan the restore");
+        if (!steps) puts("  (nothing to plug in)");
+        printf("%lld files to restore, %lld with no copy anywhere\n", (long long)total, (long long)none);
+        save = 1;
+    } else if (strcmp(cmd, "prune") == 0) {
+        if (argc < 4) { usage(); bd_catalog_close(cat); return 1; }
+        int64_t media_id;
+        bd_check_stats cs;
+        if (connect_target(cat, argv[3], &media_id, &cs) != BD_OK) return die(cat, "cannot use storage");
+        bd_prune_stats ps;
+        if (bd_prune_versions(cat, media_id, &ps, log_line, NULL) != BD_OK) return die(cat, "cannot clean up old versions");
+        char size[32];
+        human_bytes(ps.bytes_freed, size, sizeof(size));
+        printf("removed %lld old versions (%s), %lld failed; rule: keep the newest %d, and anything replaced in the last %d days\n",
+               (long long)ps.copies_removed, size, (long long)ps.failed, bd_option_get(cat, "keep_versions"),
+               bd_option_get(cat, "keep_days"));
+        save = 1;
+    } else if (strcmp(cmd, "skip") == 0) {
+        char *list = bd_skip_list_get(cat);
+        bd_status st = BD_OK;
+        const char *add = opt(argc, argv, "--add"), *file = opt(argc, argv, "--set");
+        if (has_flag(argc, argv, "--reset")) {
+            st = bd_skip_list_set(cat, NULL);
+        } else if (add && list) {
+            char *more = malloc(strlen(list) + strlen(add) + 3);
+            if (more) {
+                size_t n = strlen(list);
+                sprintf(more, "%s%s%s\n", list, n && list[n - 1] != '\n' ? "\n" : "", add);
+                st = bd_skip_list_set(cat, more);
+                free(more);
+            }
+        } else if (file) {
+            FILE *f = fopen(file, "rb");
+            char buf[16384];
+            size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+            if (f) fclose(f);
+            if (!f) { fprintf(stderr, "brodalf: cannot read %s\n", file); free(list); bd_catalog_close(cat); return 1; }
+            buf[n] = '\0';
+            st = bd_skip_list_set(cat, buf);
+        }
+        if (st != BD_OK) { free(list); return die(cat, "cannot change the skip list"); }
+        if (add || file || has_flag(argc, argv, "--reset")) {
+            free(list);
+            list = bd_skip_list_get(cat);
+            save = 1;
+        }
+        fputs(list ? list : "", stdout);
+        free(list);
     } else {
         usage();
         bd_catalog_close(cat);

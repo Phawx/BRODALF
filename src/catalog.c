@@ -519,6 +519,8 @@ const char *bd_catalog_uuid(const bd_catalog *cat)
 static const struct { const char *name; int def, min, max; } OPTIONS[] = {
     {"auto_backup", 1, 0, 1},
     {"check_days", 180, 0, 3650},
+    {"keep_versions", 5, 0, 100000},
+    {"keep_days", 365, 0, 36500},
 };
 
 static int option_index(const char *name)

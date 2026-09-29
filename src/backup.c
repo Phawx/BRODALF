@@ -14,6 +14,10 @@
 #include <string.h>
 
 #define BATCH 256
+/* Room left on a drive for its file system and the catalog copy. */
+#define MIN_RESERVE (16 * 1024 * 1024)
+
+int64_t bd_test_free_bytes = -1;
 
 typedef struct {
     int64_t node_id, node_size, node_mtime;
@@ -336,8 +340,85 @@ done:
     free(tmp_rel);
 }
 
+bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *stats, bd_log_fn log, void *log_ctx)
+{
+    bd_prune_stats local;
+    if (!stats) stats = &local;
+    memset(stats, 0, sizeof(*stats));
+    int keep = bd_option_get(cat, "keep_versions"), days = bd_option_get(cat, "keep_days");
+    if (keep <= 0) return BD_OK;
+
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT c.id, c.path_on_media, v.size FROM copies c JOIN versions v ON v.id=c.version_id"
+                           " JOIN nodes n ON n.id=v.node_id"
+                           " WHERE c.media_id=?1 AND v.id IS NOT n.current_version_id"
+                           " AND substr(c.path_on_media,1,length(?4)+1)=?4||'/'"
+                           " AND (SELECT COUNT(*) FROM versions v2 WHERE v2.node_id=v.node_id AND v2.version_no>v.version_no)>=?2"
+                           " AND COALESCE((SELECT MIN(v3.first_seen_ms) FROM versions v3"
+                           "   WHERE v3.node_id=v.node_id AND v3.version_no>v.version_no),0)<=?3",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "find old versions");
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int(q, 2, keep);
+    sqlite3_bind_int64(q, 3, bd_now_ms() - (int64_t)days * 24 * 3600 * 1000);
+    sqlite3_bind_text(q, 4, BD_VERSIONS_DIR, -1, SQLITE_STATIC);
+    typedef struct { int64_t id, size; char *rel; } old_copy;
+    old_copy *list = NULL;
+    size_t n = 0, cap = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        if (n == cap) {
+            size_t nc = cap ? cap * 2 : 64;
+            old_copy *nl = realloc(list, nc * sizeof(old_copy));
+            if (!nl) break;
+            list = nl;
+            cap = nc;
+        }
+        list[n].id = sqlite3_column_int64(q, 0);
+        list[n].rel = bd_strdup((const char *)sqlite3_column_text(q, 1));
+        list[n].size = sqlite3_column_int64(q, 2);
+        n++;
+    }
+    sqlite3_finalize(q);
+    if (!n) { free(list); return BD_OK; }
+
+    bd_store *store = bd_store_open(cat, media_id);
+    sqlite3_stmt *d = NULL;
+    if (!store || sqlite3_prepare_v2(cat->db, "DELETE FROM copies WHERE id=?", -1, &d, NULL) != SQLITE_OK) {
+        for (size_t i = 0; i < n; i++) free(list[i].rel);
+        free(list);
+        bd_store_close(store);
+        return store ? bd_fail_db(cat, "forget old versions") : BD_ERR_NOT_FOUND;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (list[i].rel && store->ops->remove(store, list[i].rel) == 0) {
+            sqlite3_reset(d);
+            sqlite3_bind_int64(d, 1, list[i].id);
+            sqlite3_step(d);
+            stats->copies_removed++;
+            stats->bytes_freed += list[i].size;
+        } else {
+            stats->failed++;
+            bd_logf(log, log_ctx, "cannot remove the old version %s: %s", list[i].rel ? list[i].rel : "?", store->err);
+        }
+        free(list[i].rel);
+    }
+    free(list);
+    sqlite3_finalize(d);
+    bd_store_close(store);
+    if (stats->copies_removed)
+        bd_logf(log, log_ctx, "removed %lld old versions that the keep rule no longer needs", (long long)stats->copies_removed);
+    return BD_OK;
+}
+
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                     bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
+{
+    return bd_backup_ex(cat, media_id, source_id, NULL, stats, log, log_ctx);
+}
+
+bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, const bd_backup_opts *opts,
+                       bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_backup_stats local;
     if (!stats) stats = &local;
@@ -351,6 +432,19 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) return BD_ERR_NOT_FOUND;
 
+    /* Make room first: old versions the keep rule no longer needs. */
+    bd_prune_stats ps;
+    if (bd_prune_versions(cat, media_id, &ps, log, log_ctx) == BD_OK) {
+        stats->versions_pruned = ps.copies_removed;
+        stats->bytes_pruned = ps.bytes_freed;
+    }
+
+    /* How much fits. Unknown space (some cloud accounts) means no limit. */
+    int64_t space_total = 0, space_free = -1, reserve = 0;
+    if (bd_test_free_bytes >= 0) space_free = bd_test_free_bytes;
+    else if (store->ops->space(store, &space_total, &space_free) != 0) space_free = -1;
+    else reserve = space_total / 200 > MIN_RESERVE ? space_total / 200 : MIN_RESERVE;
+
     int64_t job = start_job(cat, "backup", media_id);
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
@@ -358,6 +452,8 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                            " EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=?1 AND c.state='ok')"
                            " FROM nodes n JOIN sources s ON s.id=n.source_id JOIN versions v ON v.id=n.current_version_id"
                            " WHERE n.is_dir=0 AND n.deleted=0 AND (?2=0 OR n.source_id=?2) AND n.id>?3"
+                           " AND (?4=0 OR NOT EXISTS(SELECT 1 FROM copies c2 WHERE c2.version_id=v.id"
+                           "   AND c2.media_id IN (?4,?5,?6,?7,?8,?9,?10,?11) AND c2.state='ok'))"
                            " ORDER BY n.id LIMIT 256",
                            -1, &q, NULL) != SQLITE_OK) {
         bd_store_close(store);
@@ -372,6 +468,11 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
         sqlite3_bind_int64(q, 1, media_id);
         sqlite3_bind_int64(q, 2, source_id);
         sqlite3_bind_int64(q, 3, last_id);
+        for (int k = 0; k < BD_MAX_CONTINUE; k++) {
+            int64_t id = opts ? opts->only_missing_from[k] : 0;
+            if (k > 0 && opts && !opts->only_missing_from[k - 1]) id = 0; /* the list ended */
+            sqlite3_bind_int64(q, 4 + k, id);
+        }
         while (sqlite3_step(q) == SQLITE_ROW) {
             rows++;
             last_id = sqlite3_column_int64(q, 0);
@@ -391,7 +492,22 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
         }
         sqlite3_reset(q);
         if (rows == 0) break;
-        for (size_t i = 0; i < n; i++) backup_one(cat, store, key, &items[i], stats, log, log_ctx);
+        for (size_t i = 0; i < n; i++) {
+            if (space_free >= 0) {
+                /* Sealed copies are a little bigger than the file. */
+                int64_t need = items[i].version_size + (key ? items[i].version_size / 1024 + 4096 : 0);
+                if (need > space_free - reserve) {
+                    if (!stats->files_no_room)
+                        bd_logf(log, log_ctx, "the drive is full; files that do not fit are left for another drive");
+                    stats->files_no_room++;
+                    stats->bytes_no_room += items[i].version_size;
+                    continue;
+                }
+            }
+            int64_t before = stats->bytes_copied;
+            backup_one(cat, store, key, &items[i], stats, log, log_ctx);
+            if (space_free >= 0) space_free -= stats->bytes_copied - before;
+        }
         free_items(items, n);
     }
     sqlite3_finalize(q);
@@ -430,7 +546,7 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
     bd_store *store = NULL;
     bd_status s = BD_OK;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.rel_path, n.is_dir, s.name, v.id, v.hash FROM nodes n"
+                           "SELECT n.id, n.rel_path, n.is_dir, s.name, v.id, v.hash, v.size FROM nodes n"
                            " JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=n.current_version_id"
                            " WHERE n.deleted=0 AND (?1=0 OR n.source_id=?1) AND n.id>?3"
                            " AND (?2='' OR n.rel_path=?2 OR substr(n.rel_path,1,length(?2)+1)=?2||'/')"
@@ -446,7 +562,7 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
         goto done;
     }
 
-    typedef struct { int64_t id, version_id; int is_dir; char *rel, *source_name, *hash; } item;
+    typedef struct { int64_t id, version_id, size; int is_dir; char *rel, *source_name, *hash; } item;
     item items[BATCH];
     int64_t last_id = 0;
     for (;;) {
@@ -463,6 +579,7 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
             it->source_name = bd_strdup((const char *)sqlite3_column_text(q, 3));
             it->version_id = sqlite3_column_int64(q, 4);
             it->hash = sqlite3_column_type(q, 5) == SQLITE_NULL ? NULL : bd_strdup((const char *)sqlite3_column_text(q, 5));
+            it->size = sqlite3_column_int64(q, 6);
         }
         sqlite3_reset(q);
         if (n == 0) break;
@@ -480,6 +597,16 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
                 continue;
             }
             if (!it->version_id || !it->hash) { stats->files_no_copy++; free(dest); continue; }
+            /* Restored before (an earlier run, from another drive)? */
+            bd_stat_t dst;
+            if (bd_stat(dest, &dst) == 0 && dst.is_file && dst.size == it->size) {
+                char have[BD_HASH_HEX_LEN + 1];
+                if (bd_hash_file(dest, NULL, have, NULL) == 0 && strcmp(have, it->hash) == 0) {
+                    stats->files_already_there++;
+                    free(dest);
+                    continue;
+                }
+            }
 
             sqlite3_reset(find);
             sqlite3_bind_int64(find, 1, it->version_id);
@@ -543,6 +670,170 @@ done:
     sqlite3_finalize(find);
     sqlite3_finalize(any);
     bd_store_close(store);
+    free(prefix);
+    return s;
+}
+
+/* ---- Restore plan ------------------------------------------------------ */
+
+typedef struct {
+    int64_t id;
+    char *label, *kind, *location;
+    int connected;
+    int used;
+} plan_media;
+
+bd_status bd_restore_plan(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                          bd_restore_step_fn fn, void *ctx, int64_t *files_total, int64_t *files_no_copy)
+{
+    if (files_total) *files_total = 0;
+    if (files_no_copy) *files_no_copy = 0;
+    char *prefix = bd_strdup(rel_prefix ? rel_prefix : "");
+    if (!prefix) return BD_ERR_NOMEM;
+    for (char *p = prefix; *p; p++) if (*p == '\\') *p = '/';
+    size_t plen = strlen(prefix);
+    while (plen > 0 && prefix[plen - 1] == '/') prefix[--plen] = '\0';
+
+    bd_status s = BD_OK;
+    sqlite3_stmt *mq = NULL, *fq = NULL, *cq = NULL;
+    plan_media *media = NULL;
+    size_t nm = 0;
+    int64_t *fsize = NULL;
+    unsigned char *covered = NULL;
+    size_t nf = 0, capf = 0;
+    /* (file, medium) pairs: a good copy of the file's current version. */
+    size_t *pf = NULL, *pm = NULL, np = 0, capp = 0;
+
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT m.id, m.label, m.kind, COALESCE(trim(m.location),''),"
+                           " EXISTS(SELECT 1 FROM temp.connected k WHERE k.media_id=m.id) FROM media m ORDER BY m.id",
+                           -1, &mq, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(cat->db,
+                           "SELECT n.id, n.rel_path, s.name, v.size, v.id FROM nodes n JOIN sources s ON s.id=n.source_id"
+                           " JOIN versions v ON v.id=n.current_version_id"
+                           " WHERE n.is_dir=0 AND n.deleted=0 AND (?1=0 OR n.source_id=?1)"
+                           " AND (?2='' OR n.rel_path=?2 OR substr(n.rel_path,1,length(?2)+1)=?2||'/') ORDER BY n.id",
+                           -1, &fq, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(cat->db, "SELECT DISTINCT media_id FROM copies WHERE version_id=? AND state='ok'", -1, &cq, NULL) !=
+            SQLITE_OK) {
+        s = bd_fail_db(cat, "plan the restore");
+        goto done;
+    }
+    while (sqlite3_step(mq) == SQLITE_ROW) {
+        plan_media *nl = realloc(media, (nm + 1) * sizeof(plan_media));
+        if (!nl) { s = BD_ERR_NOMEM; goto done; }
+        media = nl;
+        plan_media *m = &media[nm++];
+        m->id = sqlite3_column_int64(mq, 0);
+        m->label = bd_strdup((const char *)sqlite3_column_text(mq, 1));
+        m->kind = bd_strdup((const char *)sqlite3_column_text(mq, 2));
+        m->location = bd_strdup((const char *)sqlite3_column_text(mq, 3));
+        m->connected = sqlite3_column_int(mq, 4);
+        m->used = 0;
+    }
+
+    sqlite3_bind_int64(fq, 1, source_id);
+    sqlite3_bind_text(fq, 2, prefix, -1, SQLITE_STATIC);
+    while (sqlite3_step(fq) == SQLITE_ROW) {
+        int64_t size = sqlite3_column_int64(fq, 3);
+        if (dest_root && *dest_root) {
+            char *out = bd_sprintf("%s/%s", (const char *)sqlite3_column_text(fq, 2), (const char *)sqlite3_column_text(fq, 1));
+            char *dest = out ? bd_path_join(dest_root, out) : NULL;
+            bd_stat_t st;
+            int there = dest && bd_stat(dest, &st) == 0 && st.is_file && st.size == size;
+            free(out);
+            free(dest);
+            if (there) continue;
+        }
+        if (nf == capf) {
+            size_t nc = capf ? capf * 2 : 256;
+            int64_t *ns = realloc(fsize, nc * sizeof(int64_t));
+            if (ns) fsize = ns;
+            unsigned char *ncv = realloc(covered, nc);
+            if (ncv) covered = ncv;
+            if (!ns || !ncv) { s = BD_ERR_NOMEM; goto done; }
+            capf = nc;
+        }
+        fsize[nf] = size;
+        covered[nf] = 0;
+        sqlite3_reset(cq);
+        sqlite3_bind_int64(cq, 1, sqlite3_column_int64(fq, 4));
+        int any = 0;
+        while (sqlite3_step(cq) == SQLITE_ROW) {
+            int64_t mid = sqlite3_column_int64(cq, 0);
+            size_t mi = 0;
+            while (mi < nm && media[mi].id != mid) mi++;
+            if (mi == nm) continue;
+            if (np == capp) {
+                size_t nc = capp ? capp * 2 : 256;
+                size_t *a = realloc(pf, nc * sizeof(size_t));
+                if (a) pf = a;
+                size_t *b = realloc(pm, nc * sizeof(size_t));
+                if (b) pm = b;
+                if (!a || !b) { s = BD_ERR_NOMEM; goto done; }
+                capp = nc;
+            }
+            pf[np] = nf;
+            pm[np] = mi;
+            np++;
+            any = 1;
+        }
+        if (!any && files_no_copy) (*files_no_copy)++;
+        nf++;
+    }
+    if (files_total) *files_total = (int64_t)nf;
+
+    /* Greedy: plugged-in drives first, then whichever drive supplies the
+     * most of what is still missing. */
+    int64_t *gain = calloc(nm ? nm : 1, sizeof(int64_t)), *gain_bytes = calloc(nm ? nm : 1, sizeof(int64_t));
+    if (!gain || !gain_bytes) { free(gain); free(gain_bytes); s = BD_ERR_NOMEM; goto done; }
+    for (int pass = 0; pass < 2; pass++) {
+        for (;;) {
+            memset(gain, 0, nm * sizeof(int64_t));
+            memset(gain_bytes, 0, nm * sizeof(int64_t));
+            for (size_t i = 0; i < np; i++)
+                if (!covered[pf[i]] && !media[pm[i]].used) {
+                    gain[pm[i]]++;
+                    gain_bytes[pm[i]] += fsize[pf[i]];
+                }
+            size_t best = nm;
+            for (size_t m = 0; m < nm; m++) {
+                if (media[m].used || !gain[m] || (pass == 0 && !media[m].connected)) continue;
+                if (best == nm || gain[m] > gain[best]) best = m;
+            }
+            if (best == nm) break;
+            media[best].used = 1;
+            for (size_t i = 0; i < np; i++)
+                if (pm[i] == best) covered[pf[i]] = 1;
+            bd_restore_step step;
+            memset(&step, 0, sizeof(step));
+            step.media_id = media[best].id;
+            step.label = media[best].label ? media[best].label : "";
+            step.kind = media[best].kind ? media[best].kind : "drive";
+            step.location = media[best].location ? media[best].location : "";
+            step.connected = media[best].connected;
+            step.files = gain[best];
+            step.bytes = gain_bytes[best];
+            if (fn && fn(ctx, &step) != 0) { pass = 2; break; }
+        }
+    }
+    free(gain);
+    free(gain_bytes);
+
+done:
+    sqlite3_finalize(mq);
+    sqlite3_finalize(fq);
+    sqlite3_finalize(cq);
+    for (size_t i = 0; i < nm; i++) {
+        free(media[i].label);
+        free(media[i].kind);
+        free(media[i].location);
+    }
+    free(media);
+    free(fsize);
+    free(covered);
+    free(pf);
+    free(pm);
     free(prefix);
     return s;
 }

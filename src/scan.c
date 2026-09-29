@@ -81,8 +81,164 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
     return s;
 }
 
+/* ---- Skip list ------------------------------------------------------------ */
+
+static const char DEFAULT_SKIP[] =
+    "# Temporary and partly downloaded files\n"
+    "*.tmp\n"
+    "*.temp\n"
+    "*.swp\n"
+    "~$*\n"
+    ".~lock.*\n"
+    "*.crdownload\n"
+    "*.part\n"
+    "*.partial\n"
+    "# System files\n"
+    "Thumbs.db\n"
+    "desktop.ini\n"
+    ".DS_Store\n"
+    "$RECYCLE.BIN/\n"
+    "System Volume Information/\n"
+    ".Trash-*/\n"
+    ".Trashes/\n"
+    "# Caches and things a program can download or build again\n"
+    "node_modules/\n"
+    "__pycache__/\n"
+    ".cache/\n"
+    ".pytest_cache/\n"
+    ".gradle/\n";
+
+const char *bd_skip_list_default(void)
+{
+    return DEFAULT_SKIP;
+}
+
+#define SKIP_MAX 16384
+
+char *bd_skip_list_get(bd_catalog *cat)
+{
+    char *buf = malloc(SKIP_MAX);
+    if (!buf) return NULL;
+    if (!bd_setting_get(cat, "skip_list", buf, SKIP_MAX)) snprintf(buf, SKIP_MAX, "%s", DEFAULT_SKIP);
+    return buf;
+}
+
+bd_status bd_skip_list_set(bd_catalog *cat, const char *patterns)
+{
+    if (!patterns) {
+        sqlite3_stmt *d;
+        if (sqlite3_prepare_v2(cat->db, "DELETE FROM settings WHERE key='skip_list'", -1, &d, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "reset the skip list");
+        sqlite3_step(d);
+        sqlite3_finalize(d);
+        return BD_OK;
+    }
+    if (strlen(patterns) >= SKIP_MAX) return bd_fail(cat, BD_ERR_INVALID, "the skip list is too long");
+    return bd_setting_set(cat, "skip_list", patterns) == 0 ? BD_OK : bd_fail_db(cat, "save the skip list");
+}
+
+typedef struct { char *pat; int dir_only, whole_path; } skip_rule;
+typedef struct { skip_rule *rules; int n; } skip_list;
+
+static void skip_free(skip_list *l)
+{
+    for (int i = 0; i < l->n; i++) free(l->rules[i].pat);
+    free(l->rules);
+    l->rules = NULL;
+    l->n = 0;
+}
+
+static void skip_parse(const char *text, skip_list *l)
+{
+    l->rules = NULL;
+    l->n = 0;
+    for (const char *p = text ? text : ""; *p;) {
+        const char *end = p;
+        while (*end && *end != '\n') end++;
+        const char *a = p, *b = end;
+        while (a < b && (*a == ' ' || *a == '\t')) a++;
+        while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\r')) b--;
+        p = *end ? end + 1 : end;
+        if (a == b || *a == '#') continue;
+        skip_rule r = {0};
+        size_t n = (size_t)(b - a);
+        r.pat = malloc(n + 1);
+        if (!r.pat) continue;
+        memcpy(r.pat, a, n);
+        r.pat[n] = '\0';
+        for (char *c = r.pat; *c; c++) if (*c == '\\') *c = '/';
+        if (n > 1 && r.pat[n - 1] == '/') { r.dir_only = 1; r.pat[--n] = '\0'; }
+        while (r.pat[0] == '/') memmove(r.pat, r.pat + 1, strlen(r.pat));
+        r.whole_path = strchr(r.pat, '/') != NULL;
+        if (!r.pat[0]) { free(r.pat); continue; }
+        skip_rule *nr = realloc(l->rules, sizeof(skip_rule) * (size_t)(l->n + 1));
+        if (!nr) { free(r.pat); continue; }
+        l->rules = nr;
+        l->rules[l->n++] = r;
+    }
+}
+
+static int lower_c(int c)
+{
+    return c >= 'A' && c <= 'Z' ? c + 32 : c;
+}
+
+/* * and ? wildcards, ignoring ASCII case. */
+static int glob_match(const char *p, const char *s)
+{
+    const char *star = NULL, *mark = NULL;
+    while (*s) {
+        if (*p == '*') { star = p++; mark = s; continue; }
+        if (*p && (*p == '?' || lower_c((unsigned char)*p) == lower_c((unsigned char)*s))) { p++; s++; continue; }
+        if (star) { p = star + 1; s = ++mark; continue; }
+        return 0;
+    }
+    while (*p == '*') p++;
+    return *p == '\0';
+}
+
+static int skip_one(const skip_list *l, const char *rel, int is_dir)
+{
+    const char *name = strrchr(rel, '/');
+    name = name ? name + 1 : rel;
+    for (int i = 0; i < l->n; i++) {
+        const skip_rule *r = &l->rules[i];
+        if (r->dir_only && !is_dir) continue;
+        if (glob_match(r->pat, r->whole_path ? rel : name)) return 1;
+    }
+    return 0;
+}
+
+/* The item itself, or any folder it is in. */
+static int skip_any(const skip_list *l, const char *rel, int is_dir)
+{
+    if (!l->n) return 0;
+    if (skip_one(l, rel, is_dir)) return 1;
+    char *dir = bd_strdup(rel);
+    int hit = 0;
+    for (char *slash = dir ? strrchr(dir, '/') : NULL; slash && !hit; slash = strrchr(dir, '/')) {
+        *slash = '\0';
+        hit = skip_one(l, dir, 1);
+    }
+    free(dir);
+    return hit;
+}
+
+int bd_skip_match(const char *patterns, const char *rel_path, int is_dir)
+{
+    skip_list l;
+    skip_parse(patterns, &l);
+    char *rel = bd_strdup(rel_path ? rel_path : "");
+    if (rel) for (char *c = rel; *c; c++) if (*c == '\\') *c = '/';
+    int hit = rel ? skip_any(&l, rel, is_dir) : 0;
+    free(rel);
+    skip_free(&l);
+    return hit;
+}
+
 typedef struct {
     bd_catalog *cat;
+    const skip_list *skip;
     int64_t source_id;
     const char *root;
     int64_t scan_ms;
@@ -151,6 +307,11 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         return 0;
     }
     if (!st->is_dir && !st->is_file) return 0;
+    /* Parent folders on the skip list were never entered. */
+    if (skip_one(c->skip, rel, st->is_dir)) {
+        c->stats->skipped++;
+        return st->is_dir ? BD_WALK_SKIP : 0;
+    }
 
     sqlite3_reset(c->find_node);
     sqlite3_bind_int64(c->find_node, 1, c->source_id);
@@ -257,29 +418,70 @@ static int under_failed_dir(scan_ctx *c, const char *rel)
 
 static bd_status mark_deleted(scan_ctx *c)
 {
-    sqlite3_stmt *q, *u;
+    sqlite3_stmt *q, *u, *has, *drop;
     if (sqlite3_prepare_v2(c->cat->db, "SELECT id, rel_path, is_dir FROM nodes WHERE source_id=? AND deleted=0 AND last_seen_ms<?", -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(c->cat, "find deleted files");
     if (sqlite3_prepare_v2(c->cat->db, "UPDATE nodes SET deleted=1 WHERE id=?", -1, &u, NULL) != SQLITE_OK) {
         sqlite3_finalize(q);
         return bd_fail_db(c->cat, "mark deleted files");
     }
+    if (sqlite3_prepare_v2(c->cat->db,
+                           "SELECT EXISTS(SELECT 1 FROM copies cp JOIN versions v ON v.id=cp.version_id JOIN nodes n ON n.id=v.node_id"
+                           " WHERE n.source_id=?1 AND (n.id=?2 OR substr(n.rel_path,1,length(?3)+1)=?3||'/'))",
+                           -1, &has, NULL) != SQLITE_OK) {
+        sqlite3_finalize(q);
+        sqlite3_finalize(u);
+        return bd_fail_db(c->cat, "find skipped files");
+    }
+    if (sqlite3_prepare_v2(c->cat->db, "DELETE FROM nodes WHERE id=?", -1, &drop, NULL) != SQLITE_OK) {
+        sqlite3_finalize(q);
+        sqlite3_finalize(u);
+        sqlite3_finalize(has);
+        return bd_fail_db(c->cat, "drop skipped files");
+    }
     sqlite3_bind_int64(q, 1, c->source_id);
     sqlite3_bind_int64(q, 2, c->scan_ms);
+    int64_t *drops = NULL;
+    size_t ndrop = 0, capdrop = 0;
     while (sqlite3_step(q) == SQLITE_ROW) {
         const char *rel = (const char *)sqlite3_column_text(q, 1);
         if (under_failed_dir(c, rel)) continue;
+        /* Now on the skip list: forget it, unless copies of it exist. */
+        if (skip_any(c->skip, rel, sqlite3_column_int(q, 2))) {
+            sqlite3_reset(has);
+            sqlite3_bind_int64(has, 1, c->source_id);
+            sqlite3_bind_int64(has, 2, sqlite3_column_int64(q, 0));
+            sqlite3_bind_text(has, 3, rel, -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(has) == SQLITE_ROW && !sqlite3_column_int(has, 0)) {
+                if (ndrop == capdrop) {
+                    size_t cap = capdrop ? capdrop * 2 : 64;
+                    int64_t *nd = realloc(drops, cap * sizeof(int64_t));
+                    if (nd) { drops = nd; capdrop = cap; }
+                }
+                if (ndrop < capdrop) drops[ndrop++] = sqlite3_column_int64(q, 0);
+                continue;
+            }
+        }
         sqlite3_reset(u);
         sqlite3_bind_int64(u, 1, sqlite3_column_int64(q, 0));
         sqlite3_step(u);
         if (!sqlite3_column_int(q, 2)) c->stats->files_deleted++;
     }
     sqlite3_finalize(q);
+    /* Dropped after the walk over the rows, which a delete would disturb. */
+    for (size_t i = 0; i < ndrop; i++) {
+        sqlite3_reset(drop);
+        sqlite3_bind_int64(drop, 1, drops[i]);
+        sqlite3_step(drop);
+    }
+    free(drops);
     sqlite3_finalize(u);
+    sqlite3_finalize(has);
+    sqlite3_finalize(drop);
     return BD_OK;
 }
 
-static bd_status scan_source(bd_catalog *cat, int64_t source_id, const char *root, int64_t scan_ms,
+static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int64_t source_id, const char *root, int64_t scan_ms,
                              bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_stat_t rst;
@@ -290,6 +492,7 @@ static bd_status scan_source(bd_catalog *cat, int64_t source_id, const char *roo
     }
     scan_ctx c = {0};
     c.cat = cat;
+    c.skip = skip;
     c.source_id = source_id;
     c.root = root;
     c.scan_ms = scan_ms;
@@ -366,10 +569,15 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     sqlite3_finalize(q);
 
     bd_status s = BD_OK;
+    char *patterns = bd_skip_list_get(cat);
+    skip_list skip;
+    skip_parse(patterns, &skip);
+    free(patterns);
     for (size_t i = 0; i < len && s == BD_OK; i++) {
         bd_logf(log, log_ctx, "scanning %s", list[i].path);
-        s = scan_source(cat, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
+        s = scan_source(cat, &skip, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
     }
+    skip_free(&skip);
     for (size_t i = 0; i < len; i++) free(list[i].path);
     free(list);
     bd_report(cat, "scan", stats->files_seen, stats->bytes_hashed, NULL, 1);

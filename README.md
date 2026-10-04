@@ -13,12 +13,17 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-The C core library, the Windows app (`brodalf.exe`) and a command-line
-harness (`brodalf-cli`) work, with optional encryption and OneDrive and
-Dropbox as storage. Builds are on the
-[Releases](https://github.com/Phawx/BRODALF/releases) page. The Go files
-at the top of the repo are the earlier prototype and are not part of the C
-build.
+Version **0.3.0**, released 2026-10-04. The C core library, the Windows app
+(`brodalf.exe`) and a command-line harness (`brodalf-cli`) work, with
+optional encryption and OneDrive and Dropbox as storage. Builds are on the
+[Releases](https://github.com/Phawx/BRODALF/releases) page (a zip with the
+two exes, no installer, unsigned, so SmartScreen warns). The Go files at the
+top of the repo are the earlier prototype and are not part of the C build.
+
+**Everything so far has been built and tested on Linux and under Wine, never
+on a real Windows PC.** See [Where the project stands](#where-the-project-stands)
+at the end of this file for the full picture, the open items and how to pick
+the work up.
 
 ## Build
 
@@ -417,5 +422,150 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 `third_party/` holds unmodified copies of
 [SQLite](https://sqlite.org) 3.45.0 (public domain),
 [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) 1.5.4 (CC0 / Apache-2.0) and
-[zstd](https://github.com/facebook/zstd) 1.5.6 (BSD, single-file build) and
-[Monocypher](https://monocypher.org) 4.0.2 (CC0 / BSD-2-Clause).
+[zstd](https://github.com/facebook/zstd) 1.5.6 (BSD, single-file build),
+[Monocypher](https://monocypher.org) 4.0.2 (CC0 / BSD-2-Clause) and
+[cJSON](https://github.com/DaveGamble/cJSON) (MIT).
+
+## Where the project stands
+
+This section is the hand-off: everything a person or a Claude Code session
+on a local machine needs to pick the work up without the chat history.
+
+### History
+
+- The original BRODALF was a Rust tool (egui GUI, catalog in SQLite, BLAKE3
+  hashes, copies to a local folder). It no longer compiled and had no cold
+  storage, no versioning and no cloud. It was used as a reference only; the
+  Rust source is not in this repo.
+- Before that there was a Go/Fyne prototype. Its files (`main.go`, `go.mod`,
+  `go.sum`) still sit at the top of the repo, untouched, and are not built.
+- On 2026-09-28 the design below was agreed and the C rewrite started
+  (plain C11 + CMake, vendored dependencies). It landed as PR #1 the same
+  day; everything since has gone straight to `master`.
+- v0.2.0 was released 2026-09-29, v0.3.0 on 2026-10-04.
+
+### Design decisions (agreed 2026-09-28, still binding)
+
+- **Not resident.** BRODALF never runs in the background. It runs when opened,
+  and a Windows Task Scheduler job runs `brodalf.exe --check <catalog>`
+  periodically to rescan, work out the space needed and name a known drive
+  with enough free space. Free space per drive is recorded on plug-in and
+  before and after every backup. A tray icon or always-on mode was rejected.
+- **Checksums are the truth.** Whether data is safely held is decided by
+  BLAKE3 checksums, everywhere: quick and full checks, read-back on plug-in,
+  move and rename detection.
+- **Offline removable drives first.** A drive is identified by the
+  `BRODALF.media` file on it, never by its letter. Cloud (OneDrive and
+  Dropbox) is secondary, recorded as provider, account name and path, with
+  sign-in tokens in Windows Credential Manager. Dropbox gets only its app
+  folder (`Apps/BRODALF`). Sign-in uses PKCE, so there is no client secret.
+- **The catalog holds no file data**, only where the bits live. Old versions
+  stay browsable on the drive in a `.versions` folder.
+- **Encryption is optional**, per drive, and encrypts file contents only.
+  File and folder names stay readable so a drive is still browsable.
+- **Windows is the platform, the GUI is the interface**: native Win32 in C,
+  with Local backups and Cloud backups as separate top-level menus and a
+  prominent progress area. POSIX builds exist for tests and the CLI.
+- **Startup flow**: open BRODALF, pick or create a `.brodalf` file, connect
+  everything reachable, pick folders, scan metadata and checksums, show the
+  ghost tree greyed out until a copy is verified on connected storage.
+  Clicking an entry shows its details in a second pane.
+- **Every catalog save also uploads a copy** to each connected cloud account.
+- **Ransomware**: on a mass change, pause backups and steer toward restoring,
+  not backing up.
+- **App keys and IDs never go in source or in the exe.** CI bakes them in
+  from repository variables (see below).
+
+The original design write-up lives at
+https://claude.ai/artifact/RMxcPVGY6unWn917nXnJ8w, but everything that
+matters from it is in this section and in [docs/DESIGN.md](docs/DESIGN.md),
+which describes the current implementation.
+
+### How it is built and tested
+
+- `cmake -S . -B build && cmake --build build && ctest --test-dir build`.
+  Tests: `tests/test_core.c` (end to end), `tests/test_crypto.c` (about 50 s
+  under ASan because of Argon2, 2 s in Release), `tests/test_cloud.c`
+  against `tests/mock_cloud.py` (POSIX only).
+- CI is `.github/workflows/c-core.yml`: builds and tests on ubuntu-latest
+  and windows-latest (MSVC), uploads `brodalf.exe` and `brodalf-cli.exe` as
+  the `brodalf-windows` artifact.
+- Windows testing has so far been done from Linux: cross-compile with
+  `cmake/mingw-w64-x86_64.cmake` (`gcc-mingw-w64-x86-64`) and run under
+  `wine64` with `LANG=C.UTF-8`. GUI screenshots were taken with Xvfb,
+  xdotool and ImageMagick, and a fake `xdg-open` on PATH played the browser
+  for sign-in tests. Wine has no VSS, a stub `schtasks`, no real disk
+  model or SMART data and no real plug-in notifications, which is exactly
+  what remains untested.
+- Vendored in `third_party/`: SQLite 3.45.0, BLAKE3 1.5.4, zstd 1.5.6
+  (single file), Monocypher 4.0.2 and cJSON. Nothing is downloaded at build
+  time.
+
+### Releasing
+
+CI publishes a release on every push to `master` whose `project(... VERSION
+x.y.z)` in `CMakeLists.txt` has no release yet, as `vx.y.z`, with the zip of
+the two exes plus this README and the notes from `.github/release-notes.md`.
+To ship: bump the version in `CMakeLists.txt`, update the release notes,
+push to `master`. The exes are unsigned.
+
+### Cloud app registrations
+
+The Dropbox and OneDrive app IDs are **not in the source**. CI passes the
+GitHub Actions repository variables `BRODALF_DROPBOX_CLIENT_ID` and
+`BRODALF_ONEDRIVE_CLIENT_ID` to CMake; a build without one says "this build
+of BRODALF has no ... app ID yet" and that menu entry is disabled. The
+Dropbox app exists. **The Microsoft Entra registration for OneDrive does not
+exist yet**, so OneDrive is in the menu but unusable in every build so far.
+Set-up details for both are under [App registrations](#app-registrations).
+
+### Open items: what still needs trying on a real Windows PC
+
+Nothing below has ever run outside Wine, so each is "written and
+unit-tested, never seen working":
+
+1. The scheduled check: **Settings > Check my folders while BRODALF is
+   closed** should register a Task Scheduler job ("BRODALF - <catalog>",
+   daily or weekly at 12:00) and `brodalf.exe --check <catalog>` should pop
+   its one message when files are at risk.
+2. Files in use: the shadow-copy offer, the single UAC prompt for
+   `brodalf.exe --shadow-copy`, and whether an open `.pst` actually gets
+   read and backed up (`src/shadow.c`).
+3. Plugging in a known disk: the device-change notification should quick
+   check it, back up to it (if enabled), then read back copies older than
+   a month.
+4. The **Drives...** dialog with real hardware: make, model, serial, bus and
+   SMART, including the admin fallback and USB enclosures that pass nothing.
+5. Real Dropbox sign-in through a real browser (only the local mock and a
+   fake browser have been used), and the saved sign-in reconnecting from
+   Credential Manager on the next start.
+6. Create the Microsoft Entra app registration and set
+   `BRODALF_ONEDRIVE_CLIENT_ID` so OneDrive can be tried at all.
+
+### Backlog: suggested but not yet asked for
+
+Ideas offered to the owner and not picked up. Pick by number.
+
+1. Recovery on a new PC: open a catalog from a drive or cloud copy and
+   rebuild the picture from the drives themselves.
+2. A printable recovery key for the encryption passphrase.
+3. A deleted-files view.
+4. Replace a drive: retire a failing drive and refill another with what it
+   held.
+5. A printable drive list (name, where kept, what is on it).
+6. An installer.
+7. Code signing, so SmartScreen stops warning.
+8. An update check.
+
+Rejected: a tray icon or always-on mode (periodic runs only).
+
+### Working conventions
+
+- Commit straight to `master`; no long-lived branches, no PRs needed.
+  Build and run the tests before pushing and keep CI green.
+- Secrets and app IDs go in CI variables, never in source.
+- Bump the version and ship a release when a batch of work is done.
+- Write user-facing text (menus, dialogs, this README) in plain language,
+  no jargon; the user of the app is not a developer.
+- Say plainly in notes and release text what has only been exercised under
+  Wine.

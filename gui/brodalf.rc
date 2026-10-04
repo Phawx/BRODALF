@@ -65,6 +65,28 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 244, 230, 48, 14
 END
 
+IDD_GUARD DIALOGEX 0, 0, 340, 150
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Backups are paused"
+FONT 9, "Segoe UI", 0, 0, 1
+BEGIN
+    EDITTEXT IDC_GUARD_TEXT, 8, 8, 324, 110, ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL | NOT WS_BORDER | NOT WS_TABSTOP
+    PUSHBUTTON "Restore them as they were...", IDC_GUARD_RESTORE, 8, 128, 116, 14
+    PUSHBUTTON "The changes are mine", IDC_GUARD_MINE, 130, 128, 96, 14
+    DEFPUSHBUTTON "Decide later", IDCANCEL, 272, 128, 60, 14
+END
+
+IDD_ASOF DIALOGEX 0, 0, 260, 84
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Restore as of a date"
+FONT 9, "Segoe UI", 0, 0, 1
+BEGIN
+    LTEXT "Bring back the selected files as they were at the end of this day. Files that have been deleted since come back too; the newest versions BRODALF had seen by then are used.", -1, 8, 8, 244, 34
+    CONTROL "", IDC_ASOF_DATE, "SysDateTimePick32", DTS_SHORTDATEFORMAT | WS_TABSTOP, 8, 44, 120, 14
+    DEFPUSHBUTTON "Choose where...", IDOK, 128, 64, 70, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 202, 64, 50, 14
+END
+
 IDD_PASSPHRASE DIALOGEX 0, 0, 240, 78
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Enter the passphrase"

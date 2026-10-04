@@ -15,7 +15,8 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 The C core library, the Windows app (`brodalf.exe`) and a command-line
 harness (`brodalf-cli`) work, with optional encryption and OneDrive and
-Dropbox as storage. The Go files
+Dropbox as storage. Builds are on the
+[Releases](https://github.com/Phawx/BRODALF/releases) page. The Go files
 at the top of the repo are the earlier prototype and are not part of the C
 build.
 
@@ -65,6 +66,22 @@ That works just the same when none of those drives are plugged in, so you know
 which box to go and get.
 
 ![A file whose drive is in a box](docs/images/gui-file-details.png)
+
+The menu bar keeps the two kinds of storage apart. **Local backups** lists
+every external or removable disk BRODALF knows, plugged in or not, with how
+much room it had when last seen; each disk has a submenu to back up to it,
+read back its copies, run a full check or see its details, and below the
+disks are **Add an external or removable disk...** and **What needs backing
+up, and which disk to plug in...**. **Cloud backups** lists the active
+OneDrive and Dropbox connections, with adding and signing out.
+
+![Local backups menu](docs/images/gui-menus.png)
+
+Above the log, a progress bar shows what BRODALF is doing right now: how
+many files it has looked at, copied or read back out of how many, how much
+data, the current data rate and the file it is on.
+
+![Progress during a backup](docs/images/gui-progress.png)
 
 After a backup, everything on the drive lights up:
 
@@ -143,6 +160,74 @@ oldest copy hasn't been read in 6 months, BRODALF lists it when it opens
 and offers a full check when that drive is plugged in. Change how often (3
 months, 6 months, a year, or never) under **Settings > Remind me to check
 each drive**.
+
+### Not running all the time
+
+BRODALF does not sit in the background. Open it and it rescans your folders,
+works out what needs backing up and reads back the copies on whatever is
+plugged in; close it and nothing of it runs. Instead, Windows Task Scheduler
+runs a quiet check once a day (**Settings > Check my folders for changes
+while BRODALF is closed**: every day, every week, or never). The check
+rescans with no window and speaks up only when files fall short of the
+target, with how much needs backing up and which disk to plug in. The disk
+it names is one that had enough free space when it was last seen, so you
+reach for a drive you already have rather than a new one.
+
+![The scheduled check](docs/images/gui-check.png)
+
+To know that, BRODALF records every drive's total and free space whenever
+it is plugged in and before and after each backup. **Drives...** shows the
+latest reading, and the **Free space** column of the at-risk view says
+whether what is at risk would fit on each drive.
+
+### Moved and renamed folders
+
+Renaming or moving a folder used to mean copying all of it again. A scan
+now recognises a file that disappeared in one place and turned up in
+another by its checksum and size, and the next backup moves the copy on the
+drive to the new name instead of copying it again. Folders that are left
+empty on the drive go too. The ransomware guard (below) also knows a move
+from damage, so renaming a big folder does not pause backups.
+
+### Read back when plugged in
+
+Checksums are what BRODALF trusts, not file names or dates. When a known
+drive is plugged in (or is present when BRODALF opens), after the quick
+check it reads back every copy on it that has not been read back in a
+month and compares the checksum, so a copy going bad on the shelf shows up
+as damaged while you can still replace it from your folder or another
+drive. Change how often under **Settings > Read back copies when a drive is
+plugged in** (a week, a month, 3 months, or never). A full check of every
+copy is still one click away per drive.
+
+### The ransomware guard
+
+If one scan finds a quarter or more of your files (and at least 50) changed
+or gone at once, BRODALF treats it as what ransomware encrypting a disk
+looks like. It pauses backups, so the good copies on your drives are not
+replaced by scrambled ones, stops cleaning up old versions, and asks what
+happened:
+
+![The guard](docs/images/gui-guard.png)
+
+**Restore them as they were...** brings everything back as of the scan
+before the changes; **The changes are mine** lets backups carry on (and
+runs the one that was stopped). Pick the threshold, or turn the guard off,
+under **Settings > Pause backups (ransomware guard)**. Separately,
+**Catalog > Restore what is selected as it was on a date...** restores any
+folder as it stood at the end of a chosen day, including files deleted
+since.
+
+### Files in use
+
+A file another program holds open, such as Outlook's `.pst` or a running
+database, cannot be read, so a scan skips it and lists it at the end.
+BRODALF then offers to read such files from a Windows shadow copy: it asks
+for administrator permission once, takes a snapshot of the volume, copies
+just those files out of it and backs them up from there. The same offer is
+under **Help > Read files that are in use from a shadow copy...**. This has
+so far only been exercised under Wine, which has no shadow copy service, so
+please report what it does on a real Windows PC.
 
 ### Search
 
@@ -284,6 +369,17 @@ brodalf-cli option  family.brodalf keep_versions 3           # keep the last 3 o
 brodalf-cli option  family.brodalf keep_days 90              # ... and anything from the past 90 days
 brodalf-cli prune   family.brodalf E:\                        # apply that now (backups also do it)
 
+brodalf-cli need    family.brodalf                           # what needs backing up, and the drive to plug in
+brodalf-cli verify  family.brodalf E:\                        # read back copies not read back in 30 days
+brodalf-cli option  family.brodalf verify_days 7             # ... make that a week
+brodalf-cli guard   family.brodalf                           # why backups are paused (--clear: the changes were mine)
+brodalf-cli backup  family.brodalf E:\ --anyway              # back up although the guard tripped
+brodalf-cli restore family.brodalf D:\restored --as-of 2026-09-30 --drive E:\    # the files as they were that day
+brodalf-cli restore family.brodalf D:\restored --as-of before-changes --drive E:\ # as before the guard tripped
+brodalf-cli option  family.brodalf guard_percent 50          # pause only when half the files change at once
+brodalf-cli option  family.brodalf schedule 7                # the Windows app checks weekly (1: daily, 0: never)
+brodalf-cli shadow-copy C:\shadow "C:\Users\me\Outlook.pst"  # as administrator: copy an in-use file out of a shadow copy
+
 brodalf-cli cloud-add family.brodalf dropbox "Dropbox"       # opens the browser to sign in
 brodalf-cli backup family.brodalf cloud:Dropbox
 brodalf-cli restore family.brodalf D:\restored --drive cloud:Dropbox
@@ -299,14 +395,16 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | --- | --- |
 | `include/brodalf.h` | Public API of the core library |
 | `src/catalog.c` | The `.brodalf` file format and schema |
-| `src/scan.c` | Scanning source folders, versions |
-| `src/media.c` | Drive IDs, connecting drives, quick and full checks |
+| `src/scan.c` | Scanning source folders, versions, moves, the ransomware guard |
+| `src/media.c` | Drive IDs, connecting drives, quick, full and read-back checks |
 | `src/backup.c` | Backup with kept versions, restore |
 | `src/crypto.c` | Passphrase, master key, encrypted file streams |
 | `src/store*.c`, `src/store.h` | Storage interface: local drives and folders |
 | `src/cloud.c` | OneDrive and Dropbox: sign-in, uploads, checks |
 | `src/http_*.c`, `src/secrets.c` | WinHTTP client, sign-in redirect, Credential Manager |
 | `src/query.c` | Ghost-tree state for the GUI |
+| `src/risk.c` | Files at risk, which drive would help, space tracking |
+| `src/shadow.c` | Windows shadow copies for files in use |
 | `src/drive_hw.c` | Disk make, model, serial and SMART health |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |

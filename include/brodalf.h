@@ -10,6 +10,7 @@
 #ifndef BRODALF_H
 #define BRODALF_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,7 +29,8 @@ typedef enum {
     BD_ERR_NOT_FOUND,
     BD_ERR_INVALID,
     BD_ERR_NOMEM,
-    BD_ERR_PASSPHRASE /* a passphrase is needed, or the one given is wrong */
+    BD_ERR_PASSPHRASE, /* a passphrase is needed, or the one given is wrong */
+    BD_ERR_GUARD       /* backups are paused after a scan found too much changed (see bd_guard_get) */
 } bd_status;
 
 typedef void (*bd_log_fn)(void *ctx, const char *message);
@@ -84,9 +86,20 @@ bd_status bd_catalog_set_file_encrypted(bd_catalog *cat, int on);
 int bd_catalog_file_encrypted(bd_catalog *cat);
 
 /* Progress for long jobs (scan, backup, check, restore), called at most
- * about ten times a second from the thread running the job. files_done and
- * bytes_done count up from zero; current is the file being worked on. */
-typedef void (*bd_progress_fn)(void *ctx, const char *phase, int64_t files_done, int64_t bytes_done, const char *current);
+ * about ten times a second from the thread running the job, and once more
+ * with done set when the job ends. bytes_done counts every byte read so far
+ * (hashed, copied or checked), so it gives the data rate. Totals are 0 while
+ * not known; a scan's files_total is what the last scan found. */
+typedef struct {
+    const char *phase;     /* "scan", "backup", "check", "verify", "restore" */
+    const char *current;   /* the file being worked on; "" between files */
+    int64_t files_done;
+    int64_t files_total;
+    int64_t bytes_done;
+    int64_t bytes_total;
+    int done;
+} bd_progress;
+typedef void (*bd_progress_fn)(void *ctx, const bd_progress *p);
 void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
 
 /* ---- Sources and scanning -------------------------------------------- */
@@ -103,6 +116,8 @@ typedef struct {
     int64_t skipped_links;
     int64_t errors;
     int64_t skipped;         /* files and folders left out by the skip list */
+    int64_t files_in_use;    /* another program has them open; see bd_list_in_use */
+    int guard_tripped;       /* this scan paused backups: see bd_guard_get */
 } bd_scan_stats;
 
 /* The skip list: files and folders a scan leaves out. One pattern per line,
@@ -123,6 +138,46 @@ int bd_skip_match(const char *patterns, const char *rel_path, int is_dir);
 /* Scan every source folder. New or changed files are hashed (BLAKE3) and get
  * a new version. Unreadable entries are logged and skipped. */
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* ---- The ransomware guard -------------------------------------------- */
+
+/* When one scan finds a large share of the files it knew changed or gone
+ * (the "guard_percent" option, default 25; at least 50 files), that is what
+ * ransomware encrypting a folder looks like. BRODALF then pauses: backups
+ * fail with BD_ERR_GUARD and old versions are not cleaned up, so the copies
+ * made before stay intact, until the changes are restored or accepted. */
+typedef struct {
+    int tripped;
+    int64_t tripped_ms;     /* the scan that found it */
+    int64_t before_ms;      /* the scan before it: restore as of this time */
+    int64_t files_changed;
+    int64_t files_deleted;
+    int64_t files_total;    /* files the catalog knew before that scan */
+} bd_guard_info;
+
+bd_status bd_guard_get(bd_catalog *cat, bd_guard_info *out);
+/* The changes are the user's own: back them up again. */
+bd_status bd_guard_clear(bd_catalog *cat);
+
+/* ---- Files in use ------------------------------------------------------ */
+
+/* Files another program has open so that nobody else can read them (an
+ * Outlook .pst while Outlook runs, some databases), found by the last scan
+ * or backup. The catalog keeps what it knew about them. */
+typedef int (*bd_in_use_fn)(void *ctx, const char *path, int64_t size);
+bd_status bd_list_in_use(bd_catalog *cat, bd_in_use_fn fn, void *ctx);
+
+/* Read path from staged instead, for scans and backups, until cleared: a
+ * copy of a file in use taken from a shadow copy. path is as listed by
+ * bd_list_in_use. */
+bd_status bd_substitute_add(bd_catalog *cat, const char *path, const char *staged);
+void bd_substitutes_clear(bd_catalog *cat);
+
+/* Windows: copy files in use out of a Volume Shadow Copy of their drive (a
+ * snapshot Windows takes that no program holds open), into dest_dir as
+ * 1.bin, 2.bin, ... in order. Needs administrator rights. Returns how many
+ * were copied (ok[i] set for each), or -1 with a reason in err. */
+int bd_shadow_copy_files(const char *const *paths, int n, const char *dest_dir, int *ok, char *err, size_t err_len);
 
 /* ---- Storage (media) ------------------------------------------------- */
 
@@ -163,6 +218,13 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
  * every copy. */
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
                          bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* The verify pass run when a drive is plugged in: read back and hash every
+ * copy on it that has not been read back in max_age_days (0: every copy).
+ * Copies never read back since they were written always count, so each new
+ * copy is verified on the drive's next visit. */
+bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
+                          bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* ---- Cloud storage --------------------------------------------------- */
 
@@ -207,6 +269,9 @@ typedef struct {
     int64_t bytes_no_room;
     int64_t versions_pruned;  /* old copies removed from .versions by the keep rule */
     int64_t bytes_pruned;
+    int64_t files_moved;      /* moved or renamed files whose copy was moved on the drive, not copied again */
+    int64_t bytes_moved;
+    int64_t files_in_use;     /* another program had them open (counted in files_failed too) */
 } bd_backup_stats;
 
 #define BD_MAX_CONTINUE 8
@@ -215,10 +280,13 @@ typedef struct {
      * list): to carry on with what did not fit on full ones. Empty: every
      * file missing from this drive. */
     int64_t only_missing_from[BD_MAX_CONTINUE];
+    int ignore_guard;         /* back up even while the guard has paused backups */
 } bd_backup_opts;
 
 /* Copy the current version of every file that has no good copy on this
- * drive. The drive must be connected. source_id 0 means all sources. The
+ * drive. A file that was moved or renamed is recognised by its hash: when
+ * the copy of the file it used to be is on the drive, that copy is moved to
+ * the new name instead of copying the file again. The drive must be connected. source_id 0 means all sources. The
  * previous copy of a changed file is kept under .versions, never
  * overwritten. Old copies in .versions are first cleaned up by the keep
  * rule (bd_prune_versions). Files that would leave the drive nearly full
@@ -270,6 +338,16 @@ typedef struct {
 bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                      bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
 
+typedef struct {
+    /* 0: the current version of every file. Otherwise the files as they
+     * were at this time: the newest version BRODALF had seen by then of
+     * every file that existed then, including files deleted since. */
+    int64_t as_of_ms;
+} bd_restore_opts;
+
+bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                        const bd_restore_opts *opts, bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
+
 /* Which drives a restore needs, in the order to plug them in: drives that
  * are already plugged in first, then each drive that holds the most of
  * what is still missing. Files already at dest_root (when given) are not
@@ -288,6 +366,9 @@ typedef int (*bd_restore_step_fn)(void *ctx, const bd_restore_step *step);
 
 bd_status bd_restore_plan(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                           bd_restore_step_fn fn, void *ctx, int64_t *files_total, int64_t *files_no_copy);
+bd_status bd_restore_plan_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                             const bd_restore_opts *opts, bd_restore_step_fn fn, void *ctx, int64_t *files_total,
+                             int64_t *files_no_copy);
 
 /* ---- Ghost tree queries ---------------------------------------------- */
 
@@ -379,7 +460,8 @@ typedef struct {
     const char *last_root;   /* where it was last seen, e.g. "E:\" */
     int connected;
     int64_t total_bytes;     /* 0 if unknown */
-    int64_t free_bytes;
+    int64_t free_bytes;      /* as last read: when plugged in, and before and after each backup */
+    int64_t space_ms;        /* when the space was last read; 0 if never */
     int64_t last_seen_ms;
     int64_t copies;          /* copies BRODALF has recorded on it */
     int encrypted;
@@ -425,6 +507,13 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
  *                  was last read this many days ago (default 180; 0: never).
  *   "keep_versions", "keep_days"  the keep rule for old versions (default
  *                  5 and 365; see bd_prune_versions).
+ *   "verify_days"  when a drive is plugged in, read back and hash the copies
+ *                  not read back in this many days (default 30; 0: all).
+ *   "guard_percent" pause backups when one scan finds this share of the
+ *                  files changed or gone (default 25; 0: never).
+ *   "schedule"     how often Windows runs BRODALF to check the folders:
+ *                  0 never, 1 daily, 7 weekly (default 1). The app sets up
+ *                  the Windows task; the catalog only remembers the choice.
  * bd_option_get returns the default for an unset option and -1 for an
  * unknown name. */
 int bd_option_get(bd_catalog *cat, const char *name);
@@ -504,6 +593,9 @@ typedef struct {
     int connected;
     int64_t files;         /* at-risk files a backup here would bring closer to the target */
     int64_t bytes;
+    int64_t free_bytes;    /* as last read, -1 if never */
+    int64_t space_ms;      /* when */
+    int fits;              /* all of bytes fits in that free space */
 } bd_risk_help;
 
 typedef int (*bd_risk_help_fn)(void *ctx, const bd_risk_help *info);
@@ -513,6 +605,13 @@ typedef int (*bd_risk_help_fn)(void *ctx, const bd_risk_help *info);
  * copy the file needs or a place it is missing). Most helpful first;
  * drives that would not help are left out. */
 bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx);
+
+/* The one drive to suggest for what is short of the target, using the free
+ * space each drive had when last seen: the most helpful drive with room for
+ * all it would take, or failing that the one that can take the most.
+ * BD_ERR_NOT_FOUND when nothing is short or no drive would help. The strings
+ * in out stay valid until the next call. */
+bd_status bd_suggest_drive(bd_catalog *cat, bd_risk_help *out);
 
 /* ---- App log and error reports -------------------------------------- */
 

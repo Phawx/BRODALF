@@ -230,7 +230,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " h.filesystem, h.smart, h.health, h.temperature_c, h.power_on_hours, h.power_cycles, h.reallocated,"
                            " h.pending, h.uncorrectable, h.percent_used, h.note,"
                            " (SELECT MIN(COALESCE(c.last_full_check_ms, c.written_ms)) FROM copies c"
-                           "   WHERE c.media_id=m.id AND c.state='ok')"
+                           "   WHERE c.media_id=m.id AND c.state='ok'),"
+                           " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -252,6 +253,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.location = (const char *)sqlite3_column_text(q, 10);
         info.added_ms = sqlite3_column_int64(q, 11);
         info.oldest_check_ms = col_num(q, 32);
+        info.space_ms = col_num(q, 33);
+        if (info.space_ms < 0) info.space_ms = 0;
         if (info.oldest_check_ms < 0) info.oldest_check_ms = 0;
         info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
                          now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;

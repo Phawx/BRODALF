@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf VERSION 0.2.0 LANGUAGES C)
+project(brodalf VERSION 0.3.0 LANGUAGES C)
 
 # Link the C runtime statically so brodalf.exe runs on a PC without the
 # Visual C++ redistributable.
@@ -69,6 +69,7 @@ add_library(brodalf_core STATIC
     src/report.c
     src/risk.c
     src/scan.c
+    src/shadow.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)
 target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd brodalf_monocypher brodalf_cjson)
@@ -78,7 +79,7 @@ target_compile_definitions(brodalf_core PRIVATE
     BRODALF_VERSION="${PROJECT_VERSION}"
     BRODALF_BUILD_ID="${BRODALF_BUILD_ID}")
 if(WIN32)
-    target_link_libraries(brodalf_core PUBLIC bcrypt winhttp ws2_32 advapi32 crypt32)
+    target_link_libraries(brodalf_core PUBLIC bcrypt winhttp ws2_32 advapi32 crypt32 ole32)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)
 else()
     find_package(Threads REQUIRED)

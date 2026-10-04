@@ -627,6 +627,195 @@ static void test_report(void)
     CHECK(bd_applog_path() == NULL);
 }
 
+typedef struct {
+    int reports, ends;
+    bd_progress last;
+    char phase[32];
+} progress_log;
+
+static void on_progress(void *ctx, const bd_progress *p)
+{
+    progress_log *l = ctx;
+    l->reports++;
+    if (p->done) l->ends++;
+    l->last = *p;
+    snprintf(l->phase, sizeof(l->phase), "%s", p->phase);
+    l->last.phase = l->phase;
+    l->last.current = "";
+}
+
+typedef struct { int n; char path[1024]; } in_use_list;
+
+static int collect_in_use(void *ctx, const char *path, int64_t size)
+{
+    in_use_list *l = ctx;
+    if (l->n++ == 0) snprintf(l->path, sizeof(l->path), "%s", path);
+    (void)size;
+    return 0;
+}
+
+static int first_source_path(void *ctx, const bd_source_info *info)
+{
+    snprintf((char *)ctx, 1024, "%s", info->path);
+    return 1;
+}
+
+/* Moves, the verify pass, progress, the ransomware guard, restoring as of
+ * a date, drive suggestions and files in use. */
+static void test_moves_guard_and_progress(void)
+{
+    char name[64], text[64];
+    for (int i = 0; i < 60; i++) {
+        snprintf(name, sizeof(name), "g/Work/%s/f%02d.txt", i < 20 ? "old" : "keep", i);
+        snprintf(text, sizeof(text), "file %d, first version", i);
+        write_file(at(name), text);
+    }
+    bd_mkdirs(at("g/d1"));
+    bd_mkdirs(at("g/d2"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("g/g.brodalf"), &cat), NULL);
+    int64_t src, d1, d2;
+    REQUIRE_OK(bd_source_add(cat, at("g/Work"), &src), cat);
+    progress_log pl;
+    memset(&pl, 0, sizeof(pl));
+    bd_catalog_set_progress(cat, on_progress, &pl);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 60);
+    CHECK(pl.ends == 1 && strcmp(pl.last.phase, "scan") == 0 && pl.last.files_done == 60 && pl.last.bytes_done > 0);
+
+    REQUIRE_OK(bd_media_init(cat, at("g/d1"), "One", 0, &d1), cat);
+    memset(&pl, 0, sizeof(pl));
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 60);
+    CHECK(pl.ends == 1 && strcmp(pl.last.phase, "backup") == 0);
+    CHECK(pl.last.files_total == 60 && pl.last.files_done == 60 && pl.last.bytes_done == pl.last.bytes_total);
+
+    /* Rename a folder holding a third of the files: its copies move on the
+     * drive instead of being copied again, and the guard knows a move from damage. */
+    CHECK(bd_rename_noreplace(at("g/Work/old"), at("g/Work/renamed")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 20 && ss.files_deleted == 20 && !ss.guard_tripped);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_moved == 20 && bs.files_copied == 0 && bs.files_failed == 0);
+    char p[1200];
+    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/renamed/f03.txt", bd_catalog_uuid(cat));
+    CHECK(file_equals(at(p), "file 3, first version"));
+    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/old/f03.txt", bd_catalog_uuid(cat));
+    CHECK(!exists(at(p)));
+    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/old", bd_catalog_uuid(cat));
+    CHECK(!exists(at(p))); /* the emptied folder went with its files */
+    find_ctx ren = lookup(cat, src, 0, "renamed");
+    CHECK(lookup(cat, src, ren.node_id, "f03.txt").state == BD_STATE_AVAILABLE);
+    /* Renamed back: the old entries return, the copies move back, no alarm. */
+    CHECK(bd_rename_noreplace(at("g/Work/renamed"), at("g/Work/old")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 20 && ss.files_deleted == 20 && !ss.guard_tripped);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_moved == 20 && bs.files_copied == 0);
+    CHECK(bd_rename_noreplace(at("g/Work/old"), at("g/Work/renamed")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(!ss.guard_tripped);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_moved == 20 && bs.files_copied == 0);
+    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/renamed/f03.txt", bd_catalog_uuid(cat));
+    CHECK(file_equals(at(p), "file 3, first version"));
+
+    /* The verify pass reads back copies never read back, then skips them. */
+    bd_check_stats cs;
+    memset(&pl, 0, sizeof(pl));
+    REQUIRE_OK(bd_media_verify(cat, d1, 30, &cs, quiet, NULL), cat);
+    CHECK(cs.rehashed == 60 && cs.ok == 60);
+    CHECK(strcmp(pl.last.phase, "verify") == 0 && pl.last.files_total == 60 && pl.last.bytes_done == pl.last.bytes_total);
+    REQUIRE_OK(bd_media_verify(cat, d1, 30, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 0 && cs.rehashed == 0);
+    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/keep/f20.txt", bd_catalog_uuid(cat));
+    write_file(at(p), "file 20, first versioX");
+    REQUIRE_OK(bd_media_verify(cat, d1, 0, &cs, quiet, NULL), cat);
+    CHECK(cs.rehashed == 60 && cs.bad == 1);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    bd_catalog_set_progress(cat, NULL, NULL);
+
+    /* A second drive: it would take everything, and it has room. */
+    REQUIRE_OK(bd_media_init(cat, at("g/d2"), "Two", 0, &d2), cat);
+    bd_media_disconnect(cat, d2);
+    bd_risk_help sug;
+    REQUIRE_OK(bd_suggest_drive(cat, &sug), cat);
+    CHECK(sug.media_id == d2 && sug.fits && sug.files == 60 && sug.free_bytes > 0 && strcmp(sug.label, "Two") == 0);
+
+    /* Half the files change at once: backups pause. */
+    int64_t before_attack = 0;
+    for (int i = 20; i < 55; i++) {
+        snprintf(name, sizeof(name), "g/Work/keep/f%02d.txt", i);
+        write_file(at(name), "ENCRYPTED GARBAGE");
+    }
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 35 && ss.guard_tripped);
+    bd_guard_info g;
+    REQUIRE_OK(bd_guard_get(cat, &g), cat);
+    CHECK(g.tripped && g.files_changed == 35 && g.files_total == 60 && g.before_ms > 0);
+    before_attack = g.before_ms;
+    CHECK(bd_backup(cat, d1, 0, &bs, quiet, NULL) == BD_ERR_GUARD);
+
+    /* Restore as the files were before. */
+    bd_restore_opts ro = {before_attack};
+    int64_t total = 0, none = 0;
+    REQUIRE_OK(bd_restore_plan_ex(cat, src, NULL, NULL, &ro, NULL, NULL, &total, &none), cat);
+    CHECK(total == 60 && none == 0);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore_ex(cat, src, NULL, at("g/back"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 60 && rs.files_no_copy == 0);
+    CHECK(file_equals(at("g/back/Work/keep/f21.txt"), "file 21, first version"));
+    CHECK(file_equals(at("g/back/Work/renamed/f03.txt"), "file 3, first version"));
+    /* The latest versions were never backed up. */
+    REQUIRE_OK(bd_restore(cat, src, NULL, at("g/latest"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 25 && rs.files_no_copy == 35);
+
+    /* The changes were the user's: back up again. */
+    bd_backup_opts bo;
+    memset(&bo, 0, sizeof(bo));
+    bo.ignore_guard = 1;
+    REQUIRE_OK(bd_backup_ex(cat, d1, 0, &bo, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 35);
+    REQUIRE_OK(bd_guard_clear(cat), cat);
+    REQUIRE_OK(bd_guard_get(cat, &g), cat);
+    CHECK(!g.tripped);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+
+    /* A file in use is read from its staged (shadow) copy. */
+    char root[1024] = "";
+    bd_list_sources(cat, first_source_path, root);
+    write_file(at("g/Work/mail.pst"), "live mailbox");
+    write_file(at("g/staged-mail.bin"), "live mailbox");
+    char *mail = bd_path_join(root, "mail.pst");
+    REQUIRE_OK(bd_substitute_add(cat, mail, at("g/staged-mail.bin")), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 1);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    bd_substitutes_clear(cat);
+#ifdef _WIN32
+    /* Locked against reading by another program: listed as in use. */
+    wchar_t wmail[1024];
+    MultiByteToWideChar(CP_UTF8, 0, mail, -1, wmail, 1024);
+    for (wchar_t *c = wmail; *c; c++) if (*c == L'/') *c = L'\\';
+    write_file(at("g/Work/mail.pst"), "live mailbox, changed");
+    HANDLE h = CreateFileW(wmail, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_in_use == 1 && ss.errors == 0);
+    in_use_list iu;
+    memset(&iu, 0, sizeof(iu));
+    bd_list_in_use(cat, collect_in_use, &iu);
+    CHECK(iu.n == 1 && strcmp(iu.path, mail) == 0);
+    CloseHandle(h);
+#endif
+    free(mail);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -848,6 +1037,7 @@ int main(void)
     test_search();
     test_drives_and_versions();
     test_report();
+    test_moves_guard_and_progress();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

@@ -79,6 +79,22 @@ static int l_upload(bd_store *s, const char *staged, const char *rel, bd_remote_
     return rc;
 }
 
+/* After a move, the folders it left empty go too, up to the catalog's own
+ * folder on the drive, so a renamed tree does not leave husks behind. */
+static void drop_empty_parents(bd_store *s, char *path)
+{
+    local_impl *l = s->impl;
+    size_t keep = strlen(l->dir);
+    for (;;) {
+        char *slash = strrchr(path, '/');
+        char *bslash = strrchr(path, '\\');
+        if (bslash && (!slash || bslash > slash)) slash = bslash;
+        if (!slash || (size_t)(slash - path) <= keep) return;
+        *slash = '\0';
+        if (bd_rmdir_empty(path) != 0) return;
+    }
+}
+
 static int l_move(bd_store *s, const char *from, const char *to, int replace)
 {
     char *a = full(s, from), *b = full(s, to);
@@ -89,6 +105,7 @@ static int l_move(bd_store *s, const char *from, const char *to, int replace)
         else rc = (replace ? bd_rename_replace(a, b) : bd_rename_noreplace(a, b)) == 0 ? 0 : -1;
     }
     if (rc < 0) snprintf(s->err, sizeof(s->err), "cannot move %s to %s", from, to);
+    else if (rc == 0) drop_empty_parents(s, a);
     free(a);
     free(b);
     return rc;

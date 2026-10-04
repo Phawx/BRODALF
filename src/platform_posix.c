@@ -108,6 +108,14 @@ int bd_remove(const char *path)
     return rc == 0 ? 0 : -1;
 }
 
+int bd_rmdir_empty(const char *path)
+{
+    char *p = dup_native(path);
+    int rc = p ? rmdir(p) : -1;
+    free(p);
+    return rc == 0 ? 0 : -1;
+}
+
 FILE *bd_fopen(const char *path, const char *mode)
 {
     char *p = dup_native(path);
@@ -265,6 +273,11 @@ void bd_sleep_ms(int ms)
 {
     struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
     nanosleep(&ts, NULL);
+}
+
+int bd_open_was_in_use(void)
+{
+    return 0;
 }
 
 #endif

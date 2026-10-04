@@ -51,6 +51,36 @@ enum {
     ID_BTN_RISK,
     ID_SEARCH,
     ID_RESULTS,
+    ID_PROGRESS,
+    ID_PROGTEXT,
+    /* The menu bar. */
+    ID_M_ADD_FOLDER = 700,
+    ID_M_SCAN,
+    ID_M_RESTORE,
+    ID_M_RESTORE_ASOF,
+    ID_M_RISK,
+    ID_M_EXIT,
+    ID_M_ADD_DISK,
+    ID_M_DRIVES,
+    ID_M_ONEDRIVE,
+    ID_M_DROPBOX,
+    ID_M_SETTINGS,
+    ID_M_SCHED_DAILY,
+    ID_M_SCHED_WEEKLY,
+    ID_M_SCHED_NEVER,
+    ID_M_VERIFY_7,
+    ID_M_VERIFY_30,
+    ID_M_VERIFY_90,
+    ID_M_VERIFY_NEVER,
+    ID_M_GUARD_10,
+    ID_M_GUARD_25,
+    ID_M_GUARD_50,
+    ID_M_GUARD_NEVER,
+    ID_M_GUARD_STATUS,
+    ID_M_IN_USE,
+    ID_M_LOG,
+    ID_M_REPORTS,
+    ID_M_ABOUT,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
@@ -66,6 +96,7 @@ enum {
     ID_MENU_KEEP_4,
     ID_MENU_SKIP,
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
+    ID_DRIVE_ACT_BASE = 20000, /* + media id * 8 + action, for the Local/Cloud backups menus */
     ID_MENU_OTHER = 900,
     ID_MENU_ONEDRIVE,
     ID_MENU_DROPBOX
@@ -73,7 +104,7 @@ enum {
 
 enum {
     WM_APP_LOG = WM_APP + 1,  /* lParam: malloc'd wide string */
-    WM_APP_PROGRESS,          /* lParam: malloc'd wide string */
+    WM_APP_PROGRESS,          /* lParam: malloc'd prog_msg */
     WM_APP_DONE,              /* lParam: job* */
     WM_APP_OPEN_URL           /* lParam: malloc'd wide string */
 };
@@ -135,7 +166,8 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 /* ---- Globals ------------------------------------------------------------ */
 
 static HINSTANCE g_inst;
-static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives, g_search, g_results;
+static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_drives, g_search, g_results, g_progress, g_prog_text;
+static HMENU g_menu_local, g_menu_cloud;
 #define N_BUTTONS 8
 static HWND g_buttons[N_BUTTONS];
 static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
@@ -148,7 +180,7 @@ static int S(int px) { return MulDiv(px, g_dpi, 96); }
 
 /* ---- Jobs --------------------------------------------------------------- */
 
-typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE } job_kind;
+typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW } job_kind;
 
 typedef struct job {
     job_kind kind;
@@ -168,6 +200,10 @@ typedef struct job {
     int64_t span[BD_MAX_CONTINUE]; /* backup: only what is missing from these full drives */
     int64_t no_room, bytes_no_room; /* backup: what did not fit */
     int64_t offline;    /* restore: files on drives not plugged in */
+    int64_t as_of;      /* restore: the files as they were then (0: current) */
+    int64_t in_use;     /* scan/backup: files another program had open */
+    int guard;          /* scan: this scan paused backups */
+    int from_shadow;    /* the last job using shadow copies: clean them up after */
     int problems;
     bd_status status;
     wchar_t summary[512];
@@ -201,19 +237,80 @@ static void job_log(void *ctx, const char *message)
     if (w) { post_text(WM_APP_LOG, w); free(w); }
 }
 
-static void job_progress(void *ctx, const char *phase, int64_t files, int64_t bytes, const char *current)
+/* What the progress bar shows: percent (-1: unknown, keep it moving) and a
+ * line with the counts, the data rate and the file being worked on. */
+typedef struct { int percent; wchar_t text[1024]; } prog_msg;
+
+/* The data rate over the last few seconds: a ring of (time, bytes). */
+#define RATE_SAMPLES 16
+static struct { int64_t t[RATE_SAMPLES], b[RATE_SAMPLES]; int n, head; } g_rate;
+
+static void rate_reset(void) { memset(&g_rate, 0, sizeof(g_rate)); }
+
+static double rate_add(int64_t bytes)
+{
+    int64_t now = GetTickCount64();
+    g_rate.t[g_rate.head] = now;
+    g_rate.b[g_rate.head] = bytes;
+    g_rate.head = (g_rate.head + 1) % RATE_SAMPLES;
+    if (g_rate.n < RATE_SAMPLES) g_rate.n++;
+    int oldest = g_rate.n < RATE_SAMPLES ? 0 : g_rate.head;
+    int64_t dt = now - g_rate.t[oldest], db = bytes - g_rate.b[oldest];
+    return dt >= 500 && db >= 0 ? (double)db * 1000.0 / (double)dt : -1.0;
+}
+
+static void job_progress(void *ctx, const bd_progress *p)
 {
     (void)ctx;
-    wchar_t size[64], line[1024];
-    format_bytes(bytes, size, 64);
-    wchar_t *p = widen(phase), *c = widen(current);
-    if (strcmp(phase, "scan") == 0) swprintf(line, 1024, L"Scanning: %lld files, %ls checksummed. %ls", (long long)files, size, c);
-    else if (strcmp(phase, "backup") == 0) swprintf(line, 1024, L"Backing up: %lld files copied, %ls. %ls", (long long)files, size, c);
-    else if (strcmp(phase, "restore") == 0) swprintf(line, 1024, L"Restoring: %lld files, %ls. %ls", (long long)files, size, c);
-    else swprintf(line, 1024, L"Checking the drive: %lld copies. %ls", (long long)files, c);
-    free(p);
+    if (p->files_done == 0 && p->bytes_done == 0) rate_reset();
+    prog_msg *m = calloc(1, sizeof(*m));
+    if (!m) return;
+    const char *ph = p->phase;
+    const wchar_t *verb = strcmp(ph, "scan") == 0 ? L"Scanning" : strcmp(ph, "backup") == 0 ? L"Backing up"
+                        : strcmp(ph, "restore") == 0 ? L"Restoring" : strcmp(ph, "verify") == 0 ? L"Verifying copies"
+                        : L"Checking copies";
+    const wchar_t *unit = strcmp(ph, "scan") == 0 ? L"files looked at" : strcmp(ph, "backup") == 0 ? L"files copied"
+                        : strcmp(ph, "restore") == 0 ? L"files restored" : L"copies read";
+    wchar_t done[64], total[64], rate[64] = L"", *c = widen(p->current);
+    format_bytes(p->bytes_done, done, 64);
+    double r = p->done ? -1.0 : rate_add(p->bytes_done);
+    if (r >= 0) { format_bytes((int64_t)r, rate, 64); wcsncat(rate, L"/s", 63 - wcslen(rate)); }
+    if (p->bytes_total > 0) {
+        format_bytes(p->bytes_total, total, 64);
+        m->percent = (int)(p->bytes_done * 100 / p->bytes_total);
+        swprintf(m->text, 1024, L"%ls: %lld of %lld %ls, %ls of %ls%ls%ls. %ls", verb, (long long)p->files_done,
+                 (long long)p->files_total, unit, done, total, *rate ? L", " : L"", rate, c ? c : L"");
+    } else if (p->files_total > 0) {
+        m->percent = (int)(p->files_done * 100 / p->files_total);
+        swprintf(m->text, 1024, L"%ls: %lld of about %lld %ls, %ls read%ls%ls. %ls", verb, (long long)p->files_done,
+                 (long long)p->files_total, unit, done, *rate ? L" at " : L"", rate, c ? c : L"");
+    } else {
+        m->percent = -1;
+        swprintf(m->text, 1024, L"%ls: %lld %ls, %ls read%ls%ls. %ls", verb, (long long)p->files_done, unit, done,
+                 *rate ? L" at " : L"", rate, c ? c : L"");
+    }
+    if (p->done) m->percent = 100;
+    if (m->percent > 100) m->percent = 100;
     free(c);
-    post_text(WM_APP_PROGRESS, line);
+    if (!PostMessageW(g_main, WM_APP_PROGRESS, 0, (LPARAM)m)) free(m);
+}
+
+/* The bar and its line when no job runs. */
+static void show_progress(int percent, const wchar_t *text)
+{
+    LONG_PTR style = GetWindowLongPtrW(g_progress, GWL_STYLE);
+    if (percent < 0) {
+        if (!(style & PBS_MARQUEE)) SetWindowLongPtrW(g_progress, GWL_STYLE, style | PBS_MARQUEE);
+        SendMessageW(g_progress, PBM_SETMARQUEE, TRUE, 50);
+    } else {
+        if (style & PBS_MARQUEE) {
+            SendMessageW(g_progress, PBM_SETMARQUEE, FALSE, 0);
+            SetWindowLongPtrW(g_progress, GWL_STYLE, style & ~PBS_MARQUEE);
+        }
+        SendMessageW(g_progress, PBM_SETRANGE32, 0, 100);
+        SendMessageW(g_progress, PBM_SETPOS, percent, 0);
+    }
+    SetWindowTextW(g_prog_text, text);
 }
 
 /* Is root a drive for this catalog? Connects it (with a quick check). */
@@ -359,6 +456,9 @@ static void forget_missing_drives(void)
     }
 }
 
+static bd_status run_shadow(job *j);
+static void shadow_cleanup(void);
+
 static DWORD WINAPI worker(LPVOID arg)
 {
     job *j = arg;
@@ -382,6 +482,12 @@ static DWORD WINAPI worker(LPVOID arg)
             size_t len = wcslen(j->summary);
             swprintf(j->summary + len, 512 - len, L" %lld left out by the skip list.", (long long)st.skipped);
         }
+        if (st.files_in_use) {
+            size_t len = wcslen(j->summary);
+            swprintf(j->summary + len, 512 - len, L" %lld in use by another program.", (long long)st.files_in_use);
+        }
+        j->in_use = st.files_in_use;
+        j->guard = st.guard_tripped;
         break;
     }
     case JOB_BACKUP: {
@@ -434,6 +540,14 @@ static DWORD WINAPI worker(LPVOID arg)
                 swprintf(j->summary + len, 512 - len, L" %lld old versions cleaned up.", (long long)bs.versions_pruned);
                 len = wcslen(j->summary);
             }
+            if (bs.files_moved) {
+                swprintf(j->summary + len, 512 - len, L" %lld moved or renamed files were moved on the drive instead.", (long long)bs.files_moved);
+                len = wcslen(j->summary);
+            }
+            if (bs.files_in_use) {
+                swprintf(j->summary + len, 512 - len, L" %lld in use by another program.", (long long)bs.files_in_use);
+                len = wcslen(j->summary);
+            }
             if (bs.files_no_room) {
                 format_bytes(bs.bytes_no_room, size, 64);
                 swprintf(j->summary + len, 512 - len, L" The drive is full: %lld file%ls (%ls) did not fit.", (long long)bs.files_no_room,
@@ -441,9 +555,25 @@ static DWORD WINAPI worker(LPVOID arg)
             }
             j->no_room = bs.files_no_room;
             j->bytes_no_room = bs.bytes_no_room;
+            j->in_use = bs.files_in_use;
         }
         break;
     }
+    case JOB_VERIFY: {
+        bd_check_stats cs;
+        int days = bd_option_get(g_cat, "verify_days");
+        s = bd_media_verify(g_cat, j->media_id, days, &cs, job_log, j);
+        if (cs.rehashed == 0 && s == BD_OK)
+            swprintf(j->summary, 512, L"Verified: every copy on the drive was read back within the last %d days.", days);
+        else
+            swprintf(j->summary, 512, L"Verified: read back %lld copies, %lld good, %lld damaged, %lld missing.%ls",
+                     (long long)cs.rehashed, (long long)cs.ok, (long long)cs.bad, (long long)cs.missing,
+                     cs.bad || cs.missing ? L" The next backup to this drive writes them again." : L"");
+        break;
+    }
+    case JOB_SHADOW:
+        s = run_shadow(j);
+        break;
     case JOB_CHECK: {
         bd_check_stats cs;
         s = bd_media_check(g_cat, j->media_id, 1, &cs, job_log, j);
@@ -453,7 +583,8 @@ static DWORD WINAPI worker(LPVOID arg)
     }
     case JOB_RESTORE: {
         bd_restore_stats rs;
-        s = bd_restore(g_cat, j->source_id, j->rel, j->dest, &rs, job_log, j);
+        bd_restore_opts ro = {j->as_of};
+        s = bd_restore_ex(g_cat, j->source_id, j->rel, j->dest, &ro, &rs, job_log, j);
         format_bytes(rs.bytes_restored, size, 64);
         swprintf(j->summary, 512, L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed.",
                  (long long)rs.files_restored, size, (long long)rs.files_already_there, (long long)rs.files_offline,
@@ -472,6 +603,7 @@ static DWORD WINAPI worker(LPVOID arg)
         swprintf(j->summary, 512, L"Stopped: %ls", e ? e : L"unknown error");
         free(e);
     }
+    if (j->from_shadow) shadow_cleanup();
     if (bd_catalog_save_all(g_cat, job_log, j) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         if (j->status == BD_OK) {
@@ -492,6 +624,11 @@ static void set_busy(int busy)
 {
     InterlockedExchange(&g_busy, busy);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy);
+    HMENU bar = GetMenu(g_main);
+    if (bar) {
+        for (int i = 0; i < GetMenuItemCount(bar); i++) EnableMenuItem(bar, (UINT)i, MF_BYPOSITION | (busy ? MF_GRAYED : MF_ENABLED));
+        DrawMenuBar(g_main);
+    }
 }
 
 static void start_next_job(void)
@@ -502,8 +639,10 @@ static void start_next_job(void)
     j->next = NULL;
     set_busy(1);
     static const wchar_t *starting[] = {L"Looking for BRODALF drives...", L"Scanning your folders...",
-                                        L"Backing up...", L"Checking every copy on the drive...", L"Restoring..."};
+                                        L"Backing up...", L"Checking every copy on the drive...", L"Restoring...",
+                                        L"Reading back the copies on the drive...", L"Reading files that are in use from a shadow copy..."};
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)starting[j->kind]);
+    show_progress(-1, starting[j->kind]);
     HANDLE h = CreateThread(NULL, 0, worker, j, 0, NULL);
     if (h) CloseHandle(h);
     else { set_busy(0); job_free(j); }
@@ -1261,6 +1400,12 @@ static void update_drives_label(void)
     bd_list_media(g_cat, drive_label_cb, &d);
     if (d.total == 0) wcscpy(d.text, L"No backup drives yet. Use Back up to set one up.");
     else if (d.connected == 0) swprintf(d.text, 1024, L"None of your %d backup drive(s) are plugged in.", d.total);
+    bd_guard_info g;
+    if (bd_guard_get(g_cat, &g) == BD_OK && g.tripped) {
+        wchar_t paused[1100];
+        swprintf(paused, 1100, L"BACKUPS PAUSED (ransomware guard, see Settings).  %ls", d.text);
+        wcscpy(d.text, paused);
+    }
     SetWindowTextW(g_drives, d.text);
     /* The button says how many files are short of the target. */
     bd_risk_stats rs;
@@ -1341,8 +1486,14 @@ static int risk_help_cb(void *ctx, const bd_risk_help *h)
     swprintf(files, 32, L"%lld file%ls", (long long)h->files, h->files == 1 ? L"" : L"s");
     format_bytes(h->bytes, size, 64);
     const wchar_t *kind = strcmp(h->kind, "drive") == 0 ? L"Drive" : strcmp(h->kind, "onedrive") == 0 ? L"OneDrive" : L"Dropbox";
-    const wchar_t *cells[] = {name, kind, loc && *loc ? loc : L"(not set)", files, size};
-    lv_row(f->lv, cells, 5);
+    wchar_t room[96] = L"unknown";
+    if (h->free_bytes >= 0) {
+        wchar_t fb[64];
+        format_bytes(h->free_bytes, fb, 64);
+        swprintf(room, 96, L"%ls free%ls", fb, h->fits ? L", room for all of it" : L", not enough");
+    }
+    const wchar_t *cells[] = {name, kind, loc && *loc ? loc : L"(not set)", files, size, room};
+    lv_row(f->lv, cells, 6);
     if (g_risk_media_n < 64) {
         g_risk_media[g_risk_media_n] = h->media_id;
         g_risk_connected[g_risk_media_n] = h->connected;
@@ -1401,11 +1552,11 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_INITDIALOG: {
-        static const wchar_t *help_cols[] = {L"Drive", L"Kind", L"Kept in", L"Would help", L"Size"};
-        static const int help_w[] = {170, 60, 120, 90, 80};
+        static const wchar_t *help_cols[] = {L"Drive", L"Kind", L"Kept in", L"Would help", L"Size", L"Free space"};
+        static const int help_w[] = {150, 60, 100, 80, 70, 190};
         static const wchar_t *file_cols[] = {L"File", L"Copies", L"Places", L"Size", L"Note"};
         static const int file_w[] = {280, 56, 56, 70, 200};
-        lv_columns(GetDlgItem(dlg, IDC_RISK_HELP), help_cols, help_w, 5);
+        lv_columns(GetDlgItem(dlg, IDC_RISK_HELP), help_cols, help_w, 6);
         lv_columns(GetDlgItem(dlg, IDC_RISK_FILES), file_cols, file_w, 5);
         bd_target t;
         bd_target_get(g_cat, &t);
@@ -1920,9 +2071,35 @@ static void resume_restore(const job *drives)
     enqueue(r);
 }
 
+/* A drive BRODALF knows was plugged in: read back the copies on it that
+ * were not read back lately, so slow damage shows while other copies exist. */
+static void verify_new_drives(const job *j)
+{
+    if (bd_option_get(g_cat, "verify_days") <= 0) return;
+    for (int i = 0; i < j->n_new; i++) {
+        media_one o;
+        memset(&o, 0, sizeof(o));
+        o.id = j->new_ids[i];
+        bd_list_media(g_cat, media_one_cb, &o);
+        if (!o.found || o.info.copies == 0) continue;
+        if (o.info.encrypted && !bd_catalog_is_unlocked(g_cat)) {
+            wchar_t name[600], line[800];
+            drive_name(o.label, o.location, name, 600);
+            swprintf(line, 800, L"%ls is encrypted; its copies are read back when the passphrase is entered.", name);
+            log_append(line);
+            continue;
+        }
+        job *v = new_job(JOB_VERIFY);
+        if (!v) continue;
+        v->media_id = o.id;
+        enqueue(v);
+    }
+}
+
 static void after_drives(job *j)
 {
     if (j->startup) remind_checks();
+    if (j->n_new) verify_new_drives(j);
     if (!j->n_new || !j->auto_run) return;
     resume_restore(j);
     if (bd_option_get(g_cat, "auto_backup") == 1) {
@@ -2054,6 +2231,10 @@ static void cmd_skip(void)
     }
 }
 
+static void settings_command(int cmd);
+static void apply_schedule(int days, int say);
+static int guard_dialog(void);
+
 static void cmd_security(void)
 {
     int has = bd_catalog_has_passphrase(g_cat), unlocked = bd_catalog_is_unlocked(g_cat);
@@ -2079,10 +2260,39 @@ static void cmd_security(void)
                     (UINT_PTR)(ID_MENU_KEEP_0 + i), KEEP_PRESETS[i].text);
     AppendMenuW(m, MF_POPUP, (UINT_PTR)keep, L"Old versions on each drive");
     AppendMenuW(m, MF_STRING, ID_MENU_SKIP, L"What to leave out...");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    HMENU sched = CreatePopupMenu();
+    int sd = bd_option_get(g_cat, "schedule");
+    AppendMenuW(sched, MF_STRING | (sd == 1 ? MF_CHECKED : 0), ID_M_SCHED_DAILY, L"Every day");
+    AppendMenuW(sched, MF_STRING | (sd == 7 ? MF_CHECKED : 0), ID_M_SCHED_WEEKLY, L"Every week");
+    AppendMenuW(sched, MF_STRING | (sd == 0 ? MF_CHECKED : 0), ID_M_SCHED_NEVER, L"Never");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)sched, L"Check my folders for changes while BRODALF is closed");
+    HMENU verify = CreatePopupMenu();
+    int vd = bd_option_get(g_cat, "verify_days");
+    AppendMenuW(verify, MF_STRING | (vd == 7 ? MF_CHECKED : 0), ID_M_VERIFY_7, L"Copies not read back in a week");
+    AppendMenuW(verify, MF_STRING | (vd == 30 ? MF_CHECKED : 0), ID_M_VERIFY_30, L"Copies not read back in a month");
+    AppendMenuW(verify, MF_STRING | (vd == 90 ? MF_CHECKED : 0), ID_M_VERIFY_90, L"Copies not read back in 3 months");
+    AppendMenuW(verify, MF_STRING | (vd == 0 ? MF_CHECKED : 0), ID_M_VERIFY_NEVER, L"Never");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)verify, L"Read back copies when a drive is plugged in");
+    HMENU guard = CreatePopupMenu();
+    int gp = bd_option_get(g_cat, "guard_percent");
+    AppendMenuW(guard, MF_STRING | (gp == 10 ? MF_CHECKED : 0), ID_M_GUARD_10, L"When a tenth of the files change at once");
+    AppendMenuW(guard, MF_STRING | (gp == 25 ? MF_CHECKED : 0), ID_M_GUARD_25, L"When a quarter of the files change at once");
+    AppendMenuW(guard, MF_STRING | (gp == 50 ? MF_CHECKED : 0), ID_M_GUARD_50, L"When half of the files change at once");
+    AppendMenuW(guard, MF_STRING | (gp == 0 ? MF_CHECKED : 0), ID_M_GUARD_NEVER, L"Never");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)guard, L"Pause backups (ransomware guard)");
+    bd_guard_info gi;
+    if (bd_guard_get(g_cat, &gi) == BD_OK && gi.tripped)
+        AppendMenuW(m, MF_STRING, ID_M_GUARD_STATUS, L"Backups are paused by the guard...");
     RECT r;
     GetWindowRect(g_buttons[6], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
     DestroyMenu(m);
+    settings_command(cmd);
+}
+
+static void settings_command(int cmd)
+{
     if (cmd == ID_MENU_SET_PASS) {
         set_passphrase_ui();
     } else if (cmd == ID_MENU_ENCRYPT_CATALOG) {
@@ -2116,6 +2326,30 @@ static void cmd_security(void)
         }
     } else if (cmd == ID_MENU_SKIP) {
         cmd_skip();
+    } else if (cmd >= ID_M_SCHED_DAILY && cmd <= ID_M_SCHED_NEVER) {
+        static const int choice[] = {1, 7, 0};
+        int d = choice[cmd - ID_M_SCHED_DAILY];
+        if (bd_option_set(g_cat, "schedule", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) apply_schedule(d, 1);
+    } else if (cmd >= ID_M_VERIFY_7 && cmd <= ID_M_VERIFY_NEVER) {
+        static const int choice[] = {7, 30, 90, 0};
+        int d = choice[cmd - ID_M_VERIFY_7];
+        if (bd_option_set(g_cat, "verify_days", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+            wchar_t line[200];
+            if (d) swprintf(line, 200, L"When a drive is plugged in, BRODALF reads back the copies on it not read back in %d days.", d);
+            else wcscpy(line, L"BRODALF will not read back copies when a drive is plugged in (Check drive still does).");
+            log_append(line);
+        }
+    } else if (cmd >= ID_M_GUARD_10 && cmd <= ID_M_GUARD_NEVER) {
+        static const int choice[] = {10, 25, 50, 0};
+        int p = choice[cmd - ID_M_GUARD_10];
+        if (bd_option_set(g_cat, "guard_percent", p) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+            wchar_t line[200];
+            if (p) swprintf(line, 200, L"Backups pause when one scan finds %d%% of the files changed or gone at once.", p);
+            else wcscpy(line, L"The ransomware guard is off.");
+            log_append(line);
+        }
+    } else if (cmd == ID_M_GUARD_STATUS) {
+        guard_dialog();
     } else if (cmd >= ID_MENU_CHECK_90 && cmd <= ID_MENU_CHECK_NEVER) {
         static const int choice[] = {90, 180, 365, 0};
         int d = choice[cmd - ID_MENU_CHECK_90];
@@ -2217,16 +2451,31 @@ static void cmd_add_cloud(bd_cloud_provider prov)
     enqueue(j);
 }
 
+static void add_disk(void);
+
 static void cmd_backup(void)
 {
     int64_t id = choose_drive(g_buttons[2], 1);
     if (id == CHOSE_ONEDRIVE || id == CHOSE_DROPBOX) { cmd_add_cloud(id == CHOSE_ONEDRIVE ? BD_CLOUD_ONEDRIVE : BD_CLOUD_DROPBOX); return; }
     if (id < 0) return;
+    if (id == 0) { add_disk(); return; }
     job *j = new_job(JOB_BACKUP);
     if (!j) return;
-    if (id > 0) {
-        j->media_id = id;
-    } else {
+    j->media_id = id;
+    if (media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) {
+        job_free(j);
+        return;
+    }
+    ask_continue(j, id, L"it");
+    enqueue(j);
+}
+
+/* Set up a disk (or a folder on one) as backup storage and back up to it. */
+static void add_disk(void)
+{
+    job *j = new_job(JOB_BACKUP);
+    if (!j) return;
+    {
         j->root = pick_folder(g_main, L"Choose the drive (or a folder on it) to back up to.");
         if (!j->root) { job_free(j); return; }
         if (!is_brodalf_drive(j->root)) {
@@ -2246,10 +2495,6 @@ static void cmd_backup(void)
             }
         }
     }
-    if (id > 0 && media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) {
-        job_free(j);
-        return;
-    }
     enqueue(j);
 }
 
@@ -2264,9 +2509,11 @@ static void cmd_check(void)
     enqueue(j);
 }
 
-static void cmd_restore(void)
+/* Restore what is selected in the tree (or everything, with whole set) as it
+ * is now, or as it was at as_of. */
+static void restore_selection(int whole, int64_t as_of)
 {
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref all = {0}, *r = whole ? &all : item_ref(TreeView_GetSelection(g_tree));
     if (!r) {
         MessageBoxW(g_main, L"Select a protected folder, a folder inside it, or a file to restore.", APP_NAME, MB_ICONINFORMATION);
         return;
@@ -2280,11 +2527,13 @@ static void cmd_restore(void)
     plan_text p;
     memset(&p, 0, sizeof(p));
     int64_t total = 0, none = 0;
-    bd_restore_plan(g_cat, r->source_id, r->rel, dest, plan_text_cb, &p, &total, &none);
+    bd_restore_opts ro = {as_of};
+    bd_restore_plan_ex(g_cat, r->source_id, r->rel, dest, &ro, plan_text_cb, &p, &total, &none);
     if (total == 0) {
         free(p.t.p);
         free(dest);
-        MessageBoxW(g_main, L"Everything here is already restored in that folder.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, as_of ? L"BRODALF knew of no files here at that time." : L"Everything here is already restored in that folder.",
+                    APP_NAME, MB_ICONINFORMATION);
         return;
     }
     if (p.n > 1 || p.any_offline || none) {
@@ -2305,8 +2554,537 @@ static void cmd_restore(void)
     j->source_id = r->source_id;
     j->rel = xstrdup(r->rel ? r->rel : "");
     j->dest = dest;
+    j->as_of = as_of;
     clear_pending();
+    if (as_of) {
+        wchar_t when[64], line[200];
+        format_time_ms(as_of, when, 64);
+        swprintf(line, 200, L"Restoring the files as they were at %ls.", when);
+        log_append(line);
+    }
     enqueue(j);
+}
+
+static void cmd_restore(void) { restore_selection(0, 0); }
+
+/* ---- Restore as of a date ------------------------------------------------ */
+
+static int64_t g_asof_ms;
+
+static INT_PTR CALLBACK asof_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch (msg) {
+    case WM_INITDIALOG:
+        return TRUE;
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK) {
+            SYSTEMTIME st, utc;
+            FILETIME ft;
+            if (DateTime_GetSystemtime(GetDlgItem(dlg, IDC_ASOF_DATE), &st) != GDT_VALID) return TRUE;
+            st.wHour = 23; st.wMinute = 59; st.wSecond = 59; st.wMilliseconds = 999;
+            TzSpecificLocalTimeToSystemTime(NULL, &st, &utc);
+            SystemTimeToFileTime(&utc, &ft);
+            ULONGLONG t = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+            g_asof_ms = (int64_t)((t - 116444736000000000ULL) / 10000ULL);
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        break;
+    }
+    return FALSE;
+}
+
+static void cmd_restore_as_of(void)
+{
+    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    if (!r) {
+        MessageBoxW(g_main, L"Select a protected folder, a folder inside it, or a file to restore.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    g_asof_ms = 0;
+    if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_ASOF), g_main, asof_proc) != IDOK || !g_asof_ms) return;
+    restore_selection(0, g_asof_ms);
+}
+
+/* ---- The ransomware guard ------------------------------------------------- */
+
+static INT_PTR CALLBACK guard_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void)lp;
+    switch (msg) {
+    case WM_INITDIALOG: {
+        bd_guard_info g;
+        bd_guard_get(g_cat, &g);
+        wchar_t when[64], before[64], text[1200];
+        format_time_ms(g.tripped_ms, when, 64);
+        format_time_ms(g.before_ms, before, 64);
+        swprintf(text, 1200,
+                 L"The scan at %ls found %lld of %lld files changed and %lld gone, all at once. "
+                 L"That is what ransomware encrypting your files looks like, so BRODALF has paused backups: "
+                 L"the copies made before are kept exactly as they are, and old versions are not cleaned up.\n\n"
+                 L"If your files look wrong, restore them as they were at %ls (the scan before). "
+                 L"If you made the changes yourself, tell BRODALF so and backups carry on.",
+                 when, (long long)g.files_changed, (long long)g.files_total, (long long)g.files_deleted, before);
+        SetDlgItemTextW(dlg, IDC_GUARD_TEXT, text);
+        SetFocus(GetDlgItem(dlg, IDCANCEL));
+        return FALSE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDC_GUARD_RESTORE || LOWORD(wp) == IDC_GUARD_MINE || LOWORD(wp) == IDCANCEL) {
+            EndDialog(dlg, LOWORD(wp));
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+/* Returns 1 when the user said the changes were theirs and backups carry on. */
+static int guard_dialog(void)
+{
+    bd_guard_info g;
+    if (bd_guard_get(g_cat, &g) != BD_OK || !g.tripped) return 0;
+    INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_GUARD), g_main, guard_proc);
+    if (r == IDC_GUARD_RESTORE) {
+        restore_selection(1, g.before_ms);
+    } else if (r == IDC_GUARD_MINE) {
+        if (bd_guard_clear(g_cat) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+            log_append(L"Backups carry on; the changes were yours.");
+            update_drives_label();
+            return 1;
+        }
+        update_drives_label();
+    } else {
+        log_append(L"Backups stay paused. Decide under Settings > Backups are paused by the guard.");
+    }
+    return 0;
+}
+
+/* ---- Files in use and shadow copies --------------------------------------- */
+
+static wchar_t g_shadow_dir[MAX_PATH];
+
+typedef struct { char **paths; int n, cap; int64_t bytes; } in_use_list;
+
+static int in_use_cb(void *ctx, const char *path, int64_t size)
+{
+    in_use_list *l = ctx;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 16;
+        char **grown = realloc(l->paths, sizeof(char *) * (size_t)cap);
+        if (!grown) return 1;
+        l->paths = grown;
+        l->cap = cap;
+    }
+    l->paths[l->n++] = xstrdup(path);
+    l->bytes += size;
+    return 0;
+}
+
+static void in_use_free(in_use_list *l)
+{
+    for (int i = 0; i < l->n; i++) free(l->paths[i]);
+    free(l->paths);
+}
+
+static void shadow_cleanup(void)
+{
+    bd_substitutes_clear(g_cat);
+    if (!g_shadow_dir[0]) return;
+    wchar_t pattern[MAX_PATH + 8];
+    swprintf(pattern, MAX_PATH + 8, L"%ls\\*", g_shadow_dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            wchar_t f[MAX_PATH * 2];
+            swprintf(f, MAX_PATH * 2, L"%ls\\%ls", g_shadow_dir, fd.cFileName);
+            DeleteFileW(f);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(g_shadow_dir);
+    g_shadow_dir[0] = 0;
+}
+
+/* Run an elevated copy of BRODALF that copies the files in use out of a
+ * shadow copy, then read from those copies. Worker thread. */
+static bd_status run_shadow(job *j)
+{
+    in_use_list l = {NULL, 0, 0, 0};
+    bd_list_in_use(g_cat, in_use_cb, &l);
+    if (!l.n) { swprintf(j->summary, 512, L"No files are in use any more."); return BD_OK; }
+    shadow_cleanup();
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    swprintf(g_shadow_dir, MAX_PATH, L"%lsbrodalf-shadow-%lu", tmp, (unsigned long)GetCurrentProcessId());
+    CreateDirectoryW(g_shadow_dir, NULL);
+    wchar_t list[MAX_PATH + 16], params[MAX_PATH * 2 + 64], exe[MAX_PATH];
+    swprintf(list, MAX_PATH + 16, L"%ls\\list.txt", g_shadow_dir);
+    FILE *f = _wfopen(list, L"wb");
+    if (!f) { in_use_free(&l); swprintf(j->summary, 512, L"Could not write the list of files in use."); return BD_ERR_IO; }
+    for (int i = 0; i < l.n; i++) fprintf(f, "%s\n", l.paths[i]);
+    fclose(f);
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    swprintf(params, MAX_PATH * 2 + 64, L"--shadow-copy \"%ls\" \"%ls\"", g_shadow_dir, list);
+    post_text(WM_APP_LOG, L"Asking Windows for administrator permission to take a shadow copy...");
+    SHELLEXECUTEINFOW sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe;
+    sei.lpParameters = params;
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei)) {
+        DWORD err = GetLastError();
+        in_use_free(&l);
+        if (err == ERROR_CANCELLED) {
+            swprintf(j->summary, 512, L"Without administrator permission the files in use stay as they were last backed up.");
+            return BD_OK;
+        }
+        swprintf(j->summary, 512, L"Could not start the shadow copy helper (Windows error %lu).", (unsigned long)err);
+        return BD_ERR_IO;
+    }
+    WaitForSingleObject(sei.hProcess, INFINITE);
+    CloseHandle(sei.hProcess);
+
+    /* result.txt: one line per file, "ok" or "failed", then "error: ...". */
+    wchar_t result[MAX_PATH + 16];
+    swprintf(result, MAX_PATH + 16, L"%ls\\result.txt", g_shadow_dir);
+    f = _wfopen(result, L"rb");
+    int got = 0;
+    char line[2048], err[1024] = "";
+    for (int i = 0; f && fgets(line, sizeof(line), f);) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (strncmp(line, "error: ", 7) == 0) { snprintf(err, sizeof(err), "%s", line + 7); continue; }
+        if (i < l.n && strcmp(line, "ok") == 0) {
+            char staged[MAX_PATH * 3];
+            char *dir = narrow(g_shadow_dir);
+            snprintf(staged, sizeof(staged), "%s\\%d.bin", dir ? dir : "", i + 1);
+            free(dir);
+            if (bd_substitute_add(g_cat, l.paths[i], staged) == BD_OK) got++;
+        }
+        i++;
+    }
+    if (f) fclose(f);
+    in_use_free(&l);
+    if (!got) {
+        wchar_t *e = widen(err);
+        swprintf(j->summary, 512, L"The shadow copy did not work: %ls", e && *e ? e : L"no reason was given");
+        free(e);
+        shadow_cleanup();
+        return BD_OK;
+    }
+    swprintf(j->summary, 512, L"Read %d of %d files in use from a shadow copy. Scanning them now.", got, l.n);
+    return BD_OK;
+}
+
+/* The shadow copies are ready: scan, then back up where the files were going. */
+static void after_shadow(job *j)
+{
+    if (!g_shadow_dir[0]) return;
+    job *scan = new_job(JOB_SCAN);
+    job *back = j->media_id ? new_job(JOB_BACKUP) : NULL;
+    if (back) {
+        back->media_id = j->media_id;
+        back->from_shadow = 1;
+    } else if (scan) {
+        scan->from_shadow = 1;
+    }
+    if (scan) enqueue(scan);
+    if (back) enqueue(back);
+}
+
+/* After a scan or backup that met files in use: offer to read them from a
+ * shadow copy. */
+static void offer_shadow(const job *j)
+{
+    in_use_list l = {NULL, 0, 0, 0};
+    bd_list_in_use(g_cat, in_use_cb, &l);
+    if (!l.n) return;
+    wtext msg = {NULL, 0, 0};
+    wchar_t size[64];
+    format_bytes(l.bytes, size, 64);
+    wadd(&msg, L"%d file%ls (%ls) %ls in use by another program, so BRODALF could not read %ls:\n\n", l.n, l.n == 1 ? L"" : L"s",
+         size, l.n == 1 ? L"is" : L"are", l.n == 1 ? L"it" : L"them");
+    for (int i = 0; i < l.n && i < 6; i++) {
+        wchar_t *w = widen(l.paths[i]);
+        wadd(&msg, L"    %ls\n", w ? w : L"");
+        free(w);
+    }
+    if (l.n > 6) wadd(&msg, L"    ... and %d more\n", l.n - 6);
+    wadd(&msg, L"\nWindows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read the files "
+               L"from that. Windows will ask for administrator permission.\n\nRead them from a shadow copy now?");
+    int yes = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES;
+    free(msg.p);
+    in_use_free(&l);
+    if (!yes) return;
+    job *s = new_job(JOB_SHADOW);
+    if (!s) return;
+    s->media_id = j->kind == JOB_BACKUP ? j->media_id : 0;
+    enqueue(s);
+}
+
+/* ---- Scheduled checks ------------------------------------------------------ */
+
+static void task_name(wchar_t *out, size_t cap)
+{
+    const wchar_t *base = wcsrchr(g_cat_path, L'\\');
+    swprintf(out, cap, L"BRODALF - %ls", base ? base + 1 : g_cat_path);
+}
+
+/* Tell Windows Task Scheduler to run "brodalf.exe --check <catalog>" every
+ * day or week, or forget the task. */
+static void apply_schedule(int days, int say)
+{
+    wchar_t name[MAX_PATH + 32], exe[MAX_PATH], args[MAX_PATH * 3 + 128];
+    task_name(name, MAX_PATH + 32);
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (days > 0)
+        swprintf(args, MAX_PATH * 3 + 128, L"/Create /F /SC %ls /TN \"%ls\" /ST 12:00 /TR \"\\\"%ls\\\" --check \\\"%ls\\\"\"",
+                 days >= 7 ? L"WEEKLY" : L"DAILY", name, exe, g_cat_path);
+    else
+        swprintf(args, MAX_PATH * 3 + 128, L"/Delete /F /TN \"%ls\"", name);
+    SHELLEXECUTEINFOW sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+    sei.lpFile = L"schtasks.exe";
+    sei.lpParameters = args;
+    sei.nShow = SW_HIDE;
+    DWORD code = 1;
+    if (ShellExecuteExW(&sei)) {
+        WaitForSingleObject(sei.hProcess, 30000);
+        GetExitCodeProcess(sei.hProcess, &code);
+        CloseHandle(sei.hProcess);
+    }
+    char *u = narrow(args);
+    bd_applog("schtasks %s -> %lu", u ? u : "", (unsigned long)code);
+    free(u);
+    if (!say) return;
+    if (code != 0)
+        log_append(days > 0 ? L"Windows did not accept the scheduled task (see the app log). BRODALF only checks your folders while it is open."
+                            : L"The scheduled task could not be removed (see the app log).");
+    else if (days > 0) {
+        wchar_t line[300];
+        swprintf(line, 300, L"Windows will run BRODALF every %ls around noon to check your folders. It only shows itself when "
+                            L"something needs backing up.", days >= 7 ? L"week" : L"day");
+        log_append(line);
+    } else
+        log_append(L"BRODALF checks your folders only while it is open.");
+}
+
+/* ---- The menu bar ----------------------------------------------------------- */
+
+static void clear_menu(HMENU m)
+{
+    while (GetMenuItemCount(m) > 0) DeleteMenu(m, 0, MF_BYPOSITION);
+}
+
+typedef struct { HMENU local, cloud; int n_local, n_cloud, n_cloud_on; } fill_menus;
+
+static int fill_menu_cb(void *ctx, const bd_media_info *m)
+{
+    fill_menus *f = ctx;
+    int is_drive = strcmp(m->kind, "drive") == 0;
+    HMENU parent = is_drive ? f->local : f->cloud;
+    wchar_t *label = widen(m->label), *loc = widen(m->location), *root = widen(m->last_root), text[700], freeb[64], when[64];
+    HMENU sub = CreatePopupMenu();
+    UINT base = (UINT)(ID_DRIVE_ACT_BASE + m->media_id * 8);
+    format_bytes(m->free_bytes, freeb, 64);
+    format_time_ms(m->space_ms, when, 64);
+    if (m->connected) swprintf(text, 700, L"Plugged in now at %ls, %ls free", root, freeb);
+    else if (m->space_ms > 0) swprintf(text, 700, L"Not plugged in. %ls free when last seen (%ls)", freeb, when);
+    else swprintf(text, 700, L"Not plugged in");
+    if (!is_drive) swprintf(text, 700, m->connected ? L"Signed in: %ls" : L"Not signed in: %ls", root);
+    AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, text);
+    AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 0, L"Back up to it now");
+    if (is_drive) {
+        AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, L"Read back copies not checked lately");
+        AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, L"Full check (read back every copy)");
+        AppendMenuW(sub, MF_STRING, base + 3, L"Name, where it is kept, hardware details...");
+    } else {
+        AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, L"Full check (read back every copy)");
+        AppendMenuW(sub, MF_STRING, base + 3, L"Details...");
+        AppendMenuW(sub, MF_STRING, base + 4, L"Sign out and forget the saved sign-in");
+    }
+    swprintf(text, 700, L"%ls%ls%ls%ls%ls", label, *loc ? L"  (" : L"", loc, *loc ? L")" : L"",
+             m->connected ? (is_drive ? L"  - plugged in" : L"  - signed in") : L"");
+    AppendMenuW(parent, MF_POPUP, (UINT_PTR)sub, text);
+    if (is_drive) f->n_local++;
+    else { f->n_cloud++; if (m->connected) f->n_cloud_on++; }
+    free(label); free(loc); free(root);
+    return 0;
+}
+
+/* Fill the Local backups and Cloud backups menus from the catalog, each
+ * time one opens. */
+static void fill_storage_menus(void)
+{
+    clear_menu(g_menu_local);
+    clear_menu(g_menu_cloud);
+    fill_menus f = {g_menu_local, g_menu_cloud, 0, 0, 0};
+    bd_list_media(g_cat, fill_menu_cb, &f);
+    if (!f.n_local) AppendMenuW(g_menu_local, MF_STRING | MF_GRAYED, 0, L"No backup disks yet");
+    AppendMenuW(g_menu_local, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_DISK, L"Add an external or removable disk...");
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_RISK, L"What needs backing up, and which disk to plug in...");
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_DRIVES, L"All disks...");
+    if (!f.n_cloud) AppendMenuW(g_menu_cloud, MF_STRING | MF_GRAYED, 0, L"No cloud accounts yet");
+    AppendMenuW(g_menu_cloud, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(g_menu_cloud, MF_STRING, ID_M_ONEDRIVE, L"Add a OneDrive account...");
+    AppendMenuW(g_menu_cloud, MF_STRING, ID_M_DROPBOX, L"Add a Dropbox account...");
+}
+
+static void create_menu_bar(HWND hwnd)
+{
+    HMENU bar = CreateMenu();
+    HMENU cat = CreatePopupMenu();
+    AppendMenuW(cat, MF_STRING, ID_M_ADD_FOLDER, L"Add a folder to protect...");
+    AppendMenuW(cat, MF_STRING, ID_M_SCAN, L"Check the folders for changes now");
+    AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(cat, MF_STRING, ID_M_RESTORE, L"Restore what is selected...");
+    AppendMenuW(cat, MF_STRING, ID_M_RESTORE_ASOF, L"Restore what is selected as it was on a date...");
+    AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(cat, MF_STRING, ID_M_EXIT, L"Exit");
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)cat, L"&Catalog");
+    g_menu_local = CreatePopupMenu();
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)g_menu_local, L"&Local backups");
+    g_menu_cloud = CreatePopupMenu();
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)g_menu_cloud, L"Cl&oud backups");
+    HMENU help = CreatePopupMenu();
+    AppendMenuW(help, MF_STRING, ID_M_IN_USE, L"Read files that are in use from a shadow copy...");
+    AppendMenuW(help, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(help, MF_STRING, ID_M_LOG, L"Show the app log");
+    AppendMenuW(help, MF_STRING, ID_M_REPORTS, L"Show saved error reports");
+    AppendMenuW(help, MF_STRING, ID_M_ABOUT, L"About BRODALF");
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
+    SetMenu(hwnd, bar);
+}
+
+static void drive_action(int64_t id, int action)
+{
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    if (!o.found) return;
+    if (action == 0) {
+        if (o.info.encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) return;
+        job *j = new_job(JOB_BACKUP);
+        if (!j) return;
+        j->media_id = id;
+        ask_continue(j, id, L"it");
+        enqueue(j);
+    } else if (action == 1) {
+        if (o.info.encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to read its copies.")) return;
+        job *j = new_job(JOB_VERIFY);
+        if (!j) return;
+        j->media_id = id;
+        enqueue(j);
+    } else if (action == 2) {
+        enqueue_check(id);
+    } else if (action == 3) {
+        drive_list dl = load_drives();
+        const drive_snap *d = find_drive(&dl, id);
+        if (d) {
+            g_edit_drive = d;
+            if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_DRIVE), g_main, drive_proc) == IDOK) {
+                char *name = narrow(g_edit_name), *loc = narrow(g_edit_location);
+                bd_status st = BD_OK;
+                if (name && strcmp(name, d->label) != 0) st = bd_media_rename(g_cat, id, name);
+                if (st == BD_OK) st = bd_media_set_location(g_cat, id, loc);
+                if (st == BD_OK) st = bd_catalog_save(g_cat);
+                free(name);
+                free(loc);
+                update_drives_label();
+                rebuild_tree();
+                show_detail();
+            }
+            g_edit_drive = NULL;
+        }
+        free(dl.items);
+    } else if (action == 4) {
+        wchar_t *l = widen(o.label), msg[600];
+        swprintf(msg, 600, L"Forget the saved sign-in for %ls? The files already in the cloud stay. BRODALF asks you to sign in again "
+                           L"the next time it needs the account.", l ? l : L"");
+        free(l);
+        if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+        if (bd_cloud_sign_out(g_cat, id) == BD_OK && bd_catalog_save(g_cat) == BD_OK) log_append(L"Signed out.");
+        update_drives_label();
+        rebuild_tree();
+    }
+}
+
+static void open_in_explorer(const wchar_t *path)
+{
+    ShellExecuteW(g_main, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+}
+
+static void menu_command(int cmd)
+{
+    if (cmd >= ID_DRIVE_ACT_BASE) {
+        drive_action((cmd - ID_DRIVE_ACT_BASE) / 8, (cmd - ID_DRIVE_ACT_BASE) % 8);
+        return;
+    }
+    switch (cmd) {
+    case ID_M_ADD_FOLDER: cmd_add_folder(); break;
+    case ID_M_SCAN: enqueue(new_job(JOB_SCAN)); break;
+    case ID_M_RESTORE: cmd_restore(); break;
+    case ID_M_RESTORE_ASOF: cmd_restore_as_of(); break;
+    case ID_M_RISK: cmd_risk(); break;
+    case ID_M_EXIT: PostMessageW(g_main, WM_CLOSE, 0, 0); break;
+    case ID_M_ADD_DISK: add_disk(); break;
+    case ID_M_DRIVES: cmd_drives(); break;
+    case ID_M_ONEDRIVE: cmd_add_cloud(BD_CLOUD_ONEDRIVE); break;
+    case ID_M_DROPBOX: cmd_add_cloud(BD_CLOUD_DROPBOX); break;
+    case ID_M_IN_USE: {
+        in_use_list l = {NULL, 0, 0, 0};
+        bd_list_in_use(g_cat, in_use_cb, &l);
+        int n = l.n;
+        in_use_free(&l);
+        if (!n) {
+            MessageBoxW(g_main, L"The last scan could read every file. Files in use are found by a scan; BRODALF offers the "
+                                L"shadow copy right after one that meets any.", APP_NAME, MB_ICONINFORMATION);
+            break;
+        }
+        job fake;
+        memset(&fake, 0, sizeof(fake));
+        fake.kind = JOB_SCAN;
+        offer_shadow(&fake);
+        break;
+    }
+    case ID_M_LOG: {
+        wchar_t *w = widen(bd_applog_path());
+        if (w) open_in_explorer(w);
+        free(w);
+        break;
+    }
+    case ID_M_REPORTS: {
+        wchar_t *w = widen(bd_applog_path());
+        if (w) {
+            wchar_t *slash = wcsrchr(w, L'\\');
+            if (slash) wcscpy(slash + 1, L"reports");
+            CreateDirectoryW(w, NULL);
+            open_in_explorer(w);
+        }
+        free(w);
+        break;
+    }
+    case ID_M_ABOUT: {
+        wchar_t *v = widen(bd_version()), msg[600];
+        swprintf(msg, 600, L"BRODALF %ls\n\nKeeps track of which drive holds a copy of each of your files, and whether that copy is "
+                           L"still good.\n\nhttps://github.com/Phawx/BRODALF", v ? v : L"");
+        free(v);
+        MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+        break;
+    }
+    }
 }
 
 /* ---- Search ------------------------------------------------------------- */
@@ -2460,7 +3238,8 @@ static void layout(void)
     MoveWindow(g_drives, x + S(10), pad + S(7), w - x - S(10) - pad, bar - S(7), TRUE);
 
     int top = pad + bar + pad;
-    int body_h = h - top - log_h - pad * 2;
+    int prog_h = S(20);
+    int body_h = h - top - log_h - prog_h - pad * 3;
     int tree_w = (w - pad * 3) * 55 / 100, search_h = S(24), below = search_h + S(6);
     MoveWindow(g_search, pad, top, tree_w, search_h, TRUE);
     MoveWindow(g_tree, pad, top + below, tree_w, body_h - below, TRUE);
@@ -2469,7 +3248,10 @@ static void layout(void)
     int detail_h = body_h * 58 / 100;
     MoveWindow(g_detail, rx, top, rw, detail_h, TRUE);
     MoveWindow(g_list, rx, top + detail_h + S(6), rw, body_h - detail_h - S(6), TRUE);
-    MoveWindow(g_log, pad, top + body_h + pad, w - pad * 2, log_h, TRUE);
+    int py = top + body_h + pad;
+    MoveWindow(g_progress, pad, py, S(240), prog_h, TRUE);
+    MoveWindow(g_prog_text, pad + S(248), py, w - pad * 2 - S(248), prog_h, TRUE);
+    MoveWindow(g_log, pad, py + prog_h + pad, w - pad * 2, log_h, TRUE);
 }
 
 static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
@@ -2574,6 +3356,12 @@ static void create_children(HWND hwnd)
         SendMessageW(g_list, LVM_INSERTCOLUMNW, i, (LPARAM)&c);
     }
 
+    g_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 10, 10, hwnd,
+                                 (HMENU)ID_PROGRESS, g_inst, NULL);
+    g_prog_text = CreateWindowExW(0, WC_STATICW, L"Ready.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE,
+                                  0, 0, 10, 10, hwnd, (HMENU)ID_PROGTEXT, g_inst, NULL);
+    SendMessageW(g_prog_text, WM_SETFONT, (WPARAM)g_font, TRUE);
+
     g_log = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
                             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd,
                             (HMENU)ID_LOG, g_inst, NULL);
@@ -2589,6 +3377,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_CREATE:
         create_children(hwnd);
+        create_menu_bar(hwnd);
+        return 0;
+    case WM_INITMENUPOPUP:
+        if ((HMENU)wp == g_menu_local || (HMENU)wp == g_menu_cloud) fill_storage_menus();
         return 0;
     case WM_SIZE:
         layout();
@@ -2614,6 +3406,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_CHECK: cmd_check(); break;
         case ID_BTN_RESTORE: cmd_restore(); break;
         case ID_BTN_SECURITY: cmd_security(); break;
+        default:
+            if (LOWORD(wp) >= ID_M_ADD_FOLDER && LOWORD(wp) < ID_MENU_OTHER) menu_command(LOWORD(wp));
+            else if (LOWORD(wp) >= ID_DRIVE_ACT_BASE) menu_command(LOWORD(wp));
+            break;
         }
         return 0;
     case WM_TIMER:
@@ -2673,17 +3469,33 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_APP_PROGRESS: {
-        wchar_t *text = (wchar_t *)lp;
-        SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)text);
-        free(text);
+        prog_msg *m = (prog_msg *)lp;
+        SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)m->text);
+        show_progress(m->percent, m->text);
+        free(m);
         return 0;
     }
     case WM_APP_DONE: {
         job *j = (job *)lp;
         set_busy(0);
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
+        show_progress(j->status == BD_OK ? 100 : 0, j->summary);
         log_append(j->summary);
-        if (j->status == BD_ERR_PASSPHRASE && (j->kind == JOB_BACKUP || j->kind == JOB_CHECK) &&
+        if (j->status == BD_ERR_GUARD) {
+            /* The backup the guard stopped runs after all once the user owns the changes. */
+            if (guard_dialog() && j->kind == JOB_BACKUP) {
+                job *again = new_job(JOB_BACKUP);
+                if (again) {
+                    again->media_id = j->media_id;
+                    again->root = xstrdup(j->root);
+                    again->label = xstrdup(j->label);
+                    again->location = xstrdup(j->location);
+                    again->flags = j->flags;
+                    again->provider = j->provider;
+                    enqueue(again);
+                }
+            }
+        } else if (j->status == BD_ERR_PASSPHRASE && (j->kind == JOB_BACKUP || j->kind == JOB_CHECK || j->kind == JOB_VERIFY) &&
             unlock_ui(L"This drive is encrypted. Enter the passphrase to continue.")) {
             job *again = new_job(j->kind);
             if (again) {
@@ -2704,6 +3516,9 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (j->kind == JOB_DRIVES) after_drives(j);
         else if (j->kind == JOB_BACKUP && j->status == BD_OK) after_backup(j);
         else if (j->kind == JOB_RESTORE && j->status == BD_OK) after_restore(j);
+        else if (j->kind == JOB_SHADOW && j->status == BD_OK) after_shadow(j);
+        if (j->kind == JOB_SCAN && j->guard) guard_dialog();
+        else if ((j->kind == JOB_SCAN || j->kind == JOB_BACKUP) && j->in_use && j->status == BD_OK) offer_shadow(j);
         job_free(j);
         start_next_job();
         return 0;
@@ -2921,6 +3736,115 @@ static void make_fonts(void)
     g_font_bold = CreateFontIndirectW(&lf);
 }
 
+/* ---- Helper modes ------------------------------------------------------- */
+
+/* brodalf.exe --shadow-copy <dir> <list>: run as administrator by the main
+ * window. Copies the files named in list (UTF-8, one per line) out of a
+ * shadow copy into dir as 1.bin, 2.bin, ... and writes dir\result.txt. */
+static int shadow_helper(const wchar_t *dir, const wchar_t *list)
+{
+    char *paths[4096];
+    int n = 0;
+    FILE *f = _wfopen(list, L"rb");
+    char line[4096];
+    while (f && n < 4096 && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (line[0]) paths[n++] = xstrdup(line);
+    }
+    if (f) fclose(f);
+    int *ok = calloc((size_t)(n ? n : 1), sizeof(int));
+    char err[512] = "";
+    char *d = narrow(dir);
+    int got = ok && d ? bd_shadow_copy_files((const char *const *)paths, n, d, ok, err, sizeof(err)) : -1;
+    free(d);
+    wchar_t result[MAX_PATH + 16];
+    swprintf(result, MAX_PATH + 16, L"%ls\\result.txt", dir);
+    FILE *out = _wfopen(result, L"wb");
+    if (out) {
+        for (int i = 0; i < n; i++) fprintf(out, "%s\n", ok && ok[i] ? "ok" : "failed");
+        if (err[0]) fprintf(out, "error: %s\n", err);
+        fclose(out);
+    }
+    bd_applog("shadow copy helper: %d of %d copied%s%s", got < 0 ? 0 : got, n, err[0] ? ": " : "", err);
+    for (int i = 0; i < n; i++) free(paths[i]);
+    free(ok);
+    return got < 0 ? 1 : 0;
+}
+
+
+/* brodalf.exe --check <catalog>: run by Task Scheduler. Scans the folders
+ * without a window, then speaks up only when something needs backing up (or
+ * the guard tripped): a note saying which disk to plug in, with a button to
+ * open BRODALF. Returns 1 to go on into the window with the catalog open. */
+static int scheduled_check(const wchar_t *path)
+{
+    char *p = narrow(path);
+    if (!p) return 0;
+    if (bd_catalog_file_needs_passphrase(p)) {
+        bd_applog("scheduled check: %s is encrypted and needs the passphrase; skipped", p);
+        free(p);
+        return 0;
+    }
+    bd_status s = bd_catalog_open(p, &g_cat);
+    free(p);
+    if (s != BD_OK) {
+        bd_applog("scheduled check: cannot open the catalog (%s); skipped", bd_open_error());
+        return 0;
+    }
+    wcsncpy(g_cat_path, path, MAX_PATH * 2 - 1);
+    bd_scan_stats ss;
+    bd_scan(g_cat, &ss, NULL, NULL);
+    bd_risk_stats rs;
+    memset(&rs, 0, sizeof(rs));
+    bd_list_at_risk(g_cat, 0, NULL, NULL, &rs);
+    bd_guard_info g;
+    bd_guard_get(g_cat, &g);
+    bd_catalog_save(g_cat);
+    bd_applog("scheduled check: %lld files scanned, %lld at risk, guard %s", (long long)ss.files_seen, (long long)rs.files_at_risk,
+              g.tripped ? "tripped" : "ok");
+    if (!rs.files_at_risk && !g.tripped) {
+        bd_catalog_close(g_cat);
+        g_cat = NULL;
+        return 0;
+    }
+    wtext msg = {NULL, 0, 0};
+    bd_target t;
+    bd_target_get(g_cat, &t);
+    wchar_t size[64];
+    format_bytes(rs.bytes_at_risk, size, 64);
+    if (g.tripped)
+        wadd(&msg, L"BRODALF has paused backups: a scan found %lld of %lld files changed or gone at once, which is what ransomware "
+                   L"does. Open BRODALF to restore them as they were, or to say the changes are yours.\n\n",
+             (long long)(g.files_changed + g.files_deleted), (long long)g.files_total);
+    if (rs.files_at_risk) {
+        wadd(&msg, L"%lld of %lld files (%ls) have fewer than %d copies in %d places.\n\n", (long long)rs.files_at_risk,
+             (long long)rs.files_total, size, t.copies, t.places);
+        bd_risk_help h;
+        if (bd_suggest_drive(g_cat, &h) == BD_OK) {
+            wchar_t name[600], fb[64];
+            drive_name(h.label, h.location, name, 600);
+            format_bytes(h.free_bytes >= 0 ? h.free_bytes : 0, fb, 64);
+            if (h.connected) wadd(&msg, L"%ls is plugged in and has %ls free%ls.", name, fb, h.fits ? L", room for all of it" : L"");
+            else if (h.free_bytes >= 0)
+                wadd(&msg, L"Plug in %ls: it had %ls free when last seen%ls.", name, fb,
+                     h.fits ? L", room for all of it" : L", not enough for all of it");
+            else wadd(&msg, L"Plug in %ls.", name);
+        } else {
+            wadd(&msg, L"None of your disks would help; set up another one.");
+        }
+    }
+    wadd(&msg, L"\n\nOpen BRODALF now?");
+    int open = MessageBoxW(NULL, msg.p, APP_NAME, MB_ICONINFORMATION | MB_YESNO | MB_TOPMOST | MB_SETFOREGROUND) == IDYES;
+    free(msg.p);
+    if (!open) {
+        bd_catalog_close(g_cat);
+        g_cat = NULL;
+        return 0;
+    }
+    reg_set_last(path);
+    return 1;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
 {
     (void)prev;
@@ -2929,7 +3853,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
+    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES |
+                                                 ICC_PROGRESS_CLASS | ICC_DATE_CLASSES};
     InitCommonControlsEx(&icc);
     HDC screen = GetDC(NULL);
     g_dpi = GetDeviceCaps(screen, LOGPIXELSY);
@@ -2942,9 +3867,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     bd_applog("BRODALF %s started", bd_version());
     SetUnhandledExceptionFilter(on_crash);
 
-    int opened = open_catalog(argc > 1 && argv[1][0] ? argv[1] : NULL);
+    if (argc >= 4 && wcscmp(argv[1], L"--shadow-copy") == 0) {
+        int rc = shadow_helper(argv[2], argv[3]);
+        LocalFree(argv);
+        return rc;
+    }
+    int opened;
+    if (argc >= 3 && wcscmp(argv[1], L"--check") == 0) opened = scheduled_check(argv[2]);
+    else opened = open_catalog(argc > 1 && argv[1][0] ? argv[1] : NULL);
     LocalFree(argv);
     if (!opened) return 0;
+    /* Keep the scheduled task pointing at this copy of BRODALF. */
+    if (bd_option_get(g_cat, "schedule") > 0) apply_schedule(bd_option_get(g_cat, "schedule"), 0);
 
     WNDCLASSEXW wc;
     memset(&wc, 0, sizeof(wc));

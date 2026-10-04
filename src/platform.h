@@ -29,6 +29,9 @@ int bd_rename_noreplace(const char *from, const char *to);
 
 int bd_remove(const char *path);
 
+/* Remove a directory only if it is empty. 0 on success. */
+int bd_rmdir_empty(const char *path);
+
 FILE *bd_fopen(const char *path, const char *mode);
 
 /* Flush stdio buffers and force the data to stable storage. 0 on success. */
@@ -55,6 +58,12 @@ void bd_sleep_ms(int ms);
 int bd_temp_dir(char *out, size_t out_len);
 
 int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes);
+
+/* 1 if the last bd_fopen on this thread failed because another program has
+ * the file open and does not let others read it (Windows sharing or lock
+ * violation). Files are opened for reading with every sharing mode, so only
+ * files locked against reading fail. */
+int bd_open_was_in_use(void);
 
 /* Native separator for building paths. */
 #ifdef _WIN32

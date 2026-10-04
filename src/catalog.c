@@ -20,7 +20,7 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 4
+#define BD_SCHEMA_VERSION 5
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -97,6 +97,13 @@ static const char *SCHEMA_SQL =
     "  state TEXT NOT NULL DEFAULT 'ok' CHECK(state IN ('ok','missing','bad')),"
     "  UNIQUE(version_id, media_id), UNIQUE(media_id, path_on_media));"
     "CREATE INDEX IF NOT EXISTS copies_version ON copies(version_id);"
+    "CREATE TABLE IF NOT EXISTS space_log("  /* each drive's space when plugged in and around each backup */
+    "  media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,"
+    "  at_ms INTEGER NOT NULL,"
+    "  total_bytes INTEGER NOT NULL,"
+    "  free_bytes INTEGER NOT NULL,"
+    "  event TEXT NOT NULL);"
+    "CREATE INDEX IF NOT EXISTS space_log_media ON space_log(media_id, at_ms);"
     "CREATE TABLE IF NOT EXISTS jobs("
     "  id INTEGER PRIMARY KEY,"
     "  kind TEXT NOT NULL,"
@@ -152,6 +159,7 @@ static void remove_work_files(bd_catalog *cat)
 
 static void catalog_free(bd_catalog *cat, int owns_lock)
 {
+    if (cat) bd_catalog_set_progress(cat, NULL, NULL);
     if (!cat) return;
     bd_cloud_forget_all(cat);
     if (cat->db) sqlite3_close(cat->db);
@@ -215,7 +223,10 @@ static bd_status open_db(bd_catalog *cat)
         sqlite3_finalize(probe);
     else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN location TEXT") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
-    if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);") != 0)
+    if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
+                     "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
+                     "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
+                     "CREATE TEMP TABLE IF NOT EXISTS arrived(node_id INTEGER PRIMARY KEY);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
 }
@@ -521,6 +532,9 @@ static const struct { const char *name; int def, min, max; } OPTIONS[] = {
     {"check_days", 180, 0, 3650},
     {"keep_versions", 5, 0, 100000},
     {"keep_days", 365, 0, 36500},
+    {"verify_days", 30, 0, 3650},
+    {"guard_percent", 25, 0, 100},
+    {"schedule", 1, 0, 7},
 };
 
 static int option_index(const char *name)

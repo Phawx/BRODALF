@@ -216,6 +216,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
         if (n == 0) break;
         blake3_hasher_update(&h, buf, (size_t)n);
         total += n;
+        bd_io_tick(n);
         if (copy_to && bd_sink_write(&dst, buf, (size_t)n) != 0) rc = -2;
     }
     if (dst.sealer && bd_seal_end(dst.sealer) != 0 && !rc) rc = -2;

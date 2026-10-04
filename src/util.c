@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The catalog whose job is running, for byte counts from the hashing loop.
+ * One job runs at a time. */
+static bd_catalog *g_io_cat;
+
 bd_status bd_fail(bd_catalog *cat, bd_status status, const char *fmt, ...)
 {
     if (cat) {
@@ -137,15 +141,62 @@ void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx)
 {
     cat->progress = fn;
     cat->progress_ctx = ctx;
+    if (!fn && g_io_cat == cat) g_io_cat = NULL;
 }
 
-void bd_report(bd_catalog *cat, const char *phase, int64_t files, int64_t bytes, const char *current, int force)
+
+static void emit(bd_catalog *cat, int done)
 {
+    bd_progress p;
+    p.phase = cat->prog_phase ? cat->prog_phase : "";
+    p.current = cat->prog_current;
+    p.files_done = cat->prog_files;
+    p.files_total = cat->prog_files_total;
+    p.bytes_done = cat->prog_bytes;
+    p.bytes_total = cat->prog_bytes_total;
+    p.done = done;
+    cat->progress(cat->progress_ctx, &p);
+}
+
+void bd_progress_begin(bd_catalog *cat, const char *phase, int64_t files_total, int64_t bytes_total)
+{
+    cat->prog_phase = phase;
+    cat->prog_current[0] = '\0';
+    cat->prog_files = cat->prog_bytes = 0;
+    cat->prog_files_total = files_total;
+    cat->prog_bytes_total = bytes_total;
+    cat->progress_last_ms = 0;
+    g_io_cat = cat->progress ? cat : NULL;
+    if (cat->progress) emit(cat, 0);
+}
+
+void bd_report(bd_catalog *cat, int64_t files_done, const char *current, int force)
+{
+    cat->prog_files = files_done;
+    snprintf(cat->prog_current, sizeof(cat->prog_current), "%s", current ? current : "");
     if (!cat->progress) return;
     int64_t now = bd_now_ms();
     if (!force && now - cat->progress_last_ms < 100) return;
     cat->progress_last_ms = now;
-    cat->progress(cat->progress_ctx, phase, files, bytes, current ? current : "");
+    emit(cat, 0);
+}
+
+void bd_progress_end(bd_catalog *cat)
+{
+    cat->prog_current[0] = '\0';
+    if (cat->progress) emit(cat, 1);
+    if (g_io_cat == cat) g_io_cat = NULL;
+}
+
+void bd_io_tick(int64_t bytes)
+{
+    bd_catalog *cat = g_io_cat;
+    if (!cat) return;
+    cat->prog_bytes += bytes;
+    int64_t now = bd_now_ms();
+    if (now - cat->progress_last_ms < 100) return;
+    cat->progress_last_ms = now;
+    emit(cat, 0);
 }
 
 const char *bd_status_name(bd_status s)
@@ -161,6 +212,7 @@ const char *bd_status_name(bd_status s)
     case BD_ERR_INVALID: return "invalid argument";
     case BD_ERR_NOMEM: return "out of memory";
     case BD_ERR_PASSPHRASE: return "passphrase needed or wrong";
+    case BD_ERR_GUARD: return "backups paused by the ransomware guard";
     }
     return "unknown error";
 }

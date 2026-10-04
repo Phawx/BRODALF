@@ -112,6 +112,13 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
     return BD_OK;
 }
 
+/* What a backup leaves free on a drive (as in backup.c). */
+static int64_t reserve_for(int64_t total)
+{
+    const int64_t min = 16 * 1024 * 1024;
+    return total / 200 > min ? total / 200 : min;
+}
+
 bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
 {
     bd_target t;
@@ -123,7 +130,8 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
     if (sqlite3_prepare_v2(cat->db,
                            FILES_CTE "SELECT m.id, m.label, m.kind, COALESCE(m.location,''),"
                                      " EXISTS(SELECT 1 FROM temp.connected k WHERE k.media_id=m.id),"
-                                     " COUNT(*), COALESCE(SUM(r.size),0)"
+                                     " COUNT(*), COALESCE(SUM(r.size),0), m.free_bytes, COALESCE(m.total_bytes,0),"
+                                     " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
                                      " FROM media m JOIN r"
                                      " WHERE NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=r.v"
                                      "   AND c.media_id=m.id AND c.state='ok')"
@@ -143,8 +151,52 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
         h.connected = sqlite3_column_int(q, 4);
         h.files = sqlite3_column_int64(q, 5);
         h.bytes = sqlite3_column_int64(q, 6);
+        h.free_bytes = sqlite3_column_type(q, 7) == SQLITE_NULL ? -1 : sqlite3_column_int64(q, 7);
+        h.space_ms = sqlite3_column_type(q, 9) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 9);
+        h.fits = h.free_bytes >= 0 && h.bytes + reserve_for(sqlite3_column_int64(q, 8)) <= h.free_bytes;
         if (fn(ctx, &h) != 0) break;
     }
     sqlite3_finalize(q);
+    return BD_OK;
+}
+
+typedef struct {
+    bd_risk_help best;
+    int have;
+    char label[256], kind[16], location[256];
+} suggest_ctx;
+
+static int take_suggestion(suggest_ctx *s, const bd_risk_help *h)
+{
+    s->best = *h;
+    s->have = 1;
+    snprintf(s->label, sizeof(s->label), "%s", h->label ? h->label : "");
+    snprintf(s->kind, sizeof(s->kind), "%s", h->kind ? h->kind : "");
+    snprintf(s->location, sizeof(s->location), "%s", h->location ? h->location : "");
+    s->best.label = s->label;
+    s->best.kind = s->kind;
+    s->best.location = s->location;
+    return 0;
+}
+
+/* Rows come most helpful first: take the first that fits, else the one
+ * with the most known room. */
+static int suggest_cb(void *ctx, const bd_risk_help *h)
+{
+    suggest_ctx *s = ctx;
+    if (s->have && s->best.fits) return 1;
+    if (h->fits) return take_suggestion(s, h);
+    if (!s->have || h->free_bytes > s->best.free_bytes) take_suggestion(s, h);
+    return 0;
+}
+
+bd_status bd_suggest_drive(bd_catalog *cat, bd_risk_help *out)
+{
+    static suggest_ctx s;
+    memset(&s, 0, sizeof(s));
+    bd_status st = bd_list_risk_help(cat, suggest_cb, &s);
+    if (st != BD_OK) return st;
+    if (!s.have) return bd_fail(cat, BD_ERR_NOT_FOUND, "no drive would help");
+    *out = s.best;
     return BD_OK;
 }

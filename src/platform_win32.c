@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <io.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -135,14 +137,54 @@ int bd_remove(const char *path)
     return ok ? 0 : -1;
 }
 
-FILE *bd_fopen(const char *path, const char *mode)
+int bd_rmdir_empty(const char *path)
 {
     wchar_t *w = to_wide(path);
+    if (!w) return -1;
+    BOOL ok = RemoveDirectoryW(w); /* fails when anything is left inside */
+    free(w);
+    return ok ? 0 : -1;
+}
+
+#ifdef _MSC_VER
+static __declspec(thread) int t_in_use;
+#else
+static __thread int t_in_use;
+#endif
+
+int bd_open_was_in_use(void)
+{
+    return t_in_use;
+}
+
+FILE *bd_fopen(const char *path, const char *mode)
+{
+    t_in_use = 0;
+    wchar_t *w = to_wide(path);
+    if (!w) return NULL;
+    if (strcmp(mode, "rb") == 0) {
+        /* Share everything, so a file another program is writing (a log, a
+         * database) can still be read. */
+        HANDLE h = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        DWORD err = GetLastError();
+        free(w);
+        if (h == INVALID_HANDLE_VALUE) {
+            t_in_use = err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION;
+            return NULL;
+        }
+        int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
+        if (fd < 0) { CloseHandle(h); return NULL; }
+        FILE *f = _fdopen(fd, "rb");
+        if (!f) _close(fd);
+        return f;
+    }
     wchar_t wmode[8];
     size_t i = 0;
     for (; mode[i] && i < 7; i++) wmode[i] = (wchar_t)mode[i];
     wmode[i] = 0;
-    FILE *f = w ? _wfopen(w, wmode) : NULL;
+    FILE *f = _wfopen(w, wmode);
+    if (!f) t_in_use = GetLastError() == ERROR_SHARING_VIOLATION;
     free(w);
     return f;
 }

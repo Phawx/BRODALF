@@ -24,6 +24,9 @@ struct bd_catalog {
     bd_progress_fn progress;
     void *progress_ctx;
     int64_t progress_last_ms;
+    const char *prog_phase;
+    char prog_current[512];
+    int64_t prog_files, prog_files_total, prog_bytes, prog_bytes_total;
     uint8_t key[32];  /* master key while unlocked */
     int have_key;
     void *clouds;     /* signed-in cloud sessions (cloud.c) */
@@ -131,7 +134,22 @@ char *bd_connected_root(bd_catalog *cat, int64_t media_id);
 
 int bd_exec(bd_catalog *cat, const char *sql);
 
-/* Report progress, throttled unless force is set. */
-void bd_report(bd_catalog *cat, const char *phase, int64_t files, int64_t bytes, const char *current, int force);
+/* Record a drive's space (media.total_bytes/free_bytes) and log it in
+ * space_log with what was happening ("plugged in", "before backup"...). */
+void bd_media_note_space(bd_catalog *cat, int64_t media_id, int64_t total, int64_t free_bytes, const char *event);
+
+/* Files in use (scan.c): the staged copy to read instead of path (malloc'd),
+ * or NULL; and remember a file that could not be read because it is open. */
+char *bd_substitute_for(bd_catalog *cat, const char *path);
+void bd_note_in_use(bd_catalog *cat, const char *path, int64_t size);
+
+/* Progress: begin a job's phase with its totals (0 if unknown), report the
+ * files done and the file being worked on (throttled unless force), and end
+ * it. Bytes are counted as they are read (bd_io_tick, from the hashing
+ * loop), so they move during a big file too. */
+void bd_progress_begin(bd_catalog *cat, const char *phase, int64_t files_total, int64_t bytes_total);
+void bd_report(bd_catalog *cat, int64_t files_done, const char *current, int force);
+void bd_progress_end(bd_catalog *cat);
+void bd_io_tick(int64_t bytes);
 
 #endif

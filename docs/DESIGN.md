@@ -20,7 +20,81 @@ it. Encryption is optional, per drive (see below).
 5. Plug in a drive and back up. Files light up once a correct copy is on a
    connected drive.
 6. Later sessions rescan and watch for drives. Plugging a known drive in checks
-   its copies and lights up the matching files; unplugging greys them out.
+   its copies, reads back the ones not read back lately, and lights up the
+   matching files; unplugging greys them out.
+7. BRODALF is not resident. A scheduled task runs it once a day without a
+   window to rescan and say what needs backing up and which known drive has
+   room for it.
+
+## Running on a schedule
+
+The app never runs in the background. `brodalf.exe --check <catalog>` is
+what Windows Task Scheduler runs (task "BRODALF - <catalog name>", daily or
+weekly at 12:00, from the "schedule" option: 1, 7 or 0). It scans silently,
+and only when files fall short of the protection target (or the guard
+tripped) shows one message: how much is at risk, and the drive to plug in,
+with an "Open BRODALF now?" button. The drive is `bd_suggest_drive`: the
+first known drive that would take everything at risk and had room for it
+when last seen, else the one with the most free space.
+
+Free space is tracked in `space_log(media_id, at_ms, total_bytes,
+free_bytes, event)`, written when a drive is plugged in and before and
+after every backup to it; `media` carries the latest reading. The GUI,
+`drives` and `at-risk` show it.
+
+## Moves and renames
+
+Versions belong to paths, so a renamed folder looks like deleted files plus
+new files with the same checksums. A backup checks, for every new file it
+would copy, whether a deleted node has the same hash and size with a good
+copy on this drive (not under `.versions`) whose stored size and time still
+match; if so the copy is renamed on the drive and the copy row re-pointed.
+Folders the move empties are removed up to the catalog's folder. The scan
+keeps a temp table of nodes that are new or came back in this scan, so the
+guard can subtract moves from what looks like damage.
+
+## Read-back (verify) pass
+
+Every copy row remembers when it was last fully read back. When a drive
+connects, `bd_media_verify` rehashes the copies not read back in
+"verify_days" days (default 30) and marks the bad ones damaged. A full
+check reads every copy; a quick check only compares size and time.
+
+## Ransomware guard
+
+After a scan, if changed plus deleted files, minus moves, reach
+"guard_percent" (default 25) of the files known before the scan, and at
+least 50 files were known, the guard trips. Settings `guard.tripped_ms`,
+`guard.before_ms` (the previous scan's time), `guard.changed`,
+`guard.deleted` and `guard.total` are written once, on the first trip, so
+later scans do not move the "before" point. While tripped, `bd_backup`
+returns `BD_ERR_GUARD` (unless `ignore_guard`) and version pruning is
+skipped. `bd_restore_ex` with `as_of_ms` restores the newest version first
+seen at or before that time, for every file known then including ones
+deleted since; "before the changes" is `as_of_ms = guard.before_ms`.
+`bd_guard_clear` resumes.
+
+## Files in use
+
+Opening a file for reading shares read, write and delete. A sharing or lock
+violation is reported through `bd_open_was_in_use()`, the scan records the
+path in the temp table `in_use` and leaves the catalog as it was. The GUI
+offers a shadow copy: `brodalf.exe --shadow-copy <dir> <list>` runs
+elevated (`src/shadow.c`, the VSS backup-components API on `vssapi.dll`),
+snapshots each volume involved, copies the listed files out of the snapshot
+into `<dir>` and writes `result.txt`. The GUI then registers each staged
+file as a substitute for its path (temp table `substitute`), rescans and
+backs up; the scan hashes the substitute and the backup copies it, so the
+catalog records the real path.
+
+## Progress
+
+Long jobs report through `bd_catalog_set_progress`: phase (scan, backup,
+verify, check, restore), files done and expected, bytes done and expected,
+and the current path, about ten times a second; the hash loop adds bytes
+as it reads. The GUI shows a bar with a percentage (bytes when the total is
+known, else files, else a marquee), the counts, a data rate over the last
+few seconds and the current file.
 
 ## Ghost tree states
 
@@ -185,6 +259,12 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
 
 Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 
+- Menu bar: Catalog (folders, scan, restore, restore as of a date, exit),
+  Local backups (each known disk with its own submenu: back up, read back,
+  full check, details, sign out; add a disk; what needs backing up), Cloud
+  backups (each account; add OneDrive or Dropbox), Help (shadow copies, log,
+  reports, about). The storage menus are filled on `WM_INITMENUPOPUP`.
+- A progress bar and a text line sit above the log; see Progress above.
 - Startup: a task dialog offers the last catalog (kept in
   `HKCU\Software\BRODALF\LastCatalog`), another one, or a new one. A path on
   the command line opens directly. A stale lock can be removed after a crash.

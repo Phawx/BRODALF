@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 int bd_media_file_read(const char *path, bd_media_file *mf)
 {
@@ -84,6 +85,7 @@ bd_status bd_media_record_connected(bd_catalog *cat, int64_t media_id, const cha
     int rc = sqlite3_step(u);
     sqlite3_finalize(u);
     if (rc != SQLITE_DONE) return bd_fail_db(cat, "update drive");
+    if (have_space) bd_media_note_space(cat, media_id, total, freeb, "plugged in");
 
     if (sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.connected(media_id, root) VALUES(?,?)", -1, &u, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "record connected drive");
@@ -92,6 +94,29 @@ bd_status bd_media_record_connected(bd_catalog *cat, int64_t media_id, const cha
     rc = sqlite3_step(u);
     sqlite3_finalize(u);
     return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "record connected drive");
+}
+
+void bd_media_note_space(bd_catalog *cat, int64_t media_id, int64_t total, int64_t free_bytes, const char *event)
+{
+    sqlite3_stmt *u;
+    int64_t now = bd_now_ms();
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET total_bytes=?, free_bytes=? WHERE id=?", -1, &u, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(u, 1, total);
+        sqlite3_bind_int64(u, 2, free_bytes);
+        sqlite3_bind_int64(u, 3, media_id);
+        sqlite3_step(u);
+        sqlite3_finalize(u);
+    }
+    if (sqlite3_prepare_v2(cat->db, "INSERT INTO space_log(media_id, at_ms, total_bytes, free_bytes, event) VALUES(?,?,?,?,?)",
+                           -1, &u, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(u, 1, media_id);
+        sqlite3_bind_int64(u, 2, now);
+        sqlite3_bind_int64(u, 3, total);
+        sqlite3_bind_int64(u, 4, free_bytes);
+        sqlite3_bind_text(u, 5, event, -1, SQLITE_STATIC);
+        sqlite3_step(u);
+        sqlite3_finalize(u);
+    }
 }
 
 int64_t bd_media_id_for_uuid(bd_catalog *cat, const char *uuid)
@@ -309,8 +334,26 @@ void bd_media_disconnect(bd_catalog *cat, int64_t media_id)
     sqlite3_finalize(d);
 }
 
+/* due_before > 0: only copies not read back since then (or never), each
+ * rehashed. Otherwise every copy, rehashed when full is set. */
+static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64_t due_before,
+                              bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
                          bd_check_stats *stats, bd_log_fn log, void *log_ctx)
+{
+    return check_copies(cat, media_id, full, 0, stats, log, log_ctx);
+}
+
+bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
+                          bd_check_stats *stats, bd_log_fn log, void *log_ctx)
+{
+    int64_t due = max_age_days > 0 ? bd_now_ms() - (int64_t)max_age_days * 24 * 3600 * 1000 : INT64_MAX;
+    return check_copies(cat, media_id, 1, due, stats, log, log_ctx);
+}
+
+static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64_t due_before,
+                              bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_check_stats local;
     if (!stats) stats = &local;
@@ -327,7 +370,8 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
     bd_status s = BD_OK;
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, COALESCE(c.stored_rev,'')"
-                           " FROM copies c JOIN versions v ON v.id=c.version_id WHERE c.media_id=?",
+                           " FROM copies c JOIN versions v ON v.id=c.version_id WHERE c.media_id=?1"
+                           " AND (?2=0 OR (c.state<>'missing' AND COALESCE(c.last_full_check_ms,0)<?2)) ORDER BY c.path_on_media",
                            -1, &q, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
                            "UPDATE copies SET state=?, stored_mtime_ns=?, stored_rev=?, last_quick_check_ms=?,"
@@ -336,8 +380,26 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
         s = bd_fail_db(cat, "prepare drive check");
         goto done;
     }
+    /* Totals for the progress bar. */
+    sqlite3_stmt *t;
+    int64_t total_files = 0, total_bytes = 0;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT COUNT(*), COALESCE(SUM(c.stored_size),0) FROM copies c WHERE c.media_id=?1"
+                           " AND (?2=0 OR (c.state<>'missing' AND COALESCE(c.last_full_check_ms,0)<?2))",
+                           -1, &t, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(t, 1, media_id);
+        sqlite3_bind_int64(t, 2, due_before);
+        if (sqlite3_step(t) == SQLITE_ROW) {
+            total_files = sqlite3_column_int64(t, 0);
+            total_bytes = sqlite3_column_int64(t, 1);
+        }
+        sqlite3_finalize(t);
+    }
+    bd_progress_begin(cat, due_before ? "verify" : full ? "verify" : "check", total_files, full ? total_bytes : 0);
+
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin drive check"); goto done; }
     sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int64(q, 2, due_before);
     int64_t now = bd_now_ms();
     while (sqlite3_step(q) == SQLITE_ROW) {
         int64_t copy_id = sqlite3_column_int64(q, 0);
@@ -348,7 +410,7 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
         char stored_rev[160];
         snprintf(stored_rev, sizeof(stored_rev), "%s", (const char *)sqlite3_column_text(q, 5));
         stats->copies++;
-        bd_report(cat, full ? "full check" : "check", stats->copies, 0, rel, 0);
+        bd_report(cat, stats->copies, rel, 0);
 
         bd_remote_stat st;
         int found = store->ops->stat(store, rel, &st);
@@ -405,6 +467,8 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
     }
     if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit drive check");
     if (s != BD_OK) bd_exec(cat, "ROLLBACK");
+    bd_report(cat, stats->copies, NULL, 1);
+    bd_progress_end(cat);
 done:
     sqlite3_finalize(q);
     sqlite3_finalize(u);

@@ -226,36 +226,6 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
                           bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
-/* ---- Cloud storage --------------------------------------------------- */
-
-/* OneDrive and Dropbox accounts work like drives. BRODALF keeps its files in
- * the service's app folder (Apps/BRODALF) and can see nothing else there.
- * Signing in happens once in the browser; the refresh token is saved in
- * Windows Credential Manager and the catalog records only the provider,
- * the account name and where the credential is. */
-typedef enum { BD_CLOUD_ONEDRIVE = 1, BD_CLOUD_DROPBOX = 2 } bd_cloud_provider;
-typedef struct bd_signin bd_signin;
-
-/* Start signing in: returns the address to open in a browser. The
- * provider sends the browser back to http://localhost:53682/. */
-bd_status bd_cloud_signin_begin(bd_catalog *cat, bd_cloud_provider provider, bd_signin **out, const char **url_out);
-/* Wait for the browser to come back, then finish signing in. */
-bd_status bd_cloud_signin_finish(bd_catalog *cat, bd_signin *signin, int timeout_ms);
-/* The account's name ("you@example.com"), once signed in. */
-const char *bd_cloud_signin_account(const bd_signin *signin);
-void bd_cloud_signin_free(bd_signin *signin);
-
-/* Use the signed-in account as storage. flags as for bd_media_init. If the
- * account is already storage for this catalog, this signs it in again
- * (label and flags are ignored) and returns its media id. */
-bd_status bd_cloud_add(bd_catalog *cat, bd_signin *signin, const char *label, unsigned flags, int64_t *out_media_id);
-
-/* Connect a cloud account with its saved sign-in and run a quick check. */
-bd_status bd_cloud_connect(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
-
-/* Forget the saved sign-in (the files in the cloud stay). */
-bd_status bd_cloud_sign_out(bd_catalog *cat, int64_t media_id);
-
 /* ---- Backup and restore ---------------------------------------------- */
 
 typedef struct {
@@ -314,11 +284,6 @@ bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *s
  * BRODALF/<catalog-uuid>/catalog-backup.brodalf. The copy is encrypted
  * when the catalog file or the drive is. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
-
-/* Save the catalog, then put a copy of it on every connected cloud account
- * (BRODALF/<catalog-uuid>/catalog-backup.brodalf there). A cloud copy that
- * fails is logged and does not fail the save. */
-bd_status bd_catalog_save_all(bd_catalog *cat, bd_log_fn log, void *log_ctx);
 
 typedef struct {
     int64_t files_restored;
@@ -456,7 +421,9 @@ typedef struct {
 typedef struct {
     int64_t media_id;
     const char *label;
-    const char *kind;        /* "drive", "onedrive" or "dropbox" */
+    const char *kind;        /* "drive"; a catalog from 0.3.0 may still list an
+                                "onedrive" or "dropbox" account, which this
+                                version cannot connect to */
     const char *last_root;   /* where it was last seen, e.g. "E:\" */
     int connected;
     int64_t total_bytes;     /* 0 if unknown */
@@ -530,7 +497,7 @@ typedef struct {
     int is_dir;
     int64_t size;            /* files only */
     bd_node_state state;     /* as in the ghost tree */
-    /* Drives and accounts holding a good copy of the current version (for
+    /* Drives holding a good copy of the current version (for
      * a folder: of any file inside), as "Label (kept in)" joined by "; ".
      * "" if none. */
     const char *where;
@@ -546,10 +513,9 @@ bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn f
 /* ---- Protection target and files at risk ------------------------------- */
 
 /* How well every file should be protected. A copy counts when BRODALF last
- * saw it good; each drive or cloud account counts once. A place is what a
- * drive's "kept in" says (compared ignoring case and outer spaces); every
- * cloud account is a place of its own, and drives with nothing set count
- * together as one unknown place. */
+ * saw it good; each drive counts once. A place is what a drive's "kept in"
+ * says (compared ignoring case and outer spaces); drives with nothing set
+ * count together as one unknown place. */
 typedef struct {
     int copies;  /* good copies of each file's current version (default 2) */
     int places;  /* how many different places they must be in (default 2; 1 turns this off) */
@@ -568,7 +534,8 @@ typedef struct {
     int copies;         /* good copies of the current version */
     int places;         /* different places they are in */
     int unknown_place;  /* one of those places is drives with no "kept in" set */
-    int older_copies;   /* copies exist, but only of older versions: changed since the last backup */
+    int older_copies;   /* the current version has no good copy anywhere, but an
+                           older version has: the file changed since its last backup */
 } bd_risk_info;
 
 typedef struct {
@@ -588,7 +555,7 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
 typedef struct {
     int64_t media_id;
     const char *label;
-    const char *kind;      /* "drive", "onedrive" or "dropbox" */
+    const char *kind;      /* always "drive" */
     const char *location;  /* "" if not set */
     int connected;
     int64_t files;         /* at-risk files a backup here would bring closer to the target */
@@ -600,10 +567,10 @@ typedef struct {
 
 typedef int (*bd_risk_help_fn)(void *ctx, const bd_risk_help *info);
 
-/* Which drive to plug in next: for every drive and cloud account, how many
- * at-risk files a backup to it would help (it has no copy yet and adds a
- * copy the file needs or a place it is missing). Most helpful first;
- * drives that would not help are left out. */
+/* Which drive to plug in next: for every drive, how many at-risk files a
+ * backup to it would help (it has no copy yet and adds a copy the file needs
+ * or a place it is missing). Most helpful first; drives that would not help
+ * are left out. */
 bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx);
 
 /* The one drive to suggest for what is short of the target, using the free

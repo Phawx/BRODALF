@@ -6,10 +6,11 @@ Agreed with the project owner on 2026-09-28.
 
 BRODALF is a catalog of where your bits live. The `.brodalf` file holds no file
 data. It records every file and folder you protect, every version BRODALF has
-seen, and every place a copy of each version was written. The main targets are
-hard drives that are usually offline; OneDrive and Dropbox come later as
-optional hooks. Windows is the main platform and the GUI is the main way to use
-it. Encryption is optional, per drive (see below).
+seen, and every place a copy of each version was written. The targets are
+hard drives that are usually offline. (OneDrive and Dropbox storage existed
+in 0.3.0 and was taken out in 0.4.0; see the README.) Windows is the main
+platform and the GUI is the main way to use it. Encryption is optional, per
+drive (see below).
 
 ## Flow
 
@@ -30,7 +31,9 @@ it. Encryption is optional, per drive (see below).
 
 The app never runs in the background. `brodalf.exe --check <catalog>` is
 what Windows Task Scheduler runs (task "BRODALF - <catalog name>", daily or
-weekly at 12:00, from the "schedule" option: 1, 7 or 0). It scans silently,
+weekly at 12:00, from the "schedule" option: 1, 7 or 0; the GUI registers
+the task on every start when the option is on, so a new catalog gets a
+daily task straight away). It scans silently,
 and only when files fall short of the protection target (or the guard
 tripped) shows one message: how much is at risk, and the drive to plug in,
 with an "Open BRODALF now?" button. The drive is `bd_suggest_drive`: the
@@ -52,6 +55,17 @@ match; if so the copy is renamed on the drive and the copy row re-pointed.
 Folders the move empties are removed up to the catalog's folder. The scan
 keeps a temp table of nodes that are new or came back in this scan, so the
 guard can subtract moves from what looks like damage.
+
+## Links and reparse points
+
+The scan never follows links. On Windows only a reparse point that stands
+in for another path (a symbolic link or a junction, the "name surrogate"
+tags) is a link; every other reparse point is an ordinary file or folder
+with extra plumbing behind it, above all OneDrive and Dropbox placeholders,
+which carry the attribute even when fully downloaded. `bd_walk` reads the
+tag from `WIN32_FIND_DATA.dwReserved0`; `bd_stat` asks `FindFirstFile` for
+it when a path has the attribute. (Until 0.3.0 every reparse point was
+skipped, which would have left a synced folder unprotected.)
 
 ## Read-back (verify) pass
 
@@ -118,7 +132,10 @@ ID. Drives are recognised by that ID, not by drive letter.
 Checking a copy:
 
 - **Quick** (on every connect): the file exists with the recorded size and
-  modified time. If only the time differs, it is rehashed.
+  modified time. If only the time differs, it is rehashed. A copy that was
+  found missing or damaged before is rehashed too, and only a matching
+  hash makes it good again (0.4.0; before that an unchanged size and time
+  were enough, so bit rot found by a full check was forgotten).
 - **Full** (on demand): every copy is rehashed.
 
 ## Layout on a drive
@@ -160,16 +177,19 @@ stream of a SQLite database. While open it is unpacked to a working copy in the
 temp folder and `<file>.lock` prevents a second window from editing it. Saving
 writes a new file and swaps it in atomically.
 
-Tables: `sources`, `nodes`, `versions`, `media`, `cloud_accounts`, `copies`,
-`jobs`, `settings`, `meta`.
+Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
+`space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
+written by 0.3.0). Schema version 5.
 
 ## Protection target
 
 The catalog's settings hold a target of N copies in M places (default 2 and
 2). For every live file, the current version's good copies are counted by
 distinct medium, and places by distinct place key: a drive's location
-(trimmed, ignoring case; empty for all drives with none set) or one key per
-cloud account. A file is at risk when copies < N or places < M. For "which
+(trimmed, ignoring case; empty for all drives with none set; a cloud account
+left by 0.3.0 keeps a key of its own). A file is at risk when copies < N or
+places < M. A file is "changed since its last backup" when its current
+version has no good copy anywhere but an older version has. For "which
 drive next", a medium helps a file at risk when it has no good copy of the
 current version and either the file needs copies or the medium's place is
 not yet among the file's places. Offline copies count: the target is about
@@ -190,39 +210,18 @@ administrator rights, `SMART_RCV_DRIVE_DATA`. Health is "failing" when the
 drive predicts failure, "warning" with any reallocated, pending or
 unreadable sectors, NVMe critical-warning bits or 100% wear, else "good".
 The drive's identity stays the `BRODALF.media` UUID; a serial number that
-changes under the same UUID is logged. Schema version 4.
+changes under the same UUID is logged.
 
-## Cloud
+## Cloud (removed in 0.4.0)
 
-OneDrive and Dropbox, each in its app folder (`Apps/BRODALF`), so BRODALF can
-see nothing else in the account. A cloud account is a row in `media` (kind
-`onedrive` or `dropbox`) plus one in `cloud_accounts` (provider, account name,
-root path, and `credential_ref`, the name of the saved sign-in). Files go to
-`BRODALF/<catalog uuid>/...` with the same layout as a drive, including
-`BRODALF.media`, `.versions` and `catalog-backup.brodalf`.
-
-- Sign-in: OAuth 2 authorization code with PKCE (S256) through the system
-  browser, redirected to a one-shot listener on `http://localhost:53682/`. No
-  client secret. The refresh token goes to Windows Credential Manager
-  (`BRODALF/cloud-<media uuid>`, split into 2 KB parts if needed); Microsoft
-  rotates it on every refresh and BRODALF saves the new one each time.
-- Signing in to an account that is already storage for the catalog signs it
-  in again instead of adding it twice.
-- All storage goes through one interface (`src/store.h`): stat, download,
-  upload, move, remove, space. Backup uploads to `<name>.brodalf-tmp`, moves
-  the old copy into `.versions`, then moves the new one into place.
-- Uploads: OneDrive up to 4 MiB in one PUT, larger through an upload session
-  in 10 MiB chunks; Dropbox up to 8 MiB in one call, larger through an upload
-  session in 8 MiB chunks.
-- Each copy records the provider's content hash (`quickXorHash`, Dropbox
-  `content_hash`) in `copies.stored_rev`. A quick check compares size and
-  hash; a full check downloads and verifies BLAKE3.
-- Expired access tokens are refreshed once on a 401; 429 and 5xx wait for
-  Retry-After (or back off) and retry.
-- Every catalog save also uploads `catalog-backup.brodalf` to each connected
-  cloud account (Phawx, 2026-09-28). A failure there is logged, not fatal.
-- A local synced OneDrive or Dropbox folder can still be used as a plain
-  drive.
+OneDrive and Dropbox storage was built in 0.3.0 and taken out in 0.4.0; the
+code is in git history at tag `v0.3.0`. What remains: `media.kind` can still
+be `onedrive` or `dropbox` in a catalog written by 0.3.0 (such a row is never
+connected, is shown as unsupported, and its copies count as a place of their
+own), the empty `cloud_accounts` table in those catalogs, and the unused
+`copies.stored_rev` column. Storage still goes through the one interface in
+`src/store.h` (stat, local path, download, staging path, upload, move,
+remove, space), which local drives implement with plain file operations.
 
 ## Encryption
 
@@ -261,9 +260,9 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 
 - Menu bar: Catalog (folders, scan, restore, restore as of a date, exit),
   Local backups (each known disk with its own submenu: back up, read back,
-  full check, details, sign out; add a disk; what needs backing up), Cloud
-  backups (each account; add OneDrive or Dropbox), Help (shadow copies, log,
-  reports, about). The storage menus are filled on `WM_INITMENUPOPUP`.
+  full check, details; add a disk; what needs backing up), Help (shadow
+  copies, log, reports, about). The Local backups menu is filled on
+  `WM_INITMENUPOPUP`.
 - A progress bar and a text line sit above the log; see Progress above.
 - Startup: a task dialog offers the last catalog (kept in
   `HKCU\Software\BRODALF\LastCatalog`), another one, or a new one. A path on
@@ -278,6 +277,9 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
   reports progress to the status bar and log and saves the catalog after each
   job. The tree is refreshed when a job ends and cannot be expanded while one
   runs, since the catalog belongs to the worker then.
+- `brodalf.exe --shadow-copy` is dispatched before `CoInitializeEx`: the
+  helper needs the multithreaded apartment, and VSS hangs in a
+  single-threaded one.
 - Drives: on startup and on `WM_DEVICECHANGE`, drives that disappeared are
   disconnected, every drive letter with a `BRODALF.media` for this catalog is
   connected (with a quick check), and folders or shares used as storage are

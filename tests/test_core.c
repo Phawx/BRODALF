@@ -297,6 +297,13 @@ static void test_risk(void)
     h = help_of(cat);
     CHECK(h.n == 3 && h.files[0] == 1);
 
+    /* Once the new version is backed up anywhere, the file may still be
+     * short of the target, but it is no longer "changed since its last
+     * backup", however many copies of older versions are around. */
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    st = risk_of(cat, &rc);
+    CHECK(st.files_at_risk == 1 && st.files_no_copy == 0 && rc.n == 1 && rc.copies_sum == 1 && rc.older == 0);
+
     bd_catalog_close(cat);
 }
 
@@ -915,6 +922,32 @@ int main(void)
     write_file(at(pv), "HELLO");
     REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
     CHECK(cs.bad == 1);
+
+    /* Bit rot looks like this: the bytes are wrong but the size and the
+     * modified time are just what the catalog recorded. A quick check must
+     * go on calling the copy damaged until a re-read proves it good, not
+     * trust the unchanged time. */
+    {
+        bd_stat_t rot;
+        CHECK(bd_stat(at(pv), &rot) == 0);
+        sqlite3_stmt *fix;
+        CHECK(sqlite3_prepare_v2(cat->db, "UPDATE copies SET stored_mtime_ns=? WHERE state='bad'", -1, &fix, NULL) == SQLITE_OK);
+        sqlite3_bind_int64(fix, 1, rot.mtime_ns);
+        CHECK(sqlite3_step(fix) == SQLITE_DONE);
+        sqlite3_finalize(fix);
+        REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
+        CHECK(cs.bad == 1 && cs.rehashed == 1);
+        /* The right bytes come back (as if from another drive), with the
+         * recorded time: the next quick check re-reads it and clears the mark. */
+        write_file(at(pv), "hello");
+        CHECK(bd_stat(at(pv), &rot) == 0);
+        CHECK(sqlite3_prepare_v2(cat->db, "UPDATE copies SET stored_mtime_ns=? WHERE state='bad'", -1, &fix, NULL) == SQLITE_OK);
+        sqlite3_bind_int64(fix, 1, rot.mtime_ns);
+        CHECK(sqlite3_step(fix) == SQLITE_DONE);
+        sqlite3_finalize(fix);
+        REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
+        CHECK(cs.bad == 0 && cs.rehashed == 1);
+    }
 
     /* The next backup rewrites the missing copy. */
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);

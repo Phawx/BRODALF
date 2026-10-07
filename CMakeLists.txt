@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf VERSION 0.3.0 LANGUAGES C)
+project(brodalf VERSION 0.4.0 LANGUAGES C)
 
 # Link the C runtime statically so brodalf.exe runs on a PC without the
 # Visual C++ redistributable.
@@ -33,34 +33,14 @@ target_compile_definitions(brodalf_zstd PRIVATE ZSTD_DISABLE_ASM)
 add_library(brodalf_monocypher STATIC third_party/monocypher/monocypher.c)
 target_include_directories(brodalf_monocypher PUBLIC third_party/monocypher)
 
-add_library(brodalf_cjson STATIC third_party/cjson/cJSON.c)
-target_include_directories(brodalf_cjson PUBLIC third_party/cjson)
-
-# Cloud app registrations. They are not secrets (sign-in uses PKCE), but they
-# are kept out of the source: release builds get them from the CI variables
-# BRODALF_ONEDRIVE_CLIENT_ID and BRODALF_DROPBOX_CLIENT_ID, and local builds
-# can pass -D... or set environment variables of the same names at run time.
-set(BRODALF_ONEDRIVE_CLIENT_ID "" CACHE STRING "Microsoft Entra application (client) ID")
-set(BRODALF_DROPBOX_CLIENT_ID "" CACHE STRING "Dropbox app key")
-
 # CI passes the commit, so an error report says exactly which build it came from.
 set(BRODALF_BUILD_ID "" CACHE STRING "Commit the build came from")
-
-if(WIN32)
-    set(BRODALF_HTTP_SRC src/http_win32.c)
-else()
-    set(BRODALF_HTTP_SRC src/http_posix.c)
-endif()
 
 add_library(brodalf_core STATIC
     src/backup.c
     src/catalog.c
     src/crypto.c
     src/drive_hw.c
-    src/cloud.c
-    src/http_common.c
-    ${BRODALF_HTTP_SRC}
-    src/secrets.c
     src/store_local.c
     src/media.c
     src/platform_posix.c
@@ -72,14 +52,12 @@ add_library(brodalf_core STATIC
     src/shadow.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)
-target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd brodalf_monocypher brodalf_cjson)
+target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd brodalf_monocypher)
 target_compile_definitions(brodalf_core PRIVATE
-    BRODALF_ONEDRIVE_CLIENT_ID="${BRODALF_ONEDRIVE_CLIENT_ID}"
-    BRODALF_DROPBOX_CLIENT_ID="${BRODALF_DROPBOX_CLIENT_ID}"
     BRODALF_VERSION="${PROJECT_VERSION}"
     BRODALF_BUILD_ID="${BRODALF_BUILD_ID}")
 if(WIN32)
-    target_link_libraries(brodalf_core PUBLIC bcrypt winhttp ws2_32 advapi32 crypt32 ole32)
+    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 ole32)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)
 else()
     find_package(Threads REQUIRED)
@@ -105,15 +83,6 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_crypto PRIVATE brodalf_core)
     target_include_directories(test_crypto PRIVATE src)
     add_test(NAME crypto COMMAND test_crypto)
-    # Cloud code against a local mock of OneDrive and Dropbox (POSIX only:
-    # the test forks a fake browser).
-    find_package(Python3 COMPONENTS Interpreter)
-    if(NOT WIN32 AND Python3_FOUND)
-        add_executable(test_cloud tests/test_cloud.c)
-        target_link_libraries(test_cloud PRIVATE brodalf_core)
-        target_include_directories(test_cloud PRIVATE src)
-        add_test(NAME cloud COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mock_cloud.py $<TARGET_FILE:test_cloud>)
-    endif()
 endif()
 
 if(WIN32)

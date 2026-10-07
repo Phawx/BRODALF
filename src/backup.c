@@ -118,11 +118,11 @@ static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, co
 {
     sqlite3_stmt *u;
     if (sqlite3_prepare_v2(cat->db,
-                           "INSERT INTO copies(version_id, media_id, path_on_media, stored_size, stored_mtime_ns, stored_rev,"
-                           " written_ms, last_quick_check_ms, state) VALUES(?,?,?,?,?,?,?,?,'ok')"
+                           "INSERT INTO copies(version_id, media_id, path_on_media, stored_size, stored_mtime_ns,"
+                           " written_ms, last_quick_check_ms, state) VALUES(?,?,?,?,?,?,?,'ok')"
                            " ON CONFLICT(version_id, media_id) DO UPDATE SET path_on_media=excluded.path_on_media,"
                            " stored_size=excluded.stored_size, stored_mtime_ns=excluded.stored_mtime_ns,"
-                           " stored_rev=excluded.stored_rev, written_ms=excluded.written_ms,"
+                           " written_ms=excluded.written_ms,"
                            " last_quick_check_ms=excluded.last_quick_check_ms, state='ok'",
                            -1, &u, NULL) != SQLITE_OK)
         return -1;
@@ -132,9 +132,8 @@ static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, co
     sqlite3_bind_text(u, 3, rel, -1, SQLITE_STATIC);
     sqlite3_bind_int64(u, 4, st->size);
     sqlite3_bind_int64(u, 5, st->mtime_ns);
-    sqlite3_bind_text(u, 6, st->rev, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(u, 6, now);
     sqlite3_bind_int64(u, 7, now);
-    sqlite3_bind_int64(u, 8, now);
     int rc = sqlite3_step(u) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(u);
     return rc;
@@ -217,8 +216,8 @@ static void finish_job(bd_catalog *cat, int64_t job_id, const char *status, int6
  * with the content of one that is now deleted. When that deleted file's
  * copy is on this drive, unchanged since BRODALF last saw it good, move the
  * copy to the new name instead of copying the whole file again. Checked by
- * hash (the catalog's) and by the copy's size and time (or cloud content
- * hash) on the drive. 1 if the copy was moved. */
+ * hash (the catalog's) and by the copy's size and time on the drive. 1 if
+ * the copy was moved. */
 static int move_existing(bd_catalog *cat, bd_store *store, const backup_item *it, const uint8_t *key,
                          bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
@@ -226,10 +225,10 @@ static int move_existing(bd_catalog *cat, bd_store *store, const backup_item *it
     if (!dest_rel) return 0;
     int moved = 0;
     int64_t copy_id = 0, stored_size = 0, stored_mtime = 0;
-    char *old_rel = NULL, *old_rev = NULL;
+    char *old_rel = NULL;
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, COALESCE(c.stored_rev,'')"
+                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns"
                            " FROM copies c JOIN versions v ON v.id=c.version_id JOIN nodes n ON n.id=v.node_id"
                            " WHERE c.media_id=?1 AND c.state='ok' AND v.hash=?2 AND v.size=?3 AND n.deleted=1"
                            " AND v.id=n.current_version_id AND substr(c.path_on_media,1,length(?4)+1)<>?4||'/'"
@@ -247,15 +246,13 @@ static int move_existing(bd_catalog *cat, bd_store *store, const backup_item *it
         old_rel = bd_strdup((const char *)sqlite3_column_text(q, 1));
         stored_size = sqlite3_column_int64(q, 2);
         stored_mtime = sqlite3_column_int64(q, 3);
-        old_rev = bd_strdup((const char *)sqlite3_column_text(q, 4));
     }
     sqlite3_finalize(q);
-    if (!copy_id || !old_rel || !old_rev) goto done;
+    if (!copy_id || !old_rel) goto done;
 
     bd_remote_stat st;
     if (store->ops->stat(store, dest_rel, &st) != 1) goto done; /* something is already there */
-    if (store->ops->stat(store, old_rel, &st) != 0 || st.size != stored_size) goto done;
-    if (store->is_local ? st.mtime_ns != stored_mtime : (st.rev[0] && strcmp(st.rev, old_rev) != 0)) goto done;
+    if (store->ops->stat(store, old_rel, &st) != 0 || st.size != stored_size || st.mtime_ns != stored_mtime) goto done;
     if (store->ops->move(store, old_rel, dest_rel, 0) != 0) goto done;
 
     sqlite3_stmt *d, *u;
@@ -288,7 +285,6 @@ static int move_existing(bd_catalog *cat, bd_store *store, const backup_item *it
 done:
     free(dest_rel);
     free(old_rel);
-    free(old_rev);
     return moved;
 }
 
@@ -550,7 +546,7 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
         stats->bytes_pruned = ps.bytes_freed;
     }
 
-    /* How much fits. Unknown space (some cloud accounts) means no limit. */
+    /* How much fits. Unknown space means no limit. */
     int64_t space_total = 0, space_free = -1, reserve = 0;
     if (bd_test_free_bytes >= 0) space_free = bd_test_free_bytes;
     else if (store->ops->space(store, &space_total, &space_free) != 0) space_free = -1;

@@ -1,6 +1,7 @@
-/* Storage backends. Backup, check and restore talk to a drive or a cloud
- * account through this interface. Paths ("rel") are '/'-separated and
- * relative to BRODALF/<catalog uuid> on that storage. */
+/* Storage backends. Backup, check and restore talk to a drive through this
+ * interface, which is kept general enough for other kinds of storage. Paths
+ * ("rel") are '/'-separated and relative to BRODALF/<catalog uuid> on that
+ * storage. */
 #ifndef BD_STORE_H
 #define BD_STORE_H
 
@@ -8,8 +9,7 @@
 
 typedef struct {
     int64_t size;
-    int64_t mtime_ns;  /* local drives; 0 for cloud */
-    char rev[160];     /* cloud: the provider's content hash, "" for drives */
+    int64_t mtime_ns;
 } bd_remote_stat;
 
 typedef struct bd_store bd_store;
@@ -39,13 +39,12 @@ struct bd_store {
     const bd_store_ops *ops;
     bd_catalog *cat;
     int64_t media_id;
-    int is_local;
     char err[512];
     void *impl;
 };
 
-/* A store for a connected drive or signed-in cloud account, or NULL with
- * the reason in the catalog error. Close with bd_store_close. */
+/* A store for a connected drive, or NULL with the reason in the catalog
+ * error. Close with bd_store_close. */
 bd_store *bd_store_open(bd_catalog *cat, int64_t media_id);
 void bd_store_close(bd_store *s);
 
@@ -56,9 +55,6 @@ void bd_store_release(char *path, int is_temp);
 
 /* A unique file name in the temp folder. */
 char *bd_temp_file(const char *tag);
-
-/* Cloud accounts that are signed in this session (cloud.c). */
-bd_store *bd_cloud_store_open(bd_catalog *cat, int64_t media_id);
 
 /* Local drives. */
 bd_store *bd_store_local(bd_catalog *cat, int64_t media_id, const char *root);

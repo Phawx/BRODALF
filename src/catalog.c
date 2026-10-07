@@ -59,7 +59,7 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS media("
     "  id INTEGER PRIMARY KEY,"
     "  uuid TEXT NOT NULL UNIQUE,"      /* stored in BRODALF.media on the drive */
-    "  kind TEXT NOT NULL DEFAULT 'drive',"  /* drive, onedrive, dropbox */
+    "  kind TEXT NOT NULL DEFAULT 'drive',"  /* always 'drive'; 0.3.0 also wrote onedrive and dropbox */
     "  label TEXT NOT NULL,"
     "  last_root TEXT,"
     "  total_bytes INTEGER,"
@@ -75,13 +75,6 @@ static const char *SCHEMA_SQL =
     "  volume_name TEXT, volume_serial TEXT, filesystem TEXT,"
     "  smart INTEGER, health TEXT, temperature_c INTEGER, power_on_hours INTEGER, power_cycles INTEGER,"
     "  reallocated INTEGER, pending INTEGER, uncorrectable INTEGER, percent_used INTEGER, note TEXT);"
-    "CREATE TABLE IF NOT EXISTS cloud_accounts("
-    "  id INTEGER PRIMARY KEY,"
-    "  media_id INTEGER NOT NULL UNIQUE REFERENCES media(id) ON DELETE CASCADE,"
-    "  provider TEXT NOT NULL,"
-    "  username TEXT NOT NULL,"
-    "  root_path TEXT NOT NULL,"
-    "  credential_ref TEXT);"           /* name in Windows Credential Manager, never the secret */
     "CREATE TABLE IF NOT EXISTS copies("
     "  id INTEGER PRIMARY KEY,"
     "  version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,"
@@ -90,7 +83,7 @@ static const char *SCHEMA_SQL =
     "  encrypted INTEGER NOT NULL DEFAULT 0,"
     "  stored_size INTEGER NOT NULL,"
     "  stored_mtime_ns INTEGER NOT NULL,"
-    "  stored_rev TEXT,"                 /* cloud: the provider's content hash */
+    "  stored_rev TEXT,"                 /* unused since 0.4.0 (was a cloud provider's content hash) */
     "  written_ms INTEGER NOT NULL,"
     "  last_quick_check_ms INTEGER,"
     "  last_full_check_ms INTEGER,"
@@ -161,7 +154,6 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
 {
     if (cat) bd_catalog_set_progress(cat, NULL, NULL);
     if (!cat) return;
-    bd_cloud_forget_all(cat);
     if (cat->db) sqlite3_close(cat->db);
     bd_wipe(cat->key, sizeof(cat->key));
     remove_work_files(cat);

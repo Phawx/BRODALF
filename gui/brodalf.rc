@@ -44,7 +44,7 @@ BEGIN
     EDITTEXT IDC_RISK_PLACES, 136, 32, 22, 13, ES_NUMBER
     LTEXT "different places.", -1, 162, 34, 60, 10
     PUSHBUTTON "Apply", IDC_RISK_APPLY, 226, 31, 44, 14
-    LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Each cloud account is a place of its own. Drives with no place set count as one place together.", -1, 8, 50, 404, 18
+    LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Drives with no place set count as one place together.", -1, 8, 50, 404, 18
     LTEXT "Back up to these next (double-click a plugged-in one to start):", -1, 8, 72, 330, 10
     PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 352, 68, 60, 14
     CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 84, 404, 56
@@ -114,8 +114,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION 0,2,0,0
-PRODUCTVERSION 0,2,0,0
+FILEVERSION 0,4,0,0
+PRODUCTVERSION 0,4,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -125,8 +125,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "BRODALF backup catalog"
             VALUE "ProductName", "BRODALF"
-            VALUE "FileVersion", "0.2.0"
-            VALUE "ProductVersion", "0.2.0"
+            VALUE "FileVersion", "0.4.0"
+            VALUE "ProductVersion", "0.4.0"
         END
     END
     BLOCK "VarFileInfo"

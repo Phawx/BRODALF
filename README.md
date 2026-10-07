@@ -1,8 +1,7 @@
 # BRODALF
 
 BRODALF keeps track of where every copy of your files lives. It is built for
-backups on hard drives that spend most of their time unplugged in a drawer,
-and on OneDrive and Dropbox.
+backups on hard drives that spend most of their time unplugged in a drawer.
 
 The catalog, a `.brodalf` file, holds no file data. It records every file and
 folder you protect, every version BRODALF has seen, and every drive a copy of
@@ -13,17 +12,22 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.3.0**, released 2026-10-04. The C core library, the Windows app
+Version **0.4.0**, released 2026-10-07. The C core library, the Windows app
 (`brodalf.exe`) and a command-line harness (`brodalf-cli`) work, with
-optional encryption and OneDrive and Dropbox as storage. Builds are on the
+optional encryption. Builds are on the
 [Releases](https://github.com/Phawx/BRODALF/releases) page (a zip with the
 two exes, no installer, unsigned, so SmartScreen warns). The Go files at the
 top of the repo are the earlier prototype and are not part of the C build.
 
-**Everything so far has been built and tested on Linux and under Wine, never
-on a real Windows PC.** See [Where the project stands](#where-the-project-stands)
-at the end of this file for the full picture, the open items and how to pick
-the work up.
+OneDrive and Dropbox storage was part of 0.3.0 and has been taken out for
+now (see [Where the project stands](#where-the-project-stands)).
+
+**0.3.0 was the first build tried on a real Windows PC** (2026-10-04): the
+whole loop of scanning, backing up to a USB stick, checking, changing and
+renaming files, keeping old versions and restoring worked first time. What
+has still only run under Wine is listed under
+[Where the project stands](#where-the-project-stands) at the end of this
+file, with the open items and how to pick the work up.
 
 ## Build
 
@@ -72,13 +76,11 @@ which box to go and get.
 
 ![A file whose drive is in a box](docs/images/gui-file-details.png)
 
-The menu bar keeps the two kinds of storage apart. **Local backups** lists
-every external or removable disk BRODALF knows, plugged in or not, with how
-much room it had when last seen; each disk has a submenu to back up to it,
-read back its copies, run a full check or see its details, and below the
-disks are **Add an external or removable disk...** and **What needs backing
-up, and which disk to plug in...**. **Cloud backups** lists the active
-OneDrive and Dropbox connections, with adding and signing out.
+The **Local backups** menu lists every external or removable disk BRODALF
+knows, plugged in or not, with how much room it had when last seen; each
+disk has a submenu to back up to it, read back its copies, run a full check
+or see its details, and below the disks are **Add an external or removable
+disk...** and **What needs backing up, and which disk to plug in...**.
 
 ![Local backups menu](docs/images/gui-menus.png)
 
@@ -101,7 +103,7 @@ folder names stay readable so you can still find things in Explorer. Encrypted
 copies end in `.bdenc`. Each drive is plain or encrypted from the day it is
 set up.
 
-The **Passphrase** button lets you change the passphrase, encrypt the catalog
+Under **Settings...** you can change the passphrase, encrypt the catalog
 file itself (BRODALF then asks for the passphrase when it opens), or make
 BRODALF forget the passphrase until it next needs it.
 
@@ -121,7 +123,7 @@ and keeps the latest reading in the catalog:
 - SMART health: the drive's own failure prediction, temperature, hours
   powered on, power cycles, reallocated/pending/unreadable sectors, and SSD
   wear. Internal SATA and NVMe drives answer without extra rights; some
-  drives need BRODALF to be run as administrator once, and many USB
+  drives only answer when BRODALF runs as administrator, and many USB
   enclosures do not pass SMART through at all (BRODALF says which).
 
 If the same drive ID ever turns up on a disk with a different serial number
@@ -138,10 +140,9 @@ drive and lets you rename it.
 
 BRODALF has a protection target: by default **2 copies of every file, in 2
 different places**. A place is what a drive's "where it is kept" says (so
-"Box A" and "Office shelf" are two places), every cloud account is a place
-of its own, and drives with no place set count together as one. A copy
-counts when BRODALF last saw it good, whether or not the drive is plugged in
-right now.
+"Box A" and "Office shelf" are two places), and drives with no place set
+count together as one. A copy counts when BRODALF last saw it good, whether
+or not the drive is plugged in right now.
 
 The **At risk** button shows how many files fall short. It opens a list of
 those files, fewest copies first (a file changed since its last backup has
@@ -171,12 +172,14 @@ each drive**.
 BRODALF does not sit in the background. Open it and it rescans your folders,
 works out what needs backing up and reads back the copies on whatever is
 plugged in; close it and nothing of it runs. Instead, Windows Task Scheduler
-runs a quiet check once a day (**Settings > Check my folders for changes
-while BRODALF is closed**: every day, every week, or never). The check
-rescans with no window and speaks up only when files fall short of the
-target, with how much needs backing up and which disk to plug in. The disk
-it names is one that had enough free space when it was last seen, so you
-reach for a drive you already have rather than a new one.
+runs a quiet check once a day. BRODALF sets that up the moment a catalog is
+created (daily at 12:00) and keeps it pointing at the copy of BRODALF you
+ran; change it or turn it off under **Settings > Check my folders for
+changes while BRODALF is closed** (every day, every week, or never). The
+check rescans with no window and speaks up only when files fall short of
+the target, with how much needs backing up and which disk to plug in. The
+disk it names is one that had enough free space when it was last seen, so
+you reach for a drive you already have rather than a new one.
 
 ![The scheduled check](docs/images/gui-check.png)
 
@@ -279,6 +282,16 @@ wildcards, a trailing `/` for folders only, and a `/` in the middle (like
 left out and were never backed up drop out of the tree; ones that were
 backed up show as deleted, and their copies stay.
 
+### Folders in OneDrive or Dropbox
+
+A protected folder can be inside OneDrive or Dropbox (on many PCs Windows
+keeps Documents and Pictures in OneDrive). Their files carry a Windows
+marker that looks like a shortcut's; BRODALF tells the two apart and scans
+them like any other file. A file that is "online-only" is downloaded by
+Windows when BRODALF reads it to checksum it, so the first scan of a large
+online-only folder takes a while and uses disk space. Real shortcuts
+(symbolic links and junctions) are left out of scans.
+
 ### Old versions
 
 When a file changes, the previous copy moves into `.versions` on the drive.
@@ -288,45 +301,6 @@ start of the next backup to that drive. Pick another rule under
 **Settings > Old versions on each drive** (keep everything, last 10 or past
 year, last 3 or past 3 months, or only the version before the current one).
 The current version is never removed.
-
-### OneDrive and Dropbox
-
-**Back up** also offers **OneDrive...** and **Dropbox...**. Name the storage,
-optionally tick encryption, and your browser opens to sign in. BRODALF only
-gets its own app folder (`Apps/BRODALF`) and cannot see anything else in the
-account. The sign-in is saved in Windows Credential Manager, so the account
-reconnects by itself whenever BRODALF opens; the catalog records only the
-provider, the account name and where the saved sign-in is. From then on the
-account works like a drive that is always plugged in: backups, `.versions`,
-checks (quick checks compare the provider's own content hash, full checks
-download and verify) and restores.
-
-Every time the catalog is saved, a copy of it also goes to every connected
-cloud account (`BRODALF/<catalog id>/catalog-backup.brodalf`), encrypted if
-the catalog or that storage is.
-
-![Adding cloud storage](docs/images/gui-cloud-menu.png)
-
-To sign in again after a sign-in expires, choose the same provider again and
-sign in with the same account; BRODALF recognises it and keeps its copies.
-
-### App registrations
-
-The app IDs are not in the source. CI builds the released `brodalf.exe` with
-the repository's Actions variables `BRODALF_DROPBOX_CLIENT_ID` and
-`BRODALF_ONEDRIVE_CLIENT_ID`; a build without them says "this build of BRODALF
-has no ... app ID yet" for that service. For your own build, pass
-`-DBRODALF_DROPBOX_CLIENT_ID=...` (and the OneDrive one) to CMake, or set
-environment variables of the same names before running BRODALF. These IDs are
-not secrets: sign-in uses PKCE, so no client
-secret ships with BRODALF.
-
-- **Microsoft Entra**: an app for personal and work accounts, platform
-  "Mobile and desktop applications" with redirect URI `http://localhost`,
-  delegated permissions `Files.ReadWrite.AppFolder` and `User.Read`.
-- **Dropbox**: "App folder" access, redirect URI `http://localhost:53682/`,
-  permissions `files.content.read/write`, `files.metadata.read/write`,
-  `account_info.read`.
 
 ### When something goes wrong
 
@@ -384,11 +358,6 @@ brodalf-cli restore family.brodalf D:\restored --as-of before-changes --drive E:
 brodalf-cli option  family.brodalf guard_percent 50          # pause only when half the files change at once
 brodalf-cli option  family.brodalf schedule 7                # the Windows app checks weekly (1: daily, 0: never)
 brodalf-cli shadow-copy C:\shadow "C:\Users\me\Outlook.pst"  # as administrator: copy an in-use file out of a shadow copy
-
-brodalf-cli cloud-add family.brodalf dropbox "Dropbox"       # opens the browser to sign in
-brodalf-cli backup family.brodalf cloud:Dropbox
-brodalf-cli restore family.brodalf D:\restored --drive cloud:Dropbox
-brodalf-cli cloud-signout family.brodalf Dropbox
 ```
 
 Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
@@ -405,8 +374,6 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `src/backup.c` | Backup with kept versions, restore |
 | `src/crypto.c` | Passphrase, master key, encrypted file streams |
 | `src/store*.c`, `src/store.h` | Storage interface: local drives and folders |
-| `src/cloud.c` | OneDrive and Dropbox: sign-in, uploads, checks |
-| `src/http_*.c`, `src/secrets.c` | WinHTTP client, sign-in redirect, Credential Manager |
 | `src/query.c` | Ghost-tree state for the GUI |
 | `src/risk.c` | Files at risk, which drive would help, space tracking |
 | `src/shadow.c` | Windows shadow copies for files in use |
@@ -415,16 +382,15 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `gui/` | The Win32 app, `brodalf.exe` |
 | `cli/main.c` | `brodalf-cli` |
 | `tests/test_core.c` | End-to-end test |
-| `tests/test_cloud.c`, `tests/mock_cloud.py` | Cloud test against a local mock of OneDrive and Dropbox |
+| `tests/test_crypto.c` | Encryption test |
 
 ## Third-party code
 
 `third_party/` holds unmodified copies of
 [SQLite](https://sqlite.org) 3.45.0 (public domain),
 [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) 1.5.4 (CC0 / Apache-2.0) and
-[zstd](https://github.com/facebook/zstd) 1.5.6 (BSD, single-file build),
-[Monocypher](https://monocypher.org) 4.0.2 (CC0 / BSD-2-Clause) and
-[cJSON](https://github.com/DaveGamble/cJSON) (MIT).
+[zstd](https://github.com/facebook/zstd) 1.5.6 (BSD, single-file build) and
+[Monocypher](https://monocypher.org) 4.0.2 (CC0 / BSD-2-Clause).
 
 ## Where the project stands
 
@@ -443,6 +409,11 @@ on a local machine needs to pick the work up without the chat history.
   (plain C11 + CMake, vendored dependencies). It landed as PR #1 the same
   day; everything since has gone straight to `master`.
 - v0.2.0 was released 2026-09-29, v0.3.0 on 2026-10-04.
+- On 2026-10-04 the released 0.3.0 was run on a real Windows 11 PC for the
+  first time, against a USB stick; see
+  [What the first real-PC test showed](#what-the-first-real-pc-test-showed).
+- v0.4.0 (2026-10-07) took the OneDrive and Dropbox storage out again and
+  fixed the four bugs below that the code review and that test turned up.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -454,27 +425,32 @@ on a local machine needs to pick the work up without the chat history.
 - **Checksums are the truth.** Whether data is safely held is decided by
   BLAKE3 checksums, everywhere: quick and full checks, read-back on plug-in,
   move and rename detection.
-- **Offline removable drives first.** A drive is identified by the
-  `BRODALF.media` file on it, never by its letter. Cloud (OneDrive and
-  Dropbox) is secondary, recorded as provider, account name and path, with
-  sign-in tokens in Windows Credential Manager. Dropbox gets only its app
-  folder (`Apps/BRODALF`). Sign-in uses PKCE, so there is no client secret.
+- **Offline removable drives.** A drive is identified by the
+  `BRODALF.media` file on it, never by its letter.
+- **No cloud storage for now** (owner's call, 2026-10-07). OneDrive and
+  Dropbox as secondary storage were built in 0.3.0 (OAuth with PKCE, tokens
+  in Windows Credential Manager, app-folder access, chunked uploads) and
+  removed in 0.4.0. The code is in git history at tag `v0.3.0`:
+  `src/cloud.c`, `src/http_*.c`, `src/secrets.c`, `tests/test_cloud.c`,
+  `tests/mock_cloud.py` and the cJSON dependency. A catalog written by
+  0.3.0 that lists a cloud account still opens: the account is shown as
+  unsupported, nothing can be backed up to it, and the copies it holds
+  still count towards the protection target as a place of their own.
 - **The catalog holds no file data**, only where the bits live. Old versions
   stay browsable on the drive in a `.versions` folder.
 - **Encryption is optional**, per drive, and encrypts file contents only.
   File and folder names stay readable so a drive is still browsable.
 - **Windows is the platform, the GUI is the interface**: native Win32 in C,
-  with Local backups and Cloud backups as separate top-level menus and a
-  prominent progress area. POSIX builds exist for tests and the CLI.
+  with a Local backups menu listing every known disk and a prominent
+  progress area. POSIX builds exist for tests and the CLI.
 - **Startup flow**: open BRODALF, pick or create a `.brodalf` file, connect
   everything reachable, pick folders, scan metadata and checksums, show the
   ghost tree greyed out until a copy is verified on connected storage.
   Clicking an entry shows its details in a second pane.
-- **Every catalog save also uploads a copy** to each connected cloud account.
+- **A copy of the catalog goes onto each drive** at the end of every backup
+  to it (`catalog-backup.brodalf`).
 - **Ransomware**: on a mass change, pause backups and steer toward restoring,
   not backing up.
-- **App keys and IDs never go in source or in the exe.** CI bakes them in
-  from repository variables (see below).
 
 The original design write-up lives at
 https://claude.ai/artifact/RMxcPVGY6unWn917nXnJ8w, but everything that
@@ -484,22 +460,21 @@ which describes the current implementation.
 ### How it is built and tested
 
 - `cmake -S . -B build && cmake --build build && ctest --test-dir build`.
-  Tests: `tests/test_core.c` (end to end), `tests/test_crypto.c` (about 50 s
-  under ASan because of Argon2, 2 s in Release), `tests/test_cloud.c`
-  against `tests/mock_cloud.py` (POSIX only).
+  Tests: `tests/test_core.c` (end to end, including the bit-rot and
+  at-risk cases added in 0.4.0) and `tests/test_crypto.c` (about 50 s
+  under ASan because of Argon2, 2 s in Release).
 - CI is `.github/workflows/c-core.yml`: builds and tests on ubuntu-latest
   and windows-latest (MSVC), uploads `brodalf.exe` and `brodalf-cli.exe` as
   the `brodalf-windows` artifact.
-- Windows testing has so far been done from Linux: cross-compile with
+- Until 0.3.0, Windows testing was done from Linux: cross-compile with
   `cmake/mingw-w64-x86_64.cmake` (`gcc-mingw-w64-x86-64`) and run under
-  `wine64` with `LANG=C.UTF-8`. GUI screenshots were taken with Xvfb,
-  xdotool and ImageMagick, and a fake `xdg-open` on PATH played the browser
-  for sign-in tests. Wine has no VSS, a stub `schtasks`, no real disk
-  model or SMART data and no real plug-in notifications, which is exactly
-  what remains untested.
+  `wine64` with `LANG=C.UTF-8`; GUI screenshots were taken with Xvfb,
+  xdotool and ImageMagick. Note that the released zip is the MSVC build
+  from CI, not the MinGW build that ran under Wine. Wine has no VSS, a stub
+  `schtasks`, no real disk model or SMART data and no real plug-in
+  notifications.
 - Vendored in `third_party/`: SQLite 3.45.0, BLAKE3 1.5.4, zstd 1.5.6
-  (single file), Monocypher 4.0.2 and cJSON. Nothing is downloaded at build
-  time.
+  (single file) and Monocypher 4.0.2. Nothing is downloaded at build time.
 
 ### Releasing
 
@@ -509,44 +484,98 @@ the two exes plus this README and the notes from `.github/release-notes.md`.
 To ship: bump the version in `CMakeLists.txt`, update the release notes,
 push to `master`. The exes are unsigned.
 
-### Cloud app registrations
+### What the first real-PC test showed
 
-The Dropbox and OneDrive app IDs are **not in the source**. CI passes the
-GitHub Actions repository variables `BRODALF_DROPBOX_CLIENT_ID` and
-`BRODALF_ONEDRIVE_CLIENT_ID` to CMake; a build without one says "this build
-of BRODALF has no ... app ID yet" and that menu entry is disabled. The
-Dropbox app exists. **The Microsoft Entra registration for OneDrive does not
-exist yet**, so OneDrive is in the menu but unusable in every build so far.
-Set-up details for both are under [App registrations](#app-registrations).
+On 2026-10-04 the released 0.3.0 was run on a Windows 11 laptop with a
+29 GB SanDisk USB stick (FAT32) as the drive, the protected folder inside
+OneDrive, 13 bogus files (5.6 MB) with a `.tmp`, an empty file, a one-byte
+file and an accented name among them. Everything in the loop worked first
+time and no error report was produced:
+
+- scan (12 files, the `.tmp` left out, nothing skipped as a link);
+- setting up the drive and backing up (12 copies, all identical to the
+  originals by SHA-256; `BRODALF.media` and `catalog-backup.brodalf` on
+  the stick);
+- the file details and **Drives...** with the real hardware: make, model,
+  serial, firmware, bus, volume, free space and the "does not pass SMART
+  through" note;
+- a full check (12 good); editing, renaming and removing files, then
+  backing up again (the old version under `.versions`, the renamed file
+  moved on the drive instead of copied, the removed file kept);
+- restoring the folder (identical to the source);
+- the **At risk** window; closing (catalog saved, lock released).
+
+Also seen: creating a catalog registers the Task Scheduler job straight
+away (`schtasks /Create ... -> 0` in the log), and the first launch had
+been left at the catalog chooser while a second was started, so two
+instances ran at once (the lock file kept them apart). The four bugs fixed
+in 0.4.0 came from the code review of the same day and this test:
+
+1. OneDrive and Dropbox placeholder files carry the reparse-point
+   attribute, and the scanner treated every reparse point as a link to
+   skip (`src/platform_win32.c`). It did not bite in the test because the
+   files were freshly created, but a synced folder could have gone
+   entirely unprotected. Only name-surrogate reparse points (symbolic
+   links, junctions) are links now.
+2. A copy found damaged by a full check was marked good again by the next
+   quick check when its size and time had not changed, which is what bit
+   rot looks like (`src/media.c`). A copy found missing or damaged now
+   stays so until a re-read matches its hash.
+3. The shadow-copy helper (`brodalf.exe --shadow-copy`) was started after
+   the GUI's `CoInitializeEx(COINIT_APARTMENTTHREADED)`, so VSS ran in a
+   single-threaded apartment with a blocking wait, the classic hang. The
+   helper now runs before COM is initialised (`gui/main.c`).
+4. The **At risk** list said "changed since its last backup" for a file
+   whose newest version was already backed up (`src/risk.c`).
 
 ### Open items: what still needs trying on a real Windows PC
 
-Nothing below has ever run outside Wine, so each is "written and
-unit-tested, never seen working":
+1. The scheduled check: registering the task works (exit code 0 on real
+   Windows). Still to see: `brodalf.exe --check <catalog>` actually
+   running at 12:00 and popping its one message when files are at risk.
+   Note that `schtasks` creates tasks with "do not start on battery" by
+   default, so a laptop on battery may never run it.
+2. Files in use: the shadow-copy offer, the single UAC prompt, and whether
+   an open `.pst` actually gets read and backed up (`src/shadow.c`). Try
+   `brodalf-cli shadow-copy` from an elevated prompt first.
+3. Plugging in a known disk while BRODALF is open: the device-change
+   notification should quick check it, then (as the code is written) read
+   back copies older than a month, scan, and back up. The test had the
+   stick plugged in before launch, so this never fired.
+4. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+   fallback (whose reading is currently replaced by the next unprivileged
+   one), and RAID-mode laptops. The USB stick path is confirmed.
 
-1. The scheduled check: **Settings > Check my folders while BRODALF is
-   closed** should register a Task Scheduler job ("BRODALF - <catalog>",
-   daily or weekly at 12:00) and `brodalf.exe --check <catalog>` should pop
-   its one message when files are at risk.
-2. Files in use: the shadow-copy offer, the single UAC prompt for
-   `brodalf.exe --shadow-copy`, and whether an open `.pst` actually gets
-   read and backed up (`src/shadow.c`).
-3. Plugging in a known disk: the device-change notification should quick
-   check it, back up to it (if enabled), then read back copies older than
-   a month.
-4. The **Drives...** dialog with real hardware: make, model, serial, bus and
-   SMART, including the admin fallback and USB enclosures that pass nothing.
-5. Real Dropbox sign-in through a real browser (only the local mock and a
-   fake browser have been used), and the saved sign-in reconnecting from
-   Credential Manager on the next start.
-6. Create the Microsoft Entra app registration and set
-   `BRODALF_ONEDRIVE_CLIENT_ID` so OneDrive can be tried at all.
+### Known issues from the 2026-10-04 code review, not yet fixed
+
+- No way to cancel a running job; Close is refused while one runs.
+- The GUI clears "busy" before showing the end-of-job prompts, so a drive
+  plugged in during a prompt can start a worker while the UI still uses
+  the catalog; typing in the search box also queries the catalog during a
+  job.
+- Two instances can open the same catalog if the user agrees to remove a
+  stale lock; a named mutex would be safer.
+- The elevated shadow-copy helper trusts a user-writable list file in
+  `%TEMP%`; it should check the paths against the protected folders and
+  write into a folder only administrators can change.
+- `bd_random_bytes` failures are ignored where the master key, salts and
+  nonces are drawn (`src/crypto.c`), and the Argon2 parameters read from
+  a catalog header are not bounded.
+- `src/drive_hw.c`: the temperature property id is 55 but should be 52,
+  and the ATA attribute table is parsed from NVMe/SCSI answers too.
+- Copies and restored files get the backup time as their modified time,
+  not the original file's.
+- Paths are compared case-sensitively although NTFS is not; a source
+  folder literally named `.versions` would collide with the versions tree.
+- The release zip has no LICENSE or third-party notices (zstd's and
+  SQLite's terms allow it, but BSD and CC0 notices belong in the zip).
+- `DESIGN.md` said schema 4; the code is at 5 (fixed in the doc).
 
 ### Backlog: suggested but not yet asked for
 
 Ideas offered to the owner and not picked up. Pick by number.
 
-1. Recovery on a new PC: open a catalog from a drive or cloud copy and
+1. Recovery on a new PC: open a catalog from the copy on a drive and
    rebuild the picture from the drives themselves.
 2. A printable recovery key for the encryption passphrase.
 3. A deleted-files view.
@@ -556,6 +585,11 @@ Ideas offered to the owner and not picked up. Pick by number.
 6. An installer.
 7. Code signing, so SmartScreen stops warning.
 8. An update check.
+9. Cloud storage again (OneDrive, Dropbox), starting from the 0.3.0 code
+   in git history. Before bringing it back: a Microsoft Entra app
+   registration, listing-based quick checks instead of one request per
+   copy, local `quickXorHash` and Dropbox `content_hash` so uploads are
+   verified, and resumable chunked uploads.
 
 Rejected: a tray icon or always-on mode (periodic runs only).
 
@@ -563,7 +597,6 @@ Rejected: a tray icon or always-on mode (periodic runs only).
 
 - Commit straight to `master`; no long-lived branches, no PRs needed.
   Build and run the tests before pushing and keep CI green.
-- Secrets and app IDs go in CI variables, never in source.
 - Bump the version and ship a release when a batch of work is done.
 - Write user-facing text (menus, dialogs, this README) in plain language,
   no jargon; the user of the app is not a developer.

@@ -147,7 +147,6 @@ bd_store *bd_store_local(bd_catalog *cat, int64_t media_id, const char *root)
     s->ops = &local_ops;
     s->cat = cat;
     s->media_id = media_id;
-    s->is_local = 1;
     s->impl = l;
     return s;
 }

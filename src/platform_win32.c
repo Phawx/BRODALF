@@ -53,14 +53,32 @@ static int64_t filetime_to_ns(FILETIME ft)
     return (t - BD_EPOCH_DIFF) * 100;
 }
 
-static void fill_from_attrs(DWORD attrs, DWORD size_hi, DWORD size_lo, FILETIME mtime, bd_stat_t *st)
+/* Only a reparse point that stands in for another path (a symbolic link or
+ * a junction: a "name surrogate") is a link to leave out of a scan. Every
+ * other reparse point is an ordinary file or folder with extra plumbing
+ * behind it, above all OneDrive and Dropbox placeholders, which carry the
+ * attribute even when the file is fully downloaded. Treating those as
+ * links would leave a OneDrive folder entirely unprotected. */
+static void fill_from_attrs(DWORD attrs, DWORD reparse_tag, DWORD size_hi, DWORD size_lo, FILETIME mtime, bd_stat_t *st)
 {
     memset(st, 0, sizeof(*st));
-    st->is_link = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    st->is_link = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && IsReparseTagNameSurrogate(reparse_tag);
     st->is_dir = !st->is_link && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
     st->is_file = !st->is_link && !st->is_dir;
     st->size = st->is_file ? (int64_t)(((uint64_t)size_hi << 32) | size_lo) : 0;
     st->mtime_ns = filetime_to_ns(mtime);
+}
+
+/* The reparse tag of a reparse point. GetFileAttributesEx does not report
+ * it; FindFirstFile does, without opening the file. When it cannot be read
+ * the point is taken for a symbolic link, as before. */
+static DWORD reparse_tag_of(const wchar_t *w)
+{
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW(w, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, 0);
+    if (h == INVALID_HANDLE_VALUE) return IO_REPARSE_TAG_SYMLINK;
+    FindClose(h);
+    return (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? fd.dwReserved0 : 0;
 }
 
 int bd_stat(const char *path, bd_stat_t *st)
@@ -69,9 +87,10 @@ int bd_stat(const char *path, bd_stat_t *st)
     if (!w) return -1;
     WIN32_FILE_ATTRIBUTE_DATA fa;
     BOOL ok = GetFileAttributesExW(w, GetFileExInfoStandard, &fa);
+    DWORD tag = (ok && (fa.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) ? reparse_tag_of(w) : 0;
     free(w);
     if (!ok) return -1;
-    fill_from_attrs(fa.dwFileAttributes, fa.nFileSizeHigh, fa.nFileSizeLow, fa.ftLastWriteTime, st);
+    fill_from_attrs(fa.dwFileAttributes, tag, fa.nFileSizeHigh, fa.nFileSizeLow, fa.ftLastWriteTime, st);
     return 0;
 }
 
@@ -265,7 +284,7 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             if (!child_rel) { free(name); rc = -1; stop = 1; break; }
             sprintf(child_rel, rlen ? "%s/%s" : "%s%s", rel, name);
             bd_stat_t st;
-            fill_from_attrs(fd.dwFileAttributes, fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime, &st);
+            fill_from_attrs(fd.dwFileAttributes, fd.dwReserved0, fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime, &st);
             int r = cb(ctx, child_rel, &st);
             if (r == BD_WALK_SKIP) { /* leave the folder out */ }
             else if (r != 0) stop = 1;

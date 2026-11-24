@@ -12,11 +12,16 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.4.0**, released 2026-10-07. The C core library, the Windows app
+Version **0.5.0**, released 2026-11-24. The C core library, the Windows app
 (`brodalf.exe`) and a command-line harness (`brodalf-cli`) work, with
 optional encryption. Builds are on the
-[Releases](https://github.com/Phawx/BRODALF/releases) page (a zip with the
-two exes, no installer, unsigned, so SmartScreen warns). The Go files at the
+[Releases](https://github.com/Phawx/BRODALF/releases) page: an installer that
+needs no administrator rights, and a zip with the two exes. Both are
+unsigned, so SmartScreen warns.
+
+**Everything new in 0.5.0 has only been built and tested off Windows** (Linux
+tests and a MinGW build; the MSVC build in CI). See
+[Open items](#open-items-what-still-needs-trying-on-a-real-windows-pc). The Go files at the
 top of the repo are the earlier prototype and are not part of the C build.
 
 OneDrive and Dropbox storage was part of 0.3.0 and has been taken out for
@@ -414,6 +419,14 @@ on a local machine needs to pick the work up without the chat history.
   [What the first real-PC test showed](#what-the-first-real-pc-test-showed).
 - v0.4.0 (2026-10-07) took the OneDrive and Dropbox storage out again and
   fixed the four bugs below that the code review and that test turned up.
+- v0.5.0 (2026-11-24): faster checksums (BLAKE3's SSE2/SSE4.1/AVX2/AVX-512
+  paths), overlapped copies, hashing on several cores during a scan, fewer
+  fsyncs; Stop for a running job; original modified times kept;
+  case-insensitive paths on Windows (schema 6); every item of the
+  2026-10-04 known-issues list fixed; backlog 1 to 6 built (recovery on a new
+  PC, a recovery key, deleted files, replacing a drive, the recovery sheet,
+  an installer); the scheduled check created through the Task Scheduler COM
+  API so it runs on battery. None of it has run on a real Windows PC yet.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -473,14 +486,17 @@ which describes the current implementation.
   from CI, not the MinGW build that ran under Wine. Wine has no VSS, a stub
   `schtasks`, no real disk model or SMART data and no real plug-in
   notifications.
-- Vendored in `third_party/`: SQLite 3.45.0, BLAKE3 1.5.4, zstd 1.5.6
+- Vendored in `third_party/`: SQLite 3.45.0, BLAKE3 1.5.4 (with its SSE2,
+  SSE4.1, AVX2 and AVX-512 C files since 0.5.0), zstd 1.5.6
   (single file) and Monocypher 4.0.2. Nothing is downloaded at build time.
 
 ### Releasing
 
 CI publishes a release on every push to `master` whose `project(... VERSION
 x.y.z)` in `CMakeLists.txt` has no release yet, as `vx.y.z`, with the zip of
-the two exes plus this README and the notes from `.github/release-notes.md`.
+the two exes plus this README and THIRD-PARTY-NOTICES.txt, the NSIS installer
+built from `installer/brodalf.nsi`, and the notes from
+`.github/release-notes.md`.
 To ship: bump the version in `CMakeLists.txt`, update the release notes,
 push to `master`. The exes are unsigned.
 
@@ -544,46 +560,56 @@ in 0.4.0 came from the code review of the same day and this test:
    stick plugged in before launch, so this never fired.
 4. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
-   one), and RAID-mode laptops. The USB stick path is confirmed.
+   one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
+   the temperature comes from property 52 and the ATA table is only read
+   from ATA disks.
+5. Everything new in 0.5.0, none of which has run on Windows:
+   - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
+     thread, and how much the scan pool and batched fsyncs gain on real
+     disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on
+     NTFS, FAT32 and exFAT);
+   - Stop while a job runs, and Close during a job and during end-of-job
+     questions;
+   - modified times on copies and restores (NTFS, FAT32, exFAT);
+   - a case-only rename (Photo.JPG to photo.jpg) on NTFS and exFAT;
+   - a second BRODALF on the same catalog is refused, and the catalog opens
+     again after a crash (named mutex);
+   - the shadow-copy helper's admin-only list folder and its path check;
+   - the scheduled check's settings in Task Scheduler (starts on battery);
+   - Recover from a backup drive on a second PC, Replace this drive, the
+     recovery sheet in a browser and printed, unlocking with the recovery
+     key, the deleted-files view;
+   - the installer: install, Start menu entry, uninstall, the Installed apps
+     entry.
 
-### Known issues from the 2026-10-04 code review, not yet fixed
+### Known issues
 
-- No way to cancel a running job; Close is refused while one runs.
-- The GUI clears "busy" before showing the end-of-job prompts, so a drive
-  plugged in during a prompt can start a worker while the UI still uses
-  the catalog; typing in the search box also queries the catalog during a
-  job.
-- Two instances can open the same catalog if the user agrees to remove a
-  stale lock; a named mutex would be safer.
-- The elevated shadow-copy helper trusts a user-writable list file in
-  `%TEMP%`; it should check the paths against the protected folders and
-  write into a folder only administrators can change.
-- `bd_random_bytes` failures are ignored where the master key, salts and
-  nonces are drawn (`src/crypto.c`), and the Argon2 parameters read from
-  a catalog header are not bounded.
-- `src/drive_hw.c`: the temperature property id is 55 but should be 52,
-  and the ATA attribute table is parsed from NVMe/SCSI answers too.
-- Copies and restored files get the backup time as their modified time,
-  not the original file's.
-- Paths are compared case-sensitively although NTFS is not; a source
-  folder literally named `.versions` would collide with the versions tree.
-- The release zip has no LICENSE or third-party notices (zstd's and
-  SQLite's terms allow it, but BSD and CC0 notices belong in the zip).
-- `DESIGN.md` said schema 4; the code is at 5 (fixed in the doc).
+Everything on the 2026-10-04 code-review list was fixed in 0.5.0. Known
+limits of the new work:
+
+- **Replace this drive** copies onto the new drive only what is still in the
+  source folders. Deleted files and older versions held only on the old
+  drive are counted and the user is told to keep the old drive; they are not
+  copied drive to drive.
+- `brodalf-cli` has no Ctrl+C handling: `die()` does not save the catalog.
+- 0.4.0 and earlier refuse an encrypted catalog that has a recovery key, as
+  a newer format.
+- Case-insensitive matching keys (`nodes.rel_fold`) are only written by
+  Windows builds, so files added to a catalog by a POSIX build have none.
+- The weekly scheduled check is a daily trigger every 7 days (MinGW's
+  Task Scheduler headers made a weekly trigger awkward).
 
 ### Backlog: suggested but not yet asked for
 
 Ideas offered to the owner and not picked up. Pick by number.
 
-1. Recovery on a new PC: open a catalog from the copy on a drive and
-   rebuild the picture from the drives themselves.
-2. A printable recovery key for the encryption passphrase.
-3. A deleted-files view.
-4. Replace a drive: retire a failing drive and refill another with what it
-   held.
-5. A printable drive list (name, where kept, what is on it).
-6. An installer.
-7. Code signing, so SmartScreen stops warning.
+1. ~~Recovery on a new PC~~ (0.5.0).
+2. ~~A printable recovery key for the encryption passphrase~~ (0.5.0).
+3. ~~A deleted-files view~~ (0.5.0).
+4. ~~Replace a drive~~ (0.5.0; see the known limits).
+5. ~~A printable drive list~~ (0.5.0, with the recovery key on one sheet).
+6. ~~An installer~~ (0.5.0, NSIS, per user).
+7. Code signing (needs a paid certificate), so SmartScreen stops warning.
 8. An update check.
 9. Cloud storage again (OneDrive, Dropbox), starting from the 0.3.0 code
    in git history. Before bringing it back: a Microsoft Entra app

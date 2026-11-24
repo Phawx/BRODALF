@@ -61,7 +61,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
-          cp README.md dist/
+          sudo apt-get update -q && sudo apt-get install -y -q nsis
+          makensis -V2 "-DVERSION=${TAG#v}" "-DBINDIR=$PWD/dist" "-DOUTFILE=$PWD/brodalf-$TAG-windows-x64-setup.exe" installer/brodalf.nsi
+          cp README.md THIRD-PARTY-NOTICES.txt dist/
           (cd dist && zip -9 "../brodalf-$TAG-windows-x64.zip" *)
-          gh release create "$TAG" "brodalf-$TAG-windows-x64.zip" --target "$GITHUB_SHA" \
+          gh release create "$TAG" "brodalf-$TAG-windows-x64.zip" "brodalf-$TAG-windows-x64-setup.exe" --target "$GITHUB_SHA" \
             --title "BRODALF $TAG" --notes-file .github/release-notes.md

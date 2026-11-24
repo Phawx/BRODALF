@@ -84,6 +84,24 @@ int bd_catalog_is_unlocked(bd_catalog *cat);
 bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase);
 /* BD_ERR_PASSPHRASE if wrong. */
 bd_status bd_catalog_unlock(bd_catalog *cat, const char *passphrase);
+/* A recovery key is a second way to unlock, for when the passphrase is
+ * lost: 30 characters in groups of five ("ABCDE-FGHJK-..."), printed on the
+ * recovery sheet. Making one needs the catalog unlocked and replaces any
+ * earlier one; BRODALF keeps only the master key wrapped by it, never the
+ * key itself. Changing the passphrase keeps it working. */
+#define BD_RECOVERY_KEY_SIZE 36
+bd_status bd_catalog_make_recovery_key(bd_catalog *cat, char out[BD_RECOVERY_KEY_SIZE]);
+int bd_catalog_has_recovery_key(bd_catalog *cat);
+/* Case, dashes and spaces do not matter. BD_ERR_PASSPHRASE if wrong. */
+bd_status bd_catalog_unlock_recovery(bd_catalog *cat, const char *recovery_key);
+/* 1 if the file at path is an encrypted catalog that a recovery key opens. */
+int bd_catalog_file_has_recovery_key(const char *path);
+/* Like bd_catalog_open_with, with the recovery key instead. */
+bd_status bd_catalog_open_with_recovery(const char *path, const char *recovery_key, bd_catalog **out);
+/* Write the recovery sheet, an HTML page to print: what to do on a new PC,
+ * the backup drives and what each holds, the protected folders, and the
+ * recovery key when one is given (from bd_catalog_make_recovery_key). */
+bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char *recovery_key);
 /* Forget the master key until the next unlock. */
 void bd_catalog_lock_key(bd_catalog *cat);
 /* Encrypt the .brodalf file from the next save on. Needs an unlocked

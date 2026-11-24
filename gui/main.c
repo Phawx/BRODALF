@@ -83,6 +83,7 @@ enum {
     ID_M_REPORTS,
     ID_M_ABOUT,
     ID_M_RELOCATE,
+    ID_M_SHEET,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
@@ -1652,6 +1653,7 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 static wchar_t g_pass_buf[512];
 static const wchar_t *g_pass_text;
 static int g_pass_catalog;
+static int g_pass_mode; /* IDD_PASSPHRASE: 0 passphrase, 1 also offer the recovery key, 2 typing the recovery key */
 
 static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -1659,6 +1661,12 @@ static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_INITDIALOG:
         SetDlgItemTextW(dlg, IDC_PASS_TEXT, g_pass_text);
+        if (GetDlgItem(dlg, IDC_PASS_RECOVERY) && g_pass_mode != 1) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
+        if (g_pass_mode == 2) {
+            /* A recovery key is long and read off paper: show what is typed. */
+            SetWindowTextW(dlg, L"Enter the recovery key");
+            SendDlgItemMessageW(dlg, IDC_PASS_EDIT, EM_SETPASSWORDCHAR, 0, 0);
+        }
         SetFocus(GetDlgItem(dlg, IDC_PASS_EDIT));
         return FALSE;
     case WM_COMMAND:
@@ -1683,6 +1691,7 @@ static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             return TRUE;
         }
         if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        if (LOWORD(wp) == IDC_PASS_RECOVERY) { EndDialog(dlg, IDC_PASS_RECOVERY); return TRUE; }
         break;
     }
     return FALSE;
@@ -1694,9 +1703,43 @@ static char *ask_passphrase(HWND owner, int dialog, const wchar_t *text)
     g_pass_text = text;
     g_pass_catalog = 0;
     INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(dialog), owner, pass_proc);
+    g_pass_mode = 0;
     char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
     SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
     return p;
+}
+
+/* The passphrase, or with allow_recovery the recovery key if the user
+ * chooses "Use the recovery key" (*is_recovery set). NULL if cancelled. */
+static char *ask_unlock_secret(HWND owner, const wchar_t *text, int allow_recovery, int *is_recovery)
+{
+    *is_recovery = 0;
+    g_pass_text = text;
+    g_pass_catalog = 0;
+    g_pass_mode = allow_recovery ? 1 : 0;
+    INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
+    if (rc == IDC_PASS_RECOVERY) {
+        g_pass_text = L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.";
+        g_pass_mode = 2;
+        rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
+        *is_recovery = 1;
+    }
+    g_pass_mode = 0;
+    char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
+    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+    return p;
+}
+
+static int set_passphrase_ui(void);
+static void cmd_sheet(int with_key);
+
+/* After unlocking with the recovery key the passphrase may be lost. */
+static void offer_new_passphrase(HWND owner)
+{
+    if (MessageBoxW(owner, L"Unlocked with the recovery key. If you no longer know the passphrase, set a new one now. "
+                           L"The recovery key keeps working.\n\nSet a new passphrase now?",
+                    APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES)
+        set_passphrase_ui();
 }
 
 static void free_secret(char *p)
@@ -1711,13 +1754,19 @@ static int unlock_ui(const wchar_t *why)
 {
     if (!bd_catalog_has_passphrase(g_cat) || bd_catalog_is_unlocked(g_cat)) return 1;
     for (;;) {
-        char *p = ask_passphrase(g_main, IDD_PASSPHRASE, why);
+        int recovery = 0;
+        char *p = ask_unlock_secret(g_main, why, bd_catalog_has_recovery_key(g_cat), &recovery);
         if (!p) return 0;
         SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
-        bd_status s = bd_catalog_unlock(g_cat, p);
+        bd_status s = recovery ? bd_catalog_unlock_recovery(g_cat, p) : bd_catalog_unlock(g_cat, p);
         free_secret(p);
-        if (s == BD_OK) return 1;
-        MessageBoxW(g_main, L"That passphrase is not right. Try again.", APP_NAME, MB_ICONWARNING);
+        if (s == BD_OK) {
+            if (recovery) offer_new_passphrase(g_main);
+            return 1;
+        }
+        MessageBoxW(g_main, recovery ? L"That recovery key is not right. Check it against the sheet and try again."
+                                     : L"That passphrase is not right. Try again.",
+                    APP_NAME, MB_ICONWARNING);
     }
 }
 
@@ -1742,6 +1791,11 @@ static int set_passphrase_ui(void)
         return 0;
     }
     log_append(changing ? L"Passphrase changed." : L"Passphrase set.");
+    if (!changing && g_main &&
+        MessageBoxW(g_main, L"Print a recovery sheet now? It lists your drives and holds a recovery key, which opens your "
+                            L"encrypted backups if you ever forget the passphrase.",
+                    APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES)
+        cmd_sheet(1);
     return 1;
 }
 
@@ -2370,6 +2424,97 @@ static void settings_command(int cmd)
             update_drives_label();
         }
     }
+}
+
+/* ---- Recovery sheet ---------------------------------------------------- */
+
+/* Write the recovery sheet and open it for printing. with_key: 1 always
+ * put a new recovery key on it, 0 ask (encrypted catalogs only). */
+static void cmd_sheet(int with_key)
+{
+    char key[BD_RECOVERY_KEY_SIZE] = "";
+    if (bd_catalog_has_passphrase(g_cat) && !with_key) {
+        TASKDIALOG_BUTTON b[2] = {
+            {600, L"Put a new recovery key on it\nIt opens your encrypted backups if the passphrase is lost. "
+                  L"The key on any earlier sheet stops working."},
+            {601, L"Leave the recovery key off"},
+        };
+        TASKDIALOGCONFIG tc;
+        memset(&tc, 0, sizeof(tc));
+        tc.cbSize = sizeof(tc);
+        tc.hwndParent = g_main;
+        tc.hInstance = g_inst;
+        tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+        tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+        tc.pszWindowTitle = APP_NAME;
+        tc.pszMainInstruction = L"Put a recovery key on the sheet?";
+        tc.pszContent = L"Your backups are encrypted. The sheet lists your drives and what is on them. It never shows the passphrase.";
+        tc.cButtons = 2;
+        tc.pButtons = b;
+        int pressed = IDCANCEL;
+        if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) || (pressed != 600 && pressed != 601)) return;
+        with_key = pressed == 600;
+    }
+    if (with_key) {
+        if (!unlock_ui(L"Enter the passphrase to make a recovery key.")) return;
+        bd_status s = bd_catalog_make_recovery_key(g_cat, key);
+        if (s == BD_OK) s = bd_catalog_save(g_cat);
+        if (s != BD_OK) {
+            SecureZeroMemory(key, sizeof(key));
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            report_error(g_main, e && e[0] ? e : L"Could not make a recovery key.");
+            free(e);
+            return;
+        }
+        /* The catalog backups on the drives plugged in now learn the key too;
+         * the others at their next backup. */
+        id_list l = {{0}, 0};
+        bd_list_media(g_cat, connected_drive_cb, &l);
+        for (int i = 0; i < l.n; i++)
+            if (bd_catalog_copy_to_media(g_cat, l.ids[i]) != BD_OK) {
+                wchar_t *e = widen(bd_catalog_error(g_cat));
+                if (e) log_append(e);
+                free(e);
+            }
+        log_append(L"Made a new recovery key. Drives that are not plugged in learn it at their next backup.");
+    }
+
+    wchar_t path[MAX_PATH * 2] = L"BRODALF recovery sheet.html";
+    OPENFILENAMEW of;
+    memset(&of, 0, sizeof(of));
+    of.lStructSize = sizeof(of);
+    of.hwndOwner = g_main;
+    of.lpstrFilter = L"Web page (*.html)\0*.html\0";
+    of.lpstrFile = path;
+    of.nMaxFile = MAX_PATH * 2;
+    of.lpstrDefExt = L"html";
+    of.lpstrTitle = L"Save the recovery sheet";
+    of.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    int saved = GetSaveFileNameW(&of);
+    bd_status s = BD_OK;
+    if (saved) {
+        char *p8 = narrow(path);
+        s = p8 ? bd_write_recovery_sheet(g_cat, p8, key[0] ? key : NULL) : BD_ERR_NOMEM;
+        free(p8);
+    }
+    SecureZeroMemory(key, sizeof(key));
+    if (!saved) {
+        if (with_key)
+            MessageBoxW(g_main, L"The new recovery key was not saved anywhere, so it cannot be used. Make the sheet again "
+                                L"to get one.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    if (s != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        report_error(g_main, e && e[0] ? e : L"Could not write the recovery sheet.");
+        free(e);
+        return;
+    }
+    ShellExecuteW(g_main, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+    if (with_key)
+        MessageBoxW(g_main, L"The sheet is open in your browser. Print it and keep it somewhere safe, away from the PC and "
+                            L"the drives. Then delete the file: anyone who finds the recovery key can read your encrypted "
+                            L"backups.", APP_NAME, MB_ICONINFORMATION);
 }
 
 /* ---- A protected folder that is somewhere else (a new PC) ---------------- */
@@ -3283,6 +3428,8 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(cat, MF_STRING, ID_M_RESTORE, L"Restore what is selected...");
     AppendMenuW(cat, MF_STRING, ID_M_RESTORE_ASOF, L"Restore what is selected as it was on a date...");
     AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(cat, MF_STRING, ID_M_SHEET, L"Print a recovery sheet...");
+    AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
     AppendMenuW(cat, MF_STRING, ID_M_EXIT, L"Exit");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)cat, L"&Catalog");
     g_menu_local = CreatePopupMenu();
@@ -3474,6 +3621,7 @@ static void menu_command(int cmd)
     case ID_M_ADD_FOLDER: cmd_add_folder(); break;
     case ID_M_SCAN: enqueue(new_job(JOB_SCAN)); break;
     case ID_M_RELOCATE: cmd_relocate(); break;
+    case ID_M_SHEET: cmd_sheet(0); break;
     case ID_M_RESTORE: cmd_restore(); break;
     case ID_M_RESTORE_ASOF: cmd_restore_as_of(); break;
     case ID_M_RISK: cmd_risk(); break;
@@ -4071,16 +4219,23 @@ static int ask_catalog_choice(const wchar_t *last)
 
 /* Open a catalog, asking for the passphrase if the file is encrypted.
  * A cancelled prompt returns BD_ERR_PASSPHRASE with no message. */
+static int g_opened_by_recovery; /* offer a new passphrase once the window is up */
+
 static bd_status open_maybe_encrypted(const char *path)
 {
     if (!bd_catalog_file_needs_passphrase(path)) return bd_catalog_open(path, &g_cat);
+    int can_recover = bd_catalog_file_has_recovery_key(path);
     for (;;) {
-        char *p = ask_passphrase(NULL, IDD_PASSPHRASE, L"This catalog is encrypted. Enter its passphrase to open it.");
+        int recovery = 0;
+        char *p = ask_unlock_secret(NULL, L"This catalog is encrypted. Enter its passphrase to open it.", can_recover, &recovery);
         if (!p) return BD_ERR_PASSPHRASE;
-        bd_status s = bd_catalog_open_with(path, p, &g_cat);
+        bd_status s = recovery ? bd_catalog_open_with_recovery(path, p, &g_cat) : bd_catalog_open_with(path, p, &g_cat);
         free_secret(p);
+        if (s == BD_OK && recovery) g_opened_by_recovery = 1;
         if (s != BD_ERR_PASSPHRASE) return s;
-        MessageBoxW(NULL, L"That passphrase is not right. Try again.", APP_NAME, MB_ICONWARNING);
+        MessageBoxW(NULL, recovery ? L"That recovery key is not right. Check it against the sheet and try again."
+                                   : L"That passphrase is not right. Try again.",
+                    APP_NAME, MB_ICONWARNING);
     }
 }
 
@@ -4516,6 +4671,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     UpdateWindow(hwnd);
 
     g_ui_depth++; /* a drive plugged in during these questions waits for them */
+    if (g_opened_by_recovery) offer_new_passphrase(hwnd);
     first_run_folders();
     update_drives_label();
     rebuild_tree();

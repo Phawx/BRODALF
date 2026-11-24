@@ -51,6 +51,7 @@ add_library(brodalf_core STATIC
     src/report.c
     src/risk.c
     src/scan.c
+    src/sheet.c
     src/shadow.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)

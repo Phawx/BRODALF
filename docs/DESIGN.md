@@ -317,6 +317,28 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
   header is then followed by the key block, and the zstd stream is sealed with
   the master key in the same chunk format. The catalog backup on an encrypted
   drive is always written encrypted.
+- A recovery key is a second way to unlock: 30 characters from
+  `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (no 0, 1, I or O; 150 bits) in groups of
+  five, made only when asked for (the recovery sheet) and shown once. It wraps
+  the same master key the same way as the passphrase (Argon2id with its own
+  salt, then XChaCha20-Poly1305); the block is kept as `recovery_block` in
+  `settings`, and an encrypted `.brodalf` file also carries it in the header
+  after the key block, with flag bit 1 set, so it opens a catalog backup on a
+  new PC. BRODALF before this change refuses such a file as a newer format.
+  Typed keys ignore case, dashes and spaces. A new recovery key replaces the
+  old one; changing the passphrase keeps it.
+
+## Recovery sheet
+
+`bd_write_recovery_sheet` writes one self-contained HTML page (no scripts,
+images or links; every catalog string HTML-escaped): what to do on a new PC,
+each drive with where it is kept, size, free space as last seen, the
+protected folders it holds current versions of with file counts and sizes,
+and its last backup (from `jobs`), the protected folders, and the recovery
+key when one was just made. The passphrase is never written. The GUI saves
+it where the user chooses, opens it in the browser for printing and says to
+delete the file afterwards; making a key also refreshes the catalog backup
+on every plugged-in drive so they know the new key.
 
 ## GUI
 

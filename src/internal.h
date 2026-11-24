@@ -99,6 +99,9 @@ int bd_setting_set(bd_catalog *cat, const char *key, const char *value);
 #define BD_KEY_BLOCK 96
 int bd_catalog_key_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK]);
 int bd_unwrap_key_block(const char *pass, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]); /* -1 nomem, -3 wrong */
+/* The master key wrapped by the recovery key, when there is one. 0 or -1. */
+int bd_catalog_recovery_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK]);
+int bd_unwrap_recovery_block(const char *recovery_key, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]); /* -1 nomem, -3 wrong */
 void bd_catalog_set_key(bd_catalog *cat, const uint8_t key[32]);
 void bd_wipe(void *p, size_t n);
 

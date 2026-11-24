@@ -6,8 +6,9 @@
  *   bytes 12-15 flags, little endian (bit 0: encrypted)
  *
  * An encrypted catalog continues with the 96-byte key block (the master key
- * wrapped by the passphrase, see crypto.c), and the zstd stream is sealed
- * with the master key.
+ * wrapped by the passphrase, see crypto.c), then, when flags bit 1 is set,
+ * the 96-byte block wrapping it by the recovery key, and the zstd stream is
+ * sealed with the master key.
  *
  * While open, the database lives in a working copy in the temp folder and a
  * "<file>.lock" file sits next to the catalog. On Windows a named mutex
@@ -350,9 +351,10 @@ done:
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
-    uint8_t block[BD_KEY_BLOCK];
+    uint8_t block[BD_KEY_BLOCK], recovery[BD_KEY_BLOCK];
     if (encrypt && (!cat->have_key || bd_catalog_key_block(cat, block) != 0))
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to save an encrypted catalog");
+    int with_recovery = encrypt && bd_catalog_recovery_block(cat, recovery) == 0;
     char *snapshot = bd_sprintf("%s.snapshot", cat->work_path);
     char *saving = bd_sprintf("%s.saving", dest);
     bd_status status = BD_OK;
@@ -373,9 +375,10 @@ bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
     unsigned char header[16];
     memcpy(header, BD_MAGIC, 8);
     put_u32(header + 8, BD_FORMAT_VERSION);
-    put_u32(header + 12, encrypt ? 1u : 0u);
+    put_u32(header + 12, (encrypt ? 1u : 0u) | (with_recovery ? 2u : 0u));
     if (fwrite(header, 1, sizeof(header), out) != sizeof(header) ||
-        (encrypt && fwrite(block, 1, sizeof(block), out) != sizeof(block))) {
+        (encrypt && fwrite(block, 1, sizeof(block), out) != sizeof(block)) ||
+        (with_recovery && fwrite(recovery, 1, sizeof(recovery), out) != sizeof(recovery))) {
         status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving);
         goto done;
     }
@@ -452,12 +455,24 @@ int bd_catalog_file_needs_passphrase(const char *path)
     return enc;
 }
 
+int bd_catalog_file_has_recovery_key(const char *path)
+{
+    FILE *in = bd_fopen(path, "rb");
+    if (!in) return 0;
+    unsigned char header[16];
+    int has = fread(header, 1, sizeof(header), in) == sizeof(header) && memcmp(header, BD_MAGIC, 8) == 0 &&
+              (get_u32(header + 12) & 3u) == 3u;
+    fclose(in);
+    return has;
+}
+
 bd_status bd_catalog_open(const char *path, bd_catalog **out)
 {
     return bd_catalog_open_with(path, NULL, out);
 }
 
-bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out)
+/* secret is the passphrase, or the recovery key when recovery is set. */
+static bd_status open_with_secret(const char *path, const char *secret, int recovery, bd_catalog **out)
 {
     *out = NULL;
     g_open_error[0] = '\0';
@@ -474,27 +489,33 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
         return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is not a BRODALF catalog", path), 1);
     }
     uint32_t version = get_u32(header + 8), flags = get_u32(header + 12);
-    if (version > BD_FORMAT_VERSION || (flags & ~1u)) {
+    if (version > BD_FORMAT_VERSION || (flags & ~3u) || flags == 2u) {
         fclose(in);
         return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format this build cannot read", path), 1);
     }
     bd_source src = {in, NULL};
     uint8_t key[32];
     if (flags & 1u) {
-        uint8_t block[BD_KEY_BLOCK];
-        if (fread(block, 1, sizeof(block), in) != sizeof(block)) {
+        uint8_t block[BD_KEY_BLOCK], rblock[BD_KEY_BLOCK];
+        if (fread(block, 1, sizeof(block), in) != sizeof(block) ||
+            ((flags & 2u) && fread(rblock, 1, sizeof(rblock), in) != sizeof(rblock))) {
             fclose(in);
             return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path), 1);
         }
-        if (!passphrase) {
+        if (!secret) {
             fclose(in);
             return fail_open(cat, bd_fail(cat, BD_ERR_PASSPHRASE, "%s is encrypted; enter its passphrase", path), 1);
         }
-        int rc = bd_unwrap_key_block(passphrase, block, key);
+        if (recovery && !(flags & 2u)) {
+            fclose(in);
+            return fail_open(cat, bd_fail(cat, BD_ERR_PASSPHRASE, "%s has no recovery key", path), 1);
+        }
+        int rc = recovery ? bd_unwrap_recovery_block(secret, rblock, key) : bd_unwrap_key_block(secret, block, key);
         if (rc != 0) {
             fclose(in);
             return fail_open(cat, rc == -1 ? bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key")
-                                           : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong passphrase for %s", path), 1);
+                                           : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong %s for %s",
+                                                     recovery ? "recovery key" : "passphrase", path), 1);
         }
         src.opener = bd_open_begin(in, key);
         if (!src.opener) {
@@ -521,6 +542,16 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
     if (s != BD_OK) return fail_open(cat, s, 1);
     *out = cat;
     return BD_OK;
+}
+
+bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out)
+{
+    return open_with_secret(path, passphrase, 0, out);
+}
+
+bd_status bd_catalog_open_with_recovery(const char *path, const char *recovery_key, bd_catalog **out)
+{
+    return open_with_secret(path, recovery_key ? recovery_key : "", 1, out);
 }
 
 void bd_catalog_close(bd_catalog *cat)

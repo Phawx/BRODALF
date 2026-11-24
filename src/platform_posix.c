@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -278,6 +279,77 @@ void bd_sleep_ms(int ms)
 int bd_open_was_in_use(void)
 {
     return 0;
+}
+
+/* ---- Threads ------------------------------------------------------------ */
+
+struct bd_thread { pthread_t t; bd_thread_fn fn; void *arg; };
+struct bd_mutex { pthread_mutex_t m; };
+struct bd_cond { pthread_cond_t c; };
+
+static void *thread_main(void *p)
+{
+    bd_thread *t = p;
+    t->fn(t->arg);
+    return NULL;
+}
+
+bd_thread *bd_thread_start(bd_thread_fn fn, void *arg)
+{
+    bd_thread *t = malloc(sizeof(*t));
+    if (!t) return NULL;
+    t->fn = fn;
+    t->arg = arg;
+    if (pthread_create(&t->t, NULL, thread_main, t) != 0) { free(t); return NULL; }
+    return t;
+}
+
+void bd_thread_join(bd_thread *t)
+{
+    if (!t) return;
+    pthread_join(t->t, NULL);
+    free(t);
+}
+
+bd_mutex *bd_mutex_new(void)
+{
+    bd_mutex *m = malloc(sizeof(*m));
+    if (m && pthread_mutex_init(&m->m, NULL) != 0) { free(m); m = NULL; }
+    return m;
+}
+
+void bd_mutex_free(bd_mutex *m)
+{
+    if (!m) return;
+    pthread_mutex_destroy(&m->m);
+    free(m);
+}
+
+void bd_mutex_lock(bd_mutex *m) { pthread_mutex_lock(&m->m); }
+void bd_mutex_unlock(bd_mutex *m) { pthread_mutex_unlock(&m->m); }
+
+bd_cond *bd_cond_new(void)
+{
+    bd_cond *c = malloc(sizeof(*c));
+    if (c && pthread_cond_init(&c->c, NULL) != 0) { free(c); c = NULL; }
+    return c;
+}
+
+void bd_cond_free(bd_cond *c)
+{
+    if (!c) return;
+    pthread_cond_destroy(&c->c);
+    free(c);
+}
+
+void bd_cond_wait(bd_cond *c, bd_mutex *m) { pthread_cond_wait(&c->c, &m->m); }
+void bd_cond_signal(bd_cond *c) { pthread_cond_signal(&c->c); }
+void bd_cond_broadcast(bd_cond *c) { pthread_cond_broadcast(&c->c); }
+
+int bd_cpu_count(void)
+{
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 1;
 }
 
 #endif

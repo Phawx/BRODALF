@@ -10,6 +10,9 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <signal.h>
+#include <sys/resource.h>
 #endif
 
 static int failures = 0;
@@ -823,6 +826,71 @@ static void test_moves_guard_and_progress(void)
     bd_catalog_close(cat);
 }
 
+
+/* Big copies go through the writer thread: the copy and the hash must be
+ * exactly those of the file, plain or sealed, and a write that fails after
+ * the thread started must fail the copy as before. */
+static void test_big_copy(void)
+{
+    size_t len = (size_t)9 * 1024 * 1024 + 12345;
+    unsigned char *data = malloc(len);
+    CHECK(data != NULL);
+    if (!data) return;
+    for (size_t i = 0; i < len; i++) data[i] = (unsigned char)((i * 2654435761u) >> 13);
+    bd_mkdirs(at("big"));
+    FILE *f = bd_fopen(at("big/src.bin"), "wb");
+    CHECK(f && fwrite(data, 1, len, f) == len);
+    if (f) fclose(f);
+
+    char want[BD_HASH_HEX_LEN + 1], got[BD_HASH_HEX_LEN + 1], back[BD_HASH_HEX_LEN + 1];
+    int64_t size = 0;
+    CHECK(bd_hash_file(at("big/src.bin"), NULL, want, &size) == 0 && size == (int64_t)len);
+
+    /* Plain. */
+    FILE *out = bd_fopen(at("big/copy.bin"), "wb");
+    CHECK(out && bd_hash_copy(at("big/src.bin"), NULL, out, NULL, got, &size) == 0);
+    if (out) fclose(out);
+    CHECK(strcmp(got, want) == 0 && size == (int64_t)len);
+    CHECK(bd_hash_file(at("big/copy.bin"), NULL, back, NULL) == 0 && strcmp(back, want) == 0);
+    bd_stat_t st;
+    CHECK(bd_stat(at("big/copy.bin"), &st) == 0 && st.size == (int64_t)len);
+
+    /* Sealed, then read back through the key. */
+    uint8_t key[32];
+    CHECK(bd_random_bytes(key, sizeof(key)) == 0);
+    out = bd_fopen(at("big/copy.bdenc"), "wb");
+    CHECK(out && bd_hash_copy(at("big/src.bin"), NULL, out, key, got, NULL) == 0);
+    if (out) fclose(out);
+    CHECK(strcmp(got, want) == 0);
+    CHECK(bd_hash_copy(at("big/copy.bdenc"), key, NULL, NULL, back, &size) == 0 && strcmp(back, want) == 0 &&
+          size == (int64_t)len);
+    /* And re-sealed while copying, as a drive-to-drive copy would be. */
+    out = bd_fopen(at("big/copy2.bdenc"), "wb");
+    CHECK(out && bd_hash_copy(at("big/copy.bdenc"), key, out, key, got, NULL) == 0);
+    if (out) fclose(out);
+    CHECK(strcmp(got, want) == 0);
+    CHECK(bd_hash_copy(at("big/copy2.bdenc"), key, NULL, NULL, back, NULL) == 0 && strcmp(back, want) == 0);
+
+#ifndef _WIN32
+    /* A write that fails at 6 MiB, after the writer thread took over. */
+    struct rlimit old, lim;
+    if (getrlimit(RLIMIT_FSIZE, &old) == 0) {
+        void (*prev)(int) = signal(SIGXFSZ, SIG_IGN);
+        lim = old;
+        lim.rlim_cur = 6 * 1024 * 1024;
+        if (setrlimit(RLIMIT_FSIZE, &lim) == 0) {
+            out = bd_fopen(at("big/short.bin"), "wb");
+            int rc = out ? bd_hash_copy(at("big/src.bin"), NULL, out, NULL, got, NULL) : 0;
+            if (out) fclose(out);
+            setrlimit(RLIMIT_FSIZE, &old);
+            CHECK(rc == -2);
+        }
+        signal(SIGXFSZ, prev);
+    }
+#endif
+    free(data);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1071,6 +1139,7 @@ int main(void)
     test_drives_and_versions();
     test_report();
     test_moves_guard_and_progress();
+    test_big_copy();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

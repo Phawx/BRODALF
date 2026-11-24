@@ -65,6 +65,34 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes);
  * files locked against reading fail. */
 int bd_open_was_in_use(void);
 
+/* Threads, for the few places that overlap work (a big copy, hashing during
+ * a scan). Objects are heap-allocated; the functions returning pointers give
+ * NULL when the OS refuses, and callers then do the work on their own
+ * thread instead. */
+typedef struct bd_thread bd_thread;
+typedef struct bd_mutex bd_mutex;
+typedef struct bd_cond bd_cond;
+typedef void (*bd_thread_fn)(void *arg);
+bd_thread *bd_thread_start(bd_thread_fn fn, void *arg);
+void bd_thread_join(bd_thread *t); /* waits, then frees */
+bd_mutex *bd_mutex_new(void);
+void bd_mutex_free(bd_mutex *m);
+void bd_mutex_lock(bd_mutex *m);
+void bd_mutex_unlock(bd_mutex *m);
+bd_cond *bd_cond_new(void);
+void bd_cond_free(bd_cond *c);
+void bd_cond_wait(bd_cond *c, bd_mutex *m);
+void bd_cond_signal(bd_cond *c);
+void bd_cond_broadcast(bd_cond *c);
+/* Logical processors, at least 1. */
+int bd_cpu_count(void);
+
+#ifdef _MSC_VER
+#define BD_THREAD_LOCAL __declspec(thread)
+#else
+#define BD_THREAD_LOCAL __thread
+#endif
+
 /* Native separator for building paths. */
 #ifdef _WIN32
 #define BD_SEP '\\'

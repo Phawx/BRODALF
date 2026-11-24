@@ -193,13 +193,113 @@ long bd_source_read(bd_source *k, void *buf, size_t cap)
 
 /* ---- Hash while copying ------------------------------------------------ */
 
+enum { COPY_BUF = 1 << 20, COPY_RING = 3, COPY_THREAD_AFTER = 4 };
+
+/* For a big copy, a writer thread writes (and seals) one block while this
+ * thread reads and hashes the next. Blocks go through a ring of buffers in
+ * order, so the copy holds exactly the bytes that were hashed. Small files
+ * never get here: the thread starts after COPY_THREAD_AFTER full blocks. */
+typedef struct {
+    bd_sink *dst;
+    unsigned char *buf[COPY_RING];
+    size_t len[COPY_RING];
+    int64_t produced, consumed; /* blocks handed over, blocks written */
+    int eof, err;
+    bd_mutex *m;
+    bd_cond *cv;
+    bd_thread *thread;
+} copy_pipe;
+
+static void pipe_writer(void *arg)
+{
+    copy_pipe *p = arg;
+    bd_mutex_lock(p->m);
+    for (;;) {
+        while (p->consumed == p->produced && !p->eof) bd_cond_wait(p->cv, p->m);
+        if (p->consumed == p->produced) break; /* all written */
+        int i = (int)(p->consumed % COPY_RING);
+        bd_mutex_unlock(p->m);
+        int rc = bd_sink_write(p->dst, p->buf[i], p->len[i]);
+        bd_mutex_lock(p->m);
+        if (rc != 0) p->err = 1;
+        else p->consumed++;
+        bd_cond_broadcast(p->cv);
+        if (p->err) break;
+    }
+    bd_mutex_unlock(p->m);
+}
+
+static void pipe_free(copy_pipe *p)
+{
+    for (int i = 0; i < COPY_RING; i++)
+        if (p->buf[i]) { crypto_wipe(p->buf[i], COPY_BUF); free(p->buf[i]); }
+    bd_cond_free(p->cv);
+    bd_mutex_free(p->m);
+}
+
+static int pipe_start(copy_pipe *p, bd_sink *dst)
+{
+    memset(p, 0, sizeof(*p));
+    p->dst = dst;
+    int ok = (p->m = bd_mutex_new()) != NULL && (p->cv = bd_cond_new()) != NULL;
+    for (int i = 0; ok && i < COPY_RING; i++) ok = (p->buf[i] = malloc(COPY_BUF)) != NULL;
+    if (ok) ok = (p->thread = bd_thread_start(pipe_writer, p)) != NULL;
+    if (!ok) pipe_free(p); /* carry on without the thread */
+    return ok ? 0 : -1;
+}
+
+/* The buffer to read the next block into, or NULL once the writer failed. */
+static unsigned char *pipe_slot(copy_pipe *p)
+{
+    bd_mutex_lock(p->m);
+    while (p->produced - p->consumed == COPY_RING && !p->err) bd_cond_wait(p->cv, p->m);
+    unsigned char *b = p->err ? NULL : p->buf[p->produced % COPY_RING];
+    bd_mutex_unlock(p->m);
+    return b;
+}
+
+static void pipe_push(copy_pipe *p, size_t n)
+{
+    bd_mutex_lock(p->m);
+    p->len[p->produced % COPY_RING] = n;
+    p->produced++;
+    bd_cond_broadcast(p->cv);
+    bd_mutex_unlock(p->m);
+}
+
+/* Let the writer finish what it was given. -2 if a write failed. */
+static int pipe_finish(copy_pipe *p)
+{
+    bd_mutex_lock(p->m);
+    p->eof = 1;
+    bd_cond_broadcast(p->cv);
+    bd_mutex_unlock(p->m);
+    bd_thread_join(p->thread);
+    int err = p->err;
+    pipe_free(p);
+    return err ? -2 : 0;
+}
+
+/* A whole block where there is one: a sealed source gives a chunk a time. */
+static long read_block(bd_source *src, unsigned char *b, size_t cap)
+{
+    if (!src->opener) return bd_source_read(src, b, cap); /* fread fills it */
+    size_t got = 0;
+    while (got < cap) {
+        long n = bd_source_read(src, b + got, cap - got);
+        if (n < 0) return n;
+        if (n == 0) break;
+        got += (size_t)n;
+    }
+    return (long)got;
+}
+
 int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const uint8_t *dst_key,
                  char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out)
 {
     FILE *f = bd_fopen(path, "rb");
     if (!f) return -1;
-    enum { BUF = 1 << 20 };
-    unsigned char *buf = malloc(BUF);
+    unsigned char *buf = malloc(COPY_BUF);
     bd_source src = {f, NULL};
     bd_sink dst = {copy_to, NULL};
     int rc = 0;
@@ -210,18 +310,28 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
     blake3_hasher h;
     blake3_hasher_init(&h);
     int64_t total = 0;
+    int blocks = 0, piped = 0;
+    copy_pipe pipe;
     while (!rc) {
-        long n = bd_source_read(&src, buf, BUF);
+        unsigned char *b = piped ? pipe_slot(&pipe) : buf;
+        if (!b) break; /* the writer failed; pipe_finish says so */
+        long n = read_block(&src, b, COPY_BUF);
         if (n < 0) { rc = (int)n; break; }
         if (n == 0) break;
-        blake3_hasher_update(&h, buf, (size_t)n);
+        blake3_hasher_update(&h, b, (size_t)n);
         total += n;
         bd_io_tick(n);
-        if (copy_to && bd_sink_write(&dst, buf, (size_t)n) != 0) rc = -2;
+        if (!copy_to) continue;
+        if (piped) { pipe_push(&pipe, (size_t)n); continue; }
+        if (bd_sink_write(&dst, b, (size_t)n) != 0) { rc = -2; break; }
+        if (++blocks == COPY_THREAD_AFTER && n == COPY_BUF && pipe_start(&pipe, &dst) == 0) piped = 1;
     }
+    /* A failed write was of an earlier block than any failed read, so it is
+     * what the serial loop would have stopped at. */
+    if (piped && pipe_finish(&pipe) != 0) rc = -2;
     if (dst.sealer && bd_seal_end(dst.sealer) != 0 && !rc) rc = -2;
     bd_open_end(src.opener);
-    if (buf) { crypto_wipe(buf, BUF); free(buf); }
+    if (buf) { crypto_wipe(buf, COPY_BUF); free(buf); }
     fclose(f);
     if (rc != 0) return rc;
 

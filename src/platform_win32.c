@@ -9,6 +9,7 @@
 #include <bcrypt.h>
 #include <io.h>
 #include <fcntl.h>
+#include <process.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -344,6 +345,84 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 void bd_sleep_ms(int ms)
 {
     Sleep((DWORD)ms);
+}
+
+/* ---- Threads ------------------------------------------------------------ */
+
+struct bd_thread { HANDLE h; bd_thread_fn fn; void *arg; };
+struct bd_mutex { CRITICAL_SECTION cs; };
+struct bd_cond { CONDITION_VARIABLE cv; };
+
+static unsigned __stdcall thread_main(void *p)
+{
+    bd_thread *t = p;
+    t->fn(t->arg);
+    return 0;
+}
+
+bd_thread *bd_thread_start(bd_thread_fn fn, void *arg)
+{
+    bd_thread *t = malloc(sizeof(*t));
+    if (!t) return NULL;
+    t->fn = fn;
+    t->arg = arg;
+    /* _beginthreadex, not CreateThread, so the C runtime sets the thread up. */
+    uintptr_t h = _beginthreadex(NULL, 0, thread_main, t, 0, NULL);
+    if (!h) { free(t); return NULL; }
+    t->h = (HANDLE)h;
+    return t;
+}
+
+void bd_thread_join(bd_thread *t)
+{
+    if (!t) return;
+    WaitForSingleObject(t->h, INFINITE);
+    CloseHandle(t->h);
+    free(t);
+}
+
+bd_mutex *bd_mutex_new(void)
+{
+    bd_mutex *m = malloc(sizeof(*m));
+    if (m) InitializeCriticalSection(&m->cs);
+    return m;
+}
+
+void bd_mutex_free(bd_mutex *m)
+{
+    if (!m) return;
+    DeleteCriticalSection(&m->cs);
+    free(m);
+}
+
+void bd_mutex_lock(bd_mutex *m) { EnterCriticalSection(&m->cs); }
+void bd_mutex_unlock(bd_mutex *m) { LeaveCriticalSection(&m->cs); }
+
+bd_cond *bd_cond_new(void)
+{
+    bd_cond *c = malloc(sizeof(*c));
+    if (c) InitializeConditionVariable(&c->cv);
+    return c;
+}
+
+void bd_cond_free(bd_cond *c)
+{
+    free(c); /* condition variables need no cleanup */
+}
+
+void bd_cond_wait(bd_cond *c, bd_mutex *m) { SleepConditionVariableCS(&c->cv, &m->cs, INFINITE); }
+void bd_cond_signal(bd_cond *c) { WakeConditionVariable(&c->cv); }
+void bd_cond_broadcast(bd_cond *c) { WakeAllConditionVariable(&c->cv); }
+
+int bd_cpu_count(void)
+{
+    DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (n == 0) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        n = si.dwNumberOfProcessors;
+    }
+    return n > 0 ? (int)n : 1;
 }
 
 #endif

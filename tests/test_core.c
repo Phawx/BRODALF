@@ -1067,9 +1067,9 @@ static void test_cancel(void)
     char *data = malloc(big);
     if (!data) return;
     for (size_t i = 0; i < big; i++) data[i] = (char)(i * 31 + (i >> 11));
-    FILE *f = bd_fopen(at("cx/Src/big.bin"), "wb");
-    CHECK(f && fwrite(data, 1, big, f) == big);
-    if (f) fclose(f);
+    /* It is written only after the between-files stop below, so the files
+     * copied before that stop never include it, whatever order the system
+     * lists the folder in (alphabetical on NTFS). */
     bd_mkdirs(at("cx/drive"));
 
     bd_catalog *cat;
@@ -1089,7 +1089,7 @@ static void test_cancel(void)
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes") == 0 && ss.files_new == 0);
     /* The next scan clears the request and runs to the end. */
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 41);
+    CHECK(ss.files_new == 40);
 
     REQUIRE_OK(bd_media_init(cat, at("cx/drive"), "Stop", 0, &drive), cat);
 
@@ -1100,11 +1100,18 @@ static void test_cancel(void)
     ca.after_files = 10;
     bd_backup_stats bs;
     CHECK(bd_backup(cat, drive, 0, &bs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
-    CHECK(bs.files_copied >= 10 && bs.files_copied < 41 && bs.files_failed == 0);
+    CHECK(bs.files_copied >= 10 && bs.files_copied < 40 && bs.files_failed == 0);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == bs.files_copied);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM jobs WHERE status='stopped'") == 1);
     check_drive_consistent(cat, drive, "cx/drive");
     int64_t first = bs.files_copied;
+
+    FILE *f = bd_fopen(at("cx/Src/big.bin"), "wb");
+    CHECK(f && fwrite(data, 1, big, f) == big);
+    if (f) fclose(f);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 1);
 
     /* Stopped in the middle of the big file: no half copy on the drive. */
     memset(&ca, 0, sizeof(ca));

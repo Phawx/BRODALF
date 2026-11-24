@@ -784,6 +784,8 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
                 group_bytes = 0;
             }
         }
+        /* A stop during the batch's last copy is still a stop. */
+        if (!cancelled && bd_cancelled(cat)) cancelled = 1;
         sync_group(cat, store, group, ng, stats, log, log_ctx);
         if (in_txn && bd_exec(cat, "COMMIT") != 0) {
             bd_logf(log, log_ctx, "cannot record the copies: %s", sqlite3_errmsg(cat->db));

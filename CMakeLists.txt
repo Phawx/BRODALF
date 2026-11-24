@@ -16,14 +16,59 @@ target_include_directories(brodalf_sqlite PUBLIC third_party/sqlite)
 target_compile_definitions(brodalf_sqlite PRIVATE
     SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0 SQLITE_ENABLE_FTS5)
 
-# Portable BLAKE3 build. The SIMD paths can be switched on later for speed.
-add_library(brodalf_blake3 STATIC
+# BLAKE3. On x86-64 the SSE2, SSE4.1, AVX2 and AVX-512 paths (the C
+# intrinsics files, not the assembly) are built with their own flags, and
+# blake3_dispatch.c picks the best one the CPU has at run time. Elsewhere
+# only the portable code is built.
+if(MSVC)
+    set(BRODALF_ARCH "${CMAKE_C_COMPILER_ARCHITECTURE_ID}")
+else()
+    set(BRODALF_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+string(TOLOWER "${BRODALF_ARCH}" BRODALF_ARCH)
+set(BRODALF_BLAKE3_SOURCES
     third_party/blake3/blake3.c
     third_party/blake3/blake3_dispatch.c
     third_party/blake3/blake3_portable.c)
+set(BRODALF_BLAKE3_OFF BLAKE3_USE_NEON=0)
+if(BRODALF_ARCH MATCHES "^(x86_64|amd64|x64)$" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    list(APPEND BRODALF_BLAKE3_SOURCES third_party/blake3/blake3_sse2.c third_party/blake3/blake3_sse41.c)
+    set(BRODALF_BLAKE3_WIDE ON)
+    set(BRODALF_AVX_FLAGS "")
+    if(MINGW AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        # GCC does not realign the stack for 32- and 64-byte vectors on 64-bit
+        # Windows (GCC bug 54412): have the assembler use unaligned moves, or
+        # leave AVX2 and AVX-512 out if it cannot.
+        include(CheckCCompilerFlag)
+        check_c_compiler_flag("-Wa,-muse-unaligned-vector-move" BRODALF_HAVE_UNALIGNED_MOVE)
+        if(BRODALF_HAVE_UNALIGNED_MOVE)
+            set(BRODALF_AVX_FLAGS "-Wa,-muse-unaligned-vector-move")
+        else()
+            set(BRODALF_BLAKE3_WIDE OFF)
+        endif()
+    endif()
+    if(BRODALF_BLAKE3_WIDE)
+        list(APPEND BRODALF_BLAKE3_SOURCES third_party/blake3/blake3_avx2.c third_party/blake3/blake3_avx512.c)
+    else()
+        list(APPEND BRODALF_BLAKE3_OFF BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
+    endif()
+    if(MSVC)
+        set_source_files_properties(third_party/blake3/blake3_avx2.c PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+        set_source_files_properties(third_party/blake3/blake3_avx512.c PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+    else()
+        set_source_files_properties(third_party/blake3/blake3_sse2.c PROPERTIES COMPILE_OPTIONS "-msse2")
+        set_source_files_properties(third_party/blake3/blake3_sse41.c PROPERTIES COMPILE_OPTIONS "-msse4.1")
+        set_source_files_properties(third_party/blake3/blake3_avx2.c PROPERTIES
+            COMPILE_OPTIONS "-mavx2;${BRODALF_AVX_FLAGS}")
+        set_source_files_properties(third_party/blake3/blake3_avx512.c PROPERTIES
+            COMPILE_OPTIONS "-mavx512f;-mavx512vl;${BRODALF_AVX_FLAGS}")
+    endif()
+else()
+    list(APPEND BRODALF_BLAKE3_OFF BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
+endif()
+add_library(brodalf_blake3 STATIC ${BRODALF_BLAKE3_SOURCES})
 target_include_directories(brodalf_blake3 PUBLIC third_party/blake3)
-target_compile_definitions(brodalf_blake3 PUBLIC
-    BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0)
+target_compile_definitions(brodalf_blake3 PUBLIC ${BRODALF_BLAKE3_OFF})
 
 add_library(brodalf_zstd STATIC third_party/zstd/zstd.c)
 target_include_directories(brodalf_zstd PUBLIC third_party/zstd)
@@ -83,6 +128,10 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_crypto PRIVATE brodalf_core)
     target_include_directories(test_crypto PRIVATE src)
     add_test(NAME crypto COMMAND test_crypto)
+    add_executable(test_blake3 tests/test_blake3.c)
+    target_link_libraries(test_blake3 PRIVATE brodalf_core)
+    target_include_directories(test_blake3 PRIVATE src)
+    add_test(NAME blake3 COMMAND test_blake3)
 endif()
 
 if(WIN32)

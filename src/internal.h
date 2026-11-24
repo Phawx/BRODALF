@@ -94,6 +94,9 @@ int bd_media_encrypted(bd_catalog *cat, int64_t media_id);
 /* SMART parsing, exposed for tests (src/drive_hw.c). */
 int bd_drive_hw_parse_ata(bd_drive_hw *hw, const unsigned char data[512], int predicted_failure);
 int bd_drive_hw_parse_nvme(bd_drive_hw *hw, const unsigned char log[512]);
+/* 1 for the Windows bus types (STORAGE_BUS_TYPE) whose failure-prediction
+ * answer holds an ATA SMART attribute table: ATA and SATA only. */
+int bd_drive_hw_bus_is_ata(int bus_type);
 void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw, bd_log_fn log, void *log_ctx);
 
 /* The BRODALF.media file that identifies a drive. */

@@ -1058,6 +1058,11 @@ int main(void)
     bd_drive_hw_parse_nvme(&hw, nvme);
     CHECK(hw.temperature_c == 37 && hw.percent_used == 4 && hw.power_cycles == 50 && hw.power_on_hours == 1000);
     CHECK(strcmp(hw.health, "good") == 0);
+    /* The ATA table is only read from ATA and SATA answers, never NVMe,
+     * SCSI, SAS, USB or RAID ones. */
+    CHECK(bd_drive_hw_bus_is_ata(3) && bd_drive_hw_bus_is_ata(11));
+    CHECK(!bd_drive_hw_bus_is_ata(17) && !bd_drive_hw_bus_is_ata(1) && !bd_drive_hw_bus_is_ata(10));
+    CHECK(!bd_drive_hw_bus_is_ata(7) && !bd_drive_hw_bus_is_ata(8) && !bd_drive_hw_bus_is_ata(0));
 
     REQUIRE_OK(bd_catalog_copy_to_media(cat, drive), cat);
     char pc[1200];

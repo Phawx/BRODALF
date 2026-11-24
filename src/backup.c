@@ -148,7 +148,7 @@ static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, co
  * a damaged encrypted source, -1 on I/O error, -4 if the job was stopped
  * (the temp file is removed in every case but success). */
 static int copy_verified(const char *src, const uint8_t *src_key, const char *dest, const uint8_t *dst_key,
-                         const char *expected, char **tmp_out, int64_t *bytes)
+                         const char *expected, int64_t mtime_ns, char **tmp_out, int64_t *bytes)
 {
     *tmp_out = NULL;
     char *tmp = bd_sprintf("%s" BD_TMP_MARKER, dest);
@@ -158,6 +158,8 @@ static int copy_verified(const char *src, const uint8_t *src_key, const char *de
     char hash[BD_HASH_HEX_LEN + 1];
     int rc = bd_hash_copy(src, src_key, out, dst_key, hash, bytes);
     if (rc == -3) rc = 1;
+    /* The original's modified time; a file that cannot take it is still restored. */
+    if (rc == 0 && mtime_ns > 0) bd_set_mtime(out, mtime_ns);
     if (rc == 0 && bd_fsync(out) != 0) rc = -1;
     if (fclose(out) != 0) rc = -1;
     if (rc == 0 && strcmp(hash, expected) != 0) rc = 1;
@@ -167,12 +169,13 @@ static int copy_verified(const char *src, const uint8_t *src_key, const char *de
 }
 
 /* Write src into the store's staging file for rel, hashing as it goes, and
- * keep it only if the hash matches. The file is not synced yet: that is
- * done for a group of copies at once (sync_group). 0 on success with the
+ * keep it only if the hash matches. It gets the source's modified time
+ * (mtime_ns > 0). The file is not synced yet: that is done for a group of
+ * copies at once (sync_group). 0 on success with the
  * staged local path in *staged_out, 1 on hash mismatch, 2 if the job was
  * stopped, -1 on error. */
 static int stage_verified(bd_store *store, const char *src, const uint8_t *key, const char *rel, const char *expected,
-                          char **staged_out, int64_t *bytes)
+                          int64_t mtime_ns, char **staged_out, int64_t *bytes)
 {
     *staged_out = NULL;
     char *staged = store->ops->staging_path(store, rel);
@@ -181,6 +184,10 @@ static int stage_verified(bd_store *store, const char *src, const uint8_t *key, 
     if (!out) { free(staged); return -1; }
     char hash[BD_HASH_HEX_LEN + 1];
     int rc = bd_hash_copy(src, NULL, out, key, hash, bytes);
+    /* After the last write. The copy's own time on the drive is recorded
+     * after the rename (record_copy), so the quick check compares like with
+     * like whether this worked or not. */
+    if (rc == 0 && mtime_ns > 0) bd_set_mtime(out, mtime_ns);
     if (fclose(out) != 0 && rc == 0) rc = -1;
     if (rc == 0 && strcmp(hash, expected) != 0) rc = 1;
     if (rc != 0) { bd_remove(staged); free(staged); return rc == -4 ? 2 : rc > 0 ? 1 : -1; }
@@ -399,7 +406,7 @@ static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, co
     }
 
     /* The new copy goes to <dest>.brodalf-tmp first. */
-    int rc = stage_verified(store, src, key, tmp_rel, it->hash, &p->local_tmp, &p->bytes);
+    int rc = stage_verified(store, src, key, tmp_rel, it->hash, it->node_mtime, &p->local_tmp, &p->bytes);
     if (rc == 2) goto drop; /* stopped halfway: the partial copy is gone */
     if (rc == 1) {
         stats->files_failed++;
@@ -793,7 +800,8 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
     bd_store *store = NULL;
     bd_status s = BD_OK;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.rel_path, n.is_dir, s.name, v.id, v.hash, v.size FROM nodes n"
+                           "SELECT n.id, n.rel_path, n.is_dir, s.name, v.id, v.hash, v.size,"
+                           " CASE WHEN v.id=n.current_version_id THEN n.mtime_ns ELSE v.mtime_ns END FROM nodes n"
                            " JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=" RESTORE_VERSION
                            " WHERE" RESTORE_WHERE " AND n.id>?3 AND (n.is_dir=1 OR ?4=0 OR v.id IS NOT NULL)"
                            " ORDER BY n.id LIMIT 256",
@@ -828,7 +836,7 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
     bd_progress_begin(cat, "restore", total_files, total_bytes);
     int64_t files_seen = 0;
 
-    typedef struct { int64_t id, version_id, size; int is_dir; char *rel, *source_name, *hash; } item;
+    typedef struct { int64_t id, version_id, size, mtime; int is_dir; char *rel, *source_name, *hash; } item;
     item items[BATCH];
     int64_t last_id = 0;
     int cancelled = 0;
@@ -848,6 +856,7 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
             it->version_id = sqlite3_column_int64(q, 4);
             it->hash = sqlite3_column_type(q, 5) == SQLITE_NULL ? NULL : bd_strdup((const char *)sqlite3_column_text(q, 5));
             it->size = sqlite3_column_int64(q, 6);
+            it->mtime = sqlite3_column_int64(q, 7);
         }
         sqlite3_reset(q);
         if (n == 0) break;
@@ -914,7 +923,7 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
 
             char *tmp = NULL;
             int64_t bytes = 0;
-            int rc = copy_verified(src, sealed ? cat->key : NULL, dest, NULL, it->hash, &tmp, &bytes);
+            int rc = copy_verified(src, sealed ? cat->key : NULL, dest, NULL, it->hash, it->mtime, &tmp, &bytes);
             if (rc == 0 && bd_rename_replace(tmp, dest) != 0) { bd_remove(tmp); rc = -1; }
             if (rc == 0) {
                 stats->files_restored++;

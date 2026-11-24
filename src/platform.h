@@ -37,6 +37,10 @@ FILE *bd_fopen(const char *path, const char *mode);
 /* Flush stdio buffers and force the data to stable storage. 0 on success. */
 int bd_fsync(FILE *f);
 
+/* Set an open file's modified time, after its last write (stdio buffers
+ * are flushed first). 0 on success. */
+int bd_set_mtime(FILE *f, int64_t mtime_ns);
+
 /* Force closed files' data to stable storage (each is opened again for
  * that), all on one drive, with as few device cache flushes as the OS
  * allows: on Windows each file is written out without one and a single

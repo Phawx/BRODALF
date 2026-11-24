@@ -131,6 +131,18 @@ int bd_fsync(FILE *f)
     return fsync(fileno(f)) == 0 ? 0 : -1;
 }
 
+int bd_set_mtime(FILE *f, int64_t mtime_ns)
+{
+    if (fflush(f) != 0) return -1;
+    struct timespec ts[2];
+    ts[0].tv_sec = 0;
+    ts[0].tv_nsec = UTIME_OMIT; /* leave the access time alone */
+    ts[1].tv_sec = (time_t)(mtime_ns / 1000000000LL);
+    ts[1].tv_nsec = (long)(mtime_ns % 1000000000LL);
+    if (ts[1].tv_nsec < 0) { ts[1].tv_sec--; ts[1].tv_nsec += 1000000000L; }
+    return futimens(fileno(f), ts) == 0 ? 0 : -1;
+}
+
 int bd_fsync_paths(char **paths, size_t n, int *failed)
 {
     int bad = 0;

@@ -172,6 +172,13 @@ Checking a copy:
   were enough, so bit rot found by a full check was forgotten).
 - **Full** (on demand): every copy is rehashed.
 
+Copies carry the original file's modified time, and so do restored files
+(the catalog's time for that version). The time recorded for a copy is
+always the one read back from the drive after it was renamed into place,
+so the quick check compares the drive with itself: it works the same for
+copies made before this (which have the time they were written) and on
+drives that round times (FAT keeps 2 seconds).
+
 ## Layout on a drive
 
 ```

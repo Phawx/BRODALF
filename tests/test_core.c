@@ -11,8 +11,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <time.h>
 #endif
 
 static int failures = 0;
@@ -1155,6 +1158,100 @@ static void test_cancel(void)
     free(data);
 }
 
+#ifndef _WIN32
+static void set_time(const char *path, int64_t ns)
+{
+    struct timespec ts[2];
+    ts[0].tv_sec = ts[1].tv_sec = (time_t)(ns / 1000000000LL);
+    ts[0].tv_nsec = ts[1].tv_nsec = (long)(ns % 1000000000LL);
+    CHECK(utimensat(AT_FDCWD, path, ts, 0) == 0);
+}
+
+static int64_t time_of(const char *path)
+{
+    bd_stat_t st;
+    return bd_stat(path, &st) == 0 ? st.mtime_ns : -1;
+}
+
+/* Copies on the drive and restored files keep the original modified time. */
+static void test_mtimes(void)
+{
+    const int64_t t1 = 1000000000123456789LL, t2 = 1200000000987654321LL, t3 = 1300000000000000500LL;
+    write_file(at("mt/Src/a.txt"), "first a");
+    set_time(at("mt/Src/a.txt"), t1);
+    /* Big enough for the copy's writer thread. */
+    size_t big = (size_t)5 * 1024 * 1024 + 7;
+    char *data = malloc(big);
+    if (!data) return;
+    for (size_t i = 0; i < big; i++) data[i] = (char)(i * 13 + (i >> 10));
+    FILE *f = bd_fopen(at("mt/Src/big.bin"), "wb");
+    CHECK(f && fwrite(data, 1, big, f) == big);
+    if (f) fclose(f);
+    free(data);
+    set_time(at("mt/Src/big.bin"), t2);
+    bd_mkdirs(at("mt/drive"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("mt/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("mt/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("mt/drive"), "Times", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    char dir[1200];
+    snprintf(dir, sizeof(dir), "mt/drive/BRODALF/%s/Src", bd_catalog_uuid(cat));
+    char *copy_a = bd_sprintf("%s/a.txt", at(dir)), *copy_big = bd_sprintf("%s/big.bin", at(dir));
+    CHECK(time_of(copy_a) == t1);
+    CHECK(time_of(copy_big) == t2);
+
+    /* The quick check (size and time) finds every copy as recorded. */
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 2 && cs.ok == 2 && cs.rehashed == 0);
+
+    /* A new version: the old copy moves into .versions with its time. */
+    bd_sleep_ms(5);
+    int64_t between = bd_now_ms();
+    bd_sleep_ms(5);
+    write_file(at("mt/Src/a.txt"), "second a, longer");
+    set_time(at("mt/Src/a.txt"), t3);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.versions_moved == 1);
+    CHECK(time_of(copy_a) == t3);
+    char *old_a = bd_sprintf("mt/drive/BRODALF/%s/.versions/Src/a.v1.txt", bd_catalog_uuid(cat));
+    CHECK(time_of(at(old_a)) == t1);
+    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 3 && cs.ok == 3 && cs.rehashed == 0);
+
+    /* Restored files get the time the catalog has for that version. */
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, "", at("mt/now"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2);
+    CHECK(time_of(at("mt/now/Src/a.txt")) == t3);
+    CHECK(time_of(at("mt/now/Src/big.bin")) == t2);
+    bd_restore_opts ro = {between};
+    REQUIRE_OK(bd_restore_ex(cat, src, "", at("mt/then"), &ro, &rs, quiet, NULL), cat);
+    CHECK(file_equals(at("mt/then/Src/a.txt"), "first a"));
+    CHECK(time_of(at("mt/then/Src/a.txt")) == t1);
+
+    /* Restored in place: the next scan sees nothing changed. */
+    bd_remove(at("mt/Src/big.bin"));
+    REQUIRE_OK(bd_restore(cat, src, "big.bin", at("mt"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && time_of(at("mt/Src/big.bin")) == t2);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 0 && ss.files_new == 0 && ss.bytes_hashed == 0);
+
+    free(copy_a);
+    free(copy_big);
+    free(old_a);
+    bd_catalog_close(cat);
+}
+#endif
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1406,6 +1503,9 @@ int main(void)
     test_big_copy();
     test_parallel_scan();
     test_cancel();
+#ifndef _WIN32
+    test_mtimes();
+#endif
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

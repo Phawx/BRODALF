@@ -217,6 +217,20 @@ int bd_fsync(FILE *f)
     return FlushFileBuffers(h) ? 0 : -1;
 }
 
+int bd_set_mtime(FILE *f, int64_t mtime_ns)
+{
+    if (fflush(f) != 0) return -1;
+    HANDLE h = (HANDLE)_get_osfhandle(_fileno(f));
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    int64_t t = mtime_ns / 100 + BD_EPOCH_DIFF;
+    if (t < 0) return -1; /* before 1601: cannot be set */
+    FILETIME ft;
+    ft.dwLowDateTime = (DWORD)((uint64_t)t & 0xffffffffu);
+    ft.dwHighDateTime = (DWORD)((uint64_t)t >> 32);
+    /* Only the last-write time; creation and access times stay. */
+    return SetFileTime(h, NULL, NULL, &ft) ? 0 : -1;
+}
+
 /* NtFlushBuffersFileEx (Windows 8 and later) can write a file's data and
  * metadata to the drive without making the drive flush its own cache. */
 typedef struct { void *status; ULONG_PTR information; } bd_io_status;

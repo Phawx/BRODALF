@@ -93,10 +93,24 @@ deleted since; "before the changes" is `as_of_ms = guard.before_ms`.
 Opening a file for reading shares read, write and delete. A sharing or lock
 violation is reported through `bd_open_was_in_use()`, the scan records the
 path in the temp table `in_use` and leaves the catalog as it was. The GUI
-offers a shadow copy: `brodalf.exe --shadow-copy <dir> <list>` runs
-elevated (`src/shadow.c`, the VSS backup-components API on `vssapi.dll`),
-snapshots each volume involved, copies the listed files out of the snapshot
-into `<dir>` and writes `result.txt`. The GUI then registers each staged
+offers a shadow copy: `brodalf.exe --shadow-copy <out dir> <list> <hash>`
+runs elevated (`bd_shadow_helper` in `src/shadow.c`, the VSS
+backup-components API on `vssapi.dll`, loaded from System32 only). The
+unelevated side writes the list (the user's SID, the protected folders, the
+files in use) into its temp folder and puts the list's BLAKE3 hash on the
+command line, which is fixed once Windows asks for permission. The helper
+reads the list once and refuses it if the hash differs; refuses every file
+that is not a plain `X:\...` path strictly inside one of the protected
+folders (no `.` or `..` parts, no `:` streams); makes `<out dir>` itself as
+a new folder (refused if it already exists) with a protected DACL (SYSTEM
+and Administrators full control, the user read and delete), held open
+without delete sharing and checked to be the folder it made (not a reparse
+point, its final path and owner as expected); and copies each file out of
+the snapshot through handles, refusing one whose final path is not the one
+asked for (a junction or link leading elsewhere) and never replacing a file.
+It snapshots each volume involved, writes the copies as `N.bin` and writes
+`result.txt` (`ok`, `failed` or `refused` per file) while still holding the
+folder. The GUI then registers each staged
 file as a substitute for its path (temp table `substitute`), rescans and
 backs up; the scan hashes the substitute and the backup copies it, so the
 catalog records the real path.

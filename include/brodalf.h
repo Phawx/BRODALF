@@ -179,6 +179,42 @@ void bd_substitutes_clear(bd_catalog *cat);
  * were copied (ok[i] set for each), or -1 with a reason in err. */
 int bd_shadow_copy_files(const char *const *paths, int n, const char *dest_dir, int *ok, char *err, size_t err_len);
 
+/* The app runs an elevated copy of itself to take the shadow copy. What it
+ * hands over is a list file (who asked, the protected folders, the files)
+ * whose BLAKE3 hash goes on the helper's command line, so nothing can
+ * change it after Windows asked for permission. user_sid is the asking
+ * user's SID ("S-1-5-21-..."). Returns the list's text (malloc'd) and its
+ * hash, or NULL if a string holds a line break. */
+char *bd_shadow_list_format(const char *user_sid, const char *const *folders, int n_folders, const char *const *files,
+                            int n_files, char hash_out[65]);
+
+typedef struct {
+    char *user_sid;
+    char **folders;
+    int n_folders;
+    char **files;
+    int n_files;
+} bd_shadow_list;
+
+/* 0, -1 not a list, -2 the text does not match expected_hash. */
+int bd_shadow_list_parse(const char *text, size_t len, const char *expected_hash, bd_shadow_list *out);
+void bd_shadow_list_free(bd_shadow_list *list);
+
+/* 1 if path is a plain "X:\..." path strictly inside one of the folders,
+ * compared ignoring ASCII case; "." and ".." parts, ":" streams, UNC and
+ * device paths never are. */
+int bd_shadow_path_allowed(const char *path, const char *const *folders, int n_folders);
+
+/* The elevated helper (brodalf.exe --shadow-copy <out dir> <list> <hash>):
+ * reads the list once and checks its hash, refuses every file outside the
+ * protected folders it names, makes out_dir as a new folder that only
+ * administrators can write to and the asking user can read and empty, and
+ * copies the files there as 1.bin, 2.bin, ... (by their place in the list).
+ * out_dir/result.txt gets one line per file ("ok", "failed" or "refused")
+ * and "error: ..." if something went wrong. Returns how many were copied,
+ * or -1 with the reason in err. */
+int bd_shadow_helper(const char *out_dir, const char *list_path, const char *list_hash, char *err, size_t err_len);
+
 /* ---- Storage (media) ------------------------------------------------- */
 
 /* Prepare a drive or folder as storage for this catalog. Writes

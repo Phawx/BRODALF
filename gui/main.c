@@ -19,6 +19,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <dbt.h>
+#include <sddl.h>
 #include <shlobj.h>
 #include <shellapi.h>
 #include <stdarg.h>
@@ -2586,29 +2587,82 @@ static void in_use_free(in_use_list *l)
     free(l->paths);
 }
 
-static void shadow_cleanup(void)
+/* Delete the files in dir (not in folders inside it) and dir itself. */
+static void remove_flat_dir(const wchar_t *dir)
 {
-    bd_substitutes_clear(g_cat);
-    if (!g_shadow_dir[0]) return;
     wchar_t pattern[MAX_PATH + 8];
-    swprintf(pattern, MAX_PATH + 8, L"%ls\\*", g_shadow_dir);
+    swprintf(pattern, MAX_PATH + 8, L"%ls\\*", dir);
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
             wchar_t f[MAX_PATH * 2];
-            swprintf(f, MAX_PATH * 2, L"%ls\\%ls", g_shadow_dir, fd.cFileName);
+            swprintf(f, MAX_PATH * 2, L"%ls\\%ls", dir, fd.cFileName);
             DeleteFileW(f);
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    RemoveDirectoryW(g_shadow_dir);
+    RemoveDirectoryW(dir);
+}
+
+/* g_shadow_dir holds list.txt (written here) and out\, which the elevated
+ * helper makes itself and only administrators can write to. */
+static void shadow_out_dir(wchar_t *out, size_t cap)
+{
+    swprintf(out, cap, L"%ls\\out", g_shadow_dir);
+}
+
+static void shadow_cleanup(void)
+{
+    bd_substitutes_clear(g_cat);
+    if (!g_shadow_dir[0]) return;
+    wchar_t out[MAX_PATH + 8];
+    shadow_out_dir(out, MAX_PATH + 8);
+    remove_flat_dir(out);
+    remove_flat_dir(g_shadow_dir);
     g_shadow_dir[0] = 0;
 }
 
+/* This user's SID as text, for the helper to let it read the copies. */
+static char *user_sid(void)
+{
+    HANDLE tok = NULL;
+    unsigned char buf[256];
+    DWORD n = 0;
+    char *out = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok) && GetTokenInformation(tok, TokenUser, buf, sizeof(buf), &n)) {
+        wchar_t *w = NULL;
+        if (ConvertSidToStringSidW(((TOKEN_USER *)buf)->User.Sid, &w)) {
+            out = narrow(w);
+            LocalFree(w);
+        }
+    }
+    if (tok) CloseHandle(tok);
+    return out;
+}
+
+typedef struct { char **paths; int n, cap; } path_list;
+
+static int source_path_cb(void *ctx, const bd_source_info *info)
+{
+    path_list *l = ctx;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 8;
+        char **grown = realloc(l->paths, sizeof(char *) * (size_t)cap);
+        if (!grown) return 1;
+        l->paths = grown;
+        l->cap = cap;
+    }
+    l->paths[l->n++] = xstrdup(info->path);
+    return 0;
+}
+
 /* Run an elevated copy of BRODALF that copies the files in use out of a
- * shadow copy, then read from those copies. Worker thread. */
+ * shadow copy, then read from those copies. Worker thread. The helper gets
+ * the list's hash on its command line and checks every file against the
+ * protected folders, so nothing changed after the permission prompt is
+ * used. */
 static bd_status run_shadow(job *j)
 {
     in_use_list l = {NULL, 0, 0, 0};
@@ -2619,14 +2673,26 @@ static bd_status run_shadow(job *j)
     GetTempPathW(MAX_PATH, tmp);
     swprintf(g_shadow_dir, MAX_PATH, L"%lsbrodalf-shadow-%lu", tmp, (unsigned long)GetCurrentProcessId());
     CreateDirectoryW(g_shadow_dir, NULL);
-    wchar_t list[MAX_PATH + 16], params[MAX_PATH * 2 + 64], exe[MAX_PATH];
+    wchar_t list[MAX_PATH + 16], out[MAX_PATH + 8], params[MAX_PATH * 2 + 160], exe[MAX_PATH];
     swprintf(list, MAX_PATH + 16, L"%ls\\list.txt", g_shadow_dir);
-    FILE *f = _wfopen(list, L"wb");
-    if (!f) { in_use_free(&l); swprintf(j->summary, 512, L"Could not write the list of files in use."); return BD_ERR_IO; }
-    for (int i = 0; i < l.n; i++) fprintf(f, "%s\n", l.paths[i]);
-    fclose(f);
+    shadow_out_dir(out, MAX_PATH + 8);
+
+    path_list src = {NULL, 0, 0};
+    bd_list_sources(g_cat, source_path_cb, &src);
+    char *sid = user_sid(), hash[65];
+    char *text = sid ? bd_shadow_list_format(sid, (const char *const *)src.paths, src.n, (const char *const *)l.paths, l.n, hash) : NULL;
+    for (int i = 0; i < src.n; i++) free(src.paths[i]);
+    free(src.paths);
+    free(sid);
+    FILE *f = text ? _wfopen(list, L"wb") : NULL;
+    int written = f && fwrite(text, 1, strlen(text), f) == strlen(text);
+    if (f && fclose(f) != 0) written = 0;
+    free(text);
+    if (!written) { in_use_free(&l); swprintf(j->summary, 512, L"Could not write the list of files in use."); return BD_ERR_IO; }
     GetModuleFileNameW(NULL, exe, MAX_PATH);
-    swprintf(params, MAX_PATH * 2 + 64, L"--shadow-copy \"%ls\" \"%ls\"", g_shadow_dir, list);
+    wchar_t *whash = widen(hash);
+    swprintf(params, MAX_PATH * 2 + 160, L"--shadow-copy \"%ls\" \"%ls\" %ls", out, list, whash ? whash : L"");
+    free(whash);
     post_text(WM_APP_LOG, L"Asking Windows for administrator permission to take a shadow copy...");
     SHELLEXECUTEINFOW sei;
     memset(&sei, 0, sizeof(sei));
@@ -2649,34 +2715,42 @@ static bd_status run_shadow(job *j)
     WaitForSingleObject(sei.hProcess, INFINITE);
     CloseHandle(sei.hProcess);
 
-    /* result.txt: one line per file, "ok" or "failed", then "error: ...". */
-    wchar_t result[MAX_PATH + 16];
-    swprintf(result, MAX_PATH + 16, L"%ls\\result.txt", g_shadow_dir);
+    /* result.txt: one line per file, "ok", "failed" or "refused", then "error: ...". */
+    wchar_t result[MAX_PATH + 24];
+    swprintf(result, MAX_PATH + 24, L"%ls\\result.txt", out);
     f = _wfopen(result, L"rb");
-    int got = 0;
+    int got = 0, refused = 0;
     char line[2048], err[1024] = "";
+    char *dir = narrow(out);
     for (int i = 0; f && fgets(line, sizeof(line), f);) {
         line[strcspn(line, "\r\n")] = 0;
         if (strncmp(line, "error: ", 7) == 0) { snprintf(err, sizeof(err), "%s", line + 7); continue; }
+        if (i < l.n && strcmp(line, "refused") == 0) refused++;
         if (i < l.n && strcmp(line, "ok") == 0) {
             char staged[MAX_PATH * 3];
-            char *dir = narrow(g_shadow_dir);
             snprintf(staged, sizeof(staged), "%s\\%d.bin", dir ? dir : "", i + 1);
-            free(dir);
             if (bd_substitute_add(g_cat, l.paths[i], staged) == BD_OK) got++;
         }
         i++;
     }
+    free(dir);
     if (f) fclose(f);
+    int total = l.n;
     in_use_free(&l);
+    if (refused) {
+        wchar_t line_w[200];
+        swprintf(line_w, 200, L"%d file%ls outside your protected folders %ls left alone.", refused, refused == 1 ? L"" : L"s",
+                 refused == 1 ? L"was" : L"were");
+        post_text(WM_APP_LOG, line_w);
+    }
     if (!got) {
         wchar_t *e = widen(err);
-        swprintf(j->summary, 512, L"The shadow copy did not work: %ls", e && *e ? e : L"no reason was given");
+        swprintf(j->summary, 512, L"The shadow copy did not work: %ls", e && *e ? e : L"no reason was given (see the app log)");
         free(e);
         shadow_cleanup();
         return BD_OK;
     }
-    swprintf(j->summary, 512, L"Read %d of %d files in use from a shadow copy. Scanning them now.", got, l.n);
+    swprintf(j->summary, 512, L"Read %d of %d files in use from a shadow copy. Scanning them now.", got, total);
     return BD_OK;
 }
 
@@ -3585,39 +3659,20 @@ static void make_fonts(void)
 
 /* ---- Helper modes ------------------------------------------------------- */
 
-/* brodalf.exe --shadow-copy <dir> <list>: run as administrator by the main
- * window. Copies the files named in list (UTF-8, one per line) out of a
- * shadow copy into dir as 1.bin, 2.bin, ... and writes dir\result.txt. */
-static int shadow_helper(const wchar_t *dir, const wchar_t *list)
+/* brodalf.exe --shadow-copy <out dir> <list> <hash>: run as administrator
+ * by the main window. The checks (the list's hash, the protected folders,
+ * a private folder for the copies) are in bd_shadow_helper. */
+static int shadow_helper(const wchar_t *out, const wchar_t *list, const wchar_t *hash)
 {
-    char *paths[4096];
-    int n = 0;
-    FILE *f = _wfopen(list, L"rb");
-    char line[4096];
-    while (f && n < 4096 && fgets(line, sizeof(line), f)) {
-        line[strcspn(line, "\r\n")] = 0;
-        if (line[0]) paths[n++] = xstrdup(line);
-    }
-    if (f) fclose(f);
-    int *ok = calloc((size_t)(n ? n : 1), sizeof(int));
+    char *o = narrow(out), *l = narrow(list), *h = narrow(hash);
     char err[512] = "";
-    char *d = narrow(dir);
-    int got = ok && d ? bd_shadow_copy_files((const char *const *)paths, n, d, ok, err, sizeof(err)) : -1;
-    free(d);
-    wchar_t result[MAX_PATH + 16];
-    swprintf(result, MAX_PATH + 16, L"%ls\\result.txt", dir);
-    FILE *out = _wfopen(result, L"wb");
-    if (out) {
-        for (int i = 0; i < n; i++) fprintf(out, "%s\n", ok && ok[i] ? "ok" : "failed");
-        if (err[0]) fprintf(out, "error: %s\n", err);
-        fclose(out);
-    }
-    bd_applog("shadow copy helper: %d of %d copied%s%s", got < 0 ? 0 : got, n, err[0] ? ": " : "", err);
-    for (int i = 0; i < n; i++) free(paths[i]);
-    free(ok);
+    int got = o && l && h ? bd_shadow_helper(o, l, h, err, sizeof(err)) : -1;
+    bd_applog("shadow copy helper: %d copied%s%s", got < 0 ? 0 : got, err[0] ? ": " : "", err);
+    free(o);
+    free(l);
+    free(h);
     return got < 0 ? 1 : 0;
 }
-
 
 /* brodalf.exe --check <catalog>: run by Task Scheduler. Scans the folders
  * without a window, then speaks up only when something needs backing up (or
@@ -3707,8 +3762,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
 
     /* The shadow copy helper runs before CoInitializeEx: it needs the
      * multithreaded COM apartment, and VSS hangs in a single-threaded one. */
-    if (argc >= 4 && wcscmp(argv[1], L"--shadow-copy") == 0) {
-        int rc = shadow_helper(argv[2], argv[3]);
+    if (argc >= 2 && wcscmp(argv[1], L"--shadow-copy") == 0) {
+        int rc = argc >= 5 ? shadow_helper(argv[2], argv[3], argv[4]) : 1;
         LocalFree(argv);
         return rc;
     }

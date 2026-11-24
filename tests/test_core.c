@@ -767,7 +767,7 @@ static void test_moves_guard_and_progress(void)
     CHECK(bd_backup(cat, d1, 0, &bs, quiet, NULL) == BD_ERR_GUARD);
 
     /* Restore as the files were before. */
-    bd_restore_opts ro = {before_attack};
+    bd_restore_opts ro = {before_attack, 0};
     int64_t total = 0, none = 0;
     REQUIRE_OK(bd_restore_plan_ex(cat, src, NULL, NULL, &ro, NULL, NULL, &total, &none), cat);
     CHECK(total == 60 && none == 0);
@@ -1050,6 +1050,96 @@ static void test_replace_drive(void)
     bd_catalog_close(cat);
 }
 
+typedef struct { int n; char first[256]; char drives[256]; int connected; int64_t last_seen; } deleted_list;
+
+static int collect_deleted(void *ctx, const bd_deleted_info *d)
+{
+    deleted_list *l = ctx;
+    if (!l->n++) {
+        snprintf(l->first, sizeof(l->first), "%s/%s", d->source_name, d->rel_path);
+        snprintf(l->drives, sizeof(l->drives), "%s", d->drives);
+        l->connected = d->connected;
+        l->last_seen = d->last_seen_ms;
+    }
+    return 0;
+}
+
+/* Files deleted from their folder that a drive still holds, and getting
+ * them back. */
+static void test_deleted_files(void)
+{
+    write_file(at("del/D/a.txt"), "a");
+    write_file(at("del/D/keep.txt"), "keep");
+    write_file(at("del/D/sub/b.txt"), "b");
+    write_file(at("del/D/sub/c.txt"), "c1");
+    bd_mkdirs(at("del/one"));
+    bd_mkdirs(at("del/two"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("del/d.brodalf"), &cat), NULL);
+    int64_t src, one, two;
+    REQUIRE_OK(bd_source_add(cat, at("del/D"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("del/one"), "One", 0, &one), cat);
+    REQUIRE_OK(bd_media_init(cat, at("del/two"), "Two", 0, &two), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, one, 0, &bs, quiet, NULL), cat);
+    write_file(at("del/D/sub/c.txt"), "c2, changed");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, one, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, two, 0, &bs, quiet, NULL), cat);
+    bd_media_disconnect(cat, two);
+    /* A file that never had a copy is not listed when it goes. */
+    write_file(at("del/D/never.txt"), "never backed up");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+
+    int64_t count = -1;
+    REQUIRE_OK(bd_list_deleted(cat, 0, NULL, NULL, &count), cat);
+    CHECK(count == 0);
+    CHECK(bd_remove(at("del/D/a.txt")) == 0);
+    CHECK(bd_remove(at("del/D/sub/b.txt")) == 0);
+    CHECK(bd_remove(at("del/D/sub/c.txt")) == 0);
+    CHECK(bd_rmdir_empty(at("del/D/sub")) == 0);
+    CHECK(bd_remove(at("del/D/never.txt")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_deleted == 4);
+    deleted_list dl;
+    memset(&dl, 0, sizeof(dl));
+    REQUIRE_OK(bd_list_deleted(cat, src, collect_deleted, &dl, &count), cat);
+    CHECK(count == 3 && dl.n == 3 && dl.last_seen > 0);
+    CHECK(strcmp(dl.first, "D/a.txt") == 0 && strcmp(dl.drives, "One, Two") == 0 && dl.connected);
+    REQUIRE_OK(bd_list_deleted(cat, 9999, NULL, NULL, &count), cat);
+    CHECK(count == 0);
+
+    /* The plan and the restore of a folder take only what was deleted from it. */
+    bd_restore_opts ro;
+    memset(&ro, 0, sizeof(ro));
+    ro.deleted_only = 1;
+    int64_t total = 0, none = 0;
+    REQUIRE_OK(bd_restore_plan_ex(cat, src, "", NULL, &ro, NULL, NULL, &total, &none), cat);
+    CHECK(total == 4 && none == 1); /* never.txt has no copy */
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore_ex(cat, src, "sub", at("del/out"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2 && rs.files_failed == 0);
+    CHECK(file_equals(at("del/out/D/sub/b.txt"), "b") && file_equals(at("del/out/D/sub/c.txt"), "c2, changed"));
+    CHECK(!exists(at("del/out/D/a.txt")) && !exists(at("del/out/D/keep.txt")));
+    REQUIRE_OK(bd_restore_ex(cat, src, "a.txt", at("del/out"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && file_equals(at("del/out/D/a.txt"), "a"));
+    REQUIRE_OK(bd_restore_ex(cat, src, "", at("del/out"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 0 && rs.files_already_there == 3 && rs.files_no_copy == 1 && !exists(at("del/out/D/keep.txt")));
+
+    /* Back in its folder, it is no longer deleted. */
+    write_file(at("del/D/a.txt"), "a");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_list_deleted(cat, 0, NULL, NULL, &count), cat);
+    CHECK(count == 2);
+    bd_media_disconnect(cat, one);
+    memset(&dl, 0, sizeof(dl));
+    REQUIRE_OK(bd_list_deleted(cat, 0, collect_deleted, &dl, NULL), cat);
+    CHECK(dl.n == 2 && !dl.connected);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1306,6 +1396,7 @@ int main(void)
     test_shadow_list();
     test_recover_and_relocate();
     test_replace_drive();
+    test_deleted_files();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

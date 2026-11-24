@@ -671,11 +671,12 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
 /* The files a restore brings back and the version of each: the current one,
  * or with ?4 (as of) the newest seen by then, for files that existed then
  * (including ones deleted since). */
+/* ?4: as of this time (0: now). ?5: only deleted files, each as last seen. */
 #define RESTORE_VERSION                                                                                     \
-    "(CASE WHEN ?4=0 THEN n.current_version_id ELSE (SELECT v2.id FROM versions v2 WHERE v2.node_id=n.id"  \
+    "(CASE WHEN ?4=0 OR ?5<>0 THEN n.current_version_id ELSE (SELECT v2.id FROM versions v2 WHERE v2.node_id=n.id"  \
     " AND v2.first_seen_ms<=?4 ORDER BY v2.version_no DESC LIMIT 1) END)"
 #define RESTORE_WHERE                                                                                       \
-    " (CASE WHEN ?4=0 THEN n.deleted=0 ELSE (n.deleted=0 OR n.last_seen_ms>=?4) END)"                      \
+    " (CASE WHEN ?5<>0 THEN n.deleted<>0 WHEN ?4=0 THEN n.deleted=0 ELSE (n.deleted=0 OR n.last_seen_ms>=?4) END)" \
     " AND (?1=0 OR n.source_id=?1) AND (?2='' OR n.rel_path=?2 OR substr(n.rel_path,1,length(?2)+1)=?2||'/')"
 
 bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
@@ -722,6 +723,7 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
         sqlite3_bind_text(t, 2, prefix, -1, SQLITE_STATIC);
         sqlite3_bind_int64(t, 3, 0);
         sqlite3_bind_int64(t, 4, as_of);
+        sqlite3_bind_int(t, 5, opts ? opts->deleted_only : 0);
         if (sqlite3_step(t) == SQLITE_ROW) {
             total_files = sqlite3_column_int64(t, 0);
             total_bytes = sqlite3_column_int64(t, 1);
@@ -741,6 +743,7 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
         sqlite3_bind_text(q, 2, prefix, -1, SQLITE_STATIC);
         sqlite3_bind_int64(q, 3, last_id);
         sqlite3_bind_int64(q, 4, as_of);
+        sqlite3_bind_int(q, 5, opts ? opts->deleted_only : 0);
         while (n < BATCH && sqlite3_step(q) == SQLITE_ROW) {
             item *it = &items[n++];
             it->id = last_id = sqlite3_column_int64(q, 0);
@@ -915,6 +918,7 @@ bd_status bd_restore_plan_ex(bd_catalog *cat, int64_t source_id, const char *rel
     sqlite3_bind_text(fq, 2, prefix, -1, SQLITE_STATIC);
     sqlite3_bind_int64(fq, 3, 0);
     sqlite3_bind_int64(fq, 4, as_of);
+    sqlite3_bind_int(fq, 5, opts ? opts->deleted_only : 0);
     while (sqlite3_step(fq) == SQLITE_ROW) {
         int64_t size = sqlite3_column_int64(fq, 3);
         if (dest_root && *dest_root) {

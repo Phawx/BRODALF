@@ -415,3 +415,49 @@ done:
     for (int i = 0; i < nw; i++) free(pat[i]);
     return st;
 }
+
+/* ---- Deleted files ----------------------------------------------------------- */
+
+#define DELETED_WHERE                                                                                        \
+    " WHERE n.deleted<>0 AND n.is_dir=0 AND (?1=0 OR n.source_id=?1)"                                         \
+    " AND EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.state='ok')"
+
+bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, void *ctx, int64_t *count)
+{
+    sqlite3_stmt *q;
+    if (count) {
+        *count = 0;
+        if (sqlite3_prepare_v2(cat->db, "SELECT COUNT(*) FROM nodes n" DELETED_WHERE, -1, &q, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "count deleted files");
+        sqlite3_bind_int64(q, 1, source_id);
+        if (sqlite3_step(q) == SQLITE_ROW) *count = sqlite3_column_int64(q, 0);
+        sqlite3_finalize(q);
+    }
+    if (!fn) return BD_OK;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT n.id, n.source_id, s.name, n.rel_path, v.size, n.last_seen_ms,"
+                           " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label FROM copies c JOIN media m ON m.id=c.media_id"
+                           "   WHERE c.version_id=v.id AND c.state='ok' ORDER BY m.label)),"
+                           " EXISTS(SELECT 1 FROM copies c JOIN temp.connected k ON k.media_id=c.media_id"
+                           "   WHERE c.version_id=v.id AND c.state='ok')"
+                           " FROM nodes n JOIN sources s ON s.id=n.source_id JOIN versions v ON v.id=n.current_version_id"
+                           DELETED_WHERE
+                           " ORDER BY n.last_seen_ms DESC, s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list deleted files");
+    sqlite3_bind_int64(q, 1, source_id);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_deleted_info info;
+        info.node_id = sqlite3_column_int64(q, 0);
+        info.source_id = sqlite3_column_int64(q, 1);
+        info.source_name = (const char *)sqlite3_column_text(q, 2);
+        info.rel_path = (const char *)sqlite3_column_text(q, 3);
+        info.size = sqlite3_column_int64(q, 4);
+        info.last_seen_ms = sqlite3_column_int64(q, 5);
+        info.drives = sqlite3_column_type(q, 6) == SQLITE_NULL ? "" : (const char *)sqlite3_column_text(q, 6);
+        info.connected = sqlite3_column_int(q, 7);
+        if (fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
+}

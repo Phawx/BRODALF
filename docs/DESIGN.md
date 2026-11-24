@@ -258,6 +258,20 @@ old are not copied; they are counted so the GUI can say to keep the drive.
 The drive details show a plain suggestion to replace a drive whose health
 data says failing, warning, 90% worn, or pending or unreadable sectors.
 
+## Deleted files
+
+A file removed from its protected folder keeps its node (`deleted<>0`,
+`last_seen_ms` the last scan that found it) and its versions and copies.
+`bd_list_deleted` lists the ones whose current version has a good copy,
+most recently seen first, with the drives that hold it. Restoring with
+`bd_restore_opts.deleted_only` (bound as `?5` in `RESTORE_VERSION` and
+`RESTORE_WHERE`) brings back only deleted files under the given file or
+folder, each as it was last seen. The GUI's Show deleted files lists up to
+5000 of them; it restores the selected files, or everything deleted from
+the folders they were in, in one restore job. Files on drives that are not
+plugged in are reported, not resumed when the drive arrives: the user
+restores them again from the list.
+
 ## Drive hardware
 
 `media.location` holds the optional "where it is kept" text. `media_hardware`

@@ -84,6 +84,7 @@ enum {
     ID_M_ABOUT,
     ID_M_RELOCATE,
     ID_M_SHEET,
+    ID_M_DELETED,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
@@ -208,6 +209,10 @@ typedef struct job {
     int64_t only_old[3]; /* replace: files, deleted files, older versions still only on it */
     int64_t offline;    /* restore: files on drives not plugged in */
     int64_t as_of;      /* restore: the files as they were then (0: current) */
+    int deleted;        /* restore: only files deleted from their folder */
+    int n_picks;        /* restore: these files or folders instead of source_id/rel */
+    int64_t *pick_src;
+    char **pick_rel;
     int64_t in_use;     /* scan/backup: files another program had open */
     int guard;          /* scan: this scan paused backups */
     int from_shadow;    /* the last job using shadow copies: clean them up after */
@@ -227,6 +232,9 @@ static void job_free(job *j)
     free(j->location);
     free(j->rel);
     free(j->dest);
+    for (int i = 0; i < j->n_picks; i++) free(j->pick_rel[i]);
+    free(j->pick_rel);
+    free(j->pick_src);
     free(j);
 }
 
@@ -550,8 +558,21 @@ static DWORD WINAPI worker(LPVOID arg)
     }
     case JOB_RESTORE: {
         bd_restore_stats rs;
-        bd_restore_opts ro = {j->as_of};
-        s = bd_restore_ex(g_cat, j->source_id, j->rel, j->dest, &ro, &rs, job_log, j);
+        bd_restore_opts ro = {j->as_of, j->deleted};
+        memset(&rs, 0, sizeof(rs));
+        if (!j->n_picks) s = bd_restore_ex(g_cat, j->source_id, j->rel, j->dest, &ro, &rs, job_log, j);
+        for (int i = 0; i < j->n_picks && s == BD_OK; i++) {
+            bd_restore_stats one;
+            memset(&one, 0, sizeof(one));
+            s = bd_restore_ex(g_cat, j->pick_src[i], j->pick_rel[i], j->dest, &ro, &one, job_log, j);
+            rs.files_restored += one.files_restored;
+            rs.files_offline += one.files_offline;
+            rs.files_no_copy += one.files_no_copy;
+            rs.files_failed += one.files_failed;
+            rs.files_need_passphrase += one.files_need_passphrase;
+            rs.bytes_restored += one.bytes_restored;
+            rs.files_already_there += one.files_already_there;
+        }
         format_bytes(rs.bytes_restored, size, 64);
         swprintf(j->summary, 512, L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed.",
                  (long long)rs.files_restored, size, (long long)rs.files_already_there, (long long)rs.files_offline,
@@ -2041,6 +2062,16 @@ static void clear_pending(void)
 
 static void after_restore(job *j)
 {
+    if (j->deleted) {
+        /* Not resumed when a drive arrives: the user picks deleted files again. */
+        if (j->offline > 0) {
+            wchar_t line[300];
+            swprintf(line, 300, L"%lld deleted file%ls on drives that are not plugged in. Plug one in, then restore them again "
+                                L"from Show deleted files.", (long long)j->offline, j->offline == 1 ? L" is" : L"s are");
+            log_append(line);
+        }
+        return;
+    }
     if (j->offline <= 0) {
         if (g_pending.active) log_append(L"The restore is complete: every file that has a copy is back.");
         clear_pending();
@@ -2841,7 +2872,7 @@ static void restore_selection(int whole, int64_t as_of)
     plan_text p;
     memset(&p, 0, sizeof(p));
     int64_t total = 0, none = 0;
-    bd_restore_opts ro = {as_of};
+    bd_restore_opts ro = {as_of, 0};
     bd_restore_plan_ex(g_cat, r->source_id, r->rel, dest, &ro, plan_text_cb, &p, &total, &none);
     if (total == 0) {
         free(p.t.p);
@@ -2880,6 +2911,234 @@ static void restore_selection(int whole, int64_t as_of)
 }
 
 static void cmd_restore(void) { restore_selection(0, 0); }
+
+/* ---- Deleted files -------------------------------------------------------- */
+
+#define DELETED_ROWS 5000
+
+/* The list's rows, by row; and what the user chose to restore. */
+typedef struct { int64_t source_id; char *rel; } del_row;
+static del_row *g_del, *g_del_pick;
+static int g_del_n, g_del_npick;
+
+static void del_rows_free(del_row *r, int n)
+{
+    for (int i = 0; i < n; i++) free(r[i].rel);
+    free(r);
+}
+
+static int deleted_cb(void *ctx, const bd_deleted_info *d)
+{
+    HWND lv = ctx;
+    if (g_del_n >= DELETED_ROWS) return 1;
+    char *rel = xstrdup(d->rel_path);
+    if (!rel) return 1;
+    g_del[g_del_n].source_id = d->source_id;
+    g_del[g_del_n].rel = rel;
+    g_del_n++;
+    wchar_t *src = widen(d->source_name), *wrel = widen(d->rel_path), *drv = widen(d->drives);
+    wchar_t file[1200], when[64], size[64], on[600];
+    swprintf(file, 1200, L"%ls\\%ls", src ? src : L"", wrel ? wrel : L"");
+    for (wchar_t *c = file; *c; c++) if (*c == L'/') *c = L'\\';
+    format_time_ms(d->last_seen_ms, when, 64);
+    format_bytes(d->size, size, 64);
+    swprintf(on, 600, L"%ls%ls", drv ? drv : L"", d->connected ? L"  (plugged in)" : L"");
+    const wchar_t *cells[] = {file, when, size, on};
+    lv_row(lv, cells, 4);
+    free(src);
+    free(wrel);
+    free(drv);
+    return 0;
+}
+
+/* The chosen rows, or the folders they were in, without repeats or picks
+ * already inside another pick. */
+static int deleted_pick(HWND lv, int folders)
+{
+    int sel = ListView_GetSelectedCount(lv);
+    if (sel <= 0) return 0;
+    g_del_pick = calloc((size_t)sel, sizeof(del_row));
+    if (!g_del_pick) return 0;
+    g_del_npick = 0;
+    for (int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED); row >= 0 && g_del_npick < sel;
+         row = ListView_GetNextItem(lv, row, LVNI_SELECTED)) {
+        if (row >= g_del_n) continue;
+        char *rel = xstrdup(g_del[row].rel);
+        if (!rel) continue;
+        if (folders) {
+            char *slash = strrchr(rel, '/');
+            if (slash) *slash = '\0'; else rel[0] = '\0'; /* "": the whole protected folder */
+        }
+        g_del_pick[g_del_npick].source_id = g_del[row].source_id;
+        g_del_pick[g_del_npick].rel = rel;
+        g_del_npick++;
+    }
+    if (folders) {
+        int n = 0;
+        for (int i = 0; i < g_del_npick; i++) {
+            del_row *a = &g_del_pick[i];
+            int covered = 0;
+            for (int k = 0; k < g_del_npick && !covered; k++) {
+                del_row *b = &g_del_pick[k];
+                if (k == i || !b->rel || a->source_id != b->source_id) continue;
+                size_t bl = strlen(b->rel);
+                if (strcmp(a->rel, b->rel) == 0) covered = k < i; /* keep the first of the same */
+                else covered = !bl || (strncmp(a->rel, b->rel, bl) == 0 && a->rel[bl] == '/');
+            }
+            if (covered) { free(a->rel); a->rel = NULL; }
+        }
+        for (int i = 0; i < g_del_npick; i++)
+            if (g_del_pick[i].rel) g_del_pick[n++] = g_del_pick[i];
+        g_del_npick = n;
+    }
+    return g_del_npick;
+}
+
+static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_INITDIALOG: {
+        static const wchar_t *cols[] = {L"File", L"Last seen", L"Size", L"On drives"};
+        static const int widths[] = {300, 110, 70, 180};
+        HWND lv = GetDlgItem(dlg, IDC_DEL_LIST);
+        lv_columns(lv, cols, widths, 4);
+        int64_t total = 0;
+        bd_list_deleted(g_cat, 0, NULL, NULL, &total);
+        g_del = calloc(DELETED_ROWS, sizeof(del_row));
+        g_del_n = 0;
+        SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
+        if (g_del) bd_list_deleted(g_cat, 0, deleted_cb, lv, NULL);
+        SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+        wchar_t text[400];
+        if (total == 0)
+            swprintf(text, 400, L"No deleted files are held on your drives. When a file is removed from a protected folder, "
+                                L"its last version stays on the drives and shows here.");
+        else
+            swprintf(text, 400, L"%lld file%ls removed from your protected folders %ls still on your drives, most recently "
+                                L"deleted first%ls. Select files to restore them, or restore everything deleted from their folders.",
+                     (long long)total, total == 1 ? L"" : L"s", total == 1 ? L"is" : L"are",
+                     total > g_del_n ? L" (only the first ones are listed)" : L"");
+        SetDlgItemTextW(dlg, IDC_DEL_SUMMARY, text);
+        EnableWindow(GetDlgItem(dlg, IDC_DEL_FILES), g_del_n > 0);
+        EnableWindow(GetDlgItem(dlg, IDC_DEL_FOLDERS), g_del_n > 0);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDC_DEL_FILES || LOWORD(wp) == IDC_DEL_FOLDERS) {
+            if (!deleted_pick(GetDlgItem(dlg, IDC_DEL_LIST), LOWORD(wp) == IDC_DEL_FOLDERS)) {
+                del_rows_free(g_del_pick, g_del_npick);
+                g_del_pick = NULL;
+                g_del_npick = 0;
+                MessageBoxW(dlg, L"Select one or more files in the list first.", APP_NAME, MB_ICONINFORMATION);
+                return TRUE;
+            }
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        break;
+    case WM_NOTIFY: {
+        NMHDR *nh = (NMHDR *)lp;
+        if (nh->idFrom == IDC_DEL_LIST && nh->code == NM_DBLCLK) SendMessageW(dlg, WM_COMMAND, IDC_DEL_FILES, 0);
+        return TRUE;
+    }
+    }
+    return FALSE;
+}
+
+/* Sums the plan of several restores by drive. */
+typedef struct { int64_t id[64], files[64], bytes[64]; int connected[64]; wchar_t name[64][300]; int n, other; } del_plan;
+
+static int del_plan_cb(void *ctx, const bd_restore_step *st)
+{
+    del_plan *p = ctx;
+    int i = 0;
+    while (i < p->n && p->id[i] != st->media_id) i++;
+    if (i == p->n) {
+        if (p->n == 64) { p->other = 1; return 0; }
+        p->n++;
+        p->id[i] = st->media_id;
+        p->files[i] = p->bytes[i] = 0;
+        p->connected[i] = st->connected;
+        drive_name(st->label, st->location, p->name[i], 300);
+    }
+    p->files[i] += st->files;
+    p->bytes[i] += st->bytes;
+    return 0;
+}
+
+static void cmd_deleted(void)
+{
+    g_del_pick = NULL;
+    g_del_npick = 0;
+    INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_DELETED), g_main, deleted_proc);
+    del_rows_free(g_del, g_del_n);
+    g_del = NULL;
+    g_del_n = 0;
+    del_row *picks = g_del_pick;
+    int n = g_del_npick;
+    g_del_pick = NULL;
+    g_del_npick = 0;
+    if (r != IDOK || n <= 0) { del_rows_free(picks, n); return; }
+
+    char *dest = NULL;
+    del_plan *p = calloc(1, sizeof(del_plan));
+    if (!p) goto out;
+    if (media_encryption(0).any_connected_encrypted && !unlock_ui(L"Some copies are on an encrypted drive. Enter the passphrase to restore them."))
+        goto out;
+    dest = pick_folder(g_main, L"Choose where to put the restored files. They go into a subfolder named after the protected folder.");
+    if (!dest) goto out;
+
+    int64_t total = 0;
+    bd_restore_opts ro = {0, 1};
+    for (int i = 0; i < n; i++) {
+        int64_t t = 0;
+        bd_restore_plan_ex(g_cat, picks[i].source_id, picks[i].rel, dest, &ro, del_plan_cb, p, &t, NULL);
+        total += t;
+    }
+    if (total == 0) {
+        MessageBoxW(g_main, L"Everything selected is already restored in that folder.", APP_NAME, MB_ICONINFORMATION);
+        goto out;
+    }
+    int offline = p->other;
+    for (int i = 0; i < p->n; i++) if (!p->connected[i]) offline = 1;
+    if (offline || p->n > 1) {
+        wtext msg = {NULL, 0, 0};
+        wadd(&msg, L"Restoring %lld deleted file%ls needs these drives:\n\n", (long long)total, total == 1 ? L"" : L"s");
+        for (int i = 0; i < p->n; i++) {
+            wchar_t size[64];
+            format_bytes(p->bytes[i], size, 64);
+            wadd(&msg, L"    %d. %ls: %lld file%ls (%ls)%ls\n", i + 1, p->name[i], (long long)p->files[i],
+                 p->files[i] == 1 ? L"" : L"s", size, p->connected[i] ? L", plugged in" : L"");
+        }
+        if (offline)
+            wadd(&msg, L"\nBRODALF restores what the plugged-in drives hold now. For the rest, plug in another drive "
+                       L"and restore them again from Show deleted files.\n");
+        int go = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION | MB_OKCANCEL) == IDOK;
+        free(msg.p);
+        if (!go) goto out;
+    }
+    job *j = new_job(JOB_RESTORE);
+    if (!j) goto out;
+    j->pick_src = calloc((size_t)n, sizeof(int64_t));
+    j->pick_rel = calloc((size_t)n, sizeof(char *));
+    if (!j->pick_src || !j->pick_rel) { job_free(j); goto out; }
+    for (int i = 0; i < n; i++) {
+        j->pick_src[i] = picks[i].source_id;
+        j->pick_rel[i] = picks[i].rel;
+        picks[i].rel = NULL;
+    }
+    j->n_picks = n;
+    j->deleted = 1;
+    j->dest = dest;
+    dest = NULL;
+    log_append(L"Restoring deleted files.");
+    enqueue(j);
+out:
+    free(p);
+    free(dest);
+    del_rows_free(picks, n);
+}
 
 /* ---- Restore as of a date ------------------------------------------------ */
 
@@ -3427,6 +3686,7 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
     AppendMenuW(cat, MF_STRING, ID_M_RESTORE, L"Restore what is selected...");
     AppendMenuW(cat, MF_STRING, ID_M_RESTORE_ASOF, L"Restore what is selected as it was on a date...");
+    AppendMenuW(cat, MF_STRING, ID_M_DELETED, L"Show deleted files...");
     AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
     AppendMenuW(cat, MF_STRING, ID_M_SHEET, L"Print a recovery sheet...");
     AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
@@ -3622,6 +3882,7 @@ static void menu_command(int cmd)
     case ID_M_SCAN: enqueue(new_job(JOB_SCAN)); break;
     case ID_M_RELOCATE: cmd_relocate(); break;
     case ID_M_SHEET: cmd_sheet(0); break;
+    case ID_M_DELETED: cmd_deleted(); break;
     case ID_M_RESTORE: cmd_restore(); break;
     case ID_M_RESTORE_ASOF: cmd_restore_as_of(); break;
     case ID_M_RISK: cmd_risk(); break;

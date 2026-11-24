@@ -405,6 +405,9 @@ typedef struct {
      * were at this time: the newest version BRODALF had seen by then of
      * every file that existed then, including files deleted since. */
     int64_t as_of_ms;
+    /* Only files deleted from their folder, each as it was when last seen
+     * (as_of_ms is ignored). See bd_list_deleted. */
+    int deleted_only;
 } bd_restore_opts;
 
 bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
@@ -560,6 +563,23 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx);
 bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_node_id, bd_node_fn fn, void *ctx);
 
 bd_status bd_find_node(bd_catalog *cat, int64_t source_id, const char *rel_path, int64_t *out_node_id);
+
+/* Files deleted from their folder whose last version still has a good copy
+ * on a drive, most recently seen first. Restore them with bd_restore_ex and
+ * deleted_only set. source_id 0 means every source. */
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t size;
+    int64_t last_seen_ms;    /* the last scan that still found it */
+    const char *drives;      /* names of the drives holding a good copy, ", " between them */
+    int connected;           /* one of them is plugged in */
+} bd_deleted_info;
+typedef int (*bd_deleted_fn)(void *ctx, const bd_deleted_info *info);
+/* fn may be NULL to only count; *count may be NULL. */
+bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, void *ctx, int64_t *count);
 
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);

@@ -20,7 +20,7 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 5
+#define BD_SCHEMA_VERSION 6
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -45,6 +45,7 @@ static const char *SCHEMA_SQL =
     "  current_version_id INTEGER,"
     "  deleted INTEGER NOT NULL DEFAULT 0,"
     "  last_seen_ms INTEGER NOT NULL,"
+    "  rel_fold TEXT,"                  /* bd_path_key(rel_path): set on Windows only */
     "  UNIQUE(source_id, rel_path));"
     "CREATE INDEX IF NOT EXISTS nodes_parent ON nodes(source_id, parent_id);"
     "CREATE TABLE IF NOT EXISTS versions("
@@ -192,6 +193,35 @@ static bd_status take_lock(bd_catalog *cat)
     return BD_OK;
 }
 
+/* Keys for the nodes of a catalog made before schema 6 (Windows only). */
+static int fill_path_keys(bd_catalog *cat)
+{
+    char *probe = bd_path_key("a");
+    if (!probe) return 0;
+    free(probe);
+    sqlite3_stmt *q, *u;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id, rel_path FROM nodes", -1, &q, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE nodes SET rel_fold=? WHERE id=?", -1, &u, NULL) != SQLITE_OK) {
+        sqlite3_finalize(q);
+        return -1;
+    }
+    int rc = bd_exec(cat, "BEGIN");
+    while (rc == 0 && sqlite3_step(q) == SQLITE_ROW) {
+        char *key = bd_path_key((const char *)sqlite3_column_text(q, 1));
+        if (!key) { rc = -1; break; }
+        sqlite3_reset(u);
+        sqlite3_bind_text(u, 1, key, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(u, 2, sqlite3_column_int64(q, 0));
+        if (sqlite3_step(u) != SQLITE_DONE) rc = -1;
+        free(key);
+    }
+    sqlite3_finalize(q);
+    sqlite3_finalize(u);
+    if (rc == 0 && bd_exec(cat, "COMMIT") != 0) rc = -1;
+    if (rc != 0) bd_exec(cat, "ROLLBACK");
+    return rc;
+}
+
 static bd_status open_db(bd_catalog *cat)
 {
     if (sqlite3_open_v2(cat->work_path, &cat->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK)
@@ -215,6 +245,14 @@ static bd_status open_db(bd_catalog *cat)
     if (sqlite3_prepare_v2(cat->db, "SELECT location FROM media LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
         sqlite3_finalize(probe);
     else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN location TEXT") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Schema 5 catalogs have no nodes.rel_fold column. */
+    if (sqlite3_prepare_v2(cat->db, "SELECT rel_fold FROM nodes LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
+        sqlite3_finalize(probe);
+    else if (bd_exec(cat, "ALTER TABLE nodes ADD COLUMN rel_fold TEXT") != 0 || fill_path_keys(cat) != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Only rows with a key are in it, so it costs nothing where there are none. */
+    if (bd_exec(cat, "CREATE INDEX IF NOT EXISTS nodes_fold ON nodes(source_id, rel_fold) WHERE rel_fold IS NOT NULL") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"

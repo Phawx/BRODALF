@@ -56,6 +56,22 @@ Folders the move empties are removed up to the catalog's folder. The scan
 keeps a temp table of nodes that are new or came back in this scan, so the
 guard can subtract moves from what looks like damage.
 
+On Windows names ignore letter case, so a path that only differs in case
+from one the catalog knows (Photo.JPG that is now photo.jpg) is that same
+file, renamed: the scan looks it up by `nodes.rel_fold` (the path folded
+with Windows' own case mapping, indexed, and only looked at for paths the
+catalog does not know exactly) and renames the node, keeping its versions
+and copies. Its copy on the drive keeps the old spelling until the file
+changes; the backup then finds that copy among the file's own copy rows
+by the folded name. Elsewhere paths stay case sensitive and the key is
+not stored.
+
+A source's folder on a drive sits next to `.versions`, `BRODALF.media` and
+`catalog-backup.brodalf`, so a source folder with one of those names (in
+any case) gets a name with `_` in front (`_versions`). A catalog that
+already has such a name is fixed at the next backup, which says so in the
+log; copies made before keep their rows and stay good.
+
 ## Links and reparse points
 
 The scan never follows links. On Windows only a reparse point that stands
@@ -227,7 +243,8 @@ writes a new file and swaps it in atomically.
 
 Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
 `space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
-written by 0.3.0). Schema version 5.
+written by 0.3.0). Schema version 6: version 6 added `nodes.rel_fold`, the
+case-folded path used on Windows, filled in when an older catalog is opened.
 
 ## Protection target
 

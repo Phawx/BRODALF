@@ -319,6 +319,34 @@ static void pending_free(pending_copy *p)
     memset(p, 0, sizeof(*p));
 }
 
+/* Where names ignore case (Windows), the file at dest_rel may be a copy of
+ * this file under a name that differs only in case: it was renamed that
+ * way. Find its row among this file's copies on the drive. */
+static void tracked_by_case(bd_catalog *cat, int64_t media_id, const backup_item *it, const char *dest_rel, pending_copy *p)
+{
+    char *want = bd_path_key(dest_rel);
+    sqlite3_stmt *q;
+    if (!want) return;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT c.id, v.id, v.version_no, c.path_on_media FROM copies c JOIN versions v ON v.id=c.version_id"
+                           " WHERE v.node_id=? AND c.media_id=?",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, it->node_id);
+        sqlite3_bind_int64(q, 2, media_id);
+        while (!p->tracked_copy && sqlite3_step(q) == SQLITE_ROW) {
+            char *key = bd_path_key((const char *)sqlite3_column_text(q, 3));
+            if (key && strcmp(key, want) == 0) {
+                p->tracked_copy = sqlite3_column_int64(q, 0);
+                p->tracked_version = sqlite3_column_int64(q, 1);
+                p->tracked_version_no = sqlite3_column_int64(q, 2);
+            }
+            free(key);
+        }
+        sqlite3_finalize(q);
+    }
+    free(want);
+}
+
 /* Check the file and write its copy to <dest>.brodalf-tmp. 1 if *p now
  * holds a copy to finish; 0 if the file is done with (failed, or already
  * on the drive). */
@@ -374,6 +402,7 @@ static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, co
             }
             sqlite3_finalize(q);
         }
+        if (!p->tracked_copy) tracked_by_case(cat, media_id, it, dest_rel, p);
         if (!p->tracked_copy) {
             /* Probably written by a backup whose catalog was never saved.
              * If it is exactly this version, adopt it instead of copying. */
@@ -623,6 +652,9 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
         if (!cat->have_key) return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to back up to an encrypted drive");
         key = cat->key;
     }
+    /* A source called .versions would land in the versions tree. */
+    bd_status fs = bd_sources_fix_names(cat, log, log_ctx);
+    if (fs != BD_OK) return fs;
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) return BD_ERR_NOT_FOUND;
 

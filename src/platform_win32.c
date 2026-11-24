@@ -380,6 +380,24 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
     return rc;
 }
 
+char *bd_fold_case(const char *s)
+{
+    int wn = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (wn <= 0) return NULL;
+    wchar_t *w = malloc((size_t)wn * 2 * sizeof(wchar_t));
+    if (!w) return NULL;
+    wchar_t *up = w + wn;
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, wn);
+    /* Without LCMAP_LINGUISTIC_CASING this is the file system's mapping,
+     * one UTF-16 unit for one, so the length stays the same. */
+    if (LCMapStringW(LOCALE_INVARIANT, LCMAP_UPPERCASE, w, wn, up, wn) == 0) { free(w); return NULL; }
+    int n = WideCharToMultiByte(CP_UTF8, 0, up, -1, NULL, 0, NULL, NULL);
+    char *r = n > 0 ? malloc((size_t)n) : NULL;
+    if (r) WideCharToMultiByte(CP_UTF8, 0, up, -1, r, n, NULL, NULL);
+    free(w);
+    return r;
+}
+
 int bd_random_bytes(void *buf, size_t n)
 {
     return BCRYPT_SUCCESS(BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)n, BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ? 0 : -1;

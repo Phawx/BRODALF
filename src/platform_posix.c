@@ -259,6 +259,15 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
     return rc;
 }
 
+char *bd_fold_case(const char *s)
+{
+    char *r = strdup(s);
+    if (!r) return NULL;
+    for (char *p = r; *p; p++)
+        if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+    return r;
+}
+
 int bd_random_bytes(void *buf, size_t n)
 {
 #if defined(__linux__)

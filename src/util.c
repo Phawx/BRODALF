@@ -121,6 +121,17 @@ char *bd_rel_dirname(const char *rel)
     return d;
 }
 
+int bd_test_fold_case = 0;
+
+char *bd_path_key(const char *rel)
+{
+#ifdef _WIN32
+    return bd_fold_case(rel);
+#else
+    return bd_test_fold_case ? bd_fold_case(rel) : NULL;
+#endif
+}
+
 const char *bd_rel_basename(const char *rel)
 {
     const char *slash = strrchr(rel, '/');

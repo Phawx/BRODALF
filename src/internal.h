@@ -155,6 +155,18 @@ int bd_cancel_pending(void); /* the running job's request, from any thread */
 void bd_cancel_forget(bd_catalog *cat);
 bd_status bd_fail_cancelled(bd_catalog *cat);
 
+/* The key that says two paths name the same file: on Windows, the path
+ * with letter case folded (names there ignore case); NULL elsewhere, where
+ * the path itself is the key, and when out of memory. Caller frees. */
+char *bd_path_key(const char *rel);
+/* Tests only: fold case as on Windows. */
+extern int bd_test_fold_case;
+
+/* Give a source whose name on the drives is one of BRODALF's own (the
+ * .versions tree, BRODALF.media, the catalog copy) a name of its own; its
+ * new copies go under that name. */
+bd_status bd_sources_fix_names(bd_catalog *cat, bd_log_fn log, void *log_ctx);
+
 /* Tests only: hashing threads for a scan (0: the default, -1: hash on the
  * scanning thread itself). */
 extern int bd_test_scan_workers;

@@ -23,8 +23,28 @@ static char *sanitize_name(const char *folder)
     return name;
 }
 
+/* Names next to the sources on a drive that are BRODALF's own. */
+static int name_reserved(const char *name)
+{
+    static const char *const own[] = {BD_VERSIONS_DIR, BD_MEDIA_FILE, "catalog-backup.brodalf"};
+    size_t tl = strlen(BD_TMP_MARKER);
+    for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
+        size_t n = strlen(own[i]), k = 0;
+        while (k < n && name[k] && (name[k] | 0x20) == (own[i][k] | 0x20)) k++;
+        if (k == n && (name[n] == '\0' || (strncmp(name + n, BD_TMP_MARKER, tl) == 0 && name[n + tl] == '\0'))) return 1;
+    }
+    return 0;
+}
+
+/* "_versions" for ".versions", "_BRODALF.media" for "BRODALF.media". */
+static char *escape_reserved(const char *name)
+{
+    return name[0] == '.' ? bd_sprintf("_%s", name + 1) : bd_sprintf("_%s", name);
+}
+
 static int name_taken(bd_catalog *cat, const char *name)
 {
+    if (name_reserved(name)) return 1;
     sqlite3_stmt *st;
     int taken = 1;
     if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM sources WHERE name=? COLLATE NOCASE", -1, &st, NULL) != SQLITE_OK) return 1;
@@ -56,6 +76,11 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
     sqlite3_finalize(q);
 
     char *base = sanitize_name(path);
+    if (base && name_reserved(base)) {
+        char *esc = escape_reserved(base);
+        free(base);
+        base = esc;
+    }
     char *name = base ? bd_strdup(base) : NULL;
     for (int n = 2; name && name_taken(cat, name) && n < 10000; n++) {
         free(name);
@@ -78,6 +103,49 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
     }
     free(name);
     free(path);
+    return s;
+}
+
+bd_status bd_sources_fix_names(bd_catalog *cat, bd_log_fn log, void *log_ctx)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id, name FROM sources ORDER BY id", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list sources");
+    typedef struct { int64_t id; char *name; } bad_name;
+    bad_name bad[8];
+    size_t n = 0;
+    while (n < sizeof(bad) / sizeof(bad[0]) && sqlite3_step(q) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(q, 1);
+        if (!name_reserved(name)) continue;
+        bad[n].id = sqlite3_column_int64(q, 0);
+        bad[n].name = bd_strdup(name);
+        if (bad[n].name) n++;
+    }
+    sqlite3_finalize(q);
+    bd_status s = BD_OK;
+    for (size_t i = 0; i < n; i++) {
+        char *base = escape_reserved(bad[i].name);
+        char *name = base ? bd_strdup(base) : NULL;
+        for (int k = 2; name && name_taken(cat, name) && k < 10000; k++) {
+            free(name);
+            name = bd_sprintf("%s-%d", base, k);
+        }
+        sqlite3_stmt *u;
+        if (!name) s = BD_ERR_NOMEM;
+        else if (sqlite3_prepare_v2(cat->db, "UPDATE sources SET name=? WHERE id=?", -1, &u, NULL) != SQLITE_OK) {
+            s = bd_fail_db(cat, "rename source");
+        } else {
+            sqlite3_bind_text(u, 1, name, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(u, 2, bad[i].id);
+            if (sqlite3_step(u) != SQLITE_DONE) s = bd_fail_db(cat, "rename source");
+            else bd_logf(log, log_ctx, "the folder %s has the name of BRODALF's own folder on the drives; its new copies go to %s instead",
+                         bad[i].name, name);
+            sqlite3_finalize(u);
+        }
+        free(base);
+        free(name);
+        free(bad[i].name);
+    }
     return s;
 }
 
@@ -286,6 +354,7 @@ typedef struct {
     void *log_ctx;
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file, *arrive;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
+    sqlite3_stmt *find_case, *rename_node;
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
     int db_error;
@@ -523,6 +592,29 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         old_version = sqlite3_column_int64(c->find_node, 3);
         was_deleted = sqlite3_column_int(c->find_node, 4);
     }
+    /* Where names ignore case (Windows), Photo.JPG that is now photo.jpg
+     * was renamed: keep its node, versions and copies under the new name. */
+    char *key = node_id ? NULL : bd_path_key(rel);
+    if (key) {
+        sqlite3_reset(c->find_case);
+        sqlite3_bind_int64(c->find_case, 1, c->source_id);
+        sqlite3_bind_text(c->find_case, 2, key, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(c->find_case, 3, c->scan_ms);
+        if (sqlite3_step(c->find_case) == SQLITE_ROW) {
+            node_id = sqlite3_column_int64(c->find_case, 0);
+            old_size = sqlite3_column_int64(c->find_case, 1);
+            old_mtime = sqlite3_column_int64(c->find_case, 2);
+            old_version = sqlite3_column_int64(c->find_case, 3);
+            was_deleted = sqlite3_column_int(c->find_case, 4);
+            sqlite3_reset(c->find_case);
+            sqlite3_reset(c->rename_node);
+            sqlite3_bind_text(c->rename_node, 1, rel, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(c->rename_node, 2, bd_rel_basename(rel), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(c->rename_node, 3, node_id);
+            if (sqlite3_step(c->rename_node) != SQLITE_DONE) { free(key); c->db_error = 1; return 1; }
+        }
+        sqlite3_reset(c->find_case);
+    }
     int64_t parent = lookup_parent(c, rel);
 
     if (st->is_dir) c->stats->dirs_seen++;
@@ -537,7 +629,9 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         sqlite3_bind_text(c->insert_node, 4, bd_rel_basename(rel), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(c->insert_node, 5, st->is_dir);
         sqlite3_bind_int64(c->insert_node, 6, c->scan_ms);
-        if (sqlite3_step(c->insert_node) != SQLITE_DONE) { c->db_error = 1; return 1; }
+        if (key) sqlite3_bind_text(c->insert_node, 7, key, -1, SQLITE_TRANSIENT);
+        else sqlite3_bind_null(c->insert_node, 7);
+        if (sqlite3_step(c->insert_node) != SQLITE_DONE) { free(key); c->db_error = 1; return 1; }
         node_id = sqlite3_last_insert_rowid(c->cat->db);
     } else {
         sqlite3_reset(c->touch_node);
@@ -545,8 +639,9 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         sqlite3_bind_int(c->touch_node, 2, st->is_dir);
         sqlite3_bind_int64(c->touch_node, 3, c->scan_ms);
         sqlite3_bind_int64(c->touch_node, 4, node_id);
-        if (sqlite3_step(c->touch_node) != SQLITE_DONE) { c->db_error = 1; return 1; }
+        if (sqlite3_step(c->touch_node) != SQLITE_DONE) { free(key); c->db_error = 1; return 1; }
     }
+    free(key);
     /* New and returning entries are what a disappeared file may have moved to. */
     if (old_size < 0 || was_deleted) {
         sqlite3_reset(c->arrive);
@@ -715,7 +810,11 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, hash_pool *
         {&c.find_node, "SELECT id, size, mtime_ns, current_version_id, deleted FROM nodes WHERE source_id=? AND rel_path=?"},
         {&c.arrive, "INSERT OR IGNORE INTO temp.arrived(node_id) VALUES(?)"},
         {&c.find_parent, "SELECT id FROM nodes WHERE source_id=? AND rel_path=?"},
-        {&c.insert_node, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms) VALUES(?,?,?,?,?,?)"},
+        {&c.insert_node, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms,rel_fold) VALUES(?,?,?,?,?,?,?)"},
+        /* The same name in other letter case, not seen yet in this scan. */
+        {&c.find_case, "SELECT id, size, mtime_ns, current_version_id, deleted FROM nodes"
+                       " WHERE source_id=? AND rel_fold=? AND last_seen_ms<? ORDER BY deleted, id LIMIT 1"},
+        {&c.rename_node, "UPDATE nodes SET rel_path=?, name=? WHERE id=?"},
         {&c.touch_node, "UPDATE nodes SET parent_id=?, is_dir=?, last_seen_ms=?, deleted=0 WHERE id=?"},
         {&c.update_file, "UPDATE nodes SET size=?, mtime_ns=?, current_version_id=? WHERE id=?"},
         {&c.find_version, "SELECT id FROM versions WHERE node_id=? AND hash=?"},

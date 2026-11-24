@@ -1252,6 +1252,140 @@ static void test_mtimes(void)
 }
 #endif
 
+static void rename_log(void *ctx, const char *msg)
+{
+    if (strstr(msg, "its new copies go to")) (*(int *)ctx)++;
+}
+
+/* Where names ignore case (Windows; here bd_test_fold_case stands in),
+ * a change of letter case only is a rename, not a delete and a new file. */
+static void test_case_rename(void)
+{
+    write_file(at("cr/Src/Photo.JPG"), "picture");
+    write_file(at("cr/Src/Album/One.txt"), "one");
+    bd_mkdirs(at("cr/drive"));
+    bd_test_fold_case = 1;
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("cr/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("cr/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("cr/drive"), "Case", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    int64_t photo = count_rows(cat, "SELECT id FROM nodes WHERE rel_path='Photo.JPG'");
+    int64_t one = count_rows(cat, "SELECT id FROM nodes WHERE rel_path='Album/One.txt'");
+
+    CHECK(rename(at("cr/Src/Photo.JPG"), at("cr/Src/photo.jpg")) == 0);
+    CHECK(rename(at("cr/Src/Album"), at("cr/Src/album")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 0 && ss.files_deleted == 0 && ss.files_changed == 0 && ss.bytes_hashed == 0);
+    CHECK(count_rows(cat, "SELECT id FROM nodes WHERE rel_path='photo.jpg' AND name='photo.jpg' AND deleted=0") == photo);
+    CHECK(count_rows(cat, "SELECT id FROM nodes WHERE rel_path='album/One.txt' AND deleted=0") == one);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE rel_path IN ('Photo.JPG','Album','Album/One.txt')") == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 2);
+    /* Nothing to copy again; a restore uses the new names. */
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_moved == 0 && bs.files_already_there == 2);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, "", at("cr/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2);
+    CHECK(file_equals(at("cr/out/Src/photo.jpg"), "picture") && file_equals(at("cr/out/Src/album/One.txt"), "one"));
+
+    /* The lookup uses its index. */
+    sqlite3_stmt *q;
+    int indexed = 0;
+    if (sqlite3_prepare_v2(cat->db, "EXPLAIN QUERY PLAN SELECT id FROM nodes WHERE source_id=1 AND rel_fold=? AND last_seen_ms<?",
+                           -1, &q, NULL) == SQLITE_OK) {
+        while (sqlite3_step(q) == SQLITE_ROW)
+            if (strstr((const char *)sqlite3_column_text(q, 3), "nodes_fold")) indexed = 1;
+        sqlite3_finalize(q);
+    }
+    CHECK(indexed);
+
+    /* Where names are case sensitive nothing changes: a delete and a new file. */
+    bd_test_fold_case = 0;
+    CHECK(rename(at("cr/Src/photo.jpg"), at("cr/Src/PHOTO.jpg")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 1 && ss.files_deleted == 1);
+    bd_catalog_close(cat);
+
+    /* A schema 5 catalog gets the keys when it is opened. */
+    write_file(at("mg/Src/Notes.TXT"), "notes");
+    REQUIRE_OK(bd_catalog_create(at("mg/c.brodalf"), &cat), NULL);
+    REQUIRE_OK(bd_source_add(cat, at("mg/Src"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(bd_exec(cat, "DROP INDEX nodes_fold; ALTER TABLE nodes DROP COLUMN rel_fold;"
+                       " UPDATE meta SET value='5' WHERE key='schema_version'") == 0);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    bd_test_fold_case = 1;
+    REQUIRE_OK(bd_catalog_open(at("mg/c.brodalf"), &cat), NULL);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE rel_fold IS NULL") == 0);
+    CHECK(count_rows(cat, "SELECT value FROM meta WHERE key='schema_version'") == 6);
+    CHECK(rename(at("mg/Src/Notes.TXT"), at("mg/Src/notes.txt")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 0 && ss.files_deleted == 0);
+    bd_catalog_close(cat);
+    bd_test_fold_case = 0;
+}
+
+/* A source folder called .versions (or BRODALF.media) must not land in
+ * BRODALF's own entries on the drive. */
+static void test_reserved_source_names(void)
+{
+    write_file(at("rv/.versions/a.txt"), "in a folder called .versions");
+    write_file(at("rv/Docs/a.txt"), "doc v1");
+    write_file(at("rv/brodalf.MEDIA/m.txt"), "media");
+    bd_mkdirs(at("rv/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("rv/c.brodalf"), &cat), NULL);
+    int64_t vs, docs, drive;
+    REQUIRE_OK(bd_source_add(cat, at("rv/.versions"), &vs), cat);
+    REQUIRE_OK(bd_source_add(cat, at("rv/Docs"), &docs), cat);
+    REQUIRE_OK(bd_source_add(cat, at("rv/brodalf.MEDIA"), NULL), cat);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM sources WHERE name IN ('_versions','_brodalf.MEDIA')") == 2);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("rv/drive"), "Names", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    write_file(at("rv/Docs/a.txt"), "doc v2, longer");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.versions_moved == 1);
+    char *root = bd_sprintf("rv/drive/BRODALF/%s", bd_catalog_uuid(cat));
+    char *p1 = bd_sprintf("%s/_versions/a.txt", root), *p2 = bd_sprintf("%s/.versions/Docs/a.v1.txt", root);
+    char *p3 = bd_sprintf("%s/_brodalf.MEDIA/m.txt", root);
+    CHECK(file_equals(at(p1), "in a folder called .versions"));
+    CHECK(file_equals(at(p2), "doc v1"));
+    CHECK(file_equals(at(p3), "media"));
+
+    /* A catalog that already has such a name: the next backup gives the
+     * source a name of its own and says so; its copies so far stay good. */
+    CHECK(bd_exec(cat, "UPDATE sources SET name='.versions' WHERE name='_versions'") == 0);
+    write_file(at("rv/.versions/b.txt"), "new file");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    int said = 0;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, rename_log, &said), cat);
+    CHECK(said == 1 && bs.files_copied == 1);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM sources WHERE name='_versions'") == 1);
+    char *p4 = bd_sprintf("%s/_versions/b.txt", root);
+    CHECK(file_equals(at(p4), "new file"));
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 5 && cs.ok == 5);
+    free(root);
+    free(p1);
+    free(p2);
+    free(p3);
+    free(p4);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1503,6 +1637,8 @@ int main(void)
     test_big_copy();
     test_parallel_scan();
     test_cancel();
+    test_case_rename();
+    test_reserved_source_names();
 #ifndef _WIN32
     test_mtimes();
 #endif

@@ -65,6 +65,12 @@ typedef int (*bd_walk_cb)(void *ctx, const char *rel_path, const bd_stat_t *st);
 typedef void (*bd_walk_err_cb)(void *ctx, const char *path, const char *message);
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx);
 
+/* A copy of s with letter case folded the way the file system compares
+ * names: Windows' own case mapping there; elsewhere (names are case
+ * sensitive, so only tests use it) ASCII letters made lower case. Caller
+ * frees; NULL when out of memory. */
+char *bd_fold_case(const char *s);
+
 int bd_random_bytes(void *buf, size_t n);
 int64_t bd_now_ms(void);
 void bd_sleep_ms(int ms);

@@ -390,3 +390,14 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
   disconnected, every drive letter with a `BRODALF.media` for this catalog is
   connected (with a quick check), and folders or shares used as storage are
   retried where they were last seen.
+
+## Installer
+
+`installer/brodalf.nsi` (NSIS 3, `makensis -DVERSION=x.y.z`) installs
+brodalf.exe, brodalf-cli.exe and THIRD-PARTY-NOTICES.txt for the current
+user into `%LOCALAPPDATA%\Programs\BRODALF` with no administrator rights
+(`RequestExecutionLevel user`), adds a Start menu shortcut and an uninstall
+entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRODALF`.
+The uninstaller removes only those files, the shortcut and that key: catalogs,
+the app log, `HKCU\Software\BRODALF` and any scheduled check task are left,
+since they belong to the user's catalogs. The installer is not signed.

@@ -33,7 +33,13 @@ The app never runs in the background. `brodalf.exe --check <catalog>` is
 what Windows Task Scheduler runs (task "BRODALF - <catalog name>", daily or
 weekly at 12:00, from the "schedule" option: 1, 7 or 0; the GUI registers
 the task on every start when the option is on, so a new catalog gets a
-daily task straight away). It scans silently,
+daily task straight away). The task is created or updated through the Task
+Scheduler 2.0 COM API (`ITaskService`, a daily trigger every 1 or 7 days
+from 12:00 today, local time; run as the logged-on user; "start only on AC
+power" and "stop on battery" off, "start when available" on, so a laptop
+on battery still runs it and a missed run catches up). If the COM call
+fails, `schtasks.exe` is used as before, which leaves the battery
+conditions on. It scans silently,
 and only when files fall short of the protection target (or the guard
 tripped) shows one message: how much is at risk, and the drive to plug in,
 with an "Open BRODALF now?" button. The drive is `bd_suggest_drive`: the

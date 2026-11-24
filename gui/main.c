@@ -15,6 +15,7 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 
+#define COBJMACROS
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -22,6 +23,7 @@
 #include <sddl.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <taskschd.h>
 #include <stdarg.h>
 
 #include <stdio.h>
@@ -2814,13 +2816,100 @@ static void task_name(wchar_t *out, size_t cap)
     swprintf(out, cap, L"BRODALF - %ls", base ? base + 1 : g_cat_path);
 }
 
-/* Tell Windows Task Scheduler to run "brodalf.exe --check <catalog>" every
- * day or week, or forget the task. */
-static void apply_schedule(int days, int say)
+/* The Task Scheduler 2.0 class and interfaces, declared here so no import
+ * library is needed (MinGW and MSVC name it differently). */
+static const GUID BD_CLSID_TaskScheduler = {0x0f87369f, 0xa4e5, 0x4cfc, {0xbd, 0x3e, 0x73, 0xe6, 0x15, 0x45, 0x72, 0xdd}};
+static const GUID BD_IID_ITaskService = {0x2faba4c7, 0x4da9, 0x4013, {0x96, 0x97, 0x20, 0xcc, 0x3f, 0xd4, 0x0f, 0x85}};
+static const GUID BD_IID_IDailyTrigger = {0x126c5cd8, 0xb288, 0x41d5, {0x8d, 0xbf, 0xe4, 0x91, 0x44, 0x6a, 0xdc, 0x5c}};
+static const GUID BD_IID_IExecAction = {0x4c3d624d, 0xfd6b, 0x49a3, {0xb9, 0xb7, 0x09, 0xcb, 0x3c, 0xd3, 0xf0, 0x47}};
+
+#define RELEASE(p) do { if (p) { (p)->lpVtbl->Release(p); (p) = NULL; } } while (0)
+
+/* Create, update or delete the task through the Task Scheduler 2.0 COM API,
+ * so it also runs on battery (schtasks.exe creates tasks that do not start
+ * on battery) and catches up when the PC was off at noon. Runs every day,
+ * or every 7 days, at 12:00 local time, as the user who is logged on.
+ * Called on the UI thread, which is in a single-threaded apartment. */
+static HRESULT schedule_with_com(int days, const wchar_t *name, const wchar_t *exe, const wchar_t *args)
 {
-    wchar_t name[MAX_PATH + 32], exe[MAX_PATH], args[MAX_PATH * 3 + 128];
-    task_name(name, MAX_PATH + 32);
-    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    ITaskService *svc = NULL;
+    ITaskFolder *root = NULL;
+    ITaskDefinition *def = NULL;
+    ITaskSettings *set = NULL;
+    IRegistrationInfo *info = NULL;
+    ITriggerCollection *triggers = NULL;
+    ITrigger *trig = NULL;
+    IDailyTrigger *daily = NULL;
+    IActionCollection *actions = NULL;
+    IAction *act = NULL;
+    IExecAction *exec = NULL;
+    IRegisteredTask *reg = NULL;
+    BSTR b_root = SysAllocString(L"\\"), b_name = SysAllocString(name), b_exe = SysAllocString(exe), b_args = SysAllocString(args);
+    BSTR b_start = NULL, b_desc = NULL;
+    VARIANT none;
+    VariantInit(&none);
+    HRESULT hr = E_OUTOFMEMORY;
+    if (!b_root || !b_name || !b_exe || !b_args) goto done;
+    hr = CoCreateInstance(&BD_CLSID_TaskScheduler, NULL, CLSCTX_INPROC_SERVER, &BD_IID_ITaskService, (void **)&svc);
+    if (FAILED(hr)) goto done;
+    if (FAILED(hr = ITaskService_Connect(svc, none, none, none, none))) goto done;
+    if (FAILED(hr = ITaskService_GetFolder(svc, b_root, &root))) goto done;
+    if (days <= 0) {
+        hr = ITaskFolder_DeleteTask(root, b_name, 0);
+        if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) hr = S_OK; /* there was none */
+        goto done;
+    }
+    if (FAILED(hr = ITaskService_NewTask(svc, 0, &def))) goto done;
+    if (SUCCEEDED(ITaskDefinition_get_RegistrationInfo(def, &info)) &&
+        (b_desc = SysAllocString(L"Checks the folders BRODALF protects for changes and says when something needs backing up.")) != NULL)
+        IRegistrationInfo_put_Description(info, b_desc);
+    if (FAILED(hr = ITaskDefinition_get_Settings(def, &set))) goto done;
+    if (FAILED(hr = ITaskSettings_put_DisallowStartIfOnBatteries(set, VARIANT_FALSE)) ||
+        FAILED(hr = ITaskSettings_put_StopIfGoingOnBatteries(set, VARIANT_FALSE)) ||
+        FAILED(hr = ITaskSettings_put_StartWhenAvailable(set, VARIANT_TRUE)))
+        goto done;
+    if (FAILED(hr = ITaskDefinition_get_Triggers(def, &triggers))) goto done;
+    if (FAILED(hr = ITriggerCollection_Create(triggers, TASK_TRIGGER_DAILY, &trig))) goto done;
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    wchar_t start[32];
+    swprintf(start, 32, L"%04d-%02d-%02dT12:00:00", now.wYear, now.wMonth, now.wDay); /* local time, as schtasks /ST 12:00 */
+    if (!(b_start = SysAllocString(start))) { hr = E_OUTOFMEMORY; goto done; }
+    if (FAILED(hr = ITrigger_put_StartBoundary(trig, b_start))) goto done;
+    if (FAILED(hr = ITrigger_QueryInterface(trig, &BD_IID_IDailyTrigger, (void **)&daily))) goto done;
+    if (FAILED(hr = IDailyTrigger_put_DaysInterval(daily, (short)(days >= 7 ? 7 : 1)))) goto done;
+    if (FAILED(hr = ITaskDefinition_get_Actions(def, &actions))) goto done;
+    if (FAILED(hr = IActionCollection_Create(actions, TASK_ACTION_EXEC, &act))) goto done;
+    if (FAILED(hr = IAction_QueryInterface(act, &BD_IID_IExecAction, (void **)&exec))) goto done;
+    if (FAILED(hr = IExecAction_put_Path(exec, b_exe)) || FAILED(hr = IExecAction_put_Arguments(exec, b_args))) goto done;
+    hr = ITaskFolder_RegisterTaskDefinition(root, b_name, def, TASK_CREATE_OR_UPDATE, none, none, TASK_LOGON_INTERACTIVE_TOKEN,
+                                            none, &reg);
+done:
+    RELEASE(reg);
+    RELEASE(exec);
+    RELEASE(act);
+    RELEASE(actions);
+    RELEASE(daily);
+    RELEASE(trig);
+    RELEASE(triggers);
+    RELEASE(info);
+    RELEASE(set);
+    RELEASE(def);
+    RELEASE(root);
+    RELEASE(svc);
+    SysFreeString(b_root);
+    SysFreeString(b_name);
+    SysFreeString(b_exe);
+    SysFreeString(b_args);
+    SysFreeString(b_start);
+    SysFreeString(b_desc);
+    return hr;
+}
+
+/* The old way, if the COM API is not available: schtasks.exe. */
+static DWORD schedule_with_schtasks(int days, const wchar_t *name, const wchar_t *exe)
+{
+    wchar_t args[MAX_PATH * 3 + 128];
     if (days > 0)
         swprintf(args, MAX_PATH * 3 + 128, L"/Create /F /SC %ls /TN \"%ls\" /ST 12:00 /TR \"\\\"%ls\\\" --check \\\"%ls\\\"\"",
                  days >= 7 ? L"WEEKLY" : L"DAILY", name, exe, g_cat_path);
@@ -2842,14 +2931,31 @@ static void apply_schedule(int days, int say)
     char *u = narrow(args);
     bd_applog("schtasks %s -> %lu", u ? u : "", (unsigned long)code);
     free(u);
+    return code;
+}
+
+/* Tell Windows Task Scheduler to run "brodalf.exe --check <catalog>" every
+ * day or week, or forget the task. */
+static void apply_schedule(int days, int say)
+{
+    wchar_t name[MAX_PATH + 32], exe[MAX_PATH], args[MAX_PATH * 2 + 32];
+    task_name(name, MAX_PATH + 32);
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    swprintf(args, MAX_PATH * 2 + 32, L"--check \"%ls\"", g_cat_path);
+    HRESULT hr = schedule_with_com(days, name, exe, args);
+    DWORD code = 0;
+    char *u = narrow(name);
+    bd_applog("Task Scheduler: %s \"%s\" -> 0x%08lx", days > 0 ? "register" : "delete", u ? u : "", (unsigned long)hr);
+    free(u);
+    if (FAILED(hr)) code = schedule_with_schtasks(days, name, exe);
     if (!say) return;
     if (code != 0)
         log_append(days > 0 ? L"Windows did not accept the scheduled task (see the app log). BRODALF only checks your folders while it is open."
                             : L"The scheduled task could not be removed (see the app log).");
     else if (days > 0) {
         wchar_t line[300];
-        swprintf(line, 300, L"Windows will run BRODALF every %ls around noon to check your folders. It only shows itself when "
-                            L"something needs backing up.", days >= 7 ? L"week" : L"day");
+        swprintf(line, 300, L"Windows will run BRODALF every %ls around noon to check your folders, on battery too. It only shows "
+                            L"itself when something needs backing up.", days >= 7 ? L"week" : L"day");
         log_append(line);
     } else
         log_append(L"BRODALF checks your folders only while it is open.");

@@ -318,6 +318,14 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
   header is then followed by the key block, and the zstd stream is sealed with
   the master key in the same chunk format. The catalog backup on an encrypted
   drive is always written encrypted.
+- The master key, salts and nonces come from the system's random source
+  (BCryptGenRandom, getrandom). If it fails, nothing is made or written: no
+  key block is stored, the old one stays, a sealed copy or catalog file is
+  not started, so a predictable key or a repeated nonce can never happen.
+- A key block's Argon2 settings are checked before any work: memory 8 MiB
+  to 1 GiB and 1 to 16 passes (BRODALF writes 64 MiB and 3; it always uses
+  one lane, which the block does not store). Anything else is refused as a
+  damaged catalog instead of trying to allocate 4 GiB or run for hours.
 
 ## GUI
 

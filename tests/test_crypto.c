@@ -110,6 +110,28 @@ static void quiet(void *ctx, const char *msg)
     (void)msg;
 }
 
+static void put_le32(uint8_t *p, uint32_t v)
+{
+    for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+static void hex_of(const uint8_t *b, size_t n, char *out)
+{
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = digits[b[i] >> 4];
+        out[i * 2 + 1] = digits[b[i] & 15];
+    }
+    out[n * 2] = '\0';
+}
+
+static int count_tmp_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    size_t n = strlen(rel), k = strlen(BD_TMP_MARKER);
+    if (st->is_file && n > k && strcmp(rel + n - k, BD_TMP_MARKER) == 0) (*(int *)ctx)++;
+    return 0;
+}
+
 #define PASS "correct horse battery"
 #define PASS2 "a brand new passphrase"
 
@@ -255,6 +277,89 @@ int main(void)
     REQUIRE_OK(bd_catalog_set_file_encrypted(cat, 0), cat);
     REQUIRE_OK(bd_catalog_save(cat), cat);
     CHECK(!bd_catalog_file_needs_passphrase(at("c.brodalf")));
+    bd_catalog_close(cat);
+
+    /* No random numbers for a new key: nothing is made or stored. */
+    REQUIRE_OK(bd_catalog_create(at("r.brodalf"), &cat), NULL);
+    bd_test_random_fail = 1;
+    CHECK(bd_catalog_set_passphrase(cat, PASS) == BD_ERR_IO);
+    CHECK(!bd_catalog_has_passphrase(cat) && !bd_catalog_is_unlocked(cat));
+    bd_test_random_fail = 0;
+    bd_catalog_close(cat);
+
+    /* Nor for a new salt: the old key block stays. */
+    REQUIRE_OK(bd_catalog_open(at("c.brodalf"), &cat), NULL);
+    REQUIRE_OK(bd_catalog_unlock(cat, PASS2), cat);
+    uint8_t before[BD_KEY_BLOCK], after[BD_KEY_BLOCK];
+    CHECK(bd_catalog_key_block(cat, before) == 0);
+    bd_test_random_fail = 1;
+    CHECK(bd_catalog_set_passphrase(cat, "yet another passphrase") == BD_ERR_IO);
+    CHECK(bd_catalog_key_block(cat, after) == 0 && memcmp(before, after, sizeof(before)) == 0);
+    CHECK(bd_catalog_is_unlocked(cat));
+
+    /* Nor for a sealed copy's nonce: those copies fail and leave nothing
+     * on the drive (secret.txt changed; big.bin and exact.bin were found
+     * damaged above and are copied again). */
+    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, &cs, quiet, NULL), cat);
+    write_file(at("src/Docs/secret.txt"), "the plans are gone");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_failed == 3 && bs.versions_moved == 0);
+    int tmp_files = 0;
+    bd_walk(at("vault"), count_tmp_cb, NULL, &tmp_files);
+    CHECK(tmp_files == 0);
+
+    /* Nor for saving the catalog encrypted: the file on disk stays as it was. */
+    REQUIRE_OK(bd_catalog_set_file_encrypted(cat, 1), cat);
+    static char saved[300000];
+    long saved_n = read_all(at("c.brodalf"), saved, sizeof(saved));
+    CHECK(saved_n > 0 && saved_n < (long)sizeof(saved));
+    CHECK(bd_catalog_save(cat) == BD_ERR_IO);
+    CHECK(file_equals(at("c.brodalf"), saved, (size_t)saved_n) && !exists(at("c.brodalf.saving")));
+    bd_test_random_fail = 0;
+    REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3 && bs.files_failed == 0 && bs.versions_moved == 1);
+    REQUIRE_OK(bd_media_check(cat, vault, 1, &cs, quiet, NULL), cat);
+    CHECK(cs.bad == 0 && cs.missing == 0 && cs.ok == cs.copies);
+
+    /* Argon2 settings far from what BRODALF writes (64 MiB, 3 passes) are
+     * refused before any work: a damaged or crafted block could otherwise
+     * ask for 4 GiB or hours. */
+    static const uint32_t bad[][2] = {{1u << 22, 3}, {2u << 20, 3}, {1024, 3}, {65536, 0}, {65536, 17}, {65536, 1000000}};
+    uint8_t key[32], blk[BD_KEY_BLOCK];
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        memcpy(blk, before, sizeof(blk));
+        put_le32(blk + 16, bad[i][0]);
+        put_le32(blk + 20, bad[i][1]);
+        CHECK(bd_unwrap_key_block(PASS2, blk, key) == -2);
+    }
+    CHECK(bd_unwrap_key_block(PASS2, before, key) == 0); /* the app's own settings */
+    char hex[BD_KEY_BLOCK * 2 + 1], good_hex[BD_KEY_BLOCK * 2 + 1];
+    hex_of(before, sizeof(before), good_hex);
+    memcpy(blk, before, sizeof(blk));
+    put_le32(blk + 16, 1u << 22);
+    hex_of(blk, sizeof(blk), hex);
+    CHECK(bd_setting_set(cat, "key_block", hex) == 0);
+    bd_catalog_lock_key(cat);
+    CHECK(bd_catalog_unlock(cat, PASS2) == BD_ERR_FORMAT);
+    CHECK(strstr(bd_catalog_error(cat), "not ones BRODALF writes") != NULL);
+    CHECK(!bd_catalog_is_unlocked(cat));
+    CHECK(bd_setting_set(cat, "key_block", good_hex) == 0);
+    REQUIRE_OK(bd_catalog_unlock(cat, PASS2), cat);
+
+    /* The same in an encrypted catalog file's header. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    long cn = read_all(at("c.brodalf"), saved, sizeof(saved));
+    CHECK(cn > 16 + BD_KEY_BLOCK);
+    put_le32((uint8_t *)saved + 16 + 20, 64); /* passes */
+    write_bytes(at("c.brodalf"), saved, (size_t)cn);
+    CHECK(bd_catalog_open_with(at("c.brodalf"), PASS2, &cat) == BD_ERR_FORMAT);
+    CHECK(strstr(bd_open_error(), "not ones BRODALF writes") != NULL);
+    CHECK(!exists(at("c.brodalf.lock")));
+    put_le32((uint8_t *)saved + 16 + 20, 3);
+    write_bytes(at("c.brodalf"), saved, (size_t)cn);
+    REQUIRE_OK(bd_catalog_open_with(at("c.brodalf"), PASS2, &cat), NULL);
     bd_catalog_close(cat);
 
     if (failures) {

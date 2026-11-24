@@ -398,7 +398,10 @@ bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
         goto done;
     }
     sink.file = out;
-    if (encrypt && !(sink.sealer = bd_seal_begin(out, cat->key))) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
+    if (encrypt && !(sink.sealer = bd_seal_begin(out, cat->key))) {
+        status = bd_fail(cat, BD_ERR_IO, "cannot encrypt %s: out of memory, or the system gave no random numbers", dest);
+        goto done;
+    }
     status = compress_to(cat, snapshot, &sink);
     if (sink.sealer) {
         if (bd_seal_end(sink.sealer) != 0 && status == BD_OK) status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving);
@@ -512,7 +515,8 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
         if (rc != 0) {
             fclose(in);
             return fail_open(cat, rc == -1 ? bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key")
-                                           : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong passphrase for %s", path), 1);
+                                  : rc == -2 ? bd_fail(cat, BD_ERR_FORMAT, "%s: " BD_KEY_BLOCK_BAD, path)
+                                             : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong passphrase for %s", path), 1);
         }
         src.opener = bd_open_begin(in, key);
         if (!src.opener) {

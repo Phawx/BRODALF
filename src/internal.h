@@ -61,7 +61,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
 /* Streaming encryption (see crypto.c for the format). */
 typedef struct bd_sealer bd_sealer;
 typedef struct bd_opener bd_opener;
-bd_sealer *bd_seal_begin(FILE *out, const uint8_t key[32]);
+bd_sealer *bd_seal_begin(FILE *out, const uint8_t key[32]); /* NULL, nothing written: no memory or no random nonce */
 int bd_seal_write(bd_sealer *s, const void *data, size_t n); /* 0 or -2 */
 int bd_seal_end(bd_sealer *s);                                /* writes the last chunk, frees */
 bd_opener *bd_open_begin(FILE *in, const uint8_t key[32]);   /* NULL: not a sealed stream */
@@ -85,7 +85,11 @@ int bd_setting_set(bd_catalog *cat, const char *key, const char *value);
  * header of an encrypted .brodalf file. */
 #define BD_KEY_BLOCK 96
 int bd_catalog_key_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK]);
-int bd_unwrap_key_block(const char *pass, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]); /* -1 nomem, -3 wrong */
+/* -1 nomem, -2 the block's Argon2 settings are out of range, -3 wrong */
+int bd_unwrap_key_block(const char *pass, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]);
+#define BD_KEY_BLOCK_BAD "the passphrase settings in this catalog are not ones BRODALF writes; the file may be damaged"
+/* Tests only: random bytes for keys, salts and nonces fail. */
+extern int bd_test_random_fail;
 void bd_catalog_set_key(bd_catalog *cat, const uint8_t key[32]);
 void bd_wipe(void *p, size_t n);
 

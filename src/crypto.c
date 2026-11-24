@@ -33,6 +33,24 @@
 
 #define KDF_MEM_KIB 65536u /* 64 MiB */
 #define KDF_PASSES 3u
+/* What a key block may ask for. BRODALF writes 64 MiB and 3 passes (and
+ * always uses one lane, which the block does not store); anything far
+ * outside that was not written by it, and could make opening take hours
+ * or all the memory there is. */
+#define KDF_MIN_MEM_KIB 8192u    /* 8 MiB */
+#define KDF_MAX_MEM_KIB 1048576u /* 1 GiB */
+#define KDF_MIN_PASSES 1u
+#define KDF_MAX_PASSES 16u
+
+int bd_test_random_fail = 0;
+
+/* Random bytes for keys, salts and nonces. Never use the buffer if this
+ * fails: a predictable key or a repeated nonce gives the data away. */
+static int random_bytes(void *buf, size_t n)
+{
+    if (bd_test_random_fail) return -1;
+    return bd_random_bytes(buf, n);
+}
 
 static void put_u32(uint8_t *p, uint32_t v)
 {
@@ -78,7 +96,13 @@ bd_sealer *bd_seal_begin(FILE *out, const uint8_t key[32])
     memcpy(s->ad, SEAL_MAGIC, 8);
     put_u32(s->ad + 8, SEAL_VERSION);
     put_u32(s->ad + 12, SEAL_CHUNK);
-    bd_random_bytes(s->ad + 16, 24);
+    if (random_bytes(s->ad + 16, 24) != 0) {
+        /* Nothing is written. */
+        free(s->plain);
+        free(s->cipher);
+        free(s);
+        return NULL;
+    }
     crypto_aead_init_x(&s->ctx, key, s->ad + 16);
     if (fwrite(s->ad, 1, SEAL_HEADER, out) != SEAL_HEADER) s->err = -2;
     return s;
@@ -350,9 +374,11 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
 
 /* ---- Keys ---------------------------------------------------------------- */
 
+/* 0, -1 out of memory, -2 settings out of range. */
 static int derive_kek(const char *pass, const uint8_t salt[16], uint32_t mem_kib, uint32_t passes, uint8_t kek[32])
 {
-    if (mem_kib < 8 || mem_kib > (1u << 22) || passes < 1 || passes > 64) return -1;
+    if (mem_kib < KDF_MIN_MEM_KIB || mem_kib > KDF_MAX_MEM_KIB || passes < KDF_MIN_PASSES || passes > KDF_MAX_PASSES)
+        return -2;
     void *work = malloc((size_t)mem_kib * 1024);
     if (!work) return -1;
     crypto_argon2_config config = {CRYPTO_ARGON2_ID, mem_kib, passes, 1};
@@ -364,31 +390,36 @@ static int derive_kek(const char *pass, const uint8_t salt[16], uint32_t mem_kib
 }
 
 /* Key block: salt(16) mem_kib(4) passes(4) nonce(24) mac(16) wrapped key(32). */
-static void wrap_key(const uint8_t kek[32], const uint8_t key[32], uint8_t block[BD_KEY_BLOCK])
+static int wrap_key(const uint8_t kek[32], const uint8_t key[32], uint8_t block[BD_KEY_BLOCK])
 {
-    bd_random_bytes(block + 24, 24);
+    if (random_bytes(block + 24, 24) != 0) return -4;
     crypto_aead_lock(block + 64, block + 48, kek, block + 24, block, 24, key, 32);
+    return 0;
 }
 
+/* 0, -1 out of memory, -2 the block's settings are out of range, -3 wrong
+ * passphrase. */
 static int unwrap_key(const char *pass, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32])
 {
     uint8_t kek[32];
-    if (derive_kek(pass, block, get_u32(block + 16), get_u32(block + 20), kek) != 0) return -1;
+    int d = derive_kek(pass, block, get_u32(block + 16), get_u32(block + 20), kek);
+    if (d != 0) return d;
     int rc = crypto_aead_unlock(key, block + 48, kek, block + 24, block, 24, block + 64, 32);
     crypto_wipe(kek, sizeof(kek));
     return rc == 0 ? 0 : -3;
 }
 
+/* 0, -1 out of memory, -4 no random numbers. */
 static int make_key_block(const char *pass, const uint8_t key[32], uint8_t block[BD_KEY_BLOCK])
 {
     uint8_t kek[32];
-    bd_random_bytes(block, 16);
+    if (random_bytes(block, 16) != 0) return -4;
     put_u32(block + 16, KDF_MEM_KIB);
     put_u32(block + 20, KDF_PASSES);
     if (derive_kek(pass, block, KDF_MEM_KIB, KDF_PASSES, kek) != 0) return -1;
-    wrap_key(kek, key, block);
+    int rc = wrap_key(kek, key, block);
     crypto_wipe(kek, sizeof(kek));
-    return 0;
+    return rc;
 }
 
 int bd_unwrap_key_block(const char *pass, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32])
@@ -486,11 +517,16 @@ bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase)
     if (bd_catalog_has_passphrase(cat) && !cat->have_key)
         return bd_fail(cat, BD_ERR_PASSPHRASE, "unlock the catalog with its current passphrase first");
     uint8_t key[32], block[BD_KEY_BLOCK];
+    int rc = 0;
     if (cat->have_key) memcpy(key, cat->key, 32); /* changing the passphrase keeps the key */
-    else bd_random_bytes(key, 32);
-    if (make_key_block(passphrase, key, block) != 0) {
+    else if (random_bytes(key, 32) != 0) rc = -4;
+    if (rc == 0) rc = make_key_block(passphrase, key, block);
+    if (rc != 0) {
+        /* Nothing was stored; the catalog is as it was. */
         crypto_wipe(key, sizeof(key));
-        return bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key");
+        crypto_wipe(block, sizeof(block));
+        return rc == -4 ? bd_fail(cat, BD_ERR_IO, "cannot make a key: the system gave no random numbers; nothing was changed")
+                        : bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key");
     }
     bd_status s = store_block(cat, block);
     if (s == BD_OK) bd_catalog_set_key(cat, key);
@@ -504,6 +540,7 @@ bd_status bd_catalog_unlock(bd_catalog *cat, const char *passphrase)
     if (bd_catalog_key_block(cat, block) != 0) return bd_fail(cat, BD_ERR_INVALID, "this catalog has no passphrase");
     int rc = unwrap_key(passphrase ? passphrase : "", block, key);
     if (rc == -1) return bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key");
+    if (rc == -2) return bd_fail(cat, BD_ERR_FORMAT, BD_KEY_BLOCK_BAD);
     if (rc != 0) return bd_fail(cat, BD_ERR_PASSPHRASE, "wrong passphrase");
     bd_catalog_set_key(cat, key);
     crypto_wipe(key, sizeof(key));

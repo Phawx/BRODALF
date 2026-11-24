@@ -10,7 +10,10 @@
  * with the master key.
  *
  * While open, the database lives in a working copy in the temp folder and a
- * "<file>.lock" file sits next to the catalog. */
+ * "<file>.lock" file sits next to the catalog. On Windows a named mutex
+ * derived from the catalog's full path is held too, and the lock file is
+ * kept open without sharing, so both are released by Windows if BRODALF
+ * crashes; elsewhere a lock file left by a crash has to be removed by hand. */
 #include "internal.h"
 
 #include "zstd.h"
@@ -157,7 +160,7 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
     if (cat->db) sqlite3_close(cat->db);
     bd_wipe(cat->key, sizeof(cat->key));
     remove_work_files(cat);
-    if (owns_lock) bd_remove(cat->lock_path);
+    if (owns_lock && cat->lock) bd_catalog_lock_release(cat->lock, cat->lock_path);
     free(cat->path);
     free(cat->lock_path);
     free(cat->work_path);
@@ -182,11 +185,20 @@ const char *bd_open_error(void)
 
 static bd_status take_lock(bd_catalog *cat)
 {
-    int rc = bd_create_exclusive(cat->lock_path);
+    int rc = bd_catalog_lock_take(cat->path, cat->lock_path, &cat->lock);
+#ifdef _WIN32
+    if (rc == 1)
+        return bd_fail(cat, BD_ERR_LOCKED, "%s is already open in another BRODALF window. Close it there first.", cat->path);
+    if (rc == 2)
+        return bd_fail(cat, BD_ERR_LOCKED,
+                       "%s is already open in BRODALF on another computer or in another window. Close it there first.",
+                       cat->path);
+#else
     if (rc == 1)
         return bd_fail(cat, BD_ERR_LOCKED,
                        "%s is open in another BRODALF window. If none is running, delete %s and try again.",
                        cat->path, cat->lock_path);
+#endif
     if (rc != 0) return bd_fail(cat, BD_ERR_IO, "cannot create lock file %s", cat->lock_path);
     return BD_OK;
 }

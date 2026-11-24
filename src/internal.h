@@ -18,6 +18,7 @@ struct bd_catalog {
     sqlite3 *db;
     char *path;       /* the .brodalf file */
     char *lock_path;
+    void *lock;       /* bd_catalog_lock_take's handle while this catalog holds the lock */
     char *work_path;  /* unpacked SQLite working copy */
     char uuid[37];
     char err[1024];

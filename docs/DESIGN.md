@@ -174,7 +174,14 @@ the protected folder when they contain a `/`; a trailing `/` means folders.
 
 16-byte header (`BRODALF\x1a`, format version, flags) followed by one zstd
 stream of a SQLite database. While open it is unpacked to a working copy in the
-temp folder and `<file>.lock` prevents a second window from editing it. Saving
+temp folder. On Windows a named mutex, `Local\BRODALF-catalog-<hash>` (the
+first 16 bytes of the BLAKE3 hash of the catalog's full path, made long,
+upper-cased and without the `\\?\` prefix), keeps a second BRODALF on the
+same PC from opening it, and `<file>.lock` is held open without sharing and
+deleted on close, which also keeps out a BRODALF on another PC when the
+catalog is on a share. Windows drops both when the process ends, so a crash
+leaves no stale lock. On other systems (tests, CLI) `<file>.lock` is created
+exclusively and removed on close. Saving
 writes a new file and swaps it in atomically.
 
 Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
@@ -267,7 +274,8 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 - A progress bar and a text line sit above the log; see Progress above.
 - Startup: a task dialog offers the last catalog (kept in
   `HKCU\Software\BRODALF\LastCatalog`), another one, or a new one. A path on
-  the command line opens directly. A stale lock can be removed after a crash.
+  the command line opens directly. A catalog open in another BRODALF window
+  is refused with a message naming it.
 - The tree loads folders lazily and draws each state with custom draw: grey
   italic for no reachable copy, amber for older version only, red bold for a
   bad copy, strikethrough for deleted. Folder and source rows show "x of y

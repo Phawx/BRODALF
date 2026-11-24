@@ -3479,15 +3479,6 @@ static int ask_catalog_choice(const wchar_t *last)
     return pressed;
 }
 
-static int ask_remove_lock(const wchar_t *path)
-{
-    wchar_t msg[MAX_PATH * 3];
-    swprintf(msg, MAX_PATH * 3,
-             L"%ls is marked as open in another BRODALF window.\n\nIf no other BRODALF window is open (for example after a crash), you can remove the mark and open it.",
-             path);
-    return MessageBoxW(NULL, msg, APP_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES;
-}
-
 /* Open a catalog, asking for the passphrase if the file is encrypted.
  * A cancelled prompt returns BD_ERR_PASSPHRASE with no message. */
 static bd_status open_maybe_encrypted(const char *path)
@@ -3528,12 +3519,7 @@ static int open_catalog(const wchar_t *given)
             s = bd_catalog_create(p, &g_cat);
         } else {
             s = open_maybe_encrypted(p);
-            if (s == BD_ERR_LOCKED && ask_remove_lock(path)) {
-                wchar_t lock[MAX_PATH * 2 + 8];
-                swprintf(lock, MAX_PATH * 2 + 8, L"%ls.lock", path);
-                DeleteFileW(lock);
-                s = open_maybe_encrypted(p);
-            } else if (s == BD_ERR_LOCKED || s == BD_ERR_PASSPHRASE) { /* declined */
+            if (s == BD_ERR_PASSPHRASE) { /* declined */
                 free(p);
                 continue;
             }
@@ -3547,7 +3533,10 @@ static int open_catalog(const wchar_t *given)
         wchar_t *e = widen(bd_open_error());
         const wchar_t *why = e && e[0] ? e : L"The catalog could not be opened.";
         /* Picking a file that is not a catalog is not a bug. */
-        if (s == BD_ERR_FORMAT || s == BD_ERR_NOT_FOUND || s == BD_ERR_EXISTS) MessageBoxW(NULL, why, APP_NAME, MB_ICONERROR);
+        /* Nor is a catalog that is open in another BRODALF window (a named
+         * mutex says so; Windows drops it if that BRODALF crashed). */
+        if (s == BD_ERR_LOCKED) MessageBoxW(NULL, why, APP_NAME, MB_ICONINFORMATION);
+        else if (s == BD_ERR_FORMAT || s == BD_ERR_NOT_FOUND || s == BD_ERR_EXISTS) MessageBoxW(NULL, why, APP_NAME, MB_ICONERROR);
         else report_error(NULL, why);
         free(e);
     }

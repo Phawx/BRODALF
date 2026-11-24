@@ -240,6 +240,24 @@ current version and either the file needs copies or the medium's place is
 not yet among the file's places. Offline copies count: the target is about
 what exists, not what is plugged in.
 
+## Replacing a drive
+
+`media.retired_ms` and `media.replaced_by` (added in place to schema 5
+catalogs; earlier versions ignore them) mark a drive being replaced and the
+drive taking its place. A retired drive gets nothing new: `bd_backup`
+refuses it, "which drive next" never names it, and the GUI leaves it out of
+plug-in backups. Its copies still restore. A copy on it counts toward the
+protection target (`BD_SQL_COUNTS`) until the replacement holds a good copy
+of the same version, so the target is met without it once the replacement
+has caught up. `bd_media_replace(old, new)` retires old, lists in
+`temp.replace_need` every current version with a good copy on old that has
+fewer than N copies or M places on the other drives, and runs a backup to
+new limited to that list (read from the source folders and checked by hash,
+like any backup). Deleted files and older versions whose only copy is on
+old are not copied; they are counted so the GUI can say to keep the drive.
+The drive details show a plain suggestion to replace a drive whose health
+data says failing, warning, 90% worn, or pending or unreadable sectors.
+
 ## Drive hardware
 
 `media.location` holds the optional "where it is kept" text. `media_hardware`

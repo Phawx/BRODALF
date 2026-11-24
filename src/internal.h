@@ -76,6 +76,20 @@ long bd_source_read(bd_source *k, void *buf, size_t cap);
 /* Tests only: pretend every drive has this much free space (-1: ask it). */
 extern int64_t bd_test_free_bytes;
 
+/* SQL: where a drive is kept, its "kept in" text (all drives with none set
+ * share ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place
+ * of its own, so the copies it holds still count the way they did. */
+#define BD_SQL_PLACE(m) "(CASE WHEN " m ".kind<>'drive' THEN 'cloud:'||" m ".id ELSE lower(trim(COALESCE(" m ".location,''))) END)"
+/* SQL: a copy counts toward the protection target, unless it is on a drive
+ * being replaced and the drive replacing it holds the same version. */
+#define BD_SQL_COUNTS(c)                                                                                  \
+    "NOT EXISTS(SELECT 1 FROM media rm JOIN copies rc ON rc.media_id=rm.replaced_by"                       \
+    " WHERE rm.id=" c ".media_id AND rm.retired_ms IS NOT NULL AND rc.version_id=" c ".version_id"         \
+    " AND rc.state='ok')"
+
+/* 1 if the drive is being replaced (bd_media_retire). */
+int bd_media_retired(bd_catalog *cat, int64_t media_id);
+
 /* Catalog settings (the settings table). get: 1 if found. set: 0 on success. */
 int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap);
 int bd_setting_set(bd_catalog *cat, const char *key, const char *value);

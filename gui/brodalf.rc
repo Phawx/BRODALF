@@ -28,6 +28,7 @@ BEGIN
     EDITTEXT IDC_DRIVE_NAME, 8, 178, 284, 14, ES_AUTOHSCROLL
     LTEXT "Where it is kept, or what is written on it (optional):", -1, 8, 198, 284, 10
     EDITTEXT IDC_DRIVE_LOCATION, 8, 210, 284, 14, ES_AUTOHSCROLL
+    PUSHBUTTON "Replace this drive...", IDC_DRIVE_REPLACE, 8, 230, 90, 14
     DEFPUSHBUTTON "Save", IDOK, 178, 230, 54, 14
     PUSHBUTTON "Cancel", IDCANCEL, 238, 230, 54, 14
 END

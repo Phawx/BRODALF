@@ -501,7 +501,8 @@ bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *s
     return BD_OK;
 }
 
-/* ?4..?11: the drives whose copies count (the full ones), 0 ending the list. */
+/* ?4..?11: the drives whose copies count (the full ones), 0 ending the list.
+ * ?12: replacing a drive (bd_media_replace), only the files it listed. */
 static void bind_continue(sqlite3_stmt *q, const bd_backup_opts *opts)
 {
     for (int k = 0; k < BD_MAX_CONTINUE; k++) {
@@ -509,6 +510,7 @@ static void bind_continue(sqlite3_stmt *q, const bd_backup_opts *opts)
         if (k > 0 && opts && !opts->only_missing_from[k - 1]) id = 0; /* the list ended */
         sqlite3_bind_int64(q, 4 + k, id);
     }
+    sqlite3_bind_int64(q, 12, opts ? opts->replacing : 0);
 }
 
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
@@ -530,6 +532,9 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
                        "backups are paused: the last scan found %lld of %lld files changed or gone at once, which is what "
                        "ransomware does. Restore them as they were, or say the changes are yours",
                        (long long)(g.files_changed + g.files_deleted), (long long)g.files_total);
+
+    if (bd_media_retired(cat, media_id))
+        return bd_fail(cat, BD_ERR_INVALID, "this drive is being replaced, so nothing new is backed up to it");
 
     const uint8_t *key = NULL;
     if (bd_media_encrypted(cat, media_id)) {
@@ -564,6 +569,7 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
                            " WHERE n.is_dir=0 AND n.deleted=0 AND (?2=0 OR n.source_id=?2) AND n.id>?3"
                            " AND (?4=0 OR NOT EXISTS(SELECT 1 FROM copies c2 WHERE c2.version_id=v.id"
                            "   AND c2.media_id IN (?4,?5,?6,?7,?8,?9,?10,?11) AND c2.state='ok'))"
+                           " AND (?12=0 OR v.id IN (SELECT version_id FROM temp.replace_need))"
                            " ORDER BY n.id LIMIT 256",
                            -1, &q, NULL) != SQLITE_OK) {
         bd_store_close(store);
@@ -579,7 +585,8 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
                            " WHERE n.is_dir=0 AND n.deleted=0 AND (?2=0 OR n.source_id=?2) AND n.id>?3"
                            " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=?1 AND c.state='ok')"
                            " AND (?4=0 OR NOT EXISTS(SELECT 1 FROM copies c2 WHERE c2.version_id=v.id"
-                           "   AND c2.media_id IN (?4,?5,?6,?7,?8,?9,?10,?11) AND c2.state='ok'))",
+                           "   AND c2.media_id IN (?4,?5,?6,?7,?8,?9,?10,?11) AND c2.state='ok'))"
+                           " AND (?12=0 OR v.id IN (SELECT version_id FROM temp.replace_need))",
                            -1, &t, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(t, 1, media_id);
         sqlite3_bind_int64(t, 2, source_id);

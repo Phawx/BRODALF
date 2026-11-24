@@ -10,10 +10,7 @@
 #define DEFAULT_PLACES 2
 #define MAX_COPIES 16
 
-/* Where a drive is kept: its "kept in" text (all drives with none set share
- * ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place of its
- * own, so the copies it holds still count the way they did. */
-#define PLACE(m) "(CASE WHEN " m ".kind<>'drive' THEN 'cloud:'||" m ".id ELSE lower(trim(COALESCE(" m ".location,''))) END)"
+#define PLACE(m) BD_SQL_PLACE(m)
 
 /* Every live file with its copies and places; ?3 limits it to one source.
  * "older" means the file changed since its last backup: no good copy of the
@@ -21,11 +18,11 @@
 #define FILES_CTE                                                                                        \
     "WITH f AS (SELECT n.id, n.source_id, n.rel_path, n.size, n.current_version_id AS v,"                \
     "  (SELECT COUNT(DISTINCT c.media_id) FROM copies c"                                                 \
-    "    WHERE c.version_id=n.current_version_id AND c.state='ok') AS cp,"                               \
+    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp,"     \
     "  (SELECT COUNT(DISTINCT " PLACE("m") ") FROM copies c JOIN media m ON m.id=c.media_id"             \
-    "    WHERE c.version_id=n.current_version_id AND c.state='ok') AS pl,"                               \
+    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl,"     \
     "  EXISTS(SELECT 1 FROM copies c JOIN media m ON m.id=c.media_id"                                    \
-    "    WHERE c.version_id=n.current_version_id AND c.state='ok'"                                       \
+    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c")                \
     "    AND m.kind='drive' AND trim(COALESCE(m.location,''))='') AS unk,"                               \
     "  (NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.state='ok')"     \
     "   AND EXISTS(SELECT 1 FROM copies c JOIN versions ov ON ov.id=c.version_id"                        \
@@ -137,11 +134,12 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
                                      " COUNT(*), COALESCE(SUM(r.size),0), m.free_bytes, COALESCE(m.total_bytes,0),"
                                      " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
                                      " FROM media m JOIN r"
-                                     " WHERE m.kind='drive'"
+                                     " WHERE m.kind='drive' AND m.retired_ms IS NULL"
                                      " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=r.v"
                                      "   AND c.media_id=m.id AND c.state='ok')"
                                      " AND (r.cp<?1 OR NOT EXISTS(SELECT 1 FROM copies c JOIN media m2 ON m2.id=c.media_id"
-                                     "   WHERE c.version_id=r.v AND c.state='ok' AND " PLACE("m2") "=" PLACE("m") "))"
+                                     "   WHERE c.version_id=r.v AND c.state='ok' AND " BD_SQL_COUNTS("c")
+                                     "   AND " PLACE("m2") "=" PLACE("m") "))"
                                      " GROUP BY m.id ORDER BY 6 DESC, 7 DESC, m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "work out which drive helps");

@@ -185,7 +185,7 @@ static int S(int px) { return MulDiv(px, g_dpi, 96); }
 
 /* ---- Jobs --------------------------------------------------------------- */
 
-typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW } job_kind;
+typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW, JOB_REPLACE } job_kind;
 
 typedef struct job {
     job_kind kind;
@@ -203,6 +203,8 @@ typedef struct job {
     int n_new;
     int64_t span[BD_MAX_CONTINUE]; /* backup: only what is missing from these full drives */
     int64_t no_room, bytes_no_room; /* backup: what did not fit */
+    int64_t old_id;     /* replace: the drive being replaced (media_id takes its place) */
+    int64_t only_old[3]; /* replace: files, deleted files, older versions still only on it */
     int64_t offline;    /* restore: files on drives not plugged in */
     int64_t as_of;      /* restore: the files as they were then (0: current) */
     int64_t in_use;     /* scan/backup: files another program had open */
@@ -520,6 +522,24 @@ static DWORD WINAPI worker(LPVOID arg)
     case JOB_SHADOW:
         s = run_shadow(j);
         break;
+    case JOB_REPLACE: {
+        bd_replace_stats rs;
+        s = bd_media_replace(g_cat, j->old_id, j->media_id, &rs, job_log, j);
+        if (s == BD_OK) s = bd_catalog_copy_to_media(g_cat, j->media_id);
+        format_bytes(rs.backup.bytes_copied, size, 64);
+        swprintf(j->summary, 512, L"Replace done: %lld files needed the old drive, %lld copied (%ls), %lld already there, %lld failed.",
+                 (long long)rs.files_needed, (long long)rs.backup.files_copied, size, (long long)rs.backup.files_already_there,
+                 (long long)rs.backup.files_failed);
+        if (rs.backup.files_no_room) {
+            size_t len = wcslen(j->summary);
+            swprintf(j->summary + len, 512 - len, L" The drive is full: %lld did not fit.", (long long)rs.backup.files_no_room);
+        }
+        j->no_room = rs.backup.files_no_room;
+        j->only_old[0] = rs.files_only_old;
+        j->only_old[1] = rs.deleted_only_old;
+        j->only_old[2] = rs.versions_only_old;
+        break;
+    }
     case JOB_CHECK: {
         bd_check_stats cs;
         s = bd_media_check(g_cat, j->media_id, 1, &cs, job_log, j);
@@ -981,6 +1001,7 @@ typedef struct {
     char label[256], kind[16], root[512], location[256];
     int connected, encrypted, has_hw;
     int64_t last_seen_ms, hw_read_ms, total, freeb, copies, added_ms;
+    int64_t retired_ms, replaced_by;
     bd_drive_hw hw;
 } drive_snap;
 
@@ -1010,6 +1031,8 @@ static int drive_snap_cb(void *ctx, const bd_media_info *m)
     d->freeb = m->free_bytes;
     d->copies = m->copies;
     d->added_ms = m->added_ms;
+    d->retired_ms = m->retired_ms;
+    d->replaced_by = m->replaced_by;
     if (m->hw) { d->has_hw = 1; d->hw = *m->hw; d->hw_read_ms = m->hw_read_ms; }
     return 0;
 }
@@ -1051,6 +1074,18 @@ static void wadd(wtext *t, const wchar_t *fmt, ...)
     t->len += n;
 }
 
+/* What the drive's own health data says about replacing it, or NULL. */
+static const wchar_t *replace_advice(const drive_snap *d)
+{
+    if (!d->has_hw || d->retired_ms) return NULL;
+    const bd_drive_hw *h = &d->hw;
+    if (strcmp(h->health, "failing") == 0) return L"The drive says it is failing. Replace it soon.";
+    if (h->percent_used >= 90) return L"The drive is nearly worn out. Plan to replace it.";
+    if (strcmp(h->health, "warning") == 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
+        return L"The drive reports problems reading some of its sectors. Plan to replace it.";
+    return NULL;
+}
+
 /* "WD Elements 25A3, 4.0 TB, USB" and the rest of what the disk said. */
 static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent)
 {
@@ -1090,6 +1125,8 @@ static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent
         wadd(t, L"%lsTemperature %d \x00B0" L"C\r\n", indent, h->temperature_c);
     }
     if (*note) wadd(t, L"%ls(%ls)\r\n", indent, note);
+    const wchar_t *advice = replace_advice(d);
+    if (advice) wadd(t, L"%ls%ls (Drives..., choose this drive, then Replace this drive.)\r\n", indent, advice);
     format_time_ms(d->hw_read_ms, when, 64);
     wadd(t, L"%lsRead from the drive %ls\r\n", indent, when);
     if (d->total > 0) {
@@ -1111,6 +1148,7 @@ static void add_drive_heading(wtext *t, const drive_snap *d, const wchar_t *inde
     if (strcmp(d->kind, "drive") != 0) wadd(t, L"%ls    Cloud account from an earlier version (not supported in this version)\r\n", indent);
     else if (d->connected) wadd(t, L"%ls    Plugged in now at %ls\r\n", indent, root);
     else wadd(t, L"%ls    Not plugged in. Last seen %ls%ls%ls\r\n", indent, when, *root ? L" at " : L"", root);
+    if (d->retired_ms) wadd(t, L"%ls    Being replaced: nothing new is backed up to it\r\n", indent);
     free(label); free(loc); free(root);
 }
 
@@ -1230,6 +1268,7 @@ static void show_detail(void)
 
 static void update_drives_label(void);
 
+static void media_name(int64_t id, wchar_t *out, size_t cap);
 static const drive_snap *g_edit_drive;
 static wchar_t g_edit_name[256], g_edit_location[256];
 
@@ -1246,7 +1285,16 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         swprintf(copies, 32, L"%lld", (long long)d->copies);
         wadd(&t, L"    Set up %ls, %ls copies recorded\r\n\r\n", added, copies);
         add_drive_lines(&t, d, L"");
+        if (d->retired_ms) {
+            wchar_t when[64], by[600] = L"";
+            format_time_ms(d->retired_ms, when, 64);
+            if (d->replaced_by) media_name(d->replaced_by, by, 600);
+            wadd(&t, L"\r\nBeing replaced since %ls%ls%ls. Its copies still restore, and stop counting once the new drive "
+                     L"holds them.\r\n", when, *by ? L" by " : L"", by);
+        }
         SetDlgItemTextW(dlg, IDC_DRIVE_INFO, t.p ? t.p : L"");
+        if (d->retired_ms) SetDlgItemTextW(dlg, IDC_DRIVE_REPLACE, L"Keep using this drive");
+        EnableWindow(GetDlgItem(dlg, IDC_DRIVE_REPLACE), strcmp(d->kind, "drive") == 0);
         free(t.p);
         wchar_t *name = widen(d->label), *loc = widen(d->location);
         SetDlgItemTextW(dlg, IDC_DRIVE_NAME, name);
@@ -1265,10 +1313,13 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             return TRUE;
         }
         if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
+        if (LOWORD(wp) == IDC_DRIVE_REPLACE) { EndDialog(dlg, IDC_DRIVE_REPLACE); return TRUE; }
         break;
     }
     return FALSE;
 }
+
+static void edit_drive(int64_t id);
 
 static void cmd_drives(void)
 {
@@ -1284,6 +1335,8 @@ static void cmd_drives(void)
         swprintf(text, 600, L"%ls%ls%ls%ls", label, *loc ? L"  (" : L"", loc, *loc ? L")" : L"");
         if (strcmp(d->kind, "drive") != 0) wcsncat(text, L"  - Cloud account from an earlier version (not supported in this version)", 599 - wcslen(text));
         else if (d->connected) wcsncat(text, L"  - plugged in", 599 - wcslen(text));
+        if (d->retired_ms) wcsncat(text, L"  - being replaced", 599 - wcslen(text));
+        else if (replace_advice(d)) wcsncat(text, L"  - replace it soon", 599 - wcslen(text));
         AppendMenuW(m, MF_STRING, (UINT_PTR)(ID_MENU_DRIVE_BASE + i), text);
         free(label);
         free(loc);
@@ -1292,28 +1345,7 @@ static void cmd_drives(void)
     GetWindowRect(g_buttons[5], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
     DestroyMenu(m);
-    if (cmd >= ID_MENU_DRIVE_BASE && cmd - ID_MENU_DRIVE_BASE < dl.n) {
-        g_edit_drive = &dl.items[cmd - ID_MENU_DRIVE_BASE];
-        if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_DRIVE), g_main, drive_proc) == IDOK) {
-            char *name = narrow(g_edit_name), *loc = narrow(g_edit_location);
-            int64_t id = g_edit_drive->id;
-            bd_status st = BD_OK;
-            if (name && strcmp(name, g_edit_drive->label) != 0) st = bd_media_rename(g_cat, id, name);
-            if (st == BD_OK) st = bd_media_set_location(g_cat, id, loc);
-            if (st == BD_OK) st = bd_catalog_save(g_cat);
-            if (st != BD_OK) {
-                wchar_t *e = widen(bd_catalog_error(g_cat));
-                MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
-                free(e);
-            }
-            free(name);
-            free(loc);
-            update_drives_label();
-            rebuild_tree();
-            show_detail();
-        }
-        g_edit_drive = NULL;
-    }
+    if (cmd >= ID_MENU_DRIVE_BASE && cmd - ID_MENU_DRIVE_BASE < dl.n) edit_drive(dl.items[cmd - ID_MENU_DRIVE_BASE].id);
     free(dl.items);
 }
 
@@ -2032,12 +2064,53 @@ static void verify_new_drives(const job *j)
     }
 }
 
+/* A line in the log for each drive just plugged in whose health data says
+ * to replace it. */
+static void advise_new_drives(const job *j)
+{
+    if (!j->n_new) return;
+    drive_list dl = load_drives();
+    for (int i = 0; i < j->n_new; i++) {
+        const drive_snap *d = find_drive(&dl, j->new_ids[i]);
+        const wchar_t *advice = d ? replace_advice(d) : NULL;
+        if (!advice) continue;
+        wchar_t name[600], line[900];
+        drive_name(d->label, d->location, name, 600);
+        swprintf(line, 900, L"%ls: %ls (Drives..., choose it, then Replace this drive.)", name, advice);
+        log_append(line);
+    }
+    free(dl.items);
+}
+
+/* Drives being replaced get nothing new: drop them before backups. */
+static void drop_retired(job *j)
+{
+    int keep = 0;
+    for (int i = 0; i < j->n_new; i++) {
+        media_one o;
+        memset(&o, 0, sizeof(o));
+        o.id = j->new_ids[i];
+        bd_list_media(g_cat, media_one_cb, &o);
+        if (o.found && o.info.retired_ms) {
+            wchar_t name[600], line[900];
+            drive_name(o.label, o.location, name, 600);
+            swprintf(line, 900, L"%ls is being replaced, so nothing new is backed up to it.", name);
+            log_append(line);
+            continue;
+        }
+        j->new_ids[keep++] = j->new_ids[i];
+    }
+    j->n_new = keep;
+}
+
 static void after_drives(job *j)
 {
     if (j->startup) remind_checks();
     if (j->n_new) verify_new_drives(j);
+    advise_new_drives(j);
     if (!j->n_new || !j->auto_run) return;
     resume_restore(j);
+    drop_retired(j);
     if (bd_option_get(g_cat, "auto_backup") == 1) {
         /* Ask for any passphrase first, before jobs start running. */
         int64_t ids[16];
@@ -2515,6 +2588,7 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
 {
     menu_ctx *c = ctx;
     if (!m->connected || strcmp(m->kind, "drive") != 0) return 0; /* a cloud account from an earlier version is never listed */
+    if (m->retired_ms) return 0; /* being replaced: nothing new goes to it */
     wchar_t *l = widen(m->label), *root = widen(m->last_root), text[512], freeb[64];
     format_bytes(m->free_bytes, freeb, 64);
     swprintf(text, 512, L"%ls (%ls), %ls free%ls", l, root, freeb, m->encrypted ? L", encrypted" : L"");
@@ -3173,7 +3247,8 @@ static int fill_menu_cb(void *ctx, const bd_media_info *m)
     else swprintf(text, 700, L"Not plugged in");
     AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, text);
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 0, L"Back up to it now");
+    AppendMenuW(sub, MF_STRING | (m->connected && !m->retired_ms ? 0 : MF_GRAYED), base + 0,
+                m->retired_ms ? L"Back up to it now (it is being replaced)" : L"Back up to it now");
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, L"Read back copies not checked lately");
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, L"Full check (read back every copy)");
     AppendMenuW(sub, MF_STRING, base + 3, L"Name, where it is kept, hardware details...");
@@ -3222,6 +3297,140 @@ static void create_menu_bar(HWND hwnd)
     SetMenu(hwnd, bar);
 }
 
+/* ---- Replacing a drive -------------------------------------------------- */
+
+/* Pick the drive taking old's place and start copying to it. */
+static void replace_drive_ui(const drive_snap *old)
+{
+    drive_list dl = load_drives();
+    TASKDIALOG_BUTTON b[17];
+    wchar_t text[16][700];
+    int64_t ids[16];
+    int n = 0;
+    for (int i = 0; i < dl.n && n < 16; i++) {
+        const drive_snap *d = &dl.items[i];
+        if (d->id == old->id || !d->connected || d->retired_ms || strcmp(d->kind, "drive") != 0) continue;
+        wchar_t name[600], freeb[64];
+        drive_name(d->label, d->location, name, 600);
+        format_bytes(d->freeb, freeb, 64);
+        wchar_t *root = widen(d->root);
+        swprintf(text[n], 700, L"%ls\nPlugged in at %ls, %ls free%ls", name, root ? root : L"", freeb, d->encrypted ? L", encrypted" : L"");
+        free(root);
+        ids[n] = d->id;
+        b[n].nButtonID = 500 + n;
+        b[n].pszButtonText = text[n];
+        n++;
+    }
+    b[n].nButtonID = 499;
+    b[n].pszButtonText = L"None yet: just stop backing up to it\nIts copies keep counting until you replace it";
+    wchar_t old_name[600], head[700];
+    drive_name(old->label, old->location, old_name, 600);
+    swprintf(head, 700, L"Which drive takes the place of %ls?", old_name);
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainInstruction = head;
+    tc.pszContent = n ? L"BRODALF copies to it every file that would be short of your protection target without the old drive, "
+                        L"reading each from your folders and checking it as a backup does."
+                      : L"Plug in the drive that takes its place first. To use a new drive, set it up with Back up, "
+                        L"\"Another drive or folder...\", then come back here.";
+    tc.cButtons = (UINT)(n + 1);
+    tc.pButtons = b;
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) pressed = IDCANCEL;
+    bd_status st = BD_OK;
+    if (pressed == 499) {
+        st = bd_media_retire(g_cat, old->id, 0);
+        if (st == BD_OK) st = bd_catalog_save(g_cat);
+        if (st == BD_OK) {
+            wchar_t line[700];
+            swprintf(line, 700, L"%ls is being replaced: nothing new is backed up to it.", old_name);
+            log_append(line);
+        }
+    } else if (pressed >= 500 && pressed < 500 + n) {
+        int64_t id = ids[pressed - 500];
+        if (!media_encryption(id).encrypted || unlock_ui(L"That drive is encrypted. Enter the passphrase to copy to it.")) {
+            job *j = new_job(JOB_REPLACE);
+            if (j) {
+                j->media_id = id;
+                j->old_id = old->id;
+                enqueue(j);
+            }
+        }
+    }
+    if (st != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        MessageBoxW(g_main, e ? e : L"The drive could not be changed.", APP_NAME, MB_ICONWARNING);
+        free(e);
+    }
+    free(dl.items);
+}
+
+static void after_replace(const job *j)
+{
+    wchar_t old_name[600], new_name[600], msg[2048];
+    media_name(j->old_id, old_name, 600);
+    media_name(j->media_id, new_name, 600);
+    if (j->only_old[0] || j->no_room)
+        swprintf(msg, 2048, L"%lld file%ls still %ls %ls only copy on %ls. %ls\n\nCheck your folders for changes, then "
+                            L"choose Replace this drive again, or back up to another drive.",
+                 (long long)j->only_old[0], j->only_old[0] == 1 ? L"" : L"s", j->only_old[0] == 1 ? L"has" : L"have",
+                 j->only_old[0] == 1 ? L"its" : L"their", old_name,
+                 j->no_room ? L"The new drive is full." : L"Their folder could not be read, or they changed since the last check.");
+    else
+        swprintf(msg, 2048, L"%ls now holds every file that needed %ls. Nothing new is backed up to %ls.", new_name, old_name, old_name);
+    if (j->only_old[1] || j->only_old[2]) {
+        size_t len = wcslen(msg);
+        swprintf(msg + len, 2048 - len, L"\n\n%ls also holds the only copy of %lld deleted file%ls and %lld older version%ls, which "
+                                        L"are not copied. Keep it if you may want them back.",
+                 old_name, (long long)j->only_old[1], j->only_old[1] == 1 ? L"" : L"s", (long long)j->only_old[2],
+                 j->only_old[2] == 1 ? L"" : L"s");
+    } else if (!j->only_old[0] && !j->no_room) {
+        size_t len = wcslen(msg);
+        swprintf(msg + len, 2048 - len, L" You can stop using it.");
+    }
+    MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+}
+
+/* The drive details dialog: name, where it is kept, replacing it. */
+static void edit_drive(int64_t id)
+{
+    drive_list dl = load_drives();
+    const drive_snap *d = find_drive(&dl, id);
+    if (!d) { free(dl.items); return; }
+    g_edit_drive = d;
+    INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_DRIVE), g_main, drive_proc);
+    g_edit_drive = NULL;
+    bd_status st = BD_OK;
+    if (r == IDOK) {
+        char *name = narrow(g_edit_name), *loc = narrow(g_edit_location);
+        if (name && strcmp(name, d->label) != 0) st = bd_media_rename(g_cat, id, name);
+        if (st == BD_OK) st = bd_media_set_location(g_cat, id, loc);
+        if (st == BD_OK) st = bd_catalog_save(g_cat);
+        free(name);
+        free(loc);
+    } else if (r == IDC_DRIVE_REPLACE && d->retired_ms) {
+        st = bd_media_unretire(g_cat, id);
+        if (st == BD_OK) st = bd_catalog_save(g_cat);
+    } else if (r == IDC_DRIVE_REPLACE) {
+        replace_drive_ui(d);
+    }
+    if (st != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        MessageBoxW(g_main, e ? e : L"The drive could not be changed.", APP_NAME, MB_ICONWARNING);
+        free(e);
+    }
+    free(dl.items);
+    update_drives_label();
+    rebuild_tree();
+    show_detail();
+}
+
 static void drive_action(int64_t id, int action)
 {
     media_one o;
@@ -3230,6 +3439,7 @@ static void drive_action(int64_t id, int action)
     bd_list_media(g_cat, media_one_cb, &o);
     if (!o.found) return;
     if (action == 0) {
+        if (o.info.retired_ms) return; /* being replaced: the menu item is greyed */
         if (o.info.encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) return;
         job *j = new_job(JOB_BACKUP);
         if (!j) return;
@@ -3245,25 +3455,7 @@ static void drive_action(int64_t id, int action)
     } else if (action == 2) {
         enqueue_check(id);
     } else if (action == 3) {
-        drive_list dl = load_drives();
-        const drive_snap *d = find_drive(&dl, id);
-        if (d) {
-            g_edit_drive = d;
-            if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_DRIVE), g_main, drive_proc) == IDOK) {
-                char *name = narrow(g_edit_name), *loc = narrow(g_edit_location);
-                bd_status st = BD_OK;
-                if (name && strcmp(name, d->label) != 0) st = bd_media_rename(g_cat, id, name);
-                if (st == BD_OK) st = bd_media_set_location(g_cat, id, loc);
-                if (st == BD_OK) st = bd_catalog_save(g_cat);
-                free(name);
-                free(loc);
-                update_drives_label();
-                rebuild_tree();
-                show_detail();
-            }
-            g_edit_drive = NULL;
-        }
-        free(dl.items);
+        edit_drive(id);
     }
 }
 
@@ -3768,6 +3960,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         else if (j->kind == JOB_BACKUP && j->status == BD_OK) after_backup(j);
         else if (j->kind == JOB_RESTORE && j->status == BD_OK) after_restore(j);
         else if (j->kind == JOB_SHADOW && j->status == BD_OK) after_shadow(j);
+        else if (j->kind == JOB_REPLACE && j->status == BD_OK) after_replace(j);
         if (j->kind == JOB_SCAN && j->guard) guard_dialog();
         else if ((j->kind == JOB_SCAN || j->kind == JOB_BACKUP) && j->in_use && j->status == BD_OK) offer_shadow(j);
         job_free(j);

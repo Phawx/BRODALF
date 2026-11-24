@@ -70,7 +70,9 @@ static const char *SCHEMA_SQL =
     "  added_ms INTEGER NOT NULL,"
     "  last_seen_ms INTEGER,"
     "  encrypted INTEGER NOT NULL DEFAULT 0,"
-    "  location TEXT);"
+    "  location TEXT,"
+    "  retired_ms INTEGER,"              /* being replaced: nothing new is backed up to it */
+    "  replaced_by INTEGER);"            /* the drive taking its place; its copies stop counting there */
     "CREATE TABLE IF NOT EXISTS media_hardware("  /* last reading when plugged in */
     "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
     "  read_ms INTEGER NOT NULL,"
@@ -227,10 +229,17 @@ static bd_status open_db(bd_catalog *cat)
         sqlite3_finalize(probe);
     else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN location TEXT") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Catalogs from 0.4.0 and before have no drive replacement columns.
+     * Earlier versions ignore them, so the schema version stays. */
+    if (sqlite3_prepare_v2(cat->db, "SELECT retired_ms FROM media LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
+        sqlite3_finalize(probe);
+    else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN retired_ms INTEGER; ALTER TABLE media ADD COLUMN replaced_by INTEGER") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
-                     "CREATE TEMP TABLE IF NOT EXISTS arrived(node_id INTEGER PRIMARY KEY);") != 0)
+                     "CREATE TEMP TABLE IF NOT EXISTS arrived(node_id INTEGER PRIMARY KEY);"
+                     "CREATE TEMP TABLE IF NOT EXISTS replace_need(version_id INTEGER PRIMARY KEY);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
 }

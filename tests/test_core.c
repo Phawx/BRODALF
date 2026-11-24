@@ -955,6 +955,101 @@ static void test_recover_and_relocate(void)
     bd_catalog_close(cat);
 }
 
+typedef struct { int64_t want, retired_ms, replaced_by; } retired_snap;
+
+static int snap_retired(void *ctx, const bd_media_info *m)
+{
+    retired_snap *r = ctx;
+    if (m->media_id != r->want) return 0;
+    r->retired_ms = m->retired_ms;
+    r->replaced_by = m->replaced_by;
+    return 1;
+}
+
+static retired_snap retired_of(bd_catalog *cat, int64_t id)
+{
+    retired_snap r = {id, -1, -1};
+    bd_list_media(cat, snap_retired, &r);
+    return r;
+}
+
+/* Replacing a drive: what needs it goes to the new one, nothing new goes to
+ * it, and its copies stop counting once the new drive holds them. */
+static void test_replace_drive(void)
+{
+    write_file(at("x/S1/f1.txt"), "one");
+    write_file(at("x/S1/f2.txt"), "two");
+    write_file(at("x/S2/f3.txt"), "three");
+    write_file(at("x/S2/f4.txt"), "four");
+    write_file(at("x/S2/gone.txt"), "gone");
+    bd_mkdirs(at("x/a"));
+    bd_mkdirs(at("x/b"));
+    bd_mkdirs(at("x/c"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("x/x.brodalf"), &cat), NULL);
+    bd_target t = {2, 1};
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    int64_t s1, s2, a, b, c;
+    REQUIRE_OK(bd_source_add(cat, at("x/S1"), &s1), cat);
+    REQUIRE_OK(bd_source_add(cat, at("x/S2"), &s2), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("x/a"), "Old", 0, &a), cat);
+    REQUIRE_OK(bd_media_init(cat, at("x/b"), "Other", 0, &b), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 5);
+    REQUIRE_OK(bd_backup(cat, b, s1, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    /* An older version and a deleted file that only the old drive holds. */
+    write_file(at("x/S2/f3.txt"), "three, changed");
+    CHECK(bd_remove(at("x/S2/gone.txt")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    risk_count rc;
+    CHECK(risk_of(cat, &rc).files_at_risk == 2); /* f3 (no copy of its new version) and f4 (one copy) */
+
+    /* The new drive has to be plugged in; nothing changes until it is. */
+    CHECK(bd_media_replace(cat, a, 999, NULL, quiet, NULL) == BD_ERR_NOT_FOUND);
+    CHECK(retired_of(cat, a).retired_ms == 0);
+    CHECK(bd_media_retire(cat, a, a) == BD_ERR_INVALID);
+    REQUIRE_OK(bd_media_init(cat, at("x/c"), "New", 0, &c), cat);
+    bd_replace_stats rs;
+    REQUIRE_OK(bd_media_replace(cat, a, c, &rs, quiet, NULL), cat);
+    /* f1 and f2 would have one copy without the old drive, f4 none. */
+    CHECK(rs.files_needed == 3 && rs.backup.files_copied == 3 && rs.backup.files_failed == 0);
+    CHECK(rs.files_only_old == 0 && rs.deleted_only_old == 1 && rs.versions_only_old == 1);
+    retired_snap r = retired_of(cat, a);
+    CHECK(r.retired_ms > 0 && r.replaced_by == c);
+    CHECK(retired_of(cat, c).retired_ms == 0);
+    char p[1200];
+    snprintf(p, sizeof(p), "x/c/BRODALF/%s/S2/f4.txt", bd_catalog_uuid(cat));
+    CHECK(file_equals(at(p), "four"));
+    snprintf(p, sizeof(p), "x/c/BRODALF/%s/S2/f3.txt", bd_catalog_uuid(cat));
+    CHECK(!exists(at(p))); /* not needed for the old drive: a normal backup copies it */
+
+    /* f1 and f2 are on Other and New now (Old no longer counts); f4 has one
+     * copy that counts, on New. */
+    CHECK(risk_of(cat, &rc).files_at_risk == 2 && rc.copies_sum == 1);
+    CHECK(bd_backup(cat, a, 0, &bs, quiet, NULL) == BD_ERR_INVALID);
+    help_list h = help_of(cat);
+    for (int i = 0; i < h.n; i++) CHECK(strcmp(h.labels[i], "Old") != 0);
+    /* Its copies still restore. */
+    find_ctx f = lookup(cat, s2, 0, "gone.txt");
+    CHECK(f.found && f.state == BD_STATE_DELETED);
+
+    /* Changed my mind: it counts and takes backups again. */
+    REQUIRE_OK(bd_media_unretire(cat, a), cat);
+    CHECK(retired_of(cat, a).retired_ms == 0 && retired_of(cat, a).replaced_by == 0);
+    CHECK(risk_of(cat, &rc).files_at_risk == 1); /* only f3 */
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    /* Retiring with no replacement chosen keeps every copy counting. */
+    REQUIRE_OK(bd_media_retire(cat, a, 0), cat);
+    CHECK(retired_of(cat, a).retired_ms > 0 && retired_of(cat, a).replaced_by == 0);
+    CHECK(risk_of(cat, &rc).files_at_risk == 1);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1210,6 +1305,7 @@ int main(void)
     test_moves_guard_and_progress();
     test_shadow_list();
     test_recover_and_relocate();
+    test_replace_drive();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

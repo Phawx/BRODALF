@@ -300,6 +300,9 @@ typedef struct {
      * file missing from this drive. */
     int64_t only_missing_from[BD_MAX_CONTINUE];
     int ignore_guard;         /* back up even while the guard has paused backups */
+    /* Set by bd_media_replace: only the files it found the drive being
+     * replaced is needed for. Leave 0. */
+    int64_t replacing;
 } bd_backup_opts;
 
 /* Copy the current version of every file that has no good copy on this
@@ -333,6 +336,33 @@ bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *s
  * BRODALF/<catalog-uuid>/catalog-backup.brodalf. The copy is encrypted
  * when the catalog file or the drive is. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
+
+/* Replacing a drive (worn, failing, too small). A retired drive gets
+ * nothing new: bd_backup refuses it and no drive suggestion names it. Its
+ * copies still restore, and still count toward the protection target until
+ * the drive replacing it holds the same version. replacement_id may be 0
+ * when none is chosen yet. */
+bd_status bd_media_retire(bd_catalog *cat, int64_t media_id, int64_t replacement_id);
+/* Use the drive as before. */
+bd_status bd_media_unretire(bd_catalog *cat, int64_t media_id);
+
+typedef struct {
+    int64_t files_needed;      /* on the old drive and short of the target without it */
+    bd_backup_stats backup;    /* the copy to the new drive */
+    /* Afterwards, what still has its only good copy on the old drive: */
+    int64_t files_only_old;    /* current versions (the source could not be read, or changed) */
+    int64_t deleted_only_old;  /* files deleted from their folder */
+    int64_t versions_only_old; /* older versions of files */
+} bd_replace_stats;
+
+/* Retire old_id with new_id taking its place, then copy to new_id (which
+ * must be connected) every file whose current version has a good copy on
+ * old_id and would have fewer copies or places than the protection target
+ * without it. Files are read from their folders and checked by hash, as a
+ * backup does. Deleted files and older versions whose only copy is on the
+ * old drive are not copied; they are counted so the user can keep it. */
+bd_status bd_media_replace(bd_catalog *cat, int64_t old_id, int64_t new_id, bd_replace_stats *stats,
+                           bd_log_fn log, void *log_ctx);
 
 typedef struct {
     int64_t files_restored;
@@ -489,6 +519,8 @@ typedef struct {
      * written, if never checked); 0 if it holds no copies. */
     int64_t oldest_check_ms;
     int check_due;           /* older than the check_days option */
+    int64_t retired_ms;      /* when it was set to be replaced; 0 if not (see bd_media_retire) */
+    int64_t replaced_by;     /* the drive taking its place; 0 if none chosen yet */
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on

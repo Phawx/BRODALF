@@ -231,7 +231,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " h.pending, h.uncorrectable, h.percent_used, h.note,"
                            " (SELECT MIN(COALESCE(c.last_full_check_ms, c.written_ms)) FROM copies c"
                            "   WHERE c.media_id=m.id AND c.state='ok'),"
-                           " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
+                           " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id),"
+                           " m.retired_ms, m.replaced_by"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -256,6 +257,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.space_ms = col_num(q, 33);
         if (info.space_ms < 0) info.space_ms = 0;
         if (info.oldest_check_ms < 0) info.oldest_check_ms = 0;
+        info.retired_ms = sqlite3_column_type(q, 34) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 34);
+        info.replaced_by = sqlite3_column_type(q, 35) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 35);
         info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
                          now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;
         bd_drive_hw hw;

@@ -82,6 +82,7 @@ enum {
     ID_M_LOG,
     ID_M_REPORTS,
     ID_M_ABOUT,
+    ID_M_RELOCATE,
     ID_MENU_SET_PASS = 910,
     ID_MENU_ENCRYPT_CATALOG,
     ID_MENU_LOCK,
@@ -2298,6 +2299,194 @@ static void settings_command(int cmd)
     }
 }
 
+/* ---- A protected folder that is somewhere else (a new PC) ---------------- */
+
+static int is_folder(const wchar_t *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static int folder_is_empty(const wchar_t *dir)
+{
+    wchar_t pat[MAX_PATH * 4 + 4];
+    size_t n = wcslen(dir);
+    if (swprintf(pat, MAX_PATH * 4 + 4, n && dir[n - 1] == L'\\' ? L"%ls*" : L"%ls\\*", dir) < 0) return 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 1;
+    int empty = 1;
+    do {
+        if (wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) { empty = 0; break; }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return empty;
+}
+
+/* X:\Users\<name on the old PC>\rest is often %USERPROFILE%\rest here. */
+static int guess_new_place(const wchar_t *old, wchar_t *out, size_t cap)
+{
+    if (wcslen(old) < 10 || old[1] != L':' || _wcsnicmp(old + 2, L"\\Users\\", 7) != 0) return 0;
+    const wchar_t *rest = wcschr(old + 9, L'\\');
+    wchar_t profile[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+    if (!n || n >= MAX_PATH) return 0;
+    if (swprintf(out, cap, L"%ls%ls", profile, rest ? rest : L"") < 0) return 0;
+    return _wcsicmp(out, old) != 0 && is_folder(out);
+}
+
+typedef struct { int64_t id; wchar_t *name, *path; } source_place;
+typedef struct { source_place *items; int n, cap; } source_places;
+
+static int source_place_cb(void *ctx, const bd_source_info *info)
+{
+    source_places *l = ctx;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 16;
+        source_place *g = realloc(l->items, (size_t)cap * sizeof(*g));
+        if (!g) return 1;
+        l->items = g;
+        l->cap = cap;
+    }
+    source_place *p = &l->items[l->n];
+    p->id = info->source_id;
+    p->name = widen(info->name);
+    p->path = widen(info->path);
+    if (!p->name || !p->path) { free(p->name); free(p->path); return 1; }
+    l->n++;
+    return 0;
+}
+
+static void source_places_free(source_places *l)
+{
+    for (int i = 0; i < l->n; i++) { free(l->items[i].name); free(l->items[i].path); }
+    free(l->items);
+    memset(l, 0, sizeof(*l));
+}
+
+enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER };
+
+/* Ask where a protected folder is now and point the catalog there. 1 if it
+ * was changed. Nothing is scanned here; the caller saves and scans. */
+static int relocate_source(const source_place *sp)
+{
+    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 96], head[512], body[MAX_PATH * 4 + 512];
+    int have_guess = guess_new_place(sp->path, guess, MAX_PATH * 4);
+    int here = is_folder(sp->path);
+    swprintf(head, 512, L"Where is \"%ls\" on this PC?", sp->name);
+    if (here)
+        swprintf(body, MAX_PATH * 4 + 512, L"BRODALF protects %ls. If you moved this folder, choose where it is now. Its files keep "
+                                            L"their copies and history.", sp->path);
+    else
+        swprintf(body, MAX_PATH * 4 + 512, L"BRODALF protected %ls, which is not on this PC. If the folder is somewhere else here, "
+                                            L"for example under another user name, choose where it is now. Its files keep their "
+                                            L"copies and history.", sp->path);
+    for (;;) {
+        TASKDIALOG_BUTTON b[3];
+        int n = 0;
+        if (have_guess) {
+            swprintf(guess_btn, MAX_PATH * 4 + 96, L"Use %ls\nThe same folder in your user folder on this PC", guess);
+            b[n].nButtonID = PLACE_GUESS;
+            b[n++].pszButtonText = guess_btn;
+        }
+        b[n].nButtonID = PLACE_PICK;
+        b[n++].pszButtonText = L"Choose where it is now...";
+        b[n].nButtonID = PLACE_LATER;
+        b[n++].pszButtonText = here ? L"Leave it where it is"
+                                    : L"Not now\nYou can restore it from your drives, then choose where you put it with "
+                                      L"Catalog > Change where a folder is.";
+        TASKDIALOGCONFIG tc;
+        memset(&tc, 0, sizeof(tc));
+        tc.cbSize = sizeof(tc);
+        tc.hwndParent = g_main;
+        tc.hInstance = g_inst;
+        tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+        tc.pszWindowTitle = APP_NAME;
+        tc.pszMainInstruction = head;
+        tc.pszContent = body;
+        tc.cButtons = (UINT)n;
+        tc.pButtons = b;
+        int pressed = IDCANCEL;
+        if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return 0;
+
+        wchar_t *chosen = NULL;
+        if (pressed == PLACE_GUESS) chosen = _wcsdup(guess);
+        else if (pressed == PLACE_PICK) {
+            char *f = pick_folder(g_main, L"Choose where this folder is on this PC.");
+            if (!f) continue;
+            chosen = widen(f);
+            free(f);
+        } else return 0;
+        if (!chosen) return 0;
+
+        if (folder_is_empty(chosen)) {
+            wchar_t warn[MAX_PATH * 4 + 512];
+            swprintf(warn, MAX_PATH * 4 + 512, L"%ls is empty. If BRODALF watches this folder, every file of \"%ls\" will look "
+                                                L"deleted.\n\nTo get the files back instead, choose No, restore the folder from "
+                                                L"your drives, then choose where you put it.\n\nUse this empty folder anyway?",
+                     chosen, sp->name);
+            if (MessageBoxW(g_main, warn, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) { free(chosen); continue; }
+        }
+        char *p = narrow(chosen);
+        bd_status s = p ? bd_source_relocate(g_cat, sp->id, p) : BD_ERR_NOMEM;
+        free(p);
+        if (s == BD_OK) {
+            wchar_t line[MAX_PATH * 4 + 128];
+            swprintf(line, MAX_PATH * 4 + 128, L"\"%ls\" is now watched at %ls", sp->name, chosen);
+            log_append(line);
+            free(chosen);
+            return 1;
+        }
+        free(chosen);
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        MessageBoxW(g_main, e ? e : L"That folder cannot be used.", APP_NAME, MB_ICONWARNING);
+        free(e);
+    }
+}
+
+static void places_changed(void)
+{
+    if (bd_catalog_save(g_cat) != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        report_error(g_main, e ? e : L"The catalog could not be saved.");
+        free(e);
+    }
+    rebuild_tree();
+    show_detail();
+}
+
+/* After recovering a catalog: every protected folder that is not on this
+ * PC gets a chance to be pointed at where it is now. */
+static void relocate_missing_sources(void)
+{
+    source_places l;
+    memset(&l, 0, sizeof(l));
+    bd_list_sources(g_cat, source_place_cb, &l);
+    int changed = 0;
+    for (int i = 0; i < l.n; i++)
+        if (!is_folder(l.items[i].path) && relocate_source(&l.items[i])) changed = 1;
+    source_places_free(&l);
+    if (changed) places_changed();
+}
+
+static void cmd_relocate(void)
+{
+    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    source_places l;
+    memset(&l, 0, sizeof(l));
+    bd_list_sources(g_cat, source_place_cb, &l);
+    const source_place *sp = NULL;
+    for (int i = 0; i < l.n; i++)
+        if ((r && l.items[i].id == r->source_id) || (!r && l.n == 1)) sp = &l.items[i];
+    if (!sp)
+        MessageBoxW(g_main, L"Select the protected folder in the list first.", APP_NAME, MB_ICONINFORMATION);
+    else if (relocate_source(sp)) {
+        places_changed();
+        enqueue(new_job(JOB_SCAN));
+    }
+    source_places_free(&l);
+}
+
 /* ---- Commands ----------------------------------------------------------- */
 
 static void cmd_add_folder(void)
@@ -3014,6 +3203,7 @@ static void create_menu_bar(HWND hwnd)
     HMENU cat = CreatePopupMenu();
     AppendMenuW(cat, MF_STRING, ID_M_ADD_FOLDER, L"Add a folder to protect...");
     AppendMenuW(cat, MF_STRING, ID_M_SCAN, L"Check the folders for changes now");
+    AppendMenuW(cat, MF_STRING, ID_M_RELOCATE, L"Change where a folder is...");
     AppendMenuW(cat, MF_SEPARATOR, 0, NULL);
     AppendMenuW(cat, MF_STRING, ID_M_RESTORE, L"Restore what is selected...");
     AppendMenuW(cat, MF_STRING, ID_M_RESTORE_ASOF, L"Restore what is selected as it was on a date...");
@@ -3091,6 +3281,7 @@ static void menu_command(int cmd)
     switch (cmd) {
     case ID_M_ADD_FOLDER: cmd_add_folder(); break;
     case ID_M_SCAN: enqueue(new_job(JOB_SCAN)); break;
+    case ID_M_RELOCATE: cmd_relocate(); break;
     case ID_M_RESTORE: cmd_restore(); break;
     case ID_M_RESTORE_ASOF: cmd_restore_as_of(); break;
     case ID_M_RISK: cmd_risk(); break;
@@ -3650,12 +3841,12 @@ static int file_dialog(int save, wchar_t *out, DWORD cap)
     return GetOpenFileNameW(&of);
 }
 
-enum { CHOICE_LAST = 100, CHOICE_OPEN, CHOICE_NEW };
+enum { CHOICE_LAST = 100, CHOICE_OPEN, CHOICE_NEW, CHOICE_RECOVER };
 
 static int ask_catalog_choice(const wchar_t *last)
 {
     wchar_t last_btn[MAX_PATH * 2 + 64];
-    TASKDIALOG_BUTTON buttons[3];
+    TASKDIALOG_BUTTON buttons[4];
     int n = 0;
     if (last[0]) {
         swprintf(last_btn, MAX_PATH * 2 + 64, L"Open the last catalog\n%ls", last);
@@ -3666,6 +3857,8 @@ static int ask_catalog_choice(const wchar_t *last)
     buttons[n++].pszButtonText = L"Open a catalog...\nA .brodalf file you made before";
     buttons[n].nButtonID = CHOICE_NEW;
     buttons[n++].pszButtonText = L"Create a new catalog...\nStart tracking a set of folders";
+    buttons[n].nButtonID = CHOICE_RECOVER;
+    buttons[n++].pszButtonText = L"Recover from a backup drive...\nOn a new PC, or after losing the catalog: start from the copy on a drive";
 
     TASKDIALOGCONFIG tc;
     memset(&tc, 0, sizeof(tc));
@@ -3698,6 +3891,193 @@ static bd_status open_maybe_encrypted(const char *path)
     }
 }
 
+/* ---- Recover from a backup drive (a new PC) ----------------------------- */
+
+static int g_recovered; /* the catalog was just copied back from a drive */
+
+#define MAX_FOUND 8
+typedef struct { wchar_t path[MAX_PATH * 2]; wchar_t id[64]; FILETIME saved; } backup_found;
+typedef struct { backup_found items[MAX_FOUND]; int n; } backup_list;
+
+static int file_time(const wchar_t *path, FILETIME *t)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+    *t = a.ftLastWriteTime;
+    return 1;
+}
+
+static void found_add(backup_list *l, const wchar_t *dir, const wchar_t *id)
+{
+    if (l->n == MAX_FOUND || wcslen(id) >= 64) return;
+    backup_found *b = &l->items[l->n];
+    size_t n = wcslen(dir);
+    if (swprintf(b->path, MAX_PATH * 2, n && dir[n - 1] == L'\\' ? L"%lscatalog-backup.brodalf" : L"%ls\\catalog-backup.brodalf",
+                 dir) < 0)
+        return;
+    if (!file_time(b->path, &b->saved)) return;
+    wcscpy(b->id, id);
+    l->n++;
+}
+
+/* Every <dir>\<folder>\catalog-backup.brodalf. */
+static void found_in_subfolders(backup_list *l, const wchar_t *dir)
+{
+    wchar_t pat[MAX_PATH * 2];
+    size_t n = wcslen(dir);
+    if (swprintf(pat, MAX_PATH * 2, n && dir[n - 1] == L'\\' ? L"%ls*" : L"%ls\\*", dir) < 0) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+        wchar_t sub[MAX_PATH * 2];
+        if (swprintf(sub, MAX_PATH * 2, n && dir[n - 1] == L'\\' ? L"%ls%ls" : L"%ls\\%ls", dir, fd.cFileName) >= 0)
+            found_add(l, sub, fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+/* What the user picked may be the drive, its BRODALF folder, or the
+ * catalog's own folder on it. */
+static void find_backups(backup_list *l, const wchar_t *dir)
+{
+    const wchar_t *last = wcsrchr(dir, L'\\');
+    found_add(l, dir, last && last[1] ? last + 1 : dir);
+    if (l->n) return;
+    wchar_t sub[MAX_PATH * 2];
+    size_t n = wcslen(dir);
+    if (swprintf(sub, MAX_PATH * 2, n && dir[n - 1] == L'\\' ? L"%lsBRODALF" : L"%ls\\BRODALF", dir) >= 0) found_in_subfolders(l, sub);
+    if (!l->n) found_in_subfolders(l, dir);
+}
+
+/* Each drive saves the catalog at the end of its own backups, so another
+ * plugged-in drive may hold a newer copy of the same catalog. */
+static void use_newest_copy(backup_found *b)
+{
+    DWORD mask = GetLogicalDrives();
+    for (int i = 2; i < 26; i++) {
+        if (!(mask & (1u << i))) continue;
+        wchar_t root[4] = {(wchar_t)(L'A' + i), L':', L'\\', 0}, path[MAX_PATH * 2];
+        UINT type = GetDriveTypeW(root);
+        if (type == DRIVE_NO_ROOT_DIR || type == DRIVE_UNKNOWN || type == DRIVE_CDROM) continue;
+        FILETIME t;
+        if (swprintf(path, MAX_PATH * 2, L"%lsBRODALF\\%ls\\catalog-backup.brodalf", root, b->id) >= 0 && file_time(path, &t) &&
+            CompareFileTime(&t, &b->saved) > 0) {
+            wcscpy(b->path, path);
+            b->saved = t;
+        }
+    }
+}
+
+static void filetime_text(const FILETIME *ft, wchar_t *out, size_t cap)
+{
+    ULARGE_INTEGER u;
+    u.LowPart = ft->dwLowDateTime;
+    u.HighPart = ft->dwHighDateTime;
+    format_time_ms((int64_t)((u.QuadPart - 116444736000000000ULL) / 10000), out, cap);
+}
+
+/* Which catalog, when a drive holds more than one (one per catalog that
+ * backs up to it). -1 cancelled. */
+static int pick_backup(const backup_list *l)
+{
+    if (l->n == 1) return 0;
+    TASKDIALOG_BUTTON b[MAX_FOUND];
+    wchar_t text[MAX_FOUND][MAX_PATH * 2 + 128];
+    for (int i = 0; i < l->n; i++) {
+        wchar_t when[64];
+        filetime_text(&l->items[i].saved, when, 64);
+        swprintf(text[i], MAX_PATH * 2 + 128, L"Catalog last saved %ls\n%ls", when, l->items[i].path);
+        b[i].nButtonID = 400 + i;
+        b[i].pszButtonText = text[i];
+    }
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainInstruction = L"This drive holds more than one catalog. Which one is yours?";
+    tc.cButtons = (UINT)l->n;
+    tc.pButtons = b;
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return -1;
+    return pressed >= 400 && pressed < 400 + l->n ? pressed - 400 : -1;
+}
+
+/* Copy a catalog backup from a drive to a new catalog and open it. 1 when
+ * g_cat is open at dest. */
+static int recover_catalog(wchar_t *dest, DWORD cap)
+{
+    char *dir = pick_folder(NULL, L"Choose the backup drive (or the folder on it that holds the catalog backup).");
+    if (!dir) return 0;
+    wchar_t *wdir = widen(dir);
+    free(dir);
+    if (!wdir) return 0;
+    backup_list l;
+    memset(&l, 0, sizeof(l));
+    find_backups(&l, wdir);
+    int pick = -1;
+    if (!l.n) {
+        wchar_t msg[MAX_PATH * 2 + 256];
+        swprintf(msg, MAX_PATH * 2 + 256, L"No catalog backup was found in %ls.\n\nEach backup drive holds one as "
+                                          L"BRODALF\\...\\catalog-backup.brodalf. Choose that file yourself?", wdir);
+        if (MessageBoxW(NULL, msg, APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            OPENFILENAMEW of;
+            memset(&of, 0, sizeof(of));
+            of.lStructSize = sizeof(of);
+            of.lpstrFilter = L"Catalog backups (catalog-backup.brodalf)\0catalog-backup.brodalf\0BRODALF catalogs (*.brodalf)\0*.brodalf\0";
+            of.lpstrFile = l.items[0].path;
+            of.nMaxFile = MAX_PATH * 2;
+            of.lpstrInitialDir = wdir;
+            of.lpstrTitle = L"Choose the catalog backup";
+            of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            if (GetOpenFileNameW(&of)) pick = 0; /* a file picked by hand is used as it is */
+        }
+    } else if ((pick = pick_backup(&l)) >= 0) {
+        use_newest_copy(&l.items[pick]);
+    }
+    free(wdir);
+    if (pick < 0) return 0;
+    const wchar_t *src = l.items[pick].path;
+
+    for (;;) {
+        dest[0] = 0;
+        wcsncpy(dest, L"My files.brodalf", cap - 1);
+        OPENFILENAMEW of;
+        memset(&of, 0, sizeof(of));
+        of.lStructSize = sizeof(of);
+        of.lpstrFilter = L"BRODALF catalogs (*.brodalf)\0*.brodalf\0";
+        of.lpstrFile = dest;
+        of.nMaxFile = cap;
+        of.lpstrDefExt = L"brodalf";
+        of.lpstrTitle = L"Choose where to keep your catalog on this PC";
+        of.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&of)) return 0;
+        if (GetFileAttributesW(dest) == INVALID_FILE_ATTRIBUTES) break;
+        MessageBoxW(NULL, L"A file with that name is already there. Choose another name, so nothing is overwritten.", APP_NAME,
+                    MB_ICONINFORMATION);
+    }
+    char *s8 = narrow(src), *d8 = narrow(dest);
+    bd_status s = s8 && d8 ? bd_catalog_recover(s8, d8) : BD_ERR_NOMEM;
+    if (s == BD_OK) {
+        bd_applog("recovered the catalog from %s to %s", s8, d8);
+        s = open_maybe_encrypted(d8);
+        if (s != BD_OK) DeleteFileW(dest); /* only the copy just made; the drive's is untouched */
+    }
+    free(s8);
+    free(d8);
+    if (s == BD_OK) return 1;
+    if (s != BD_ERR_PASSPHRASE) {
+        wchar_t *e = widen(bd_open_error());
+        MessageBoxW(NULL, e && e[0] ? e : L"The catalog could not be recovered.", APP_NAME, MB_ICONERROR);
+        free(e);
+    }
+    return 0;
+}
+
 /* given: a catalog named on the command line (double-click), tried first. */
 static int open_catalog(const wchar_t *given)
 {
@@ -3714,6 +4094,13 @@ static int open_catalog(const wchar_t *given)
         if (choice == CHOICE_LAST) wcsncpy(path, first ? first : last, MAX_PATH * 2 - 1);
         else if (choice == CHOICE_OPEN) { if (!file_dialog(0, path, MAX_PATH * 2)) continue; }
         else if (choice == CHOICE_NEW) { create = 1; if (!file_dialog(1, path, MAX_PATH * 2)) continue; }
+        else if (choice == CHOICE_RECOVER) {
+            if (!recover_catalog(path, MAX_PATH * 2)) continue;
+            wcscpy(g_cat_path, path);
+            reg_set_last(path);
+            g_recovered = 1;
+            return 1;
+        }
         else return 0;
 
         char *p = narrow(path);
@@ -3935,11 +4322,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);
 
+    g_ui_depth++; /* a drive plugged in during these questions waits for them */
     first_run_folders();
     update_drives_label();
     rebuild_tree();
     show_detail();
-    log_append(L"Catalog opened. Looking for backup drives, then checking your folders for changes.");
+    if (g_recovered) {
+        log_append(L"Catalog recovered. Looking for backup drives and checking what they hold, then checking your folders for changes.");
+        relocate_missing_sources();
+    } else {
+        log_append(L"Catalog opened. Looking for backup drives, then checking your folders for changes.");
+    }
+    g_ui_depth--;
     job *first = new_job(JOB_DRIVES);
     if (first) {
         first->startup = 1;

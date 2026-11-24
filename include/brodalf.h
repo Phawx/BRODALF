@@ -50,6 +50,12 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out);
  * back unlocked; for a plain one the passphrase is ignored. */
 bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
 
+/* Start again on a new PC from the catalog backup a drive holds
+ * (BRODALF\<catalog id>\catalog-backup.brodalf): copy it to dest_path,
+ * which must not exist yet, then open dest_path as usual. Fails with
+ * BD_ERR_FORMAT if backup_path is not a catalog; bd_open_error says why. */
+bd_status bd_catalog_recover(const char *backup_path, const char *dest_path);
+
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
@@ -105,6 +111,13 @@ void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
 /* ---- Sources and scanning -------------------------------------------- */
 
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
+
+/* Point a protected folder at where it is now, e.g. on a new PC with another
+ * user name. The folder keeps its name on the drives and its files keep
+ * their versions and copies; the next scan finds them by their path inside
+ * the folder. new_path must be an existing folder that no other protected
+ * folder uses (BD_ERR_EXISTS). */
+bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new_path);
 
 typedef struct {
     int64_t files_seen;

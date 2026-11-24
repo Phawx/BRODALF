@@ -46,6 +46,7 @@ add_library(brodalf_core STATIC
     src/platform_posix.c
     src/platform_win32.c
     src/query.c
+    src/recover.c
     src/report.c
     src/risk.c
     src/scan.c

@@ -876,6 +876,85 @@ static void test_shadow_list(void)
     CHECK(!exists(at("shadow/out")));
 }
 
+typedef struct { char path[8][1024]; int64_t id[8]; int n; } source_paths;
+
+static int collect_sources(void *ctx, const bd_source_info *info)
+{
+    source_paths *sp = ctx;
+    if (sp->n < 8) {
+        snprintf(sp->path[sp->n], sizeof(sp->path[0]), "%s", info->path);
+        sp->id[sp->n++] = info->source_id;
+    }
+    return 0;
+}
+
+/* A new PC: the catalog comes back from the copy on a drive, and a
+ * protected folder that now lives elsewhere is pointed at its new place
+ * without anything looking deleted or being copied again. */
+static void test_recover_and_relocate(void)
+{
+    write_file(at("r/Users/old/Docs/a.txt"), "alpha");
+    write_file(at("r/Users/old/Docs/sub/b.txt"), "beta");
+    write_file(at("r/Other/c.txt"), "gamma");
+    bd_mkdirs(at("r/d1"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("r/old.brodalf"), &cat), NULL);
+    int64_t docs, other, d1;
+    REQUIRE_OK(bd_source_add(cat, at("r/Users/old/Docs"), &docs), cat);
+    REQUIRE_OK(bd_source_add(cat, at("r/Other"), &other), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r/d1"), "One", 0, &d1), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    REQUIRE_OK(bd_catalog_copy_to_media(cat, d1), cat);
+    char uuid[64], backup[1200];
+    snprintf(uuid, sizeof(uuid), "%s", bd_catalog_uuid(cat));
+    snprintf(backup, sizeof(backup), "r/d1/BRODALF/%s/catalog-backup.brodalf", uuid);
+    bd_catalog_close(cat);
+
+    /* Copy it back as a new catalog; never over an existing file, never from something else. */
+    CHECK(bd_catalog_recover(at(backup), at("r/new.brodalf")) == BD_OK);
+    CHECK(bd_catalog_recover(at(backup), at("r/new.brodalf")) == BD_ERR_EXISTS);
+    CHECK(bd_catalog_recover(at("r/Other/c.txt"), at("r/bad.brodalf")) == BD_ERR_FORMAT);
+    CHECK(!exists(at("r/bad.brodalf")) && !exists(at("r/bad.brodalf.recovering")));
+    CHECK(bd_catalog_recover(at("r/missing.brodalf"), at("r/bad.brodalf")) == BD_ERR_NOT_FOUND);
+    CHECK(!exists(at("r/new.brodalf.recovering")));
+    REQUIRE_OK(bd_catalog_open(at("r/new.brodalf"), &cat), NULL);
+    CHECK(strcmp(bd_catalog_uuid(cat), uuid) == 0);
+    int64_t found = 0;
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_connect(cat, at("r/d1"), &found, &cs, quiet, NULL), cat);
+    CHECK(found == d1 && cs.ok == 3 && cs.missing == 0);
+
+    /* The user folder has another name here. Until it is pointed there a
+     * scan skips it rather than calling its files deleted. */
+    CHECK(bd_rename_noreplace(at("r/Users/old"), at("r/Users/new")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_deleted == 0 && ss.errors == 1);
+    CHECK(bd_source_relocate(cat, docs, at("r/Users/nowhere")) == BD_ERR_NOT_FOUND);
+    CHECK(bd_source_relocate(cat, docs, at("r/Other")) == BD_ERR_EXISTS);
+    CHECK(bd_source_relocate(cat, 9999, at("r/Users/new/Docs")) == BD_ERR_NOT_FOUND);
+    REQUIRE_OK(bd_source_relocate(cat, docs, at("r/Users/new/Docs/")), cat);
+    REQUIRE_OK(bd_source_relocate(cat, docs, at("r/Users/new/Docs")), cat); /* same place again is fine */
+    source_paths sp;
+    memset(&sp, 0, sizeof(sp));
+    bd_list_sources(cat, collect_sources, &sp);
+    CHECK(sp.n == 2 && sp.id[0] == docs && strcmp(sp.path[0], at("r/Users/new/Docs")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 0 && ss.files_changed == 0 && ss.files_deleted == 0 && ss.errors == 0);
+    find_ctx sub = lookup(cat, docs, 0, "sub");
+    CHECK(lookup(cat, docs, sub.node_id, "b.txt").state == BD_STATE_AVAILABLE);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, docs, NULL, at("r/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2 && file_equals(at("r/out/Docs/sub/b.txt"), "beta"));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1130,6 +1209,7 @@ int main(void)
     test_report();
     test_moves_guard_and_progress();
     test_shadow_list();
+    test_recover_and_relocate();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

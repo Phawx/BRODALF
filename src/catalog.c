@@ -570,3 +570,54 @@ bd_status bd_option_set(bd_catalog *cat, const char *name, int value)
     snprintf(v, sizeof(v), "%d", value);
     return bd_setting_set(cat, key, v) == 0 ? BD_OK : bd_fail_db(cat, "save the option");
 }
+
+/* ---- Recovery on a new PC -------------------------------------------------- */
+
+bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)
+{
+    g_open_error[0] = '\0';
+    bd_stat_t st;
+    if (bd_stat(dest_path, &st) == 0) {
+        snprintf(g_open_error, sizeof(g_open_error), "%s already exists", dest_path);
+        return BD_ERR_EXISTS;
+    }
+    FILE *in = bd_fopen(backup_path, "rb");
+    if (!in) {
+        snprintf(g_open_error, sizeof(g_open_error), "cannot open %s", backup_path);
+        return BD_ERR_NOT_FOUND;
+    }
+    unsigned char header[16];
+    if (fread(header, 1, sizeof(header), in) != sizeof(header) || memcmp(header, BD_MAGIC, 8) != 0 ||
+        get_u32(header + 8) > BD_FORMAT_VERSION) {
+        fclose(in);
+        snprintf(g_open_error, sizeof(g_open_error), "%s is not a BRODALF catalog this version can read", backup_path);
+        return BD_ERR_FORMAT;
+    }
+    /* Copy under a temporary name and rename at the end, so a half-written
+     * catalog never sits at dest_path. */
+    char *tmp = bd_sprintf("%s.recovering", dest_path);
+    FILE *out = tmp ? bd_fopen(tmp, "wb") : NULL;
+    bd_status s = BD_OK;
+    if (!out) {
+        snprintf(g_open_error, sizeof(g_open_error), "cannot write %s", dest_path);
+        s = tmp ? BD_ERR_IO : BD_ERR_NOMEM;
+    } else {
+        unsigned char buf[65536];
+        size_t n = sizeof(header);
+        memcpy(buf, header, n);
+        do {
+            if (fwrite(buf, 1, n, out) != n) { s = BD_ERR_IO; break; }
+        } while ((n = fread(buf, 1, sizeof(buf), in)) > 0);
+        if (s == BD_OK && ferror(in)) s = BD_ERR_IO;
+        if (s == BD_OK && bd_fsync(out) != 0) s = BD_ERR_IO;
+        if (fclose(out) != 0 && s == BD_OK) s = BD_ERR_IO;
+        if (s == BD_OK && bd_rename_noreplace(tmp, dest_path) != 0) s = BD_ERR_IO;
+        if (s != BD_OK) {
+            bd_remove(tmp);
+            snprintf(g_open_error, sizeof(g_open_error), "cannot copy %s to %s", backup_path, dest_path);
+        }
+    }
+    fclose(in);
+    free(tmp);
+    return s;
+}

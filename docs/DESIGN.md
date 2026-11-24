@@ -208,6 +208,24 @@ Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
 `space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
 written by 0.3.0). Schema version 5.
 
+## Recovery on a new PC
+
+Every backup leaves `catalog-backup.brodalf` in the catalog's folder on the
+drive. "Recover from a backup drive..." on the start screen finds it on the
+drive picked (the drive, its `BRODALF` folder or the catalog's folder), takes
+the newest copy of that catalog on any plugged-in drive by file time, and
+`bd_catalog_recover` copies it to a new file the user names (never over an
+existing one; written as `<name>.recovering` and renamed at the end). It is
+then opened as usual (passphrase asked if the copy is encrypted), and the
+startup drive search quick-checks every connected drive. Protected folders
+whose path is not on this PC are offered a new place first (with a guess
+under `%USERPROFILE%` when the old path was under `X:\Users\<name>`);
+`bd_source_relocate` changes only `sources.path`, so the folder keeps its
+name on the drives and its files keep their versions and copies. A scan
+skips an unreachable folder rather than marking its files deleted, so a
+folder left for later is safe. Catalog > "Change where a folder is..." does
+the same at any time.
+
 ## Protection target
 
 The catalog's settings hold a target of N copies in M places (default 2 and

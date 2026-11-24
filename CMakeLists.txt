@@ -91,9 +91,12 @@ add_library(brodalf_core STATIC
     src/platform_posix.c
     src/platform_win32.c
     src/query.c
+    src/recover.c
+    src/replace.c
     src/report.c
     src/risk.c
     src/scan.c
+    src/sheet.c
     src/shadow.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)
@@ -102,7 +105,7 @@ target_compile_definitions(brodalf_core PRIVATE
     BRODALF_VERSION="${PROJECT_VERSION}"
     BRODALF_BUILD_ID="${BRODALF_BUILD_ID}")
 if(WIN32)
-    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 ole32)
+    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 ole32 user32)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)
 else()
     find_package(Threads REQUIRED)
@@ -136,7 +139,7 @@ endif()
 
 if(WIN32)
     add_executable(brodalf WIN32 gui/main.c gui/brodalf.rc)
-    target_link_libraries(brodalf PRIVATE brodalf_core comctl32 shell32 ole32 uuid)
+    target_link_libraries(brodalf PRIVATE brodalf_core comctl32 shell32 ole32 oleaut32 uuid)
     target_compile_definitions(brodalf PRIVATE UNICODE _UNICODE)
     if(MSVC)
         # The manifest is embedded through the .rc file.

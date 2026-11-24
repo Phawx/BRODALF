@@ -33,7 +33,13 @@ The app never runs in the background. `brodalf.exe --check <catalog>` is
 what Windows Task Scheduler runs (task "BRODALF - <catalog name>", daily or
 weekly at 12:00, from the "schedule" option: 1, 7 or 0; the GUI registers
 the task on every start when the option is on, so a new catalog gets a
-daily task straight away). It scans silently,
+daily task straight away). The task is created or updated through the Task
+Scheduler 2.0 COM API (`ITaskService`, a daily trigger every 1 or 7 days
+from 12:00 today, local time; run as the logged-on user; "start only on AC
+power" and "stop on battery" off, "start when available" on, so a laptop
+on battery still runs it and a missed run catches up). If the COM call
+fails, `schtasks.exe` is used as before, which leaves the battery
+conditions on. It scans silently,
 and only when files fall short of the protection target (or the guard
 tripped) shows one message: how much is at risk, and the drive to plug in,
 with an "Open BRODALF now?" button. The drive is `bd_suggest_drive`: the
@@ -109,10 +115,24 @@ deleted since; "before the changes" is `as_of_ms = guard.before_ms`.
 Opening a file for reading shares read, write and delete. A sharing or lock
 violation is reported through `bd_open_was_in_use()`, the scan records the
 path in the temp table `in_use` and leaves the catalog as it was. The GUI
-offers a shadow copy: `brodalf.exe --shadow-copy <dir> <list>` runs
-elevated (`src/shadow.c`, the VSS backup-components API on `vssapi.dll`),
-snapshots each volume involved, copies the listed files out of the snapshot
-into `<dir>` and writes `result.txt`. The GUI then registers each staged
+offers a shadow copy: `brodalf.exe --shadow-copy <out dir> <list> <hash>`
+runs elevated (`bd_shadow_helper` in `src/shadow.c`, the VSS
+backup-components API on `vssapi.dll`, loaded from System32 only). The
+unelevated side writes the list (the user's SID, the protected folders, the
+files in use) into its temp folder and puts the list's BLAKE3 hash on the
+command line, which is fixed once Windows asks for permission. The helper
+reads the list once and refuses it if the hash differs; refuses every file
+that is not a plain `X:\...` path strictly inside one of the protected
+folders (no `.` or `..` parts, no `:` streams); makes `<out dir>` itself as
+a new folder (refused if it already exists) with a protected DACL (SYSTEM
+and Administrators full control, the user read and delete), held open
+without delete sharing and checked to be the folder it made (not a reparse
+point, its final path and owner as expected); and copies each file out of
+the snapshot through handles, refusing one whose final path is not the one
+asked for (a junction or link leading elsewhere) and never replacing a file.
+It snapshots each volume involved, writes the copies as `N.bin` and writes
+`result.txt` (`ok`, `failed` or `refused` per file) while still holding the
+folder. The GUI then registers each staged
 file as a substitute for its path (temp table `substitute`), rescans and
 backs up; the scan hashes the substitute and the backup copies it, so the
 catalog records the real path.
@@ -238,13 +258,38 @@ the protected folder when they contain a `/`; a trailing `/` means folders.
 
 16-byte header (`BRODALF\x1a`, format version, flags) followed by one zstd
 stream of a SQLite database. While open it is unpacked to a working copy in the
-temp folder and `<file>.lock` prevents a second window from editing it. Saving
+temp folder. On Windows a named mutex, `Local\BRODALF-catalog-<hash>` (the
+first 16 bytes of the BLAKE3 hash of the catalog's full path, made long,
+upper-cased and without the `\\?\` prefix), keeps a second BRODALF on the
+same PC from opening it, and `<file>.lock` is held open without sharing and
+deleted on close, which also keeps out a BRODALF on another PC when the
+catalog is on a share. Windows drops both when the process ends, so a crash
+leaves no stale lock. On other systems (tests, CLI) `<file>.lock` is created
+exclusively and removed on close. Saving
 writes a new file and swaps it in atomically.
 
 Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
 `space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
 written by 0.3.0). Schema version 6: version 6 added `nodes.rel_fold`, the
 case-folded path used on Windows, filled in when an older catalog is opened.
+
+## Recovery on a new PC
+
+Every backup leaves `catalog-backup.brodalf` in the catalog's folder on the
+drive. "Recover from a backup drive..." on the start screen finds it on the
+drive picked (the drive, its `BRODALF` folder or the catalog's folder), takes
+the newest copy of that catalog on any plugged-in drive by file time, and
+`bd_catalog_recover` copies it to a new file the user names (never over an
+existing one; written as `<name>.recovering` and renamed at the end). It is
+then opened as usual (passphrase asked if the copy is encrypted), and the
+startup drive search quick-checks every connected drive. Protected folders
+whose path is not on this PC are offered a new place first (with a guess
+under `%USERPROFILE%` when the old path was under `X:\Users\<name>`);
+`bd_source_relocate` changes only `sources.path`, so the folder keeps its
+name on the drives and its files keep their versions and copies. A scan
+skips an unreachable folder rather than marking its files deleted, so a
+folder left for later is safe. Catalog > "Change where a folder is..." does
+the same at any time.
 
 ## Protection target
 
@@ -260,6 +305,38 @@ current version and either the file needs copies or the medium's place is
 not yet among the file's places. Offline copies count: the target is about
 what exists, not what is plugged in.
 
+## Replacing a drive
+
+`media.retired_ms` and `media.replaced_by` (added in place to schema 5
+catalogs; earlier versions ignore them) mark a drive being replaced and the
+drive taking its place. A retired drive gets nothing new: `bd_backup`
+refuses it, "which drive next" never names it, and the GUI leaves it out of
+plug-in backups. Its copies still restore. A copy on it counts toward the
+protection target (`BD_SQL_COUNTS`) until the replacement holds a good copy
+of the same version, so the target is met without it once the replacement
+has caught up. `bd_media_replace(old, new)` retires old, lists in
+`temp.replace_need` every current version with a good copy on old that has
+fewer than N copies or M places on the other drives, and runs a backup to
+new limited to that list (read from the source folders and checked by hash,
+like any backup). Deleted files and older versions whose only copy is on
+old are not copied; they are counted so the GUI can say to keep the drive.
+The drive details show a plain suggestion to replace a drive whose health
+data says failing, warning, 90% worn, or pending or unreadable sectors.
+
+## Deleted files
+
+A file removed from its protected folder keeps its node (`deleted<>0`,
+`last_seen_ms` the last scan that found it) and its versions and copies.
+`bd_list_deleted` lists the ones whose current version has a good copy,
+most recently seen first, with the drives that hold it. Restoring with
+`bd_restore_opts.deleted_only` (bound as `?5` in `RESTORE_VERSION` and
+`RESTORE_WHERE`) brings back only deleted files under the given file or
+folder, each as it was last seen. The GUI's Show deleted files lists up to
+5000 of them; it restores the selected files, or everything deleted from
+the folders they were in, in one restore job. Files on drives that are not
+plugged in are reported, not resumed when the drive arrives: the user
+restores them again from the list.
+
 ## Drive hardware
 
 `media.location` holds the optional "where it is kept" text. `media_hardware`
@@ -267,10 +344,11 @@ holds the last reading of each drive, taken whenever it is plugged in
 (`src/drive_hw.c`): on Windows the volume is mapped to its physical disk
 (`IOCTL_STORAGE_GET_DEVICE_NUMBER`), then `IOCTL_STORAGE_QUERY_PROPERTY` gives
 vendor, model, firmware, serial and bus; `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`
-the size; the temperature property the temperature;
-`IOCTL_STORAGE_PREDICT_FAILURE` the failure prediction and the ATA SMART
-attribute table (ids 5, 9, 12, 190/194, 197, 198, 231); the NVMe health log
-page through the protocol-specific query; and, as a fallback that needs
+the size; the temperature property (`StorageDeviceTemperatureProperty`, 52)
+the temperature; `IOCTL_STORAGE_PREDICT_FAILURE` the failure prediction and,
+for ATA and SATA disks only, the ATA SMART attribute table (ids 5, 9, 12,
+190/194, 197, 198, 231; other buses put something else in those bytes); for
+NVMe disks only the NVMe health log page through the protocol-specific query; and, as a fallback that needs
 administrator rights, `SMART_RCV_DRIVE_DATA`. Health is "failing" when the
 drive predicts failure, "warning" with any reallocated, pending or
 unreadable sectors, NVMe critical-warning bits or 100% wear, else "good".
@@ -326,6 +404,28 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
   to 1 GiB and 1 to 16 passes (BRODALF writes 64 MiB and 3; it always uses
   one lane, which the block does not store). Anything else is refused as a
   damaged catalog instead of trying to allocate 4 GiB or run for hours.
+- A recovery key is a second way to unlock: 30 characters from
+  `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (no 0, 1, I or O; 150 bits) in groups of
+  five, made only when asked for (the recovery sheet) and shown once. It wraps
+  the same master key the same way as the passphrase (Argon2id with its own
+  salt, then XChaCha20-Poly1305); the block is kept as `recovery_block` in
+  `settings`, and an encrypted `.brodalf` file also carries it in the header
+  after the key block, with flag bit 1 set, so it opens a catalog backup on a
+  new PC. BRODALF before this change refuses such a file as a newer format.
+  Typed keys ignore case, dashes and spaces. A new recovery key replaces the
+  old one; changing the passphrase keeps it.
+
+## Recovery sheet
+
+`bd_write_recovery_sheet` writes one self-contained HTML page (no scripts,
+images or links; every catalog string HTML-escaped): what to do on a new PC,
+each drive with where it is kept, size, free space as last seen, the
+protected folders it holds current versions of with file counts and sizes,
+and its last backup (from `jobs`), the protected folders, and the recovery
+key when one was just made. The passphrase is never written. The GUI saves
+it where the user chooses, opens it in the browser for printing and says to
+delete the file afterwards; making a key also refreshes the catalog backup
+on every plugged-in drive so they know the new key.
 
 ## GUI
 
@@ -339,7 +439,8 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 - A progress bar and a text line sit above the log; see Progress above.
 - Startup: a task dialog offers the last catalog (kept in
   `HKCU\Software\BRODALF\LastCatalog`), another one, or a new one. A path on
-  the command line opens directly. A stale lock can be removed after a crash.
+  the command line opens directly. A catalog open in another BRODALF window
+  is refused with a message naming it.
 - The tree loads folders lazily and draws each state with custom draw: grey
   italic for no reachable copy, amber for older version only, red bold for a
   bad copy, strikethrough for deleted. Folder and source rows show "x of y
@@ -349,7 +450,12 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 - Scan, backup, check and restore run one at a time on a worker thread, which
   reports progress to the status bar and log and saves the catalog after each
   job. The tree is refreshed when a job ends and cannot be expanded while one
-  runs, since the catalog belongs to the worker then.
+  runs, since the catalog belongs to the worker then. The reverse holds too:
+  while the UI thread is in a command or in what follows a job (its
+  end-of-job prompts, which may wait in a message box), no job starts; a
+  drive plugged in meanwhile is queued and handled when the UI is done.
+  The search box says search is available when the current job finishes,
+  and searches again then.
 - `brodalf.exe --shadow-copy` is dispatched before `CoInitializeEx`: the
   helper needs the multithreaded apartment, and VSS hangs in a
   single-threaded one.
@@ -357,3 +463,14 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
   disconnected, every drive letter with a `BRODALF.media` for this catalog is
   connected (with a quick check), and folders or shares used as storage are
   retried where they were last seen.
+
+## Installer
+
+`installer/brodalf.nsi` (NSIS 3, `makensis -DVERSION=x.y.z`) installs
+brodalf.exe, brodalf-cli.exe and THIRD-PARTY-NOTICES.txt for the current
+user into `%LOCALAPPDATA%\Programs\BRODALF` with no administrator rights
+(`RequestExecutionLevel user`), adds a Start menu shortcut and an uninstall
+entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRODALF`.
+The uninstaller removes only those files, the shortcut and that key: catalogs,
+the app log, `HKCU\Software\BRODALF` and any scheduled check task are left,
+since they belong to the user's catalogs. The installer is not signed.

@@ -773,7 +773,7 @@ static void test_moves_guard_and_progress(void)
     CHECK(bd_backup(cat, d1, 0, &bs, quiet, NULL) == BD_ERR_GUARD);
 
     /* Restore as the files were before. */
-    bd_restore_opts ro = {before_attack};
+    bd_restore_opts ro = {before_attack, 0};
     int64_t total = 0, none = 0;
     REQUIRE_OK(bd_restore_plan_ex(cat, src, NULL, NULL, &ro, NULL, NULL, &total, &none), cat);
     CHECK(total == 60 && none == 0);
@@ -1388,6 +1388,323 @@ static void test_reserved_source_names(void)
     bd_catalog_close(cat);
 }
 
+/* What the elevated shadow-copy helper accepts: only a list whose hash
+ * matches, and only files inside the protected folders. */
+static void test_shadow_list(void)
+{
+    const char *folders[] = {"C:\\Users\\me\\Documents", "D:/Mail/", "E:\\"};
+    CHECK(bd_shadow_path_allowed("C:\\Users\\me\\Documents\\Outlook.pst", folders, 3));
+    CHECK(bd_shadow_path_allowed("c:/users/ME/documents/sub/a.db", folders, 3));
+    CHECK(bd_shadow_path_allowed("D:\\Mail\\x.pst", folders, 3));
+    CHECK(bd_shadow_path_allowed("E:\\anything.txt", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents", folders, 3));          /* the folder itself */
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents2\\a.pst", folders, 3));  /* only a prefix */
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\..\\..\\..\\Windows\\System32\\config\\SAM", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\.\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\. .\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\a.pst:secret", folders, 3));
+    CHECK(!bd_shadow_path_allowed("\\\\?\\C:\\Users\\me\\Documents\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("\\\\server\\share\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("Documents\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Windows\\System32\\config\\SAM", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\a.pst", folders, 0));
+
+    const char *files[] = {"C:\\Users\\me\\Documents\\Outlook.pst", "C:\\Windows\\System32\\config\\SAM"};
+    char hash[65];
+    char *text = bd_shadow_list_format("S-1-5-21-1-2-3-1001", folders, 3, files, 2, hash);
+    CHECK(text != NULL && strlen(hash) == 64);
+    if (!text) return;
+    bd_shadow_list l;
+    CHECK(bd_shadow_list_parse(text, strlen(text), hash, &l) == 0);
+    CHECK(l.user_sid && strcmp(l.user_sid, "S-1-5-21-1-2-3-1001") == 0);
+    CHECK(l.n_folders == 3 && strcmp(l.folders[1], "D:/Mail/") == 0);
+    CHECK(l.n_files == 2 && strcmp(l.files[1], "C:\\Windows\\System32\\config\\SAM") == 0);
+    CHECK(bd_shadow_path_allowed(l.files[0], (const char *const *)l.folders, l.n_folders));
+    CHECK(!bd_shadow_path_allowed(l.files[1], (const char *const *)l.folders, l.n_folders));
+    bd_shadow_list_free(&l);
+    /* Changed after the hash was taken (as on the helper's command line). */
+    char *tampered = bd_strdup(text);
+    tampered[strlen(tampered) - 2] = 'X';
+    CHECK(bd_shadow_list_parse(tampered, strlen(tampered), hash, &l) == -2);
+    CHECK(bd_shadow_list_parse(text, strlen(text), "00", &l) == -2);
+    CHECK(bd_shadow_list_parse(text, strlen(text), NULL, &l) == -2);
+    free(tampered);
+    const char *bad[] = {"C:\\a\nfile\tC:\\Windows\\win.ini"};
+    CHECK(bd_shadow_list_format("S-1-5-21-1", folders, 3, bad, 1, hash) == NULL);
+    free(text);
+
+    /* The helper refuses a list whose hash does not match, before any copy. */
+    write_file(at("shadow/list.txt"), "BRODALF shadow-copy list 1\nuser\tS-1-5-21-1\nfile\tC:\\x\n");
+    char err[256];
+    CHECK(bd_shadow_helper(at("shadow/out"), at("shadow/list.txt"), hash, err, sizeof(err)) == -1);
+    CHECK(strstr(err, "changed") != NULL);
+    CHECK(!exists(at("shadow/out")));
+}
+
+typedef struct { char path[8][1024]; int64_t id[8]; int n; } source_paths;
+
+static int collect_sources(void *ctx, const bd_source_info *info)
+{
+    source_paths *sp = ctx;
+    if (sp->n < 8) {
+        snprintf(sp->path[sp->n], sizeof(sp->path[0]), "%s", info->path);
+        sp->id[sp->n++] = info->source_id;
+    }
+    return 0;
+}
+
+/* A new PC: the catalog comes back from the copy on a drive, and a
+ * protected folder that now lives elsewhere is pointed at its new place
+ * without anything looking deleted or being copied again. */
+static void test_recover_and_relocate(void)
+{
+    write_file(at("r/Users/old/Docs/a.txt"), "alpha");
+    write_file(at("r/Users/old/Docs/sub/b.txt"), "beta");
+    write_file(at("r/Other/c.txt"), "gamma");
+    bd_mkdirs(at("r/d1"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("r/old.brodalf"), &cat), NULL);
+    int64_t docs, other, d1;
+    REQUIRE_OK(bd_source_add(cat, at("r/Users/old/Docs"), &docs), cat);
+    REQUIRE_OK(bd_source_add(cat, at("r/Other"), &other), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r/d1"), "One", 0, &d1), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    REQUIRE_OK(bd_catalog_copy_to_media(cat, d1), cat);
+    char uuid[64], backup[1200];
+    snprintf(uuid, sizeof(uuid), "%s", bd_catalog_uuid(cat));
+    snprintf(backup, sizeof(backup), "r/d1/BRODALF/%s/catalog-backup.brodalf", uuid);
+    bd_catalog_close(cat);
+
+    /* Copy it back as a new catalog; never over an existing file, never from something else. */
+    CHECK(bd_catalog_recover(at(backup), at("r/new.brodalf")) == BD_OK);
+    CHECK(bd_catalog_recover(at(backup), at("r/new.brodalf")) == BD_ERR_EXISTS);
+    CHECK(bd_catalog_recover(at("r/Other/c.txt"), at("r/bad.brodalf")) == BD_ERR_FORMAT);
+    CHECK(!exists(at("r/bad.brodalf")) && !exists(at("r/bad.brodalf.recovering")));
+    CHECK(bd_catalog_recover(at("r/missing.brodalf"), at("r/bad.brodalf")) == BD_ERR_NOT_FOUND);
+    CHECK(!exists(at("r/new.brodalf.recovering")));
+    REQUIRE_OK(bd_catalog_open(at("r/new.brodalf"), &cat), NULL);
+    CHECK(strcmp(bd_catalog_uuid(cat), uuid) == 0);
+    int64_t found = 0;
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_connect(cat, at("r/d1"), &found, &cs, quiet, NULL), cat);
+    CHECK(found == d1 && cs.ok == 3 && cs.missing == 0);
+
+    /* The user folder has another name here. Until it is pointed there a
+     * scan skips it rather than calling its files deleted. */
+    CHECK(bd_rename_noreplace(at("r/Users/old"), at("r/Users/new")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_deleted == 0 && ss.errors == 1);
+    CHECK(bd_source_relocate(cat, docs, at("r/Users/nowhere")) == BD_ERR_NOT_FOUND);
+    CHECK(bd_source_relocate(cat, docs, at("r/Other")) == BD_ERR_EXISTS);
+    CHECK(bd_source_relocate(cat, 9999, at("r/Users/new/Docs")) == BD_ERR_NOT_FOUND);
+    REQUIRE_OK(bd_source_relocate(cat, docs, at("r/Users/new/Docs/")), cat);
+    REQUIRE_OK(bd_source_relocate(cat, docs, at("r/Users/new/Docs")), cat); /* same place again is fine */
+    source_paths sp;
+    memset(&sp, 0, sizeof(sp));
+    bd_list_sources(cat, collect_sources, &sp);
+    CHECK(sp.n == 2 && sp.id[0] == docs && strcmp(sp.path[0], at("r/Users/new/Docs")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 0 && ss.files_changed == 0 && ss.files_deleted == 0 && ss.errors == 0);
+    find_ctx sub = lookup(cat, docs, 0, "sub");
+    CHECK(lookup(cat, docs, sub.node_id, "b.txt").state == BD_STATE_AVAILABLE);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, docs, NULL, at("r/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2 && file_equals(at("r/out/Docs/sub/b.txt"), "beta"));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+}
+
+typedef struct { int64_t want, retired_ms, replaced_by; } retired_snap;
+
+static int snap_retired(void *ctx, const bd_media_info *m)
+{
+    retired_snap *r = ctx;
+    if (m->media_id != r->want) return 0;
+    r->retired_ms = m->retired_ms;
+    r->replaced_by = m->replaced_by;
+    return 1;
+}
+
+static retired_snap retired_of(bd_catalog *cat, int64_t id)
+{
+    retired_snap r = {id, -1, -1};
+    bd_list_media(cat, snap_retired, &r);
+    return r;
+}
+
+/* Replacing a drive: what needs it goes to the new one, nothing new goes to
+ * it, and its copies stop counting once the new drive holds them. */
+static void test_replace_drive(void)
+{
+    write_file(at("x/S1/f1.txt"), "one");
+    write_file(at("x/S1/f2.txt"), "two");
+    write_file(at("x/S2/f3.txt"), "three");
+    write_file(at("x/S2/f4.txt"), "four");
+    write_file(at("x/S2/gone.txt"), "gone");
+    bd_mkdirs(at("x/a"));
+    bd_mkdirs(at("x/b"));
+    bd_mkdirs(at("x/c"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("x/x.brodalf"), &cat), NULL);
+    bd_target t = {2, 1};
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    int64_t s1, s2, a, b, c;
+    REQUIRE_OK(bd_source_add(cat, at("x/S1"), &s1), cat);
+    REQUIRE_OK(bd_source_add(cat, at("x/S2"), &s2), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("x/a"), "Old", 0, &a), cat);
+    REQUIRE_OK(bd_media_init(cat, at("x/b"), "Other", 0, &b), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 5);
+    REQUIRE_OK(bd_backup(cat, b, s1, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    /* An older version and a deleted file that only the old drive holds. */
+    write_file(at("x/S2/f3.txt"), "three, changed");
+    CHECK(bd_remove(at("x/S2/gone.txt")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    risk_count rc;
+    CHECK(risk_of(cat, &rc).files_at_risk == 2); /* f3 (no copy of its new version) and f4 (one copy) */
+
+    /* The new drive has to be plugged in; nothing changes until it is. */
+    CHECK(bd_media_replace(cat, a, 999, NULL, quiet, NULL) == BD_ERR_NOT_FOUND);
+    CHECK(retired_of(cat, a).retired_ms == 0);
+    CHECK(bd_media_retire(cat, a, a) == BD_ERR_INVALID);
+    REQUIRE_OK(bd_media_init(cat, at("x/c"), "New", 0, &c), cat);
+    bd_replace_stats rs;
+    REQUIRE_OK(bd_media_replace(cat, a, c, &rs, quiet, NULL), cat);
+    /* f1 and f2 would have one copy without the old drive, f4 none. */
+    CHECK(rs.files_needed == 3 && rs.backup.files_copied == 3 && rs.backup.files_failed == 0);
+    CHECK(rs.files_only_old == 0 && rs.deleted_only_old == 1 && rs.versions_only_old == 1);
+    retired_snap r = retired_of(cat, a);
+    CHECK(r.retired_ms > 0 && r.replaced_by == c);
+    CHECK(retired_of(cat, c).retired_ms == 0);
+    char p[1200];
+    snprintf(p, sizeof(p), "x/c/BRODALF/%s/S2/f4.txt", bd_catalog_uuid(cat));
+    CHECK(file_equals(at(p), "four"));
+    snprintf(p, sizeof(p), "x/c/BRODALF/%s/S2/f3.txt", bd_catalog_uuid(cat));
+    CHECK(!exists(at(p))); /* not needed for the old drive: a normal backup copies it */
+
+    /* f1 and f2 are on Other and New now (Old no longer counts); f4 has one
+     * copy that counts, on New. */
+    CHECK(risk_of(cat, &rc).files_at_risk == 2 && rc.copies_sum == 1);
+    CHECK(bd_backup(cat, a, 0, &bs, quiet, NULL) == BD_ERR_INVALID);
+    help_list h = help_of(cat);
+    for (int i = 0; i < h.n; i++) CHECK(strcmp(h.labels[i], "Old") != 0);
+    /* Its copies still restore. */
+    find_ctx f = lookup(cat, s2, 0, "gone.txt");
+    CHECK(f.found && f.state == BD_STATE_DELETED);
+
+    /* Changed my mind: it counts and takes backups again. */
+    REQUIRE_OK(bd_media_unretire(cat, a), cat);
+    CHECK(retired_of(cat, a).retired_ms == 0 && retired_of(cat, a).replaced_by == 0);
+    CHECK(risk_of(cat, &rc).files_at_risk == 1); /* only f3 */
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    /* Retiring with no replacement chosen keeps every copy counting. */
+    REQUIRE_OK(bd_media_retire(cat, a, 0), cat);
+    CHECK(retired_of(cat, a).retired_ms > 0 && retired_of(cat, a).replaced_by == 0);
+    CHECK(risk_of(cat, &rc).files_at_risk == 1);
+    bd_catalog_close(cat);
+}
+
+typedef struct { int n; char first[256]; char drives[256]; int connected; int64_t last_seen; } deleted_list;
+
+static int collect_deleted(void *ctx, const bd_deleted_info *d)
+{
+    deleted_list *l = ctx;
+    if (!l->n++) {
+        snprintf(l->first, sizeof(l->first), "%s/%s", d->source_name, d->rel_path);
+        snprintf(l->drives, sizeof(l->drives), "%s", d->drives);
+        l->connected = d->connected;
+        l->last_seen = d->last_seen_ms;
+    }
+    return 0;
+}
+
+/* Files deleted from their folder that a drive still holds, and getting
+ * them back. */
+static void test_deleted_files(void)
+{
+    write_file(at("del/D/a.txt"), "a");
+    write_file(at("del/D/keep.txt"), "keep");
+    write_file(at("del/D/sub/b.txt"), "b");
+    write_file(at("del/D/sub/c.txt"), "c1");
+    bd_mkdirs(at("del/one"));
+    bd_mkdirs(at("del/two"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("del/d.brodalf"), &cat), NULL);
+    int64_t src, one, two;
+    REQUIRE_OK(bd_source_add(cat, at("del/D"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("del/one"), "One", 0, &one), cat);
+    REQUIRE_OK(bd_media_init(cat, at("del/two"), "Two", 0, &two), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, one, 0, &bs, quiet, NULL), cat);
+    write_file(at("del/D/sub/c.txt"), "c2, changed");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, one, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, two, 0, &bs, quiet, NULL), cat);
+    bd_media_disconnect(cat, two);
+    /* A file that never had a copy is not listed when it goes. */
+    write_file(at("del/D/never.txt"), "never backed up");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+
+    int64_t count = -1;
+    REQUIRE_OK(bd_list_deleted(cat, 0, NULL, NULL, &count), cat);
+    CHECK(count == 0);
+    CHECK(bd_remove(at("del/D/a.txt")) == 0);
+    CHECK(bd_remove(at("del/D/sub/b.txt")) == 0);
+    CHECK(bd_remove(at("del/D/sub/c.txt")) == 0);
+    CHECK(bd_rmdir_empty(at("del/D/sub")) == 0);
+    CHECK(bd_remove(at("del/D/never.txt")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_deleted == 4);
+    deleted_list dl;
+    memset(&dl, 0, sizeof(dl));
+    REQUIRE_OK(bd_list_deleted(cat, src, collect_deleted, &dl, &count), cat);
+    CHECK(count == 3 && dl.n == 3 && dl.last_seen > 0);
+    CHECK(strcmp(dl.first, "D/a.txt") == 0 && strcmp(dl.drives, "One, Two") == 0 && dl.connected);
+    REQUIRE_OK(bd_list_deleted(cat, 9999, NULL, NULL, &count), cat);
+    CHECK(count == 0);
+
+    /* The plan and the restore of a folder take only what was deleted from it. */
+    bd_restore_opts ro;
+    memset(&ro, 0, sizeof(ro));
+    ro.deleted_only = 1;
+    int64_t total = 0, none = 0;
+    REQUIRE_OK(bd_restore_plan_ex(cat, src, "", NULL, &ro, NULL, NULL, &total, &none), cat);
+    CHECK(total == 4 && none == 1); /* never.txt has no copy */
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore_ex(cat, src, "sub", at("del/out"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2 && rs.files_failed == 0);
+    CHECK(file_equals(at("del/out/D/sub/b.txt"), "b") && file_equals(at("del/out/D/sub/c.txt"), "c2, changed"));
+    CHECK(!exists(at("del/out/D/a.txt")) && !exists(at("del/out/D/keep.txt")));
+    REQUIRE_OK(bd_restore_ex(cat, src, "a.txt", at("del/out"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && file_equals(at("del/out/D/a.txt"), "a"));
+    REQUIRE_OK(bd_restore_ex(cat, src, "", at("del/out"), &ro, &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 0 && rs.files_already_there == 3 && rs.files_no_copy == 1 && !exists(at("del/out/D/keep.txt")));
+
+    /* Back in its folder, it is no longer deleted. */
+    write_file(at("del/D/a.txt"), "a");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_list_deleted(cat, 0, NULL, NULL, &count), cat);
+    CHECK(count == 2);
+    bd_media_disconnect(cat, one);
+    memset(&dl, 0, sizeof(dl));
+    REQUIRE_OK(bd_list_deleted(cat, 0, collect_deleted, &dl, NULL), cat);
+    CHECK(dl.n == 2 && !dl.connected);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1623,6 +1940,11 @@ int main(void)
     bd_drive_hw_parse_nvme(&hw, nvme);
     CHECK(hw.temperature_c == 37 && hw.percent_used == 4 && hw.power_cycles == 50 && hw.power_on_hours == 1000);
     CHECK(strcmp(hw.health, "good") == 0);
+    /* The ATA table is only read from ATA and SATA answers, never NVMe,
+     * SCSI, SAS, USB or RAID ones. */
+    CHECK(bd_drive_hw_bus_is_ata(3) && bd_drive_hw_bus_is_ata(11));
+    CHECK(!bd_drive_hw_bus_is_ata(17) && !bd_drive_hw_bus_is_ata(1) && !bd_drive_hw_bus_is_ata(10));
+    CHECK(!bd_drive_hw_bus_is_ata(7) && !bd_drive_hw_bus_is_ata(8) && !bd_drive_hw_bus_is_ata(0));
 
     REQUIRE_OK(bd_catalog_copy_to_media(cat, drive), cat);
     char pc[1200];
@@ -1644,6 +1966,10 @@ int main(void)
 #ifndef _WIN32
     test_mtimes();
 #endif
+    test_shadow_list();
+    test_recover_and_relocate();
+    test_replace_drive();
+    test_deleted_files();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

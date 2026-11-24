@@ -135,6 +135,111 @@ static int count_tmp_cb(void *ctx, const char *rel, const bd_stat_t *st)
 #define PASS "correct horse battery"
 #define PASS2 "a brand new passphrase"
 
+static int key_shape_ok(const char *k)
+{
+    if (strlen(k) != BD_RECOVERY_KEY_SIZE - 1) return 0;
+    for (int i = 0; k[i]; i++) {
+        if (i % 6 == 5) { if (k[i] != '-') return 0; continue; }
+        if (!strchr("23456789ABCDEFGHJKLMNPQRSTUVWXYZ", k[i])) return 0;
+    }
+    return 1;
+}
+
+/* The recovery key: a second way to unlock, in the catalog and in the
+ * header of an encrypted catalog file, and the recovery sheet that prints it. */
+static void test_recovery_key(void)
+{
+    write_file(at("rk/src/note.txt"), "recover me");
+    bd_mkdirs(at("rk/vault"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("rk/k.brodalf"), &cat), NULL);
+    char key[BD_RECOVERY_KEY_SIZE], key2[BD_RECOVERY_KEY_SIZE];
+    CHECK(bd_catalog_make_recovery_key(cat, key) == BD_ERR_INVALID); /* no passphrase yet */
+    CHECK(!bd_catalog_has_recovery_key(cat));
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, "first passphrase"), cat);
+    int64_t src, vault;
+    REQUIRE_OK(bd_source_add(cat, at("rk/src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("rk/vault"), "Vault", BD_MEDIA_ENCRYPTED, &vault), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);
+    bd_catalog_lock_key(cat);
+    CHECK(bd_catalog_make_recovery_key(cat, key) == BD_ERR_PASSPHRASE); /* locked */
+    REQUIRE_OK(bd_catalog_unlock(cat, "first passphrase"), cat);
+    REQUIRE_OK(bd_catalog_make_recovery_key(cat, key), cat);
+    CHECK(key_shape_ok(key) && bd_catalog_has_recovery_key(cat));
+
+    /* Either way unlocks; case, dashes and spaces do not matter; a wrong key does not. */
+    bd_catalog_lock_key(cat);
+    char typed[64];
+    snprintf(typed, sizeof(typed), " %s ", key);
+    for (char *p = typed; *p; p++) {
+        if (*p == '-') *p = ' ';
+        else if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+    }
+    REQUIRE_OK(bd_catalog_unlock_recovery(cat, typed), cat);
+    CHECK(bd_catalog_is_unlocked(cat));
+    bd_catalog_lock_key(cat);
+    char wrong[BD_RECOVERY_KEY_SIZE];
+    memcpy(wrong, key, sizeof(wrong));
+    wrong[0] = wrong[0] == '2' ? '3' : '2';
+    CHECK(bd_catalog_unlock_recovery(cat, wrong) == BD_ERR_PASSPHRASE && !bd_catalog_is_unlocked(cat));
+    CHECK(bd_catalog_unlock_recovery(cat, "too short") == BD_ERR_PASSPHRASE);
+    CHECK(bd_catalog_unlock_recovery(cat, "first passphrase") == BD_ERR_PASSPHRASE);
+    CHECK(bd_catalog_unlock(cat, key) == BD_ERR_PASSPHRASE); /* not a passphrase */
+    REQUIRE_OK(bd_catalog_unlock(cat, "first passphrase"), cat);
+
+    /* Changing the passphrase keeps the recovery key. */
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, "second passphrase"), cat);
+    bd_catalog_lock_key(cat);
+    REQUIRE_OK(bd_catalog_unlock_recovery(cat, key), cat);
+
+    /* An encrypted catalog file opens with either; the passphrase is never in it. */
+    REQUIRE_OK(bd_catalog_set_file_encrypted(cat, 1), cat);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    REQUIRE_OK(bd_catalog_copy_to_media(cat, vault), cat);
+    bd_catalog_close(cat);
+    CHECK(!contains(at("rk/k.brodalf"), "second passphrase") && !contains(at("rk/k.brodalf"), key));
+    CHECK(bd_catalog_open_with_recovery(at("rk/k.brodalf"), wrong, &cat) == BD_ERR_PASSPHRASE);
+    REQUIRE_OK(bd_catalog_open_with_recovery(at("rk/k.brodalf"), key, &cat), NULL);
+    CHECK(bd_catalog_is_unlocked(cat));
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open_with(at("rk/k.brodalf"), "second passphrase", &cat), NULL);
+    bd_catalog_close(cat);
+
+    /* On a new PC: the catalog backup on the drive opens with the recovery key. */
+    char backup[1400];
+    REQUIRE_OK(bd_catalog_open_with(at("rk/k.brodalf"), "second passphrase", &cat), NULL);
+    snprintf(backup, sizeof(backup), "rk/vault/BRODALF/%s/catalog-backup.brodalf", bd_catalog_uuid(cat));
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_recover(at(backup), at("rk/new.brodalf")), NULL);
+    REQUIRE_OK(bd_catalog_open_with_recovery(at("rk/new.brodalf"), key, &cat), NULL);
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_connect(cat, at("rk/vault"), &vault, &cs, quiet, NULL), cat);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, NULL, at("rk/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && file_equals(at("rk/out/src/note.txt"), "recover me", 10));
+
+    /* The sheet: drives, folders, the key; never the passphrase. */
+    REQUIRE_OK(bd_media_set_location(cat, vault, "Top <shelf> & co"), cat);
+    REQUIRE_OK(bd_write_recovery_sheet(cat, at("rk/sheet.html"), key), cat);
+    CHECK(contains(at("rk/sheet.html"), key) && contains(at("rk/sheet.html"), "Vault"));
+    CHECK(contains(at("rk/sheet.html"), "Top &lt;shelf&gt; &amp; co") && !contains(at("rk/sheet.html"), "<shelf>"));
+    CHECK(contains(at("rk/sheet.html"), "src: 1 file"));
+    CHECK(!contains(at("rk/sheet.html"), "passphrase\"") && !contains(at("rk/sheet.html"), "second passphrase"));
+    REQUIRE_OK(bd_write_recovery_sheet(cat, at("rk/sheet2.html"), NULL), cat);
+    CHECK(!contains(at("rk/sheet2.html"), key) && contains(at("rk/sheet2.html"), "no recovery key"));
+
+    /* A new key replaces the old one. */
+    REQUIRE_OK(bd_catalog_make_recovery_key(cat, key2), cat);
+    CHECK(strcmp(key, key2) != 0);
+    bd_catalog_lock_key(cat);
+    CHECK(bd_catalog_unlock_recovery(cat, key) == BD_ERR_PASSPHRASE);
+    REQUIRE_OK(bd_catalog_unlock_recovery(cat, key2), cat);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -278,6 +383,7 @@ int main(void)
     REQUIRE_OK(bd_catalog_save(cat), cat);
     CHECK(!bd_catalog_file_needs_passphrase(at("c.brodalf")));
     bd_catalog_close(cat);
+    test_recovery_key();
 
     /* No random numbers for a new key: nothing is made or stored. */
     REQUIRE_OK(bd_catalog_create(at("r.brodalf"), &cat), NULL);

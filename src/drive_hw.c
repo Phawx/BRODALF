@@ -6,8 +6,11 @@
  *   - IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: disk size.
  *   - StorageDeviceTemperatureProperty (Windows 10+): temperature.
  *   - IOCTL_STORAGE_PREDICT_FAILURE: the drive's own failure prediction and,
- *     for ATA drives, the SMART attribute table (no administrator needed).
- *   - NVMe drives: the health log page through the protocol-specific query.
+ *     for ATA and SATA drives only, the SMART attribute table (no
+ *     administrator needed). For NVMe, SCSI, USB and other buses the
+ *     vendor-specific bytes are not an ATA table and are not parsed.
+ *   - NVMe drives: the health log page through the protocol-specific query,
+ *     the only place NVMe health is read from.
  *   - ATA drives, as a fallback: SMART READ DATA (needs administrator).
  * USB enclosures often do not pass SMART through; the note says so.
  *
@@ -20,6 +23,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* STORAGE_BUS_TYPE values whose IOCTL_STORAGE_PREDICT_FAILURE answer
+ * carries the ATA SMART attribute table: BusTypeAta (3) and BusTypeSata
+ * (11). Everything else (SCSI, SAS, USB, RAID, NVMe...) fills those bytes
+ * with something else, or nothing. */
+int bd_drive_hw_bus_is_ata(int bus_type)
+{
+    return bus_type == 3 || bus_type == 11;
+}
 
 static void hw_clear(bd_drive_hw *hw)
 {
@@ -144,10 +156,12 @@ typedef struct {
 
 #define BD_PROP_DEVICE 0
 #define BD_PROP_PROTOCOL_SPECIFIC 50
-#define BD_PROP_TEMPERATURE 55
+#define BD_PROP_TEMPERATURE 52 /* StorageDeviceTemperatureProperty (55 is StorageDeviceAttributesProperty) */
 #define BD_PROTOCOL_NVME 3
 #define BD_NVME_LOG_PAGE 2
 #define BD_NVME_HEALTH_LOG 2
+#define BD_BUS_USB 7
+#define BD_BUS_NVME 17
 
 static const char *bus_name(int t)
 {
@@ -349,22 +363,22 @@ int bd_drive_hw_read(const char *root, bd_drive_hw *hw)
     if (DeviceIoControl(h, IOCTL_STORAGE_PREDICT_FAILURE, NULL, 0, &pf, sizeof(pf), &got, NULL)) {
         predicted = pf.PredictFailure != 0;
         hw->smart = 1;
-        parse_ata_smart(hw, pf.VendorSpecific);
+        if (bd_drive_hw_bus_is_ata(bus)) parse_ata_smart(hw, pf.VendorSpecific);
     }
-    if (bus == 17) read_nvme_health(h, hw);
+    if (bus == BD_BUS_NVME) read_nvme_health(h, hw);
     CloseHandle(h);
 
-    if (hw->power_on_hours < 0 && bus != 17) {
+    if (hw->power_on_hours < 0 && bus != BD_BUS_NVME) {
         /* Try the administrator-only way. */
         HANDLE rw = CreateFileW(dev_path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
         if (rw != INVALID_HANDLE_VALUE) {
             read_ata_smart_admin(rw, hw, (BYTE)disk);
             CloseHandle(rw);
-        } else if (bus != 7) {
+        } else if (bus != BD_BUS_USB) {
             snprintf(hw->note, sizeof(hw->note), "run BRODALF as administrator once to read this drive's SMART details");
         }
     }
-    if (!hw->smart && bus == 7)
+    if (!hw->smart && bus == BD_BUS_USB)
         snprintf(hw->note, sizeof(hw->note), "this USB enclosure does not pass SMART health data through");
     set_health(hw, predicted);
     return known ? 0 : -1;

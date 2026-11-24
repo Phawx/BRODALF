@@ -6,11 +6,15 @@
  *   bytes 12-15 flags, little endian (bit 0: encrypted)
  *
  * An encrypted catalog continues with the 96-byte key block (the master key
- * wrapped by the passphrase, see crypto.c), and the zstd stream is sealed
- * with the master key.
+ * wrapped by the passphrase, see crypto.c), then, when flags bit 1 is set,
+ * the 96-byte block wrapping it by the recovery key, and the zstd stream is
+ * sealed with the master key.
  *
  * While open, the database lives in a working copy in the temp folder and a
- * "<file>.lock" file sits next to the catalog. */
+ * "<file>.lock" file sits next to the catalog. On Windows a named mutex
+ * derived from the catalog's full path is held too, and the lock file is
+ * kept open without sharing, so both are released by Windows if BRODALF
+ * crashes; elsewhere a lock file left by a crash has to be removed by hand. */
 #include "internal.h"
 
 #include "zstd.h"
@@ -68,7 +72,9 @@ static const char *SCHEMA_SQL =
     "  added_ms INTEGER NOT NULL,"
     "  last_seen_ms INTEGER,"
     "  encrypted INTEGER NOT NULL DEFAULT 0,"
-    "  location TEXT);"
+    "  location TEXT,"
+    "  retired_ms INTEGER,"              /* being replaced: nothing new is backed up to it */
+    "  replaced_by INTEGER);"            /* the drive taking its place; its copies stop counting there */
     "CREATE TABLE IF NOT EXISTS media_hardware("  /* last reading when plugged in */
     "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
     "  read_ms INTEGER NOT NULL,"
@@ -159,7 +165,7 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
     if (cat->db) sqlite3_close(cat->db);
     bd_wipe(cat->key, sizeof(cat->key));
     remove_work_files(cat);
-    if (owns_lock) bd_remove(cat->lock_path);
+    if (owns_lock && cat->lock) bd_catalog_lock_release(cat->lock, cat->lock_path);
     free(cat->path);
     free(cat->lock_path);
     free(cat->work_path);
@@ -184,11 +190,20 @@ const char *bd_open_error(void)
 
 static bd_status take_lock(bd_catalog *cat)
 {
-    int rc = bd_create_exclusive(cat->lock_path);
+    int rc = bd_catalog_lock_take(cat->path, cat->lock_path, &cat->lock);
+#ifdef _WIN32
+    if (rc == 1)
+        return bd_fail(cat, BD_ERR_LOCKED, "%s is already open in another BRODALF window. Close it there first.", cat->path);
+    if (rc == 2)
+        return bd_fail(cat, BD_ERR_LOCKED,
+                       "%s is already open in BRODALF on another computer or in another window. Close it there first.",
+                       cat->path);
+#else
     if (rc == 1)
         return bd_fail(cat, BD_ERR_LOCKED,
                        "%s is open in another BRODALF window. If none is running, delete %s and try again.",
                        cat->path, cat->lock_path);
+#endif
     if (rc != 0) return bd_fail(cat, BD_ERR_IO, "cannot create lock file %s", cat->lock_path);
     return BD_OK;
 }
@@ -254,10 +269,17 @@ static bd_status open_db(bd_catalog *cat)
     /* Only rows with a key are in it, so it costs nothing where there are none. */
     if (bd_exec(cat, "CREATE INDEX IF NOT EXISTS nodes_fold ON nodes(source_id, rel_fold) WHERE rel_fold IS NOT NULL") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Catalogs from 0.4.0 and before have no drive replacement columns.
+     * Earlier versions ignore them, so the schema version stays. */
+    if (sqlite3_prepare_v2(cat->db, "SELECT retired_ms FROM media LIMIT 0", -1, &probe, NULL) == SQLITE_OK)
+        sqlite3_finalize(probe);
+    else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN retired_ms INTEGER; ALTER TABLE media ADD COLUMN replaced_by INTEGER") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
-                     "CREATE TEMP TABLE IF NOT EXISTS arrived(node_id INTEGER PRIMARY KEY);") != 0)
+                     "CREATE TEMP TABLE IF NOT EXISTS arrived(node_id INTEGER PRIMARY KEY);"
+                     "CREATE TEMP TABLE IF NOT EXISTS replace_need(version_id INTEGER PRIMARY KEY);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
 }
@@ -368,9 +390,10 @@ done:
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
-    uint8_t block[BD_KEY_BLOCK];
+    uint8_t block[BD_KEY_BLOCK], recovery[BD_KEY_BLOCK];
     if (encrypt && (!cat->have_key || bd_catalog_key_block(cat, block) != 0))
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to save an encrypted catalog");
+    int with_recovery = encrypt && bd_catalog_recovery_block(cat, recovery) == 0;
     char *snapshot = bd_sprintf("%s.snapshot", cat->work_path);
     char *saving = bd_sprintf("%s.saving", dest);
     bd_status status = BD_OK;
@@ -391,9 +414,10 @@ bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
     unsigned char header[16];
     memcpy(header, BD_MAGIC, 8);
     put_u32(header + 8, BD_FORMAT_VERSION);
-    put_u32(header + 12, encrypt ? 1u : 0u);
+    put_u32(header + 12, (encrypt ? 1u : 0u) | (with_recovery ? 2u : 0u));
     if (fwrite(header, 1, sizeof(header), out) != sizeof(header) ||
-        (encrypt && fwrite(block, 1, sizeof(block), out) != sizeof(block))) {
+        (encrypt && fwrite(block, 1, sizeof(block), out) != sizeof(block)) ||
+        (with_recovery && fwrite(recovery, 1, sizeof(recovery), out) != sizeof(recovery))) {
         status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving);
         goto done;
     }
@@ -473,12 +497,24 @@ int bd_catalog_file_needs_passphrase(const char *path)
     return enc;
 }
 
+int bd_catalog_file_has_recovery_key(const char *path)
+{
+    FILE *in = bd_fopen(path, "rb");
+    if (!in) return 0;
+    unsigned char header[16];
+    int has = fread(header, 1, sizeof(header), in) == sizeof(header) && memcmp(header, BD_MAGIC, 8) == 0 &&
+              (get_u32(header + 12) & 3u) == 3u;
+    fclose(in);
+    return has;
+}
+
 bd_status bd_catalog_open(const char *path, bd_catalog **out)
 {
     return bd_catalog_open_with(path, NULL, out);
 }
 
-bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out)
+/* secret is the passphrase, or the recovery key when recovery is set. */
+static bd_status open_with_secret(const char *path, const char *secret, int recovery, bd_catalog **out)
 {
     *out = NULL;
     g_open_error[0] = '\0';
@@ -495,28 +531,34 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
         return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is not a BRODALF catalog", path), 1);
     }
     uint32_t version = get_u32(header + 8), flags = get_u32(header + 12);
-    if (version > BD_FORMAT_VERSION || (flags & ~1u)) {
+    if (version > BD_FORMAT_VERSION || (flags & ~3u) || flags == 2u) {
         fclose(in);
         return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format this build cannot read", path), 1);
     }
     bd_source src = {in, NULL};
     uint8_t key[32];
     if (flags & 1u) {
-        uint8_t block[BD_KEY_BLOCK];
-        if (fread(block, 1, sizeof(block), in) != sizeof(block)) {
+        uint8_t block[BD_KEY_BLOCK], rblock[BD_KEY_BLOCK];
+        if (fread(block, 1, sizeof(block), in) != sizeof(block) ||
+            ((flags & 2u) && fread(rblock, 1, sizeof(rblock), in) != sizeof(rblock))) {
             fclose(in);
             return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path), 1);
         }
-        if (!passphrase) {
+        if (!secret) {
             fclose(in);
             return fail_open(cat, bd_fail(cat, BD_ERR_PASSPHRASE, "%s is encrypted; enter its passphrase", path), 1);
         }
-        int rc = bd_unwrap_key_block(passphrase, block, key);
+        if (recovery && !(flags & 2u)) {
+            fclose(in);
+            return fail_open(cat, bd_fail(cat, BD_ERR_PASSPHRASE, "%s has no recovery key", path), 1);
+        }
+        int rc = recovery ? bd_unwrap_recovery_block(secret, rblock, key) : bd_unwrap_key_block(secret, block, key);
         if (rc != 0) {
             fclose(in);
             return fail_open(cat, rc == -1 ? bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key")
                                   : rc == -2 ? bd_fail(cat, BD_ERR_FORMAT, "%s: " BD_KEY_BLOCK_BAD, path)
-                                             : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong passphrase for %s", path), 1);
+                                             : bd_fail(cat, BD_ERR_PASSPHRASE, "wrong %s for %s",
+                                                       recovery ? "recovery key" : "passphrase", path), 1);
         }
         src.opener = bd_open_begin(in, key);
         if (!src.opener) {
@@ -543,6 +585,16 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
     if (s != BD_OK) return fail_open(cat, s, 1);
     *out = cat;
     return BD_OK;
+}
+
+bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out)
+{
+    return open_with_secret(path, passphrase, 0, out);
+}
+
+bd_status bd_catalog_open_with_recovery(const char *path, const char *recovery_key, bd_catalog **out)
+{
+    return open_with_secret(path, recovery_key ? recovery_key : "", 1, out);
 }
 
 void bd_catalog_close(bd_catalog *cat)
@@ -600,4 +652,55 @@ bd_status bd_option_set(bd_catalog *cat, const char *name, int value)
     snprintf(key, sizeof(key), "option.%s", name);
     snprintf(v, sizeof(v), "%d", value);
     return bd_setting_set(cat, key, v) == 0 ? BD_OK : bd_fail_db(cat, "save the option");
+}
+
+/* ---- Recovery on a new PC -------------------------------------------------- */
+
+bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)
+{
+    g_open_error[0] = '\0';
+    bd_stat_t st;
+    if (bd_stat(dest_path, &st) == 0) {
+        snprintf(g_open_error, sizeof(g_open_error), "%s already exists", dest_path);
+        return BD_ERR_EXISTS;
+    }
+    FILE *in = bd_fopen(backup_path, "rb");
+    if (!in) {
+        snprintf(g_open_error, sizeof(g_open_error), "cannot open %s", backup_path);
+        return BD_ERR_NOT_FOUND;
+    }
+    unsigned char header[16];
+    if (fread(header, 1, sizeof(header), in) != sizeof(header) || memcmp(header, BD_MAGIC, 8) != 0 ||
+        get_u32(header + 8) > BD_FORMAT_VERSION) {
+        fclose(in);
+        snprintf(g_open_error, sizeof(g_open_error), "%s is not a BRODALF catalog this version can read", backup_path);
+        return BD_ERR_FORMAT;
+    }
+    /* Copy under a temporary name and rename at the end, so a half-written
+     * catalog never sits at dest_path. */
+    char *tmp = bd_sprintf("%s.recovering", dest_path);
+    FILE *out = tmp ? bd_fopen(tmp, "wb") : NULL;
+    bd_status s = BD_OK;
+    if (!out) {
+        snprintf(g_open_error, sizeof(g_open_error), "cannot write %s", dest_path);
+        s = tmp ? BD_ERR_IO : BD_ERR_NOMEM;
+    } else {
+        unsigned char buf[65536];
+        size_t n = sizeof(header);
+        memcpy(buf, header, n);
+        do {
+            if (fwrite(buf, 1, n, out) != n) { s = BD_ERR_IO; break; }
+        } while ((n = fread(buf, 1, sizeof(buf), in)) > 0);
+        if (s == BD_OK && ferror(in)) s = BD_ERR_IO;
+        if (s == BD_OK && bd_fsync(out) != 0) s = BD_ERR_IO;
+        if (fclose(out) != 0 && s == BD_OK) s = BD_ERR_IO;
+        if (s == BD_OK && bd_rename_noreplace(tmp, dest_path) != 0) s = BD_ERR_IO;
+        if (s != BD_OK) {
+            bd_remove(tmp);
+            snprintf(g_open_error, sizeof(g_open_error), "cannot copy %s to %s", backup_path, dest_path);
+        }
+    }
+    fclose(in);
+    free(tmp);
+    return s;
 }

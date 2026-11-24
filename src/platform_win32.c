@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include "blake3.h"
 #include <io.h>
 #include <fcntl.h>
 #include <process.h>
@@ -518,6 +519,83 @@ int bd_cpu_count(void)
         n = si.dwNumberOfProcessors;
     }
     return n > 0 ? (int)n : 1;
+}
+
+/* The catalog's mutex name: a hash of its full path, made the same however
+ * the path was written (relative or not, short 8.3 names, case, / or \). */
+static int catalog_mutex_name(const char *catalog_path, wchar_t *name, size_t cap)
+{
+    /* to_wide gives drive paths the \\?\ prefix and leaves relative and UNC
+     * paths alone; GetFullPathNameW keeps a prefix it is given. */
+    wchar_t *w = to_wide(catalog_path);
+    if (!w) return -1;
+    DWORD n = GetFullPathNameW(w, 0, NULL, NULL);
+    wchar_t *full = n ? malloc(sizeof(wchar_t) * n) : NULL;
+    DWORD got = full ? GetFullPathNameW(w, n, full, NULL) : 0;
+    free(w);
+    if (!got || got >= n) { free(full); return -1; }
+    DWORD ln = GetLongPathNameW(full, NULL, 0); /* only works when the file is there */
+    wchar_t *lng = ln ? malloc(sizeof(wchar_t) * ln) : NULL;
+    if (lng && (got = GetLongPathNameW(full, lng, ln)) > 0 && got < ln) { free(full); full = lng; }
+    else free(lng);
+    wchar_t *p = wcsncmp(full, L"\\\\?\\", 4) == 0 ? full + 4 : full;
+    CharUpperBuffW(p, (DWORD)wcslen(p));
+    char *u = to_utf8(p);
+    free(full);
+    if (!u) return -1;
+    uint8_t hash[16];
+    blake3_hasher h;
+    blake3_hasher_init(&h);
+    blake3_hasher_update(&h, u, strlen(u));
+    blake3_hasher_finalize(&h, hash, sizeof(hash));
+    free(u);
+    wchar_t hex[33];
+    for (int i = 0; i < 16; i++) swprintf(hex + i * 2, 3, L"%02x", hash[i]);
+    swprintf(name, cap, L"Local\\BRODALF-catalog-%ls", hex);
+    return 0;
+}
+
+typedef struct { HANDLE mutex, file; } win_lock;
+
+int bd_catalog_lock_take(const char *catalog_path, const char *lock_path, void **handle)
+{
+    *handle = NULL;
+    wchar_t name[96];
+    if (catalog_mutex_name(catalog_path, name, 96) != 0) return -1;
+    /* Whoever holds a handle to the mutex has the catalog open: nobody else
+     * opens it. Windows closes the handle when a process ends, so a crash
+     * leaves nothing behind. Ownership is not used, so any thread may close. */
+    HANDLE m = CreateMutexW(NULL, FALSE, name);
+    DWORD err = GetLastError();
+    if (!m) return err == ERROR_ACCESS_DENIED ? 1 : -1;
+    if (err == ERROR_ALREADY_EXISTS) { CloseHandle(m); return 1; }
+    /* The lock file, held open without sharing and deleted on close, keeps
+     * out a BRODALF on another computer when the catalog is on a share. */
+    wchar_t *wl = to_wide(lock_path);
+    if (!wl) { CloseHandle(m); return -1; }
+    HANDLE f = CreateFileW(wl, GENERIC_WRITE | DELETE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    err = GetLastError();
+    free(wl);
+    if (f == INVALID_HANDLE_VALUE) {
+        CloseHandle(m);
+        return err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION ? 2 : -1;
+    }
+    win_lock *l = malloc(sizeof(*l));
+    if (!l) { CloseHandle(f); CloseHandle(m); return -1; }
+    l->mutex = m;
+    l->file = f;
+    *handle = l;
+    return 0;
+}
+
+void bd_catalog_lock_release(void *handle, const char *lock_path)
+{
+    (void)lock_path; /* deleted when its handle closes */
+    win_lock *l = handle;
+    if (!l) return;
+    CloseHandle(l->file);
+    CloseHandle(l->mutex);
+    free(l);
 }
 
 #endif

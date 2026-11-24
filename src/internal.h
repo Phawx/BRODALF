@@ -18,6 +18,7 @@ struct bd_catalog {
     sqlite3 *db;
     char *path;       /* the .brodalf file */
     char *lock_path;
+    void *lock;       /* bd_catalog_lock_take's handle while this catalog holds the lock */
     char *work_path;  /* unpacked SQLite working copy */
     char uuid[37];
     char err[1024];
@@ -77,6 +78,20 @@ long bd_source_read(bd_source *k, void *buf, size_t cap);
 /* Tests only: pretend every drive has this much free space (-1: ask it). */
 extern int64_t bd_test_free_bytes;
 
+/* SQL: where a drive is kept, its "kept in" text (all drives with none set
+ * share ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place
+ * of its own, so the copies it holds still count the way they did. */
+#define BD_SQL_PLACE(m) "(CASE WHEN " m ".kind<>'drive' THEN 'cloud:'||" m ".id ELSE lower(trim(COALESCE(" m ".location,''))) END)"
+/* SQL: a copy counts toward the protection target, unless it is on a drive
+ * being replaced and the drive replacing it holds the same version. */
+#define BD_SQL_COUNTS(c)                                                                                  \
+    "NOT EXISTS(SELECT 1 FROM media rm JOIN copies rc ON rc.media_id=rm.replaced_by"                       \
+    " WHERE rm.id=" c ".media_id AND rm.retired_ms IS NOT NULL AND rc.version_id=" c ".version_id"         \
+    " AND rc.state='ok')"
+
+/* 1 if the drive is being replaced (bd_media_retire). */
+int bd_media_retired(bd_catalog *cat, int64_t media_id);
+
 /* Catalog settings (the settings table). get: 1 if found. set: 0 on success. */
 int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap);
 int bd_setting_set(bd_catalog *cat, const char *key, const char *value);
@@ -90,6 +105,9 @@ int bd_unwrap_key_block(const char *pass, const uint8_t block[BD_KEY_BLOCK], uin
 #define BD_KEY_BLOCK_BAD "the passphrase settings in this catalog are not ones BRODALF writes; the file may be damaged"
 /* Tests only: random bytes for keys, salts and nonces fail. */
 extern int bd_test_random_fail;
+/* The master key wrapped by the recovery key, when there is one. 0 or -1. */
+int bd_catalog_recovery_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK]);
+int bd_unwrap_recovery_block(const char *recovery_key, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]); /* -1 nomem, -3 wrong */
 void bd_catalog_set_key(bd_catalog *cat, const uint8_t key[32]);
 void bd_wipe(void *p, size_t n);
 
@@ -100,6 +118,9 @@ int bd_media_encrypted(bd_catalog *cat, int64_t media_id);
 /* SMART parsing, exposed for tests (src/drive_hw.c). */
 int bd_drive_hw_parse_ata(bd_drive_hw *hw, const unsigned char data[512], int predicted_failure);
 int bd_drive_hw_parse_nvme(bd_drive_hw *hw, const unsigned char log[512]);
+/* 1 for the Windows bus types (STORAGE_BUS_TYPE) whose failure-prediction
+ * answer holds an ATA SMART attribute table: ATA and SATA only. */
+int bd_drive_hw_bus_is_ata(int bus_type);
 void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw, bd_log_fn log, void *log_ctx);
 
 /* The BRODALF.media file that identifies a drive. */

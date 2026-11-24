@@ -399,4 +399,22 @@ int bd_cpu_count(void)
     return n > 0 ? (int)n : 1;
 }
 
+/* The lock file is the lock: a crash leaves it behind, and the user is
+ * told it can be removed. */
+static char posix_lock_token;
+
+int bd_catalog_lock_take(const char *catalog_path, const char *lock_path, void **handle)
+{
+    (void)catalog_path;
+    *handle = NULL;
+    int rc = bd_create_exclusive(lock_path);
+    if (rc == 0) *handle = &posix_lock_token;
+    return rc;
+}
+
+void bd_catalog_lock_release(void *handle, const char *lock_path)
+{
+    if (handle) bd_remove(lock_path);
+}
+
 #endif

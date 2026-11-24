@@ -569,3 +569,101 @@ void bd_wipe(void *p, size_t n)
 {
     crypto_wipe(p, n);
 }
+
+/* ---- Recovery key -------------------------------------------------------- *
+ * A second way to unlock: 30 random characters from an alphabet with no
+ * look-alikes (150 bits), shown once for the recovery sheet. The master key
+ * is wrapped by it exactly as by the passphrase (Argon2id, then
+ * XChaCha20-Poly1305) and stored as "recovery_block" beside "key_block"; an
+ * encrypted catalog file carries both blocks in its header. Only the
+ * wrapped key is kept, never the recovery key itself. */
+
+static const char RECOVERY_ALPHABET[] = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; /* no 0, 1, I or O */
+#define RECOVERY_CHARS 30
+#define RECOVERY_GROUP 5
+
+/* The 30 characters of a recovery key as typed: any case, with or without
+ * dashes and spaces. 0, or -1 if it cannot be a recovery key. */
+static int recovery_normalize(const char *in, char out[RECOVERY_CHARS + 1])
+{
+    size_t n = 0;
+    for (; in && *in; in++) {
+        char c = *in;
+        if (c == '-' || c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if (n == RECOVERY_CHARS || !strchr(RECOVERY_ALPHABET, c)) { crypto_wipe(out, n); return -1; }
+        out[n++] = c;
+    }
+    out[n] = '\0';
+    if (n == RECOVERY_CHARS) return 0;
+    crypto_wipe(out, n);
+    return -1;
+}
+
+int bd_unwrap_recovery_block(const char *recovery_key, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32])
+{
+    char norm[RECOVERY_CHARS + 1];
+    if (recovery_normalize(recovery_key, norm) != 0) return -3;
+    int rc = unwrap_key(norm, block, key);
+    crypto_wipe(norm, sizeof(norm));
+    return rc;
+}
+
+int bd_catalog_recovery_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK])
+{
+    char hex[BD_KEY_BLOCK * 2 + 1];
+    if (!bd_setting_get(cat, "recovery_block", hex, sizeof(hex))) return -1;
+    return from_hex(hex, block, BD_KEY_BLOCK);
+}
+
+int bd_catalog_has_recovery_key(bd_catalog *cat)
+{
+    uint8_t block[BD_KEY_BLOCK];
+    return bd_catalog_recovery_block(cat, block) == 0;
+}
+
+bd_status bd_catalog_make_recovery_key(bd_catalog *cat, char out[BD_RECOVERY_KEY_SIZE])
+{
+    out[0] = '\0';
+    if (!bd_catalog_has_passphrase(cat)) return bd_fail(cat, BD_ERR_INVALID, "set a passphrase first");
+    if (!cat->have_key) return bd_fail(cat, BD_ERR_PASSPHRASE, "unlock the catalog with its passphrase first");
+    uint8_t r[RECOVERY_CHARS], block[BD_KEY_BLOCK];
+    char norm[RECOVERY_CHARS + 1];
+    if (bd_random_bytes(r, sizeof(r)) != 0) return bd_fail(cat, BD_ERR_IO, "the system could not supply random numbers");
+    for (int i = 0; i < RECOVERY_CHARS; i++) norm[i] = RECOVERY_ALPHABET[r[i] & 31]; /* 256 is a multiple of 32: no bias */
+    norm[RECOVERY_CHARS] = '\0';
+    crypto_wipe(r, sizeof(r));
+    int mk = make_key_block(norm, cat->key, block);
+    if (mk != 0) {
+        crypto_wipe(norm, sizeof(norm));
+        return mk == -4 ? bd_fail(cat, BD_ERR_IO, "the system could not supply random numbers")
+                        : bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key");
+    }
+    char hex[BD_KEY_BLOCK * 2 + 1];
+    to_hex(block, BD_KEY_BLOCK, hex);
+    if (bd_setting_set(cat, "recovery_block", hex) != 0) {
+        crypto_wipe(norm, sizeof(norm));
+        return bd_fail_db(cat, "store the recovery key");
+    }
+    size_t j = 0;
+    for (int i = 0; i < RECOVERY_CHARS; i++) {
+        if (i && i % RECOVERY_GROUP == 0) out[j++] = '-';
+        out[j++] = norm[i];
+    }
+    out[j] = '\0';
+    crypto_wipe(norm, sizeof(norm));
+    return BD_OK;
+}
+
+bd_status bd_catalog_unlock_recovery(bd_catalog *cat, const char *recovery_key)
+{
+    uint8_t block[BD_KEY_BLOCK], key[32];
+    if (bd_catalog_recovery_block(cat, block) != 0) return bd_fail(cat, BD_ERR_INVALID, "this catalog has no recovery key");
+    int rc = bd_unwrap_recovery_block(recovery_key, block, key);
+    if (rc == -1) return bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key");
+    if (rc == -2) return bd_fail(cat, BD_ERR_FORMAT, "%s", BD_KEY_BLOCK_BAD);
+    if (rc != 0) return bd_fail(cat, BD_ERR_PASSPHRASE, "wrong recovery key");
+    bd_catalog_set_key(cat, key);
+    crypto_wipe(key, sizeof(key));
+    return BD_OK;
+}

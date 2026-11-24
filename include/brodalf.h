@@ -51,6 +51,12 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out);
  * back unlocked; for a plain one the passphrase is ignored. */
 bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
 
+/* Start again on a new PC from the catalog backup a drive holds
+ * (BRODALF\<catalog id>\catalog-backup.brodalf): copy it to dest_path,
+ * which must not exist yet, then open dest_path as usual. Fails with
+ * BD_ERR_FORMAT if backup_path is not a catalog; bd_open_error says why. */
+bd_status bd_catalog_recover(const char *backup_path, const char *dest_path);
+
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
@@ -79,6 +85,24 @@ int bd_catalog_is_unlocked(bd_catalog *cat);
 bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase);
 /* BD_ERR_PASSPHRASE if wrong. */
 bd_status bd_catalog_unlock(bd_catalog *cat, const char *passphrase);
+/* A recovery key is a second way to unlock, for when the passphrase is
+ * lost: 30 characters in groups of five ("ABCDE-FGHJK-..."), printed on the
+ * recovery sheet. Making one needs the catalog unlocked and replaces any
+ * earlier one; BRODALF keeps only the master key wrapped by it, never the
+ * key itself. Changing the passphrase keeps it working. */
+#define BD_RECOVERY_KEY_SIZE 36
+bd_status bd_catalog_make_recovery_key(bd_catalog *cat, char out[BD_RECOVERY_KEY_SIZE]);
+int bd_catalog_has_recovery_key(bd_catalog *cat);
+/* Case, dashes and spaces do not matter. BD_ERR_PASSPHRASE if wrong. */
+bd_status bd_catalog_unlock_recovery(bd_catalog *cat, const char *recovery_key);
+/* 1 if the file at path is an encrypted catalog that a recovery key opens. */
+int bd_catalog_file_has_recovery_key(const char *path);
+/* Like bd_catalog_open_with, with the recovery key instead. */
+bd_status bd_catalog_open_with_recovery(const char *path, const char *recovery_key, bd_catalog **out);
+/* Write the recovery sheet, an HTML page to print: what to do on a new PC,
+ * the backup drives and what each holds, the protected folders, and the
+ * recovery key when one is given (from bd_catalog_make_recovery_key). */
+bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char *recovery_key);
 /* Forget the master key until the next unlock. */
 void bd_catalog_lock_key(bd_catalog *cat);
 /* Encrypt the .brodalf file from the next save on. Needs an unlocked
@@ -116,6 +140,13 @@ void bd_catalog_cancel(bd_catalog *cat);
 /* ---- Sources and scanning -------------------------------------------- */
 
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
+
+/* Point a protected folder at where it is now, e.g. on a new PC with another
+ * user name. The folder keeps its name on the drives and its files keep
+ * their versions and copies; the next scan finds them by their path inside
+ * the folder. new_path must be an existing folder that no other protected
+ * folder uses (BD_ERR_EXISTS). */
+bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new_path);
 
 typedef struct {
     int64_t files_seen;
@@ -190,6 +221,42 @@ void bd_substitutes_clear(bd_catalog *cat);
  * were copied (ok[i] set for each), or -1 with a reason in err. */
 int bd_shadow_copy_files(const char *const *paths, int n, const char *dest_dir, int *ok, char *err, size_t err_len);
 
+/* The app runs an elevated copy of itself to take the shadow copy. What it
+ * hands over is a list file (who asked, the protected folders, the files)
+ * whose BLAKE3 hash goes on the helper's command line, so nothing can
+ * change it after Windows asked for permission. user_sid is the asking
+ * user's SID ("S-1-5-21-..."). Returns the list's text (malloc'd) and its
+ * hash, or NULL if a string holds a line break. */
+char *bd_shadow_list_format(const char *user_sid, const char *const *folders, int n_folders, const char *const *files,
+                            int n_files, char hash_out[65]);
+
+typedef struct {
+    char *user_sid;
+    char **folders;
+    int n_folders;
+    char **files;
+    int n_files;
+} bd_shadow_list;
+
+/* 0, -1 not a list, -2 the text does not match expected_hash. */
+int bd_shadow_list_parse(const char *text, size_t len, const char *expected_hash, bd_shadow_list *out);
+void bd_shadow_list_free(bd_shadow_list *list);
+
+/* 1 if path is a plain "X:\..." path strictly inside one of the folders,
+ * compared ignoring ASCII case; "." and ".." parts, ":" streams, UNC and
+ * device paths never are. */
+int bd_shadow_path_allowed(const char *path, const char *const *folders, int n_folders);
+
+/* The elevated helper (brodalf.exe --shadow-copy <out dir> <list> <hash>):
+ * reads the list once and checks its hash, refuses every file outside the
+ * protected folders it names, makes out_dir as a new folder that only
+ * administrators can write to and the asking user can read and empty, and
+ * copies the files there as 1.bin, 2.bin, ... (by their place in the list).
+ * out_dir/result.txt gets one line per file ("ok", "failed" or "refused")
+ * and "error: ..." if something went wrong. Returns how many were copied,
+ * or -1 with the reason in err. */
+int bd_shadow_helper(const char *out_dir, const char *list_path, const char *list_hash, char *err, size_t err_len);
+
 /* ---- Storage (media) ------------------------------------------------- */
 
 /* Prepare a drive or folder as storage for this catalog. Writes
@@ -262,6 +329,9 @@ typedef struct {
      * file missing from this drive. */
     int64_t only_missing_from[BD_MAX_CONTINUE];
     int ignore_guard;         /* back up even while the guard has paused backups */
+    /* Set by bd_media_replace: only the files it found the drive being
+     * replaced is needed for. Leave 0. */
+    int64_t replacing;
 } bd_backup_opts;
 
 /* Copy the current version of every file that has no good copy on this
@@ -296,6 +366,33 @@ bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *s
  * when the catalog file or the drive is. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
 
+/* Replacing a drive (worn, failing, too small). A retired drive gets
+ * nothing new: bd_backup refuses it and no drive suggestion names it. Its
+ * copies still restore, and still count toward the protection target until
+ * the drive replacing it holds the same version. replacement_id may be 0
+ * when none is chosen yet. */
+bd_status bd_media_retire(bd_catalog *cat, int64_t media_id, int64_t replacement_id);
+/* Use the drive as before. */
+bd_status bd_media_unretire(bd_catalog *cat, int64_t media_id);
+
+typedef struct {
+    int64_t files_needed;      /* on the old drive and short of the target without it */
+    bd_backup_stats backup;    /* the copy to the new drive */
+    /* Afterwards, what still has its only good copy on the old drive: */
+    int64_t files_only_old;    /* current versions (the source could not be read, or changed) */
+    int64_t deleted_only_old;  /* files deleted from their folder */
+    int64_t versions_only_old; /* older versions of files */
+} bd_replace_stats;
+
+/* Retire old_id with new_id taking its place, then copy to new_id (which
+ * must be connected) every file whose current version has a good copy on
+ * old_id and would have fewer copies or places than the protection target
+ * without it. Files are read from their folders and checked by hash, as a
+ * backup does. Deleted files and older versions whose only copy is on the
+ * old drive are not copied; they are counted so the user can keep it. */
+bd_status bd_media_replace(bd_catalog *cat, int64_t old_id, int64_t new_id, bd_replace_stats *stats,
+                           bd_log_fn log, void *log_ctx);
+
 typedef struct {
     int64_t files_restored;
     int64_t files_offline;    /* copies exist but no drive holding one is connected */
@@ -319,6 +416,9 @@ typedef struct {
      * were at this time: the newest version BRODALF had seen by then of
      * every file that existed then, including files deleted since. */
     int64_t as_of_ms;
+    /* Only files deleted from their folder, each as it was when last seen
+     * (as_of_ms is ignored). See bd_list_deleted. */
+    int deleted_only;
 } bd_restore_opts;
 
 bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
@@ -451,6 +551,8 @@ typedef struct {
      * written, if never checked); 0 if it holds no copies. */
     int64_t oldest_check_ms;
     int check_due;           /* older than the check_days option */
+    int64_t retired_ms;      /* when it was set to be replaced; 0 if not (see bd_media_retire) */
+    int64_t replaced_by;     /* the drive taking its place; 0 if none chosen yet */
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on
@@ -472,6 +574,23 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx);
 bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_node_id, bd_node_fn fn, void *ctx);
 
 bd_status bd_find_node(bd_catalog *cat, int64_t source_id, const char *rel_path, int64_t *out_node_id);
+
+/* Files deleted from their folder whose last version still has a good copy
+ * on a drive, most recently seen first. Restore them with bd_restore_ex and
+ * deleted_only set. source_id 0 means every source. */
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t size;
+    int64_t last_seen_ms;    /* the last scan that still found it */
+    const char *drives;      /* names of the drives holding a good copy, ", " between them */
+    int connected;           /* one of them is plugged in */
+} bd_deleted_info;
+typedef int (*bd_deleted_fn)(void *ctx, const bd_deleted_info *info);
+/* fn may be NULL to only count; *count may be NULL. */
+bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, void *ctx, int64_t *count);
 
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);

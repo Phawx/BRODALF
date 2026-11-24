@@ -56,6 +56,16 @@ int bd_fsync_dir(const char *path);
  * 0 on success, 1 if it already exists, -1 on other errors. */
 int bd_create_exclusive(const char *path);
 
+/* Keep a second BRODALF from opening the same catalog. On Windows a named
+ * mutex (Local\BRODALF-catalog-<hash of the full path>) plus the lock file
+ * held open without sharing; both go away when the process ends, crash or
+ * not. Elsewhere the lock file is created and must be removed on release.
+ * 0 taken (*handle set), 1 another BRODALF on this computer has it, 2 the
+ * lock file is held (on Windows: open elsewhere, maybe another computer),
+ * -1 other errors. */
+int bd_catalog_lock_take(const char *catalog_path, const char *lock_path, void **handle);
+void bd_catalog_lock_release(void *handle, const char *lock_path);
+
 /* Directory walk. The callback gets the path relative to the root, joined
  * with '/'. Return BD_WALK_SKIP for a folder to leave out what is inside it,
  * any other non-zero value to stop the walk. Entries that cannot be read

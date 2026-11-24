@@ -141,5 +141,12 @@ void bd_progress_begin(bd_catalog *cat, const char *phase, int64_t files_total, 
 void bd_report(bd_catalog *cat, int64_t files_done, const char *current, int force);
 void bd_progress_end(bd_catalog *cat);
 void bd_io_tick(int64_t bytes);
+/* Send this thread's bd_io_tick calls to fn instead (a hashing worker hands
+ * its byte counts to the thread running the job). NULL undoes it. */
+void bd_io_redirect(void (*fn)(void *ctx, int64_t bytes), void *ctx);
+
+/* Tests only: hashing threads for a scan (0: the default, -1: hash on the
+ * scanning thread itself). */
+extern int bd_test_scan_workers;
 
 #endif

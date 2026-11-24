@@ -891,6 +891,89 @@ static void test_big_copy(void)
     free(data);
 }
 
+/* Everything a scan records, without the times that differ between runs. */
+static char *catalog_dump(bd_catalog *cat)
+{
+    sqlite3_stmt *q;
+    char *out = NULL;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT group_concat(line, char(10)) FROM ("
+                           " SELECT 'n|'||id||'|'||rel_path||'|'||is_dir||'|'||size||'|'||mtime_ns||'|'||"
+                           "  COALESCE(current_version_id,0)||'|'||deleted||'|'||COALESCE(parent_id,0) AS line FROM nodes"
+                           " UNION ALL SELECT 'v|'||id||'|'||node_id||'|'||version_no||'|'||hash||'|'||size||'|'||mtime_ns"
+                           "  FROM versions ORDER BY 1)",
+                           -1, &q, NULL) == SQLITE_OK) {
+        if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0))
+            out = bd_strdup((const char *)sqlite3_column_text(q, 0));
+        sqlite3_finalize(q);
+    }
+    return out ? out : bd_strdup("");
+}
+
+static int same_stats(const bd_scan_stats *a, const bd_scan_stats *b)
+{
+    return a->files_seen == b->files_seen && a->dirs_seen == b->dirs_seen && a->files_new == b->files_new &&
+           a->files_changed == b->files_changed && a->files_deleted == b->files_deleted &&
+           a->bytes_hashed == b->bytes_hashed && a->errors == b->errors && a->skipped == b->skipped;
+}
+
+/* A scan that hashes on several threads must record exactly what hashing
+ * one file at a time does. */
+static void test_parallel_scan(void)
+{
+    char name[128];
+    static char text[300000];
+    for (int i = 0; i < 300; i++) {
+        snprintf(name, sizeof(name), "ps/Tree/d%d/e%d/f%03d.bin", i % 7, i % 3, i);
+        /* Mostly small files, a few big ones that take a while. */
+        size_t n = i % 50 == 0 ? sizeof(text) - 1 : (size_t)(i * 37 % 2000);
+        for (size_t k = 0; k < n; k++) text[k] = (char)('a' + (k * 7 + (size_t)i) % 26);
+        text[n] = '\0';
+        write_file(at(name), text);
+    }
+    int modes[] = {-1, 1, 4};
+    char *dumps[3][2];
+    bd_scan_stats stats[3][2];
+    progress_log pl[3];
+    for (int m = 0; m < 3; m++) {
+        bd_test_scan_workers = modes[m];
+        snprintf(name, sizeof(name), "ps/c%d.brodalf", m);
+        bd_catalog *cat;
+        REQUIRE_OK(bd_catalog_create(at(name), &cat), NULL);
+        REQUIRE_OK(bd_source_add(cat, at("ps/Tree"), NULL), cat);
+        memset(&pl[m], 0, sizeof(pl[m]));
+        bd_catalog_set_progress(cat, on_progress, &pl[m]);
+        REQUIRE_OK(bd_scan(cat, &stats[m][0], quiet, NULL), cat);
+        dumps[m][0] = catalog_dump(cat);
+        bd_catalog_save(cat);
+        bd_catalog_close(cat);
+    }
+    /* Change some files; every catalog rescans the changed tree. */
+    for (int i = 0; i < 300; i += 11) {
+        snprintf(name, sizeof(name), "ps/Tree/d%d/e%d/f%03d.bin", i % 7, i % 3, i);
+        snprintf(text, sizeof(text), "changed %d", i);
+        write_file(at(name), text);
+    }
+    for (int m = 0; m < 3; m++) {
+        bd_test_scan_workers = modes[m];
+        snprintf(name, sizeof(name), "ps/c%d.brodalf", m);
+        bd_catalog *cat;
+        REQUIRE_OK(bd_catalog_open(at(name), &cat), NULL);
+        REQUIRE_OK(bd_scan(cat, &stats[m][1], quiet, NULL), cat);
+        dumps[m][1] = catalog_dump(cat);
+        bd_catalog_close(cat);
+    }
+    bd_test_scan_workers = 0;
+    CHECK(stats[0][0].files_new == 300 && stats[0][1].files_changed == 28);
+    for (int m = 1; m < 3; m++)
+        for (int k = 0; k < 2; k++) CHECK(strcmp(dumps[0][k], dumps[m][k]) == 0 && same_stats(&stats[0][k], &stats[m][k]));
+    CHECK(strlen(dumps[0][1]) > 1000);
+    /* Progress counted every byte, from the scanning thread. */
+    CHECK(pl[2].ends == 1 && pl[2].last.bytes_done == stats[2][0].bytes_hashed);
+    CHECK(pl[1].last.bytes_done == stats[1][0].bytes_hashed);
+    for (int m = 0; m < 3; m++) { free(dumps[m][0]); free(dumps[m][1]); }
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1140,6 +1223,7 @@ int main(void)
     test_report();
     test_moves_guard_and_progress();
     test_big_copy();
+    test_parallel_scan();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

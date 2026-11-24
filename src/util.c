@@ -188,8 +188,18 @@ void bd_progress_end(bd_catalog *cat)
     if (g_io_cat == cat) g_io_cat = NULL;
 }
 
+static BD_THREAD_LOCAL void (*t_tick_fn)(void *ctx, int64_t bytes);
+static BD_THREAD_LOCAL void *t_tick_ctx;
+
+void bd_io_redirect(void (*fn)(void *ctx, int64_t bytes), void *ctx)
+{
+    t_tick_fn = fn;
+    t_tick_ctx = ctx;
+}
+
 void bd_io_tick(int64_t bytes)
 {
+    if (t_tick_fn) { t_tick_fn(t_tick_ctx, bytes); return; }
     bd_catalog *cat = g_io_cat;
     if (!cat) return;
     cat->prog_bytes += bytes;

@@ -110,6 +110,24 @@ as it reads. The GUI shows a bar with a percentage (bytes when the total is
 known, else files, else a marquee), the counts, a data rate over the last
 few seconds and the current file.
 
+## Speed
+
+- BLAKE3 is built with its SSE2, SSE4.1, AVX2 and AVX-512 code on x86-64
+  (the C intrinsics files from BLAKE3 1.5.4) and picks the best the CPU has
+  at run time; other targets use the portable code. `tests/test_blake3.c`
+  checks the official test vectors and every path against the portable one.
+- A copy longer than four 1 MiB blocks hands its blocks to a writer thread
+  through a ring of three buffers (`bd_hash_copy`), so reading and hashing
+  one block overlaps writing or sealing the previous one. Smaller files use
+  the plain loop and start no thread.
+- A scan hashes new and changed files on a few worker threads (one fewer
+  than the processors, at most four, at least one), started with the first
+  file that needs hashing. Results come back in walk order through a
+  bounded ring of 64 slots and only the scanning thread writes the catalog,
+  so it ends up exactly as a one-at-a-time scan leaves it. Workers pass
+  their byte counts to the scanning thread (`bd_io_redirect`), which alone
+  calls the progress callback.
+
 ## Ghost tree states
 
 | State | Meaning |

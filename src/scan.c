@@ -236,6 +236,45 @@ int bd_skip_match(const char *patterns, const char *rel_path, int is_dir)
     return hit;
 }
 
+/* ---- Hashing on more than one core ---------------------------------------
+ *
+ * New and changed files are hashed by a few worker threads while the walk
+ * goes on. Results come back in the order the walk found the files and are
+ * written to the catalog by the scanning thread alone, so the catalog ends
+ * up exactly as a one-file-at-a-time scan leaves it. The threads start with
+ * the first file that needs hashing; a scan that finds nothing new starts
+ * none. */
+#define HASH_SLOTS 64
+#define HASH_MAX_WORKERS 8
+
+int bd_test_scan_workers = 0;
+
+typedef struct {
+    /* From the walk. */
+    char *path;     /* what to read: the file, or its staged copy */
+    char *full;     /* the file itself */
+    char *rel;
+    int staged;
+    int is_new, was_deleted;
+    int64_t node_id, old_version, size, mtime_ns;
+    /* From the worker. */
+    int done, rc, in_use;
+    int64_t hashed;
+    char hash[BD_HASH_HEX_LEN + 1];
+} hash_job;
+
+typedef struct {
+    int workers;    /* wanted; 0 hashes on the scanning thread */
+    int started;
+    bd_thread *threads[HASH_MAX_WORKERS];
+    bd_mutex *m;
+    bd_cond *work, *done;
+    hash_job slot[HASH_SLOTS];
+    int64_t submitted, claimed, applied;
+    int64_t ticked; /* bytes the workers read, not yet reported */
+    int stop;
+} hash_pool;
+
 typedef struct {
     bd_catalog *cat;
     const skip_list *skip;
@@ -250,6 +289,7 @@ typedef struct {
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
     int db_error;
+    hash_pool *pool;
 } scan_ctx;
 
 static int64_t lookup_parent(scan_ctx *c, const char *rel)
@@ -296,6 +336,161 @@ static int64_t ensure_version(scan_ctx *c, int64_t node_id, const char *hash, in
     if (sqlite3_step(c->insert_version) != SQLITE_DONE) return 0;
     *created = 1;
     return sqlite3_last_insert_rowid(c->cat->db);
+}
+
+/* Record one hashed file, as the scan always did. Frees the job's strings. */
+static void apply_hash(scan_ctx *c, hash_job *j)
+{
+    if (c->db_error) goto done;
+    if (j->rc != 0 && !j->staged && j->in_use) {
+        bd_note_in_use(c->cat, j->full, j->size);
+        c->stats->files_in_use++;
+        bd_logf(c->log, c->log_ctx, "in use by another program, cannot read it now: %s", j->rel);
+        goto done;
+    }
+    if (j->rc != 0) {
+        c->stats->errors++;
+        bd_logf(c->log, c->log_ctx, "cannot read %s; keeping what the catalog already knows", j->rel);
+        goto done;
+    }
+    c->stats->bytes_hashed += j->hashed;
+
+    int created = 0;
+    int64_t version_id = ensure_version(c, j->node_id, j->hash, j->hashed, j->mtime_ns, &created);
+    if (!version_id) { c->db_error = 1; goto done; }
+
+    sqlite3_reset(c->update_file);
+    sqlite3_bind_int64(c->update_file, 1, j->hashed);
+    sqlite3_bind_int64(c->update_file, 2, j->mtime_ns);
+    sqlite3_bind_int64(c->update_file, 3, version_id);
+    sqlite3_bind_int64(c->update_file, 4, j->node_id);
+    if (sqlite3_step(c->update_file) != SQLITE_DONE) { c->db_error = 1; goto done; }
+
+    if (j->is_new || j->was_deleted) c->stats->files_new++;
+    else if (version_id != j->old_version) c->stats->files_changed++;
+done:
+    if (j->path != j->full) free(j->path);
+    free(j->full);
+    free(j->rel);
+    j->path = j->full = j->rel = NULL;
+}
+
+static void pool_tick(void *ctx, int64_t bytes)
+{
+    hash_pool *p = ctx;
+    bd_mutex_lock(p->m);
+    p->ticked += bytes;
+    bd_cond_signal(p->done);
+    bd_mutex_unlock(p->m);
+}
+
+static void pool_worker(void *arg)
+{
+    hash_pool *p = arg;
+    bd_io_redirect(pool_tick, p);
+    bd_mutex_lock(p->m);
+    for (;;) {
+        while (p->claimed == p->submitted && !p->stop) bd_cond_wait(p->work, p->m);
+        if (p->claimed == p->submitted) break;
+        hash_job *j = &p->slot[p->claimed % HASH_SLOTS];
+        p->claimed++;
+        bd_mutex_unlock(p->m);
+        j->rc = bd_hash_file(j->path, NULL, j->hash, &j->hashed);
+        j->in_use = j->rc != 0 && bd_open_was_in_use();
+        bd_mutex_lock(p->m);
+        j->done = 1;
+        bd_cond_signal(p->done);
+    }
+    bd_mutex_unlock(p->m);
+    bd_io_redirect(NULL, NULL);
+}
+
+static void pool_stop(hash_pool *p)
+{
+    if (!p->started) return;
+    bd_mutex_lock(p->m);
+    p->stop = 1;
+    bd_cond_broadcast(p->work);
+    bd_mutex_unlock(p->m);
+    for (int i = 0; i < p->workers; i++) bd_thread_join(p->threads[i]);
+    bd_cond_free(p->work);
+    bd_cond_free(p->done);
+    bd_mutex_free(p->m);
+    p->started = 0;
+}
+
+static int pool_start(hash_pool *p)
+{
+    p->m = bd_mutex_new();
+    p->work = bd_cond_new();
+    p->done = bd_cond_new();
+    int n = 0;
+    if (p->m && p->work && p->done)
+        while (n < p->workers && (p->threads[n] = bd_thread_start(pool_worker, p)) != NULL) n++;
+    if (n == 0) {
+        bd_cond_free(p->work);
+        bd_cond_free(p->done);
+        bd_mutex_free(p->m);
+        p->workers = 0; /* hash on the scanning thread from now on */
+        return -1;
+    }
+    p->workers = n;
+    p->started = 1;
+    return 0;
+}
+
+/* Record finished results in order, waiting until `until` have been taken
+ * (0: only what is ready). With apply 0 they are dropped (the scan is being
+ * abandoned); the workers still finish what they started. */
+static void pool_collect(scan_ctx *c, int64_t until, int apply)
+{
+    hash_pool *p = c->pool;
+    if (!p || !p->started) return;
+    bd_mutex_lock(p->m);
+    for (;;) {
+        int64_t ticked = p->ticked;
+        p->ticked = 0;
+        if (ticked) {
+            bd_mutex_unlock(p->m);
+            bd_io_tick(ticked);
+            bd_mutex_lock(p->m);
+        }
+        if (p->applied == p->submitted) break;
+        hash_job *j = &p->slot[p->applied % HASH_SLOTS];
+        if (!j->done) {
+            if (p->applied >= until) break;
+            bd_cond_wait(p->done, p->m);
+            continue;
+        }
+        bd_mutex_unlock(p->m);
+        if (apply) apply_hash(c, j);
+        else {
+            if (j->path != j->full) free(j->path);
+            free(j->full);
+            free(j->rel);
+        }
+        bd_mutex_lock(p->m);
+        p->applied++;
+    }
+    bd_mutex_unlock(p->m);
+}
+
+/* Hand a file to the workers. -1 when there are none: hash it here. */
+static int pool_submit(scan_ctx *c, const hash_job *in)
+{
+    hash_pool *p = c->pool;
+    if (!p || p->workers <= 0) return -1;
+    if (!p->started && pool_start(p) != 0) return -1;
+    if (p->submitted - p->applied == HASH_SLOTS) pool_collect(c, p->applied + 1, 1);
+    bd_mutex_lock(p->m);
+    hash_job *j = &p->slot[p->submitted % HASH_SLOTS];
+    *j = *in;
+    j->done = 0;
+    p->submitted++;
+    bd_cond_signal(p->work);
+    bd_mutex_unlock(p->m);
+    pool_collect(c, 0, 1);
+    return 0;
 }
 
 static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
@@ -363,42 +558,33 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         return 0;
     }
 
-    char *full = bd_path_join(c->root, rel);
-    /* A file in use is read from its shadow copy, when one was taken. */
-    char *staged = full ? bd_substitute_for(c->cat, full) : NULL;
-    char hash[BD_HASH_HEX_LEN + 1];
-    int64_t hashed = 0;
-    int rc = full ? bd_hash_file(staged ? staged : full, NULL, hash, &hashed) : -1;
-    int in_use = rc != 0 && !staged && bd_open_was_in_use();
-    if (in_use) bd_note_in_use(c->cat, full, st->size);
-    free(full);
-    free(staged);
-    if (in_use) {
-        c->stats->files_in_use++;
-        bd_logf(c->log, c->log_ctx, "in use by another program, cannot read it now: %s", rel);
-        return 0;
-    }
-    if (rc != 0) {
+    hash_job j;
+    memset(&j, 0, sizeof(j));
+    j.full = bd_path_join(c->root, rel);
+    j.rel = bd_strdup(rel);
+    if (!j.full || !j.rel) {
+        free(j.full);
+        free(j.rel);
         c->stats->errors++;
         bd_logf(c->log, c->log_ctx, "cannot read %s; keeping what the catalog already knows", rel);
         return 0;
     }
-    c->stats->bytes_hashed += hashed;
-
-    int created = 0;
-    int64_t version_id = ensure_version(c, node_id, hash, hashed, st->mtime_ns, &created);
-    if (!version_id) { c->db_error = 1; return 1; }
-
-    sqlite3_reset(c->update_file);
-    sqlite3_bind_int64(c->update_file, 1, hashed);
-    sqlite3_bind_int64(c->update_file, 2, st->mtime_ns);
-    sqlite3_bind_int64(c->update_file, 3, version_id);
-    sqlite3_bind_int64(c->update_file, 4, node_id);
-    if (sqlite3_step(c->update_file) != SQLITE_DONE) { c->db_error = 1; return 1; }
-
-    if (is_new || was_deleted) c->stats->files_new++;
-    else if (version_id != old_version) c->stats->files_changed++;
-    return 0;
+    /* A file in use is read from its shadow copy, when one was taken. */
+    j.path = bd_substitute_for(c->cat, j.full);
+    j.staged = j.path != NULL;
+    if (!j.path) j.path = j.full;
+    j.is_new = is_new;
+    j.was_deleted = was_deleted;
+    j.node_id = node_id;
+    j.old_version = old_version;
+    j.size = st->size;
+    j.mtime_ns = st->mtime_ns;
+    if (pool_submit(c, &j) != 0) {
+        j.rc = bd_hash_file(j.path, NULL, j.hash, &j.hashed);
+        j.in_use = j.rc != 0 && bd_open_was_in_use();
+        apply_hash(c, &j);
+    }
+    return c->db_error ? 1 : 0;
 }
 
 static void scan_error(void *ctx, const char *path, const char *message)
@@ -502,8 +688,8 @@ static bd_status mark_deleted(scan_ctx *c)
     return BD_OK;
 }
 
-static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int64_t source_id, const char *root, int64_t scan_ms,
-                             bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
+static bd_status scan_source(bd_catalog *cat, const skip_list *skip, hash_pool *pool, int64_t source_id, const char *root,
+                             int64_t scan_ms, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_stat_t rst;
     if (bd_stat(root, &rst) != 0 || !rst.is_dir) {
@@ -520,6 +706,7 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int64_t sou
     c.stats = stats;
     c.log = log;
     c.log_ctx = log_ctx;
+    c.pool = pool;
 
     struct { sqlite3_stmt **st; const char *sql; } stmts[] = {
         {&c.find_node, "SELECT id, size, mtime_ns, current_version_id, deleted FROM nodes WHERE source_id=? AND rel_path=?"},
@@ -538,7 +725,10 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int64_t sou
         if (sqlite3_prepare_v2(cat->db, stmts[i].sql, -1, stmts[i].st, NULL) != SQLITE_OK) { s = bd_fail_db(cat, "prepare scan"); goto done; }
 
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin scan"); goto done; }
-    if (bd_walk(root, scan_entry, scan_error, &c) != 0 && !c.db_error) {
+    int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
+    /* The files still with the workers. */
+    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error);
+    if (walk_rc != 0 && !c.db_error) {
         bd_exec(cat, "ROLLBACK");
         s = bd_fail(cat, BD_ERR_NOMEM, "out of memory while scanning %s", root);
         goto done;
@@ -733,10 +923,20 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     skip_list skip;
     skip_parse(patterns, &skip);
     free(patterns);
+    /* Hashing threads: one fewer than the processors, at most four, at
+     * least one. They start only when a file needs hashing. */
+    hash_pool pool;
+    memset(&pool, 0, sizeof(pool));
+    pool.workers = bd_cpu_count() - 1;
+    if (pool.workers > 4) pool.workers = 4;
+    if (pool.workers < 1) pool.workers = 1;
+    if (bd_test_scan_workers) pool.workers = bd_test_scan_workers < 0 ? 0 : bd_test_scan_workers;
+    if (pool.workers > HASH_MAX_WORKERS) pool.workers = HASH_MAX_WORKERS;
     for (size_t i = 0; i < len && s == BD_OK; i++) {
         bd_logf(log, log_ctx, "scanning %s", list[i].path);
-        s = scan_source(cat, &skip, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
+        s = scan_source(cat, &skip, &pool, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
     }
+    pool_stop(&pool);
     skip_free(&skip);
     for (size_t i = 0; i < len; i++) free(list[i].path);
     free(list);

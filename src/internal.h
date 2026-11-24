@@ -29,6 +29,7 @@ struct bd_catalog {
     int64_t prog_files, prog_files_total, prog_bytes, prog_bytes_total;
     uint8_t key[32];  /* master key while unlocked */
     int have_key;
+    volatile long cancel; /* bd_catalog_cancel was called */
 };
 
 /* Record an error message on the catalog and return status. */
@@ -46,7 +47,8 @@ const char *bd_rel_basename(const char *rel);
 
 /* Hash a file with BLAKE3. If copy_to is non-NULL the bytes are also written
  * there. hex_out receives 64 hex chars plus NUL. 0 on success; on failure
- * -1 for read errors, -2 for write errors. */
+ * -1 for read errors, -2 for write errors, -4 when the job was cancelled
+ * (checked between blocks). */
 int bd_hash_file(const char *path, FILE *copy_to, char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out);
 
 /* Like bd_hash_file, but the source can be a sealed (encrypted) file when
@@ -144,6 +146,14 @@ void bd_io_tick(int64_t bytes);
 /* Send this thread's bd_io_tick calls to fn instead (a hashing worker hands
  * its byte counts to the thread running the job). NULL undoes it. */
 void bd_io_redirect(void (*fn)(void *ctx, int64_t bytes), void *ctx);
+
+/* Cancelling (bd_catalog_cancel). A job calls bd_cancel_reset when it starts
+ * and bd_cancelled between files; bd_hash_copy checks between blocks. */
+void bd_cancel_reset(bd_catalog *cat);
+int bd_cancelled(bd_catalog *cat);
+int bd_cancel_pending(void); /* the running job's request, from any thread */
+void bd_cancel_forget(bd_catalog *cat);
+bd_status bd_fail_cancelled(bd_catalog *cat);
 
 /* Tests only: hashing threads for a scan (0: the default, -1: hash on the
  * scanning thread itself). */

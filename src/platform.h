@@ -104,6 +104,16 @@ int bd_cpu_count(void);
 #define BD_THREAD_LOCAL __thread
 #endif
 
+/* A flag one thread sets and others read. */
+#ifdef _MSC_VER
+#include <intrin.h>
+#define bd_flag_get(p) _InterlockedOr((volatile long *)(p), 0)
+#define bd_flag_set(p, v) _InterlockedExchange((volatile long *)(p), (long)(v))
+#else
+#define bd_flag_get(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)
+#define bd_flag_set(p, v) __atomic_store_n((p), (long)(v), __ATOMIC_SEQ_CST)
+#endif
+
 /* Native separator for building paths. */
 #ifdef _WIN32
 #define BD_SEP '\\'

@@ -154,6 +154,7 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
 {
     if (cat) bd_catalog_set_progress(cat, NULL, NULL);
     if (!cat) return;
+    bd_cancel_forget(cat);
     if (cat->db) sqlite3_close(cat->db);
     bd_wipe(cat->key, sizeof(cat->key));
     remove_work_files(cat);

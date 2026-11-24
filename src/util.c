@@ -8,6 +8,41 @@
 /* The catalog whose job is running, for byte counts from the hashing loop.
  * One job runs at a time. */
 static bd_catalog *g_io_cat;
+/* The running job's cancel flag, for the copy loop and hashing threads. */
+static volatile long *volatile g_cancel;
+
+void bd_catalog_cancel(bd_catalog *cat)
+{
+    if (cat) bd_flag_set(&cat->cancel, 1);
+}
+
+void bd_cancel_reset(bd_catalog *cat)
+{
+    bd_flag_set(&cat->cancel, 0);
+    g_cancel = &cat->cancel;
+}
+
+int bd_cancelled(bd_catalog *cat)
+{
+    return bd_flag_get(&cat->cancel) != 0;
+}
+
+int bd_cancel_pending(void)
+{
+    volatile long *f = g_cancel;
+    return f && bd_flag_get(f) != 0;
+}
+
+/* The catalog is going away. */
+void bd_cancel_forget(bd_catalog *cat)
+{
+    if (g_cancel == &cat->cancel) g_cancel = NULL;
+}
+
+bd_status bd_fail_cancelled(bd_catalog *cat)
+{
+    return bd_fail(cat, BD_ERR_CANCELLED, "stopped; what was done until then is kept");
+}
 
 bd_status bd_fail(bd_catalog *cat, bd_status status, const char *fmt, ...)
 {
@@ -223,6 +258,7 @@ const char *bd_status_name(bd_status s)
     case BD_ERR_NOMEM: return "out of memory";
     case BD_ERR_PASSPHRASE: return "passphrase needed or wrong";
     case BD_ERR_GUARD: return "backups paused by the ransomware guard";
+    case BD_ERR_CANCELLED: return "stopped";
     }
     return "unknown error";
 }

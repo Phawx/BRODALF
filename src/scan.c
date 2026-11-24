@@ -289,6 +289,7 @@ typedef struct {
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
     int db_error;
+    int cancelled;
     hash_pool *pool;
 } scan_ctx;
 
@@ -342,6 +343,7 @@ static int64_t ensure_version(scan_ctx *c, int64_t node_id, const char *hash, in
 static void apply_hash(scan_ctx *c, hash_job *j)
 {
     if (c->db_error) goto done;
+    if (j->rc == -4) { c->cancelled = 1; goto done; } /* the scan is being stopped */
     if (j->rc != 0 && !j->staged && j->in_use) {
         bd_note_in_use(c->cat, j->full, j->size);
         c->stats->files_in_use++;
@@ -496,6 +498,7 @@ static int pool_submit(scan_ctx *c, const hash_job *in)
 static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 {
     scan_ctx *c = ctx;
+    if (bd_cancelled(c->cat)) { c->cancelled = 1; return 1; }
     if (st->is_link) {
         c->stats->skipped_links++;
         bd_logf(c->log, c->log_ctx, "skipped link: %s", rel);
@@ -584,7 +587,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         j.in_use = j.rc != 0 && bd_open_was_in_use();
         apply_hash(c, &j);
     }
-    return c->db_error ? 1 : 0;
+    return c->db_error || c->cancelled ? 1 : 0;
 }
 
 static void scan_error(void *ctx, const char *path, const char *message)
@@ -727,7 +730,14 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, hash_pool *
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin scan"); goto done; }
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
     /* The files still with the workers. */
-    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error);
+    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
+    if (c.cancelled) {
+        /* A half-scanned folder would look like files deleted: leave this
+         * one as the last full scan saw it. */
+        bd_exec(cat, "ROLLBACK");
+        s = bd_fail_cancelled(cat);
+        goto done;
+    }
     if (walk_rc != 0 && !c.db_error) {
         bd_exec(cat, "ROLLBACK");
         s = bd_fail(cat, BD_ERR_NOMEM, "out of memory while scanning %s", root);
@@ -887,6 +897,7 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     bd_scan_stats local;
     if (!stats) stats = &local;
     memset(stats, 0, sizeof(*stats));
+    bd_cancel_reset(cat);
 
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db, "SELECT id, path, COALESCE(last_scan_ms,0) FROM sources ORDER BY id", -1, &q, NULL) != SQLITE_OK)
@@ -932,15 +943,21 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     if (pool.workers < 1) pool.workers = 1;
     if (bd_test_scan_workers) pool.workers = bd_test_scan_workers < 0 ? 0 : bd_test_scan_workers;
     if (pool.workers > HASH_MAX_WORKERS) pool.workers = HASH_MAX_WORKERS;
+    size_t finished = 0;
     for (size_t i = 0; i < len && s == BD_OK; i++) {
         bd_logf(log, log_ctx, "scanning %s", list[i].path);
+        bd_scan_stats before = *stats;
         s = scan_source(cat, &skip, &pool, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
+        if (s == BD_ERR_CANCELLED) *stats = before; /* that folder was rolled back */
+        else if (s == BD_OK) finished++;
     }
     pool_stop(&pool);
     skip_free(&skip);
     for (size_t i = 0; i < len; i++) free(list[i].path);
     free(list);
-    if (s == BD_OK) check_guard(cat, stats, expect, scan_ms, prev_scan_ms, log, log_ctx);
+    /* The folders a stopped scan finished are recorded, so they count too. */
+    if (s == BD_OK || (s == BD_ERR_CANCELLED && finished > 0))
+        check_guard(cat, stats, expect, scan_ms, prev_scan_ms, log, log_ctx);
     bd_report(cat, stats->files_seen, NULL, 1);
     bd_progress_end(cat);
     return s;

@@ -313,6 +313,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
     int blocks = 0, piped = 0;
     copy_pipe pipe;
     while (!rc) {
+        if (bd_cancel_pending()) { rc = -4; break; }
         unsigned char *b = piped ? pipe_slot(&pipe) : buf;
         if (!b) break; /* the writer failed; pipe_finish says so */
         long n = read_block(&src, b, COPY_BUF);

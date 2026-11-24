@@ -30,7 +30,8 @@ typedef enum {
     BD_ERR_INVALID,
     BD_ERR_NOMEM,
     BD_ERR_PASSPHRASE, /* a passphrase is needed, or the one given is wrong */
-    BD_ERR_GUARD       /* backups are paused after a scan found too much changed (see bd_guard_get) */
+    BD_ERR_GUARD,      /* backups are paused after a scan found too much changed (see bd_guard_get) */
+    BD_ERR_CANCELLED   /* stopped by bd_catalog_cancel; what was done until then is kept */
 } bd_status;
 
 typedef void (*bd_log_fn)(void *ctx, const char *message);
@@ -101,6 +102,16 @@ typedef struct {
 } bd_progress;
 typedef void (*bd_progress_fn)(void *ctx, const bd_progress *p);
 void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
+
+/* Ask the running job (scan, backup, check, read-back, restore) to stop.
+ * Safe to call from any thread, including from the progress callback. The
+ * job stops between files, or between blocks of a big file, and returns
+ * BD_ERR_CANCELLED. Everything it finished stays recorded: a scan keeps
+ * the folders it had finished (the one it was in is left as it was), a
+ * backup keeps every copy it had finished, and a copy it was writing is
+ * removed, never put in place. Each job clears the request when it
+ * starts. */
+void bd_catalog_cancel(bd_catalog *cat);
 
 /* ---- Sources and scanning -------------------------------------------- */
 

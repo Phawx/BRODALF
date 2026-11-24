@@ -342,6 +342,7 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
                          bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
+    bd_cancel_reset(cat);
     return check_copies(cat, media_id, full, 0, stats, log, log_ctx);
 }
 
@@ -349,6 +350,7 @@ bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
                           bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     int64_t due = max_age_days > 0 ? bd_now_ms() - (int64_t)max_age_days * 24 * 3600 * 1000 : INT64_MAX;
+    bd_cancel_reset(cat);
     return check_copies(cat, media_id, 1, due, stats, log, log_ctx);
 }
 
@@ -401,7 +403,9 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
     sqlite3_bind_int64(q, 1, media_id);
     sqlite3_bind_int64(q, 2, due_before);
     int64_t now = bd_now_ms();
+    int cancelled = 0;
     while (sqlite3_step(q) == SQLITE_ROW) {
+        if (bd_cancelled(cat)) { cancelled = 1; break; }
         int64_t copy_id = sqlite3_column_int64(q, 0);
         const char *rel = (const char *)sqlite3_column_text(q, 1);
         int64_t stored_size = sqlite3_column_int64(q, 2);
@@ -447,9 +451,17 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
                 stats->skipped++;
                 continue;
             }
-            if (got != 0 || bd_hash_copy(path, key, NULL, NULL, hash, NULL) != 0 || strcmp(hash, expected) != 0) state = "bad";
-            else mtime = st.mtime_ns;
+            int hrc = got != 0 ? 1 : bd_hash_copy(path, key, NULL, NULL, hash, NULL);
             bd_store_release(path, is_temp);
+            if (hrc == -4) {
+                /* Stopped halfway through reading it: leave it as it was. */
+                stats->copies--;
+                stats->rehashed--;
+                cancelled = 1;
+                break;
+            }
+            if (hrc != 0 || strcmp(hash, expected) != 0) state = "bad";
+            else mtime = st.mtime_ns;
         }
         if (strcmp(state, "ok") == 0) stats->ok++;
         else if (strcmp(state, "missing") == 0) { stats->missing++; bd_logf(log, log_ctx, "missing on drive: %s", rel); }
@@ -464,8 +476,10 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
         sqlite3_bind_int64(u, 6, copy_id);
         if (sqlite3_step(u) != SQLITE_DONE) { s = bd_fail_db(cat, "record drive check"); break; }
     }
+    /* Copies checked before a stop keep what was found. */
     if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit drive check");
     if (s != BD_OK) bd_exec(cat, "ROLLBACK");
+    if (s == BD_OK && cancelled) s = bd_fail_cancelled(cat);
     bd_report(cat, stats->copies, NULL, 1);
     bd_progress_end(cat);
 done:

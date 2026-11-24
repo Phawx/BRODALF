@@ -53,6 +53,7 @@ enum {
     ID_RESULTS,
     ID_PROGRESS,
     ID_PROGTEXT,
+    ID_BTN_STOP,
     /* The menu bar. */
     ID_M_ADD_FOLDER = 700,
     ID_M_SCAN,
@@ -170,6 +171,11 @@ static int g_dpi = 96;
 static bd_catalog *g_cat;
 static wchar_t g_cat_path[MAX_PATH * 2];
 static volatile LONG g_busy;
+/* Stop pressed: the running job is asked to stop, and closes the window
+ * once it has when g_close_after is set. */
+static HWND g_stop;
+static volatile LONG g_stopping;
+static int g_close_after, g_running_kind;
 
 static int S(int px) { return MulDiv(px, g_dpi, 96); }
 
@@ -256,6 +262,8 @@ static double rate_add(int64_t bytes)
 static void job_progress(void *ctx, const bd_progress *p)
 {
     (void)ctx;
+    /* Each core job clears the request when it starts; ask again. */
+    if (g_stopping) bd_catalog_cancel(g_cat);
     if (p->files_done == 0 && p->bytes_done == 0) rate_reset();
     prog_msg *m = calloc(1, sizeof(*m));
     if (!m) return;
@@ -460,6 +468,7 @@ static DWORD WINAPI worker(LPVOID arg)
             }
         }
         else if (!id) s = try_connect(j, j->root, &id) ? BD_OK : BD_ERR_NOT_FOUND;
+        if (s == BD_OK && g_stopping) s = BD_ERR_CANCELLED;
         if (s == BD_OK) {
             bd_backup_stats bs;
             bd_backup_opts bo;
@@ -534,7 +543,9 @@ static DWORD WINAPI worker(LPVOID arg)
     }
     }
     j->status = s;
-    if (s != BD_OK) {
+    if (s == BD_ERR_CANCELLED) {
+        swprintf(j->summary, 512, L"Stopped. What was done until then is kept.");
+    } else if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         swprintf(j->summary, 512, L"Stopped: %ls", e ? e : L"unknown error");
         free(e);
@@ -560,6 +571,8 @@ static void set_busy(int busy)
 {
     InterlockedExchange(&g_busy, busy);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy);
+    EnableWindow(g_stop, busy);
+    ShowWindow(g_stop, busy ? SW_SHOW : SW_HIDE);
     HMENU bar = GetMenu(g_main);
     if (bar) {
         for (int i = 0; i < GetMenuItemCount(bar); i++) EnableMenuItem(bar, (UINT)i, MF_BYPOSITION | (busy ? MF_GRAYED : MF_ENABLED));
@@ -573,6 +586,8 @@ static void start_next_job(void)
     job *j = g_queue;
     g_queue = j->next;
     j->next = NULL;
+    InterlockedExchange(&g_stopping, 0);
+    g_running_kind = j->kind;
     set_busy(1);
     static const wchar_t *starting[] = {L"Looking for BRODALF drives...", L"Scanning your folders...",
                                         L"Backing up...", L"Checking every copy on the drive...", L"Restoring...",
@@ -582,6 +597,22 @@ static void start_next_job(void)
     HANDLE h = CreateThread(NULL, 0, worker, j, 0, NULL);
     if (h) CloseHandle(h);
     else { set_busy(0); job_free(j); }
+}
+
+/* Ask the running job to stop, and drop the ones waiting after it. */
+static void stop_job(void)
+{
+    if (!g_busy) return;
+    InterlockedExchange(&g_stopping, 1);
+    bd_catalog_cancel(g_cat);
+    while (g_queue) {
+        job *q = g_queue;
+        g_queue = q->next;
+        job_free(q);
+    }
+    EnableWindow(g_stop, FALSE);
+    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)L"Stopping...");
+    show_progress(-1, L"Stopping...");
 }
 
 static void enqueue(job *j)
@@ -3118,7 +3149,8 @@ static void layout(void)
     MoveWindow(g_list, rx, top + detail_h + S(6), rw, body_h - detail_h - S(6), TRUE);
     int py = top + body_h + pad;
     MoveWindow(g_progress, pad, py, S(240), prog_h, TRUE);
-    MoveWindow(g_prog_text, pad + S(248), py, w - pad * 2 - S(248), prog_h, TRUE);
+    MoveWindow(g_stop, pad + S(248), py - S(2), S(64), prog_h + S(4), TRUE);
+    MoveWindow(g_prog_text, pad + S(320), py, w - pad * 2 - S(320), prog_h, TRUE);
     MoveWindow(g_log, pad, py + prog_h + pad, w - pad * 2, log_h, TRUE);
 }
 
@@ -3229,6 +3261,8 @@ static void create_children(HWND hwnd)
     g_prog_text = CreateWindowExW(0, WC_STATICW, L"Ready.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE,
                                   0, 0, 10, 10, hwnd, (HMENU)ID_PROGTEXT, g_inst, NULL);
     SendMessageW(g_prog_text, WM_SETFONT, (WPARAM)g_font, TRUE);
+    g_stop = make_button(L"Stop", ID_BTN_STOP);
+    ShowWindow(g_stop, SW_HIDE);
 
     g_log = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
                             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd,
@@ -3262,6 +3296,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         if (LOWORD(wp) == ID_SEARCH) {
             if (HIWORD(wp) == EN_CHANGE) SetTimer(hwnd, ID_SEARCH_TIMER, 250, NULL);
+            return 0;
+        }
+        if (LOWORD(wp) == ID_BTN_STOP) {
+            stop_job();
             return 0;
         }
         if (g_busy) return 0;
@@ -3337,10 +3375,25 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_APP_DONE: {
         job *j = (job *)lp;
+        int stopping = g_stopping != 0;
         set_busy(0);
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
         show_progress(j->status == BD_OK ? 100 : 0, j->summary);
         log_append(j->summary);
+        if (g_close_after) {
+            job_free(j);
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (stopping) {
+            /* Nothing follows a job the user stopped. */
+            update_drives_label();
+            rebuild_tree();
+            show_detail();
+            job_free(j);
+            start_next_job();
+            return 0;
+        }
         if (j->status == BD_ERR_GUARD) {
             /* The backup the guard stopped runs after all once the user owns the changes. */
             if (guard_dialog() && j->kind == JOB_BACKUP) {
@@ -3395,7 +3448,22 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return TRUE;
     case WM_CLOSE:
         if (g_busy) {
-            MessageBoxW(hwnd, L"BRODALF is still working. Close it when the status bar says the job is done.", APP_NAME, MB_ICONINFORMATION);
+            static const wchar_t *ask[] = {L"Stop looking for drives and close?", L"Stop the scan and close?",
+                                           L"Stop the backup and close?", L"Stop the check and close?",
+                                           L"Stop the restore and close?", L"Stop reading back the copies and close?",
+                                           L"Stop the shadow copy and close?"};
+            if (g_close_after) return 0; /* already stopping; closes when the job returns */
+            wchar_t text[256];
+            swprintf(text, 256, L"%ls\n\nWhat was done until then is kept. BRODALF closes as soon as the job has stopped.",
+                     ask[g_running_kind]);
+            if (MessageBoxW(hwnd, text, APP_NAME, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+                if (!g_busy) {
+                    DestroyWindow(hwnd); /* the job ended while the question was up */
+                    return 0;
+                }
+                g_close_after = 1;
+                stop_job();
+            }
             return 0;
         }
         DestroyWindow(hwnd);

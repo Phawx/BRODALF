@@ -1001,6 +1001,160 @@ static void test_parallel_scan(void)
     for (int m = 0; m < 3; m++) { free(dumps[m][0]); free(dumps[m][1]); }
 }
 
+/* Cancelling from the progress callback. */
+typedef struct {
+    bd_catalog *cat;
+    const char *phase;   /* cancel in this phase */
+    int64_t after_files; /* once this many files are done */
+    const char *in_file; /* or this many reports into this file */
+    int reports_in_file, after_reports;
+    int fired;
+} cancel_at;
+
+static void cancel_progress(void *ctx, const bd_progress *p)
+{
+    cancel_at *c = ctx;
+    c->cat->progress_last_ms = 0; /* report every file and block, not ten times a second */
+    if (c->fired || p->done || strcmp(p->phase, c->phase) != 0) return;
+    if (c->in_file) {
+        if (strcmp(p->current, c->in_file) == 0 && ++c->reports_in_file >= c->after_reports) c->fired = 1;
+    } else if (p->files_done >= c->after_files) {
+        c->fired = 1;
+    }
+    if (c->fired) bd_catalog_cancel(c->cat);
+}
+
+static int64_t count_rows(bd_catalog *cat, const char *sql)
+{
+    sqlite3_stmt *q;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) == SQLITE_OK) {
+        if (sqlite3_step(q) == SQLITE_ROW) n = sqlite3_column_int64(q, 0);
+        sqlite3_finalize(q);
+    }
+    return n;
+}
+
+/* Every recorded copy is on the drive with its recorded size, and nothing
+ * half-written is left. */
+static void check_drive_consistent(bd_catalog *cat, int64_t drive, const char *drive_rel)
+{
+    char dir[1200];
+    snprintf(dir, sizeof(dir), "%s/BRODALF/%s", drive_rel, bd_catalog_uuid(cat));
+    tmp_count tc = {0, 0};
+    bd_walk(at(dir), count_tmp, NULL, &tc);
+    CHECK(tc.tmp == 0);
+    CHECK(tc.files == 1 + count_rows(cat, "SELECT COUNT(*) FROM copies")); /* plus BRODALF.media */
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == cs.ok && cs.bad == 0 && cs.missing == 0);
+}
+
+static void test_cancel(void)
+{
+    char name[64];
+    static char text[4096];
+    for (int i = 0; i < 40; i++) {
+        snprintf(name, sizeof(name), "cx/Src/f%02d.txt", i);
+        snprintf(text, sizeof(text), "small file %d", i);
+        write_file(at(name), text);
+    }
+    /* A big file, copied in blocks through the writer thread. */
+    size_t big = (size_t)7 * 1024 * 1024 + 99;
+    char *data = malloc(big);
+    if (!data) return;
+    for (size_t i = 0; i < big; i++) data[i] = (char)(i * 31 + (i >> 11));
+    FILE *f = bd_fopen(at("cx/Src/big.bin"), "wb");
+    CHECK(f && fwrite(data, 1, big, f) == big);
+    if (f) fclose(f);
+    bd_mkdirs(at("cx/drive"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("cx/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("cx/Src"), &src), cat);
+    cancel_at ca;
+
+    /* A scan stopped halfway leaves the folder as the catalog knew it. */
+    memset(&ca, 0, sizeof(ca));
+    ca.cat = cat;
+    ca.phase = "scan";
+    ca.after_files = 5;
+    bd_catalog_set_progress(cat, cancel_progress, &ca);
+    bd_scan_stats ss;
+    CHECK(bd_scan(cat, &ss, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes") == 0 && ss.files_new == 0);
+    /* The next scan clears the request and runs to the end. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 41);
+
+    REQUIRE_OK(bd_media_init(cat, at("cx/drive"), "Stop", 0, &drive), cat);
+
+    /* Stopped between files: what was copied stays recorded. */
+    memset(&ca, 0, sizeof(ca));
+    ca.cat = cat;
+    ca.phase = "backup";
+    ca.after_files = 10;
+    bd_backup_stats bs;
+    CHECK(bd_backup(cat, drive, 0, &bs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
+    CHECK(bs.files_copied >= 10 && bs.files_copied < 41 && bs.files_failed == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == bs.files_copied);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM jobs WHERE status='stopped'") == 1);
+    check_drive_consistent(cat, drive, "cx/drive");
+    int64_t first = bs.files_copied;
+
+    /* Stopped in the middle of the big file: no half copy on the drive. */
+    memset(&ca, 0, sizeof(ca));
+    ca.cat = cat;
+    ca.phase = "backup";
+    ca.in_file = "big.bin";
+    ca.after_reports = 4;
+    bd_catalog_set_progress(cat, cancel_progress, &ca);
+    bd_status st = bd_backup(cat, drive, 0, &bs, quiet, NULL);
+    CHECK(st == BD_ERR_CANCELLED && ca.fired);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies c JOIN versions v ON v.id=c.version_id JOIN nodes n ON n.id=v.node_id"
+                          " WHERE n.name='big.bin'") == 0);
+    check_drive_consistent(cat, drive, "cx/drive");
+    int64_t second = bs.files_copied;
+
+    /* The next backup finishes the job. */
+    bd_catalog_set_progress(cat, NULL, NULL);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_failed == 0 && first + second + bs.files_copied == 41);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == 41);
+    check_drive_consistent(cat, drive, "cx/drive");
+
+    /* A full check stopped halfway keeps what it found and touches nothing else. */
+    memset(&ca, 0, sizeof(ca));
+    ca.cat = cat;
+    ca.phase = "verify";
+    ca.after_files = 3;
+    bd_catalog_set_progress(cat, cancel_progress, &ca);
+    bd_check_stats cs;
+    CHECK(bd_media_check(cat, drive, 1, &cs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
+    /* The copy being read when the request came is left as it was. */
+    CHECK(cs.copies >= 2 && cs.copies < 41 && cs.bad == 0 && cs.missing == 0 && cs.ok == cs.copies);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+
+    /* A restore stopped inside the big file leaves no half-written file. */
+    memset(&ca, 0, sizeof(ca));
+    ca.cat = cat;
+    ca.phase = "restore";
+    ca.in_file = "big.bin";
+    ca.after_reports = 3;
+    bd_restore_stats rs;
+    CHECK(bd_restore(cat, src, "", at("cx/out"), &rs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
+    CHECK(!exists(at("cx/out/Src/big.bin")) && !exists(at("cx/out/Src/big.bin" BD_TMP_MARKER)));
+    bd_catalog_set_progress(cat, NULL, NULL);
+    REQUIRE_OK(bd_restore(cat, src, "", at("cx/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_failed == 0 && rs.files_restored + rs.files_already_there == 41);
+    char back[BD_HASH_HEX_LEN + 1], want[BD_HASH_HEX_LEN + 1];
+    CHECK(bd_hash_file(at("cx/out/Src/big.bin"), NULL, back, NULL) == 0 &&
+          bd_hash_file(at("cx/Src/big.bin"), NULL, want, NULL) == 0 && strcmp(back, want) == 0);
+    bd_catalog_close(cat);
+    free(data);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1251,6 +1405,7 @@ int main(void)
     test_moves_guard_and_progress();
     test_big_copy();
     test_parallel_scan();
+    test_cancel();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

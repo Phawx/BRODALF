@@ -110,6 +110,22 @@ as it reads. The GUI shows a bar with a percentage (bytes when the total is
 known, else files, else a marquee), the counts, a data rate over the last
 few seconds and the current file.
 
+## Stopping a job
+
+`bd_catalog_cancel` sets a flag on the catalog that any thread may set; each
+job clears it when it starts and returns `BD_ERR_CANCELLED` when it saw it.
+Scan, backup (moves included), prune, check, read-back and restore look at
+it between files, and a copy or hash looks at it between 1 MiB blocks (the
+scan's hashing threads too). Stopping keeps everything already done: a scan
+drops only what it found in the source folder it was in, which reads as it
+did before; a backup still syncs, renames and records the copies already
+written, and a copy cut off halfway is removed, never renamed into place; a check keeps the
+results so far and leaves the copy it was reading as it was; a restore
+removes the file it was writing. The job is recorded as `stopped`. The GUI's
+Stop button and Close (which asks first) set the flag, drop the queued jobs,
+and the GUI asks again from the progress callback, so a request made between
+two steps of a job is not lost when the next step clears the flag.
+
 ## Speed
 
 - BLAKE3 is built with its SSE2, SSE4.1, AVX2 and AVX-512 code on x86-64

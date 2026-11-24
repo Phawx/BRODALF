@@ -217,6 +217,69 @@ int bd_fsync(FILE *f)
     return FlushFileBuffers(h) ? 0 : -1;
 }
 
+/* NtFlushBuffersFileEx (Windows 8 and later) can write a file's data and
+ * metadata to the drive without making the drive flush its own cache. */
+typedef struct { void *status; ULONG_PTR information; } bd_io_status;
+typedef LONG (WINAPI *flush_ex_fn)(HANDLE, ULONG, PVOID, ULONG, bd_io_status *);
+#define BD_FLUSH_FLAGS_NO_SYNC 0x00000002
+
+static HANDLE open_for_flush(const char *path)
+{
+    wchar_t *w = to_wide(path);
+    if (!w) return INVALID_HANDLE_VALUE;
+    /* FlushFileBuffers needs write access; it flushes everything cached for
+     * the file, whichever handle wrote it. */
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    return h;
+}
+
+int bd_fsync_paths(char **paths, size_t n, int *failed)
+{
+    static flush_ex_fn flush_ex;
+    static int looked;
+    if (!looked) {
+        HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        flush_ex = nt ? (flush_ex_fn)(void (*)(void))GetProcAddress(nt, "NtFlushBuffersFileEx") : NULL;
+        looked = 1;
+    }
+    int bad = 0;
+    size_t last_light = n; /* the last file written out without a cache flush */
+    for (size_t i = 0; i < n; i++) {
+        HANDLE h = open_for_flush(paths[i]);
+        BOOL ok = h != INVALID_HANDLE_VALUE;
+        int light = 0;
+        if (ok) {
+            bd_io_status io;
+            memset(&io, 0, sizeof(io));
+            light = flush_ex && n > 1 && flush_ex(h, BD_FLUSH_FLAGS_NO_SYNC, NULL, 0, &io) >= 0;
+            if (!light) ok = FlushFileBuffers(h);
+            if (!CloseHandle(h)) ok = FALSE;
+        }
+        failed[i] = !ok;
+        bad += failed[i];
+        if (ok && light) last_light = i;
+    }
+    if (last_light == n) return bad;
+    /* One full flush makes the drive write out its cache, and with it every
+     * file above. If it fails, none of them counts as synced. */
+    HANDLE h = open_for_flush(paths[last_light]);
+    BOOL ok = h != INVALID_HANDLE_VALUE && FlushFileBuffers(h);
+    if (h != INVALID_HANDLE_VALUE && !CloseHandle(h)) ok = FALSE;
+    if (!ok) {
+        bad = 0;
+        for (size_t i = 0; i < n; i++) { failed[i] = 1; bad++; }
+    }
+    return bad;
+}
+
+int bd_fsync_dir(const char *path)
+{
+    (void)path; /* MoveFileEx is called with MOVEFILE_WRITE_THROUGH */
+    return 0;
+}
+
 int bd_create_exclusive(const char *path)
 {
     wchar_t *w = to_wide(path);

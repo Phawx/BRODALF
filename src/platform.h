@@ -37,6 +37,17 @@ FILE *bd_fopen(const char *path, const char *mode);
 /* Flush stdio buffers and force the data to stable storage. 0 on success. */
 int bd_fsync(FILE *f);
 
+/* Force closed files' data to stable storage (each is opened again for
+ * that), all on one drive, with as few device cache flushes as the OS
+ * allows: on Windows each file is written out without one and a single
+ * full flush ends the group. failed[i] is set for each file that could not
+ * be synced; returns how many. */
+int bd_fsync_paths(char **paths, size_t n, int *failed);
+
+/* Make renames and new names in a folder durable: fsync on the folder on
+ * POSIX; a no-op on Windows, where renames are written through. */
+int bd_fsync_dir(const char *path);
+
 /* Create a file that must not already exist (used for lock files).
  * 0 on success, 1 if it already exists, -1 on other errors. */
 int bd_create_exclusive(const char *path);

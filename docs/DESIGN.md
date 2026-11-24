@@ -168,7 +168,14 @@ X:\BRODALF\<catalog id>\catalog-backup.brodalf           copy of the catalog
 Files stay browsable without BRODALF. A new version is written to a temp file
 and checked against its hash first; only then is the previous copy moved into
 `.versions` and the new one renamed into place, so a failed write can never
-destroy a good copy. A file already at the destination that the catalog does
+destroy a good copy. Copies are synced to the drive in groups (up to the 256
+files of a batch or about 64 MB of data): every temp file of the group is
+written and checked, then the group is synced (`bd_fsync_paths`: on Windows
+each file is written out without a drive cache flush and one full flush ends
+the group; elsewhere one fsync each), then each copy is renamed into place
+and recorded, then on POSIX the folders that got new names are synced. A
+batch's catalog rows are committed in one transaction after its last group,
+so no copy is recorded before its data is on the drive. A file already at the destination that the catalog does
 not know about is adopted if its hash matches (for example after a crash
 before the catalog was saved), otherwise it is moved aside, never overwritten.
 

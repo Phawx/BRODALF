@@ -891,6 +891,16 @@ static void test_big_copy(void)
     free(data);
 }
 
+typedef struct { int files, tmp; } tmp_count;
+
+static int count_tmp(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    tmp_count *t = ctx;
+    if (st->is_file) t->files++;
+    if (strstr(rel, BD_TMP_MARKER)) t->tmp++;
+    return 0;
+}
+
 /* Everything a scan records, without the times that differ between runs. */
 static char *catalog_dump(bd_catalog *cat)
 {
@@ -961,6 +971,23 @@ static void test_parallel_scan(void)
         REQUIRE_OK(bd_catalog_open(at(name), &cat), NULL);
         REQUIRE_OK(bd_scan(cat, &stats[m][1], quiet, NULL), cat);
         dumps[m][1] = catalog_dump(cat);
+        if (m == 0) {
+            /* Many small files: synced in groups, then renamed and recorded. */
+            bd_mkdirs(at("ps/drive"));
+            int64_t drive;
+            REQUIRE_OK(bd_media_init(cat, at("ps/drive"), "Many", 0, &drive), cat);
+            bd_backup_stats bs;
+            REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+            CHECK(bs.files_copied == 300 && bs.files_failed == 0);
+            bd_check_stats cs;
+            REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
+            CHECK(cs.copies == 300 && cs.ok == 300);
+            char dir[1200];
+            snprintf(dir, sizeof(dir), "ps/drive/BRODALF/%s", bd_catalog_uuid(cat));
+            tmp_count tc = {0, 0};
+            bd_walk(at(dir), count_tmp, NULL, &tc);
+            CHECK(tc.tmp == 0 && tc.files == 301); /* the copies and BRODALF.media */
+        }
         bd_catalog_close(cat);
     }
     bd_test_scan_workers = 0;

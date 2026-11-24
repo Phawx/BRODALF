@@ -131,6 +131,32 @@ int bd_fsync(FILE *f)
     return fsync(fileno(f)) == 0 ? 0 : -1;
 }
 
+int bd_fsync_paths(char **paths, size_t n, int *failed)
+{
+    int bad = 0;
+    for (size_t i = 0; i < n; i++) {
+        char *p = dup_native(paths[i]);
+        int fd = p ? open(p, O_WRONLY) : -1;
+        free(p);
+        int rc = fd < 0 ? -1 : fsync(fd);
+        if (fd >= 0 && close(fd) != 0) rc = -1;
+        failed[i] = rc != 0;
+        bad += failed[i];
+    }
+    return bad;
+}
+
+int bd_fsync_dir(const char *path)
+{
+    char *p = dup_native(path);
+    int fd = p ? open(p, O_RDONLY | O_DIRECTORY) : -1;
+    free(p);
+    if (fd < 0) return -1;
+    int rc = fsync(fd);
+    close(fd);
+    return rc == 0 ? 0 : -1;
+}
+
 int bd_create_exclusive(const char *path)
 {
     char *p = dup_native(path);

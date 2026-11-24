@@ -14,6 +14,9 @@
 #include <string.h>
 
 #define BATCH 256
+/* Copies are synced to the drive in groups of up to BATCH files or about
+ * this much data, whichever comes first. */
+#define SYNC_BYTES (64 * 1024 * 1024)
 /* Room left on a drive for its file system and the catalog copy. */
 #define MIN_RESERVE (16 * 1024 * 1024)
 
@@ -163,24 +166,24 @@ static int copy_verified(const char *src, const uint8_t *src_key, const char *de
 }
 
 /* Write src into the store's staging file for rel, hashing as it goes, and
- * upload it only if the hash matches. 0 on success (rel now holds the copy
- * and *st describes it), 1 on hash mismatch, -1 on error. */
-static int put_verified(bd_store *store, const char *src, const uint8_t *key, const char *rel, const char *expected,
-                        bd_remote_stat *st, int64_t *bytes)
+ * keep it only if the hash matches. The file is not synced yet: that is
+ * done for a group of copies at once (sync_group). 0 on success with the
+ * staged local path in *staged_out, 1 on hash mismatch, -1 on error. */
+static int stage_verified(bd_store *store, const char *src, const uint8_t *key, const char *rel, const char *expected,
+                          char **staged_out, int64_t *bytes)
 {
+    *staged_out = NULL;
     char *staged = store->ops->staging_path(store, rel);
     if (!staged) return -1;
     FILE *out = bd_fopen(staged, "wb");
     if (!out) { free(staged); return -1; }
     char hash[BD_HASH_HEX_LEN + 1];
     int rc = bd_hash_copy(src, NULL, out, key, hash, bytes);
-    if (rc == 0 && bd_fsync(out) != 0) rc = -1;
-    if (fclose(out) != 0) rc = -1;
+    if (fclose(out) != 0 && rc == 0) rc = -1;
     if (rc == 0 && strcmp(hash, expected) != 0) rc = 1;
     if (rc != 0) { bd_remove(staged); free(staged); return rc > 0 ? 1 : -1; }
-    rc = store->ops->upload(store, staged, rel, st);
-    free(staged);
-    return rc == 0 ? 0 : -1;
+    *staged_out = staged;
+    return 0;
 }
 
 static int64_t start_job(bd_catalog *cat, const char *kind, int64_t media_id)
@@ -288,42 +291,66 @@ done:
     return moved;
 }
 
-static void backup_one(bd_catalog *cat, bd_store *store, const uint8_t *key, const backup_item *it,
-                       bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
+/* A copy written and checked, waiting for its data to be synced before it
+ * is renamed into place and recorded. */
+typedef struct {
+    const backup_item *it;
+    char *orig, *src_staged, *dest_rel, *tmp_rel, *local_tmp;
+    int dest_exists, failed;
+    int64_t tracked_copy, tracked_version, tracked_version_no, bytes;
+} pending_copy;
+
+static void pending_free(pending_copy *p)
+{
+    free(p->orig);
+    free(p->src_staged);
+    free(p->dest_rel);
+    free(p->tmp_rel);
+    free(p->local_tmp);
+    memset(p, 0, sizeof(*p));
+}
+
+/* Check the file and write its copy to <dest>.brodalf-tmp. 1 if *p now
+ * holds a copy to finish; 0 if the file is done with (failed, or already
+ * on the drive). */
+static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, const backup_item *it, pending_copy *p,
+                        bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
     int64_t media_id = store->media_id;
+    memset(p, 0, sizeof(*p));
+    p->it = it;
     bd_report(cat, stats->files_copied + stats->files_moved + stats->files_failed + stats->files_no_room, it->rel, 0);
-    char *orig = bd_path_join(it->source_path, it->rel);
+    p->orig = bd_path_join(it->source_path, it->rel);
     /* A file in use is read from its shadow copy, when one was taken. */
-    char *staged = orig ? bd_substitute_for(cat, orig) : NULL;
-    char *src = staged ? staged : orig;
-    char *dest_rel = bd_sprintf("%s/%s%s", it->source_name, it->rel, key ? BD_SEALED_SUFFIX : "");
-    char *tmp_rel = dest_rel ? bd_sprintf("%s" BD_TMP_MARKER, dest_rel) : NULL;
-    if (!src || !tmp_rel) { stats->files_failed++; goto done; }
+    p->src_staged = p->orig ? bd_substitute_for(cat, p->orig) : NULL;
+    const char *src = p->src_staged ? p->src_staged : p->orig;
+    p->dest_rel = bd_sprintf("%s/%s%s", it->source_name, it->rel, key ? BD_SEALED_SUFFIX : "");
+    p->tmp_rel = p->dest_rel ? bd_sprintf("%s" BD_TMP_MARKER, p->dest_rel) : NULL;
+    const char *dest_rel = p->dest_rel, *tmp_rel = p->tmp_rel;
+    if (!src || !tmp_rel) { stats->files_failed++; goto drop; }
 
     bd_stat_t sst;
     if (bd_stat(src, &sst) != 0 || !sst.is_file) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "source file missing, scan again: %s", src);
-        goto done;
+        goto drop;
     }
-    if (sst.size != it->node_size || (!staged && sst.mtime_ns != it->node_mtime)) {
+    if (sst.size != it->node_size || (!p->src_staged && sst.mtime_ns != it->node_mtime)) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "changed since the last scan, scan again: %s", src);
-        goto done;
+        goto drop;
     }
 
     /* What is at the destination now? */
-    int64_t tracked_copy = 0, tracked_version = 0, tracked_version_no = 0;
     bd_remote_stat dst_st;
     int found = store->ops->stat(store, dest_rel, &dst_st);
     if (found < 0) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "cannot look at %s: %s", dest_rel, store->err);
-        goto done;
+        goto drop;
     }
-    int dest_exists = found == 0;
-    if (dest_exists) {
+    p->dest_exists = found == 0;
+    if (p->dest_exists) {
         sqlite3_stmt *q;
         if (sqlite3_prepare_v2(cat->db,
                                "SELECT c.id, v.id, v.version_no FROM copies c JOIN versions v ON v.id=c.version_id"
@@ -332,13 +359,13 @@ static void backup_one(bd_catalog *cat, bd_store *store, const uint8_t *key, con
             sqlite3_bind_int64(q, 1, media_id);
             sqlite3_bind_text(q, 2, dest_rel, -1, SQLITE_STATIC);
             if (sqlite3_step(q) == SQLITE_ROW) {
-                tracked_copy = sqlite3_column_int64(q, 0);
-                tracked_version = sqlite3_column_int64(q, 1);
-                tracked_version_no = sqlite3_column_int64(q, 2);
+                p->tracked_copy = sqlite3_column_int64(q, 0);
+                p->tracked_version = sqlite3_column_int64(q, 1);
+                p->tracked_version_no = sqlite3_column_int64(q, 2);
             }
             sqlite3_finalize(q);
         }
-        if (!tracked_copy) {
+        if (!p->tracked_copy) {
             /* Probably written by a backup whose catalog was never saved.
              * If it is exactly this version, adopt it instead of copying. */
             char hash[BD_HASH_HEX_LEN + 1];
@@ -350,12 +377,12 @@ static void backup_one(bd_catalog *cat, bd_store *store, const uint8_t *key, con
             if (same) {
                 if (record_copy(cat, it->version_id, media_id, dest_rel, &dst_st) == 0) stats->files_already_there++;
                 else stats->files_failed++;
-                goto done;
+                goto drop;
             }
         }
     }
 
-    if (!dest_exists) {
+    if (!p->dest_exists) {
         /* Rows for other versions that claim this path point at a file that
          * is gone from the drive; drop them so the new copy can be recorded. */
         sqlite3_stmt *d;
@@ -370,59 +397,107 @@ static void backup_one(bd_catalog *cat, bd_store *store, const uint8_t *key, con
     }
 
     /* The new copy goes to <dest>.brodalf-tmp first. */
-    int64_t bytes = 0;
-    bd_remote_stat new_st;
-    int rc = put_verified(store, src, key, tmp_rel, it->hash, &new_st, &bytes);
+    int rc = stage_verified(store, src, key, tmp_rel, it->hash, &p->local_tmp, &p->bytes);
     if (rc == 1) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "changed while copying, scan again: %s", src);
-        goto done;
+        goto drop;
     }
     if (rc != 0) {
         stats->files_failed++;
         if (bd_open_was_in_use()) {
             stats->files_in_use++;
-            bd_note_in_use(cat, orig, it->node_size);
+            bd_note_in_use(cat, p->orig, it->node_size);
             bd_logf(log, log_ctx, "in use by another program, not copied: %s", src);
         } else {
             bd_logf(log, log_ctx, "cannot copy %s to the drive%s%s", src, store->err[0] ? ": " : "", store->err);
         }
         store->ops->remove(store, tmp_rel);
-        goto done;
+        goto drop;
     }
+    return 1;
 
+drop:
+    pending_free(p);
+    return 0;
+}
+
+/* The copy's data is on the drive: put it in place and record it. */
+static void backup_finish(bd_catalog *cat, bd_store *store, pending_copy *p, bd_backup_stats *stats, bd_log_fn log,
+                          void *log_ctx)
+{
+    const backup_item *it = p->it;
+    const char *dest_rel = p->dest_rel, *tmp_rel = p->tmp_rel;
+    bd_remote_stat new_st;
+    if (p->failed) {
+        stats->files_failed++;
+        bd_logf(log, log_ctx, "cannot write the copy of %s to the drive", p->src_staged ? p->src_staged : p->orig);
+        store->ops->remove(store, tmp_rel);
+        return;
+    }
+    if (store->ops->upload(store, p->local_tmp, tmp_rel, &new_st) != 0) {
+        stats->files_failed++;
+        bd_logf(log, log_ctx, "cannot copy %s to the drive: %s", p->src_staged ? p->src_staged : p->orig, store->err);
+        store->ops->remove(store, tmp_rel);
+        return;
+    }
     /* The new copy is safe in the temp file. Keep the old one if it is
      * another version (or unknown); replace it if it is a damaged copy of
      * this same version. */
-    if (dest_exists && tracked_version != it->version_id) {
-        if (move_aside(cat, store, dest_rel, tracked_copy, tracked_version_no, log, log_ctx) != 0) {
+    if (p->dest_exists && p->tracked_version != it->version_id) {
+        if (move_aside(cat, store, dest_rel, p->tracked_copy, p->tracked_version_no, log, log_ctx) != 0) {
             stats->files_failed++;
             bd_logf(log, log_ctx, "cannot move the previous copy of %s into .versions; left it in place", dest_rel);
             store->ops->remove(store, tmp_rel);
-            goto done;
+            return;
         }
-        if (tracked_copy) stats->versions_moved++;
+        if (p->tracked_copy) stats->versions_moved++;
     }
     if (store->ops->move(store, tmp_rel, dest_rel, 1) != 0) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "cannot finish writing %s: %s", dest_rel, store->err);
         store->ops->remove(store, tmp_rel);
-        goto done;
+        return;
     }
     if (store->ops->stat(store, dest_rel, &new_st) != 0 ||
-        record_copy(cat, it->version_id, media_id, dest_rel, &new_st) != 0) {
+        record_copy(cat, it->version_id, store->media_id, dest_rel, &new_st) != 0) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "copied %s but could not record it: %s", dest_rel, sqlite3_errmsg(cat->db));
-        goto done;
+        return;
     }
     stats->files_copied++;
-    stats->bytes_copied += bytes;
+    stats->bytes_copied += p->bytes;
+}
 
-done:
-    free(orig);
-    free(staged);
-    free(dest_rel);
-    free(tmp_rel);
+/* Sync a group of written copies, then rename each into place and record
+ * it, then sync the folders that got new names. Syncing many small files
+ * together instead of one by one is much faster, and no copy is renamed
+ * into place or recorded before its data is on the drive. */
+static void sync_group(bd_catalog *cat, bd_store *store, pending_copy *group, size_t n, bd_backup_stats *stats,
+                       bd_log_fn log, void *log_ctx)
+{
+    if (n == 0) return;
+    char *paths[BATCH];
+    int failed[BATCH];
+    for (size_t i = 0; i < n; i++) paths[i] = group[i].local_tmp;
+    bd_fsync_paths(paths, n, failed);
+    for (size_t i = 0; i < n; i++) group[i].failed = failed[i];
+    char *last_dir = NULL;
+    for (size_t i = 0; i < n; i++) {
+        backup_finish(cat, store, &group[i], stats, log, log_ctx);
+        char *local = group[i].failed ? NULL : store->ops->local_path(store, group[i].dest_rel);
+        char *dir = local ? bd_rel_dirname(local) : NULL;
+        if (dir && (!last_dir || strcmp(dir, last_dir) != 0)) {
+            bd_fsync_dir(dir);
+            free(last_dir);
+            last_dir = dir;
+        } else {
+            free(dir);
+        }
+        free(local);
+        pending_free(&group[i]);
+    }
+    free(last_dir);
 }
 
 bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *stats, bd_log_fn log, void *log_ctx)
@@ -594,6 +669,7 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
     bd_progress_begin(cat, "backup", todo_files, todo_bytes);
 
     backup_item items[BATCH];
+    pending_copy group[BATCH];
     int64_t last_id = 0;
     for (;;) {
         size_t n = 0, rows = 0;
@@ -620,6 +696,11 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
         }
         sqlite3_reset(q);
         if (rows == 0) break;
+        /* One catalog transaction per batch; copies are synced in groups
+         * (at most SYNC_BYTES of data) before they are renamed and recorded. */
+        int in_txn = bd_exec(cat, "BEGIN") == 0;
+        size_t ng = 0;
+        int64_t group_bytes = 0;
         for (size_t i = 0; i < n; i++) {
             /* Moved or renamed: move the copy already on the drive. */
             if (move_existing(cat, store, &items[i], key, stats, log, log_ctx)) {
@@ -637,9 +718,20 @@ bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, con
                     continue;
                 }
             }
-            int64_t before = stats->bytes_copied;
-            backup_one(cat, store, key, &items[i], stats, log, log_ctx);
-            if (space_free >= 0) space_free -= stats->bytes_copied - before;
+            if (!backup_start(cat, store, key, &items[i], &group[ng], stats, log, log_ctx)) continue;
+            if (space_free >= 0) space_free -= group[ng].bytes;
+            group_bytes += group[ng].bytes;
+            ng++;
+            if (group_bytes >= SYNC_BYTES) {
+                sync_group(cat, store, group, ng, stats, log, log_ctx);
+                ng = 0;
+                group_bytes = 0;
+            }
+        }
+        sync_group(cat, store, group, ng, stats, log, log_ctx);
+        if (in_txn && bd_exec(cat, "COMMIT") != 0) {
+            bd_logf(log, log_ctx, "cannot record the copies: %s", sqlite3_errmsg(cat->db));
+            bd_exec(cat, "ROLLBACK");
         }
         free_items(items, n);
     }

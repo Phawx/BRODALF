@@ -299,7 +299,12 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 - Scan, backup, check and restore run one at a time on a worker thread, which
   reports progress to the status bar and log and saves the catalog after each
   job. The tree is refreshed when a job ends and cannot be expanded while one
-  runs, since the catalog belongs to the worker then.
+  runs, since the catalog belongs to the worker then. The reverse holds too:
+  while the UI thread is in a command or in what follows a job (its
+  end-of-job prompts, which may wait in a message box), no job starts; a
+  drive plugged in meanwhile is queued and handled when the UI is done.
+  The search box says search is available when the current job finishes,
+  and searches again then.
 - `brodalf.exe --shadow-copy` is dispatched before `CoInitializeEx`: the
   helper needs the multithreaded apartment, and VSS hangs in a
   single-threaded one.

@@ -170,7 +170,13 @@ static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
 static int g_dpi = 96;
 static bd_catalog *g_cat;
 static wchar_t g_cat_path[MAX_PATH * 2];
-static volatile LONG g_busy;
+static volatile LONG g_busy;  /* a worker thread owns the catalog */
+/* >0 while the UI thread is in the middle of a command or of what comes
+ * after a job (its end-of-job prompts), perhaps waiting in a message box:
+ * the catalog is the UI's then, so no job may start. Jobs asked for
+ * meanwhile, such as a drive being plugged in, wait in the queue and start
+ * when the UI is done. */
+static int g_ui_depth;
 
 static int S(int px) { return MulDiv(px, g_dpi, 96); }
 
@@ -570,7 +576,7 @@ static void set_busy(int busy)
 
 static void start_next_job(void)
 {
-    if (g_busy || !g_queue) return;
+    if (g_busy || g_ui_depth || !g_queue) return;
     job *j = g_queue;
     g_queue = j->next;
     j->next = NULL;
@@ -3104,6 +3110,16 @@ static void run_search(void)
         ShowWindow(g_tree, SW_SHOW);
         return;
     }
+    if (g_busy) {
+        /* The catalog belongs to the job; the search runs again when it ends. */
+        const wchar_t *cells[] = {L"Search is available when the current job finishes.", L"", L"", L""};
+        lv_row(g_results, cells, 4);
+        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(g_results, NULL, TRUE);
+        ShowWindow(g_tree, SW_HIDE);
+        ShowWindow(g_results, SW_SHOW);
+        return;
+    }
     char *u = narrow(text);
     if (u) bd_search(g_cat, u, 500, search_cb, NULL);
     free(u);
@@ -3322,7 +3338,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         create_menu_bar(hwnd);
         return 0;
     case WM_INITMENUPOPUP:
-        if ((HMENU)wp == g_menu_local) fill_storage_menus();
+        if ((HMENU)wp == g_menu_local && !g_busy) fill_storage_menus();
         return 0;
     case WM_SIZE:
         layout();
@@ -3338,7 +3354,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (HIWORD(wp) == EN_CHANGE) SetTimer(hwnd, ID_SEARCH_TIMER, 250, NULL);
             return 0;
         }
-        if (g_busy) return 0;
+        if (g_busy || g_ui_depth) return 0;
+        g_ui_depth++; /* a job this asks for starts once it is done */
         switch (LOWORD(wp)) {
         case ID_BTN_ADD: cmd_add_folder(); break;
         case ID_BTN_SCAN: enqueue(new_job(JOB_SCAN)); break;
@@ -3353,6 +3370,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             else if (LOWORD(wp) >= ID_DRIVE_ACT_BASE) menu_command(LOWORD(wp));
             break;
         }
+        g_ui_depth--;
+        start_next_job();
         return 0;
     case WM_TIMER:
         if (wp == ID_SEARCH_TIMER) {
@@ -3411,7 +3430,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_APP_DONE: {
         job *j = (job *)lp;
-        set_busy(0);
+        /* The worker has let go of the catalog. Until the prompts below are
+         * answered, the buttons stay disabled and nothing new starts. */
+        g_ui_depth++;
+        InterlockedExchange(&g_busy, 0);
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
         show_progress(j->status == BD_OK ? 100 : 0, j->summary);
         log_append(j->summary);
@@ -3452,6 +3474,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (j->kind == JOB_SCAN && j->guard) guard_dialog();
         else if ((j->kind == JOB_SCAN || j->kind == JOB_BACKUP) && j->in_use && j->status == BD_OK) offer_shadow(j);
         job_free(j);
+        g_ui_depth--;
+        set_busy(0);
         start_next_job();
         return 0;
     }
@@ -3468,7 +3492,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return TRUE;
     case WM_CLOSE:
-        if (g_busy) {
+        if (g_busy || g_ui_depth) {
             MessageBoxW(hwnd, L"BRODALF is still working. Close it when the status bar says the job is done.", APP_NAME, MB_ICONINFORMATION);
             return 0;
         }

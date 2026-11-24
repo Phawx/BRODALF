@@ -1305,11 +1305,13 @@ static void test_case_rename(void)
     }
     CHECK(indexed);
 
+#ifndef _WIN32
     /* Where names are case sensitive nothing changes: a delete and a new file. */
     bd_test_fold_case = 0;
     CHECK(rename(at("cr/Src/photo.jpg"), at("cr/Src/PHOTO.jpg")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_new == 1 && ss.files_deleted == 1);
+#endif
     bd_catalog_close(cat);
 
     /* A schema 5 catalog gets the keys when it is opened. */

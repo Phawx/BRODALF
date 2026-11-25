@@ -52,6 +52,7 @@ VIAddVersionKey "LegalCopyright" "See THIRD-PARTY-NOTICES.txt for the libraries 
 !define MUI_FINISHPAGE_RUN_TEXT "Open BRODALF now"
 
 !insertmacro MUI_PAGE_COMPONENTS
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE CheckRunning
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -61,12 +62,44 @@ VIAddVersionKey "LegalCopyright" "See THIRD-PARTY-NOTICES.txt for the libraries 
 
 !insertmacro MUI_LANGUAGE "English"
 
+; An open BRODALF keeps its exes locked, so an upgrade or uninstall would
+; fail half way. Find the window, or an exe in the folder that cannot be
+; opened for writing (Windows locks a running program's file), and ask the
+; person to close it first. Opening for append changes nothing in the file.
+!macro CHECK_RUNNING un
+Function ${un}CheckRunning
+  again:
+    FindWindow $0 "BrodalfMain"
+    StrCmp $0 "0" 0 running
+    IfFileExists "$INSTDIR\brodalf.exe" 0 cli
+    ClearErrors
+    FileOpen $1 "$INSTDIR\brodalf.exe" a
+    IfErrors running
+    FileClose $1
+  cli:
+    IfFileExists "$INSTDIR\brodalf-cli.exe" 0 done
+    ClearErrors
+    FileOpen $1 "$INSTDIR\brodalf-cli.exe" a
+    IfErrors running
+    FileClose $1
+    Goto done
+  running:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "BRODALF is open. Close it, and any brodalf-cli that is running, then press Retry." /SD IDCANCEL IDRETRY again
+    Abort
+  done:
+FunctionEnd
+!macroend
+!insertmacro CHECK_RUNNING ""
+!insertmacro CHECK_RUNNING "un."
+
 Function .onInit
   SetShellVarContext current
+  Call CheckRunning
 FunctionEnd
 
 Function un.onInit
   SetShellVarContext current
+  Call un.CheckRunning
 FunctionEnd
 
 Section "BRODALF (required)" SecMain

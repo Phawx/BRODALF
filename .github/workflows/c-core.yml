@@ -25,6 +25,15 @@ jobs:
       - name: Check the translations
         if: runner.os == 'Linux'
         run: python3 tools/lang.py check
+      # Builds the installer script around stand-in files, so a mistake in
+      # it shows here and not first when a release is made.
+      - name: Check the installer script
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q nsis
+          mkdir -p /tmp/nsis-check && touch /tmp/nsis-check/brodalf.exe /tmp/nsis-check/brodalf-cli.exe
+          v="$(sed -n 's/^project(brodalf VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          makensis -V2 "-DVERSION=$v" "-DBINDIR=/tmp/nsis-check" "-DOUTFILE=/tmp/nsis-check/setup.exe" installer/brodalf.nsi
       - name: Configure
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

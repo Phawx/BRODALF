@@ -181,6 +181,10 @@ enum {
     ID_M_LANG_FOLLOW, /* View > Language */
     ID_M_LANG_FIRST,
     ID_M_LANG_LAST = ID_M_LANG_FIRST + 15,
+    ID_M_FIND,     /* View: Ctrl+F, the search box */
+    ID_M_NEXT_TAB, /* View: Ctrl+Tab */
+    ID_M_PREV_TAB, /* View: Ctrl+Shift+Tab */
+    ID_M_STOP,     /* Tools: Esc, the same as the Stop button */
     /* Right-click menus (TrackPopupMenu with TPM_RETURNCMD). */
     ID_CTX_OPEN = 800,
     ID_CTX_RESTORE,
@@ -642,6 +646,11 @@ static int g_close_after, g_running_kind;
  * meanwhile, such as a drive being plugged in, wait in the queue and start
  * when the UI is done. */
 static int g_ui_depth;
+/* The keyboard: the shortcuts in the menus, the control that had the
+ * focus when the window was last active, and the one that had it when a
+ * job started (it gets it back when the job ends). */
+static HACCEL g_accel;
+static HWND g_focus, g_focus_job;
 
 static int S(int px) { return MulDiv(px, g_dpi, 96); }
 
@@ -660,6 +669,155 @@ static void toggle_encrypt_selected(void);
 static void load_marks(void);
 static int good_description(const wchar_t *s);
 static void media_name(int64_t id, wchar_t *out, size_t cap);
+
+/* ---- The keyboard -------------------------------------------------------- *
+ *
+ * The message loop gives the main window the dialog keys (IsDialogMessage:
+ * Enter, Esc, the & letters, the arrows between buttons) and the shortcuts
+ * in the menus (an accelerator table). Tab and Shift+Tab are done here, in
+ * the order the window reads: the buttons along the top, the tabs, what is
+ * on the tab shown, then Stop and the log. */
+
+static int usable(HWND h)
+{
+    return h && IsWindow(h) && IsWindowVisible(h) && IsWindowEnabled(h);
+}
+
+/* Give a control the focus, or keep it for when the window is active again. */
+static void put_focus(HWND h)
+{
+    if (!usable(h)) return;
+    if (GetActiveWindow() == g_main) SetFocus(h);
+    else g_focus = h;
+}
+
+/* The same, when the focus was lost: on a control that was hidden or
+ * turned off, or nowhere. */
+static void keep_focus(HWND h)
+{
+    if (GetActiveWindow() == g_main) {
+        HWND now = GetFocus();
+        if (!usable(now) || !IsChild(g_main, now)) put_focus(h);
+    } else if (!usable(g_focus)) {
+        g_focus = usable(h) ? h : NULL;
+    }
+}
+
+/* The focus moved by the keyboard: show where it is, and select the text
+ * of a box you type in, as dialogs do. */
+static void focus_control(HWND h)
+{
+    if (!usable(h)) return;
+    SendMessageW(g_main, WM_CHANGEUISTATE, MAKEWPARAM(UIS_CLEAR, UISF_HIDEFOCUS), 0);
+    SetFocus(h);
+    if (SendMessageW(h, WM_GETDLGCODE, 0, 0) & DLGC_HASSETSEL) SendMessageW(h, EM_SETSEL, 0, -1);
+}
+
+static void tab_stops_of(HWND parent, HWND *out, int *n, int cap)
+{
+    for (HWND c = GetWindow(parent, GW_CHILD); c && *n < cap; c = GetWindow(c, GW_HWNDNEXT))
+        if ((GetWindowLongW(c, GWL_STYLE) & WS_TABSTOP) && usable(c)) out[(*n)++] = c;
+}
+
+static void tab_move(int back)
+{
+    HWND order[160];
+    int n = 0;
+    for (HWND c = GetWindow(g_main, GW_CHILD); c && n < 160; c = GetWindow(c, GW_HWNDNEXT)) {
+        if (c == g_tabs) continue;
+        int page = -1;
+        for (int i = 0; i < N_TABS; i++)
+            if (c == g_page[i]) page = i;
+        if (page >= 0) {
+            /* The tabs come just before the page they show. */
+            if (page == g_tab) {
+                if (usable(g_tabs)) order[n++] = g_tabs;
+                tab_stops_of(c, order, &n, 160);
+            }
+            continue;
+        }
+        if ((GetWindowLongW(c, GWL_STYLE) & WS_TABSTOP) && usable(c)) order[n++] = c;
+    }
+    if (!n) return;
+    HWND f = GetFocus();
+    int at = -1;
+    for (int i = 0; i < n && at < 0; i++)
+        if (f && (order[i] == f || IsChild(order[i], f))) at = i;
+    int next = back ? (at <= 0 ? n - 1 : at - 1) : (at + 1) % n;
+    focus_control(order[next]);
+}
+
+/* Tab, unless the control with the focus uses it itself. */
+static int tab_key(const MSG *m)
+{
+    if (m->message != WM_KEYDOWN || m->wParam != VK_TAB || GetKeyState(VK_CONTROL) < 0 || GetKeyState(VK_MENU) < 0) return 0;
+    LRESULT code = SendMessageW(m->hwnd, WM_GETDLGCODE, m->wParam, (LPARAM)m);
+    if (code & (DLGC_WANTTAB | DLGC_WANTALLKEYS | DLGC_WANTMESSAGE)) return 0;
+    tab_move(GetKeyState(VK_SHIFT) < 0);
+    return 1;
+}
+
+/* The details, the log and the other read-only text: the arrows, Page Up
+ * and Page Down scroll them and Ctrl+A selects all of it, but Tab, Enter
+ * and Esc are the window's, and the text is not selected when they get
+ * the focus. */
+static LRESULT CALLBACK read_only_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (msg == WM_GETDLGCODE)
+        return DefSubclassProc(h, msg, wp, lp) & ~(LRESULT)(DLGC_WANTALLKEYS | DLGC_WANTTAB | DLGC_HASSETSEL);
+    if (msg == WM_KEYDOWN && wp == 'A' && GetKeyState(VK_CONTROL) < 0) {
+        SendMessageW(h, EM_SETSEL, 0, -1);
+        return 0;
+    }
+    if (msg == WM_CHAR && wp == 1) return 0; /* Ctrl+A, done above */
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+static void read_only_keys(HWND h)
+{
+    SetWindowSubclass(h, read_only_proc, 1, 0);
+}
+
+static HACCEL make_accels(void)
+{
+    static const ACCEL keys[] = {
+        {FVIRTKEY | FCONTROL, 'N', ID_M_NEW_DB},
+        {FVIRTKEY | FCONTROL, 'O', ID_M_OPEN_DB},
+        {FVIRTKEY | FCONTROL, 'P', ID_M_SHEET},
+        {FVIRTKEY | FCONTROL, 'F', ID_M_FIND},
+        {FVIRTKEY | FCONTROL, 'B', ID_M_BACKUP},
+        {FVIRTKEY, VK_F5, ID_M_SCAN},
+        {FVIRTKEY | FCONTROL, VK_TAB, ID_M_NEXT_TAB},
+        {FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, ID_M_PREV_TAB},
+        {FVIRTKEY | FCONTROL, VK_NEXT, ID_M_NEXT_TAB},
+        {FVIRTKEY | FCONTROL, VK_PRIOR, ID_M_PREV_TAB},
+        {FVIRTKEY | FCONTROL, '1', ID_M_TAB_FIRST + 0},
+        {FVIRTKEY | FCONTROL, '2', ID_M_TAB_FIRST + 1},
+        {FVIRTKEY | FCONTROL, '3', ID_M_TAB_FIRST + 2},
+        {FVIRTKEY | FCONTROL, '4', ID_M_TAB_FIRST + 3},
+        {FVIRTKEY | FCONTROL, '5', ID_M_TAB_FIRST + 4},
+        {FVIRTKEY | FCONTROL, '6', ID_M_TAB_FIRST + 5},
+    };
+    return CreateAcceleratorTableW((LPACCEL)keys, (int)(sizeof(keys) / sizeof(keys[0])));
+}
+
+/* "Ctrl+Shift+Tab", in the words of the keyboard the language uses. */
+static void key_text(wchar_t *out, size_t cap, int ctrl, int shift, const wchar_t *key)
+{
+    swprintf(out, cap, L"%ls%ls%ls%ls%ls", ctrl ? T(L"Ctrl") : L"", ctrl ? L"+" : L"", shift ? T(L"Shift") : L"", shift ? L"+" : L"",
+             key);
+}
+
+/* A menu item with its shortcut at the right. */
+static void menu_keyed(HMENU m, UINT id, const wchar_t *label, int ctrl, int shift, const wchar_t *key)
+{
+    wchar_t k[64], text[400];
+    key_text(k, 64, ctrl, shift, key);
+    swprintf(text, 400, L"%ls\t%ls", label, k);
+    AppendMenuW(m, MF_STRING, id, text);
+}
 
 /* ---- Light and dark ---------------------------------------------------------- */
 
@@ -1704,9 +1862,26 @@ static DWORD WINAPI worker(LPVOID arg)
 static void update_menus(void);
 static void layout(void);
 
+static int g_refocus; /* Stop had the focus when it was hidden */
+
+static HWND focus_now(void)
+{
+    return GetActiveWindow() == g_main ? GetFocus() : g_focus;
+}
+
+static void hide_stop(void)
+{
+    if (focus_now() == g_stop) g_refocus = 1;
+    EnableWindow(g_stop, FALSE);
+    ShowWindow(g_stop, SW_HIDE);
+}
+
 /* The buttons work only with a database open and no job running. */
 static void set_busy(int busy)
 {
+    HWND f = focus_now();
+    if (busy && f && f != g_stop && IsChild(g_main, f)) g_focus_job = f;
+    if (!busy) hide_stop();
     InterlockedExchange(&g_busy, busy);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy && g_cat);
     int was_shown = g_nodb_open && IsWindowVisible(g_nodb_open);
@@ -1717,10 +1892,20 @@ static void set_busy(int busy)
         EnableWindow(g_nodb_new, !busy);
         if (was_shown != !g_cat) layout();
     }
-    EnableWindow(g_stop, busy);
-    ShowWindow(g_stop, busy ? SW_SHOW : SW_HIDE);
+    if (busy) {
+        EnableWindow(g_stop, TRUE);
+        ShowWindow(g_stop, SW_SHOW);
+    }
     update_menus();
     page_buttons_state();
+    /* A button that started the job is turned off while it runs: the focus
+     * goes to Stop (Esc does the same), and back when the job ends. */
+    if (busy) keep_focus(g_stop);
+    else if (g_refocus || !usable(focus_now())) {
+        g_refocus = 0;
+        if (usable(g_focus_job)) put_focus(g_focus_job);
+        else put_focus(g_tab == TAB_DB && IsWindowVisible(g_tree) ? g_tree : g_tabs);
+    }
 }
 
 static void start_next_job(void)
@@ -1758,7 +1943,10 @@ static void stop_job(void)
         g_queue = q->next;
         job_free(q);
     }
+    if (focus_now() == g_stop) g_refocus = 1;
     EnableWindow(g_stop, FALSE);
+    keep_focus(g_tabs);
+    update_menus();
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)T(L"Stopping..."));
     show_progress(-1, T(L"Stopping..."));
 }
@@ -2842,9 +3030,9 @@ static void update_drives_label(void)
     /* The button says how many files are short of the target. */
     bd_risk_stats rs;
     wchar_t risk[64];
-    wcscpy(risk, T(L"At risk..."));
+    wcscpy(risk, T(L"At ris&k..."));
     if (bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK && rs.files_at_risk > 0)
-        swprintf(risk, 64, T(L"At risk (%lld)..."), (long long)rs.files_at_risk);
+        swprintf(risk, 64, T(L"At ris&k (%lld)..."), (long long)rs.files_at_risk);
     SetWindowTextW(g_buttons[7], risk);
     update_set_bars();
 }
@@ -5596,27 +5784,37 @@ static void fill_storage_menus(void)
 static void create_menu_bar(HWND hwnd)
 {
     HMENU bar = CreateMenu();
+    /* Each menu's & letters differ from each other in every language. */
     HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, ID_M_NEW_DB, T(L"&New database..."));
-    AppendMenuW(file, MF_STRING, ID_M_OPEN_DB, T(L"&Open database..."));
+    menu_keyed(file, ID_M_NEW_DB, T(L"&New database..."), 1, 0, L"N");
+    menu_keyed(file, ID_M_OPEN_DB, T(L"&Open database..."), 1, 0, L"O");
     AppendMenuW(file, MF_STRING, ID_M_RECOVER_DB, T(L"&Recover the database from a backup drive..."));
     AppendMenuW(file, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(file, MF_STRING, ID_M_SHEET, T(L"&Print a recovery sheet..."));
+    menu_keyed(file, ID_M_SHEET, T(L"&Print a recovery sheet..."), 1, 0, L"P");
     AppendMenuW(file, MF_STRING, ID_M_EXPORT, T(L"&Export the file list (CSV)..."));
     AppendMenuW(file, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(file, MF_STRING, ID_M_EXIT, T(L"E&xit"));
+    menu_keyed(file, ID_M_EXIT, T(L"E&xit"), 0, 0, L"Alt+F4");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, T(L"&File"));
 
     g_menu_view = CreatePopupMenu();
-    for (int i = 0; i < N_TABS; i++) AppendMenuW(g_menu_view, MF_STRING, (UINT_PTR)(ID_M_TAB_FIRST + i), T(g_tab_names[i]));
+    static const wchar_t *tab_items[N_TABS] = {N_(L"&Primary Database"), N_(L"&Next backup"), N_(L"L&ocal backups"),
+                                               N_(L"&Starred files and extra places"), N_(L"&Encryption"), N_(L"Res&tore")};
+    for (int i = 0; i < N_TABS; i++) {
+        wchar_t digit[4];
+        swprintf(digit, 4, L"%d", i + 1);
+        menu_keyed(g_menu_view, (UINT)(ID_M_TAB_FIRST + i), T(tab_items[i]), 1, 0, digit);
+    }
+    menu_keyed(g_menu_view, ID_M_NEXT_TAB, T(L"Ne&xt tab"), 1, 0, L"Tab");
+    menu_keyed(g_menu_view, ID_M_PREV_TAB, T(L"Pre&vious tab"), 1, 1, L"Tab");
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every drive..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, T(L"Files short of your copies, and which drive to plug in..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_LARGEST, T(L"Largest files..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_DELETED, T(L"Deleted files..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_DAMAGED, T(L"Damaged files (found by a bit-rot scan)..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_IN_USE, T(L"Files that were in use at the last scan..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_CONFLICTS, T(L"Files the last restore left alone..."));
+    menu_keyed(g_menu_view, ID_M_FIND, T(L"&Find a file or folder"), 1, 0, L"F");
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every &drive..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, T(L"Files short of your &copies, and which drive to plug in..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_LARGEST, T(L"Lar&gest files..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_DELETED, T(L"Deleted f&iles..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_DAMAGED, T(L"Da&maged files (found by a bit-rot scan)..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_IN_USE, T(L"Files that were in &use at the last scan..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_CONFLICTS, T(L"Files t&he last restore left alone..."));
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
     AppendMenuW(g_menu_view, MF_STRING, ID_M_REFRESH, T(L"&Refresh"));
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
@@ -5635,31 +5833,33 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)g_menu_view, T(L"&View"));
 
     HMENU tools = CreatePopupMenu();
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_FOLDER, T(L"Add a backup root..."));
-    AppendMenuW(tools, MF_STRING, ID_M_SCAN, T(L"Scan the backup roots for changes now"));
-    AppendMenuW(tools, MF_STRING, ID_M_BITROT, T(L"Bit-rot scan: read every file again..."));
-    AppendMenuW(tools, MF_STRING, ID_M_RELOCATE, T(L"Change where a backup root is..."));
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_FOLDER, T(L"&Add a backup root..."));
+    menu_keyed(tools, ID_M_SCAN, T(L"S&can the backup roots for changes now"), 0, 0, L"F5");
+    AppendMenuW(tools, MF_STRING, ID_M_BITROT, T(L"&Bit-rot scan: read every file again..."));
+    AppendMenuW(tools, MF_STRING, ID_M_RELOCATE, T(L"Change &where a backup root is..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_BACKUP, T(L"Back up..."));
-    AppendMenuW(tools, MF_STRING, ID_M_BACKUP_ALL, T(L"Back up to every plugged-in drive"));
-    AppendMenuW(tools, MF_STRING, ID_M_CHECK, T(L"Check a drive..."));
+    menu_keyed(tools, ID_M_BACKUP, T(L"Back &up..."), 1, 0, L"B");
+    AppendMenuW(tools, MF_STRING, ID_M_BACKUP_ALL, T(L"Back up to &every plugged-in drive"));
+    AppendMenuW(tools, MF_STRING, ID_M_CHECK, T(L"Chec&k a drive..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_RESTORE, T(L"Restore what is selected..."));
-    AppendMenuW(tools, MF_STRING, ID_M_RESTORE_DELETED, T(L"Restore deleted files..."));
+    AppendMenuW(tools, MF_STRING, ID_M_RESTORE, T(L"&Restore what is selected..."));
+    AppendMenuW(tools, MF_STRING, ID_M_RESTORE_DELETED, T(L"Restore &deleted files..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_DISK, T(L"Set up an external or removable disk..."));
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_PLACE, T(L"Add an extra place for starred files..."));
-    AppendMenuW(tools, MF_STRING, ID_M_STAR, T(L"Star or unstar what is selected"));
-    AppendMenuW(tools, MF_STRING, ID_M_ENCRYPT, T(L"Encrypt what is selected, or stop..."));
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_DISK, T(L"Set up an e&xternal or removable disk..."));
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_PLACE, T(L"Add an extra &place for starred files..."));
+    AppendMenuW(tools, MF_STRING, ID_M_STAR, T(L"S&tar or unstar what is selected"));
+    AppendMenuW(tools, MF_STRING, ID_M_ENCRYPT, T(L"E&ncrypt what is selected, or stop..."));
     g_menu_local = CreatePopupMenu();
-    AppendMenuW(tools, MF_POPUP, (UINT_PTR)g_menu_local, T(L"Backup drives and extra places"));
+    AppendMenuW(tools, MF_POPUP, (UINT_PTR)g_menu_local, T(L"Backup dr&ives and extra places"));
+    AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
+    menu_keyed(tools, ID_M_STOP, T(L"Stop the running &job"), 0, 0, L"Esc");
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
     AppendMenuW(tools, MF_STRING, ID_M_SETTINGS, T(L"&Settings..."));
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)tools, T(L"&Tools"));
 
     HMENU help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, ID_M_LOG, T(L"Show the app log"));
-    AppendMenuW(help, MF_STRING, ID_M_REPORTS, T(L"Show saved error reports"));
+    AppendMenuW(help, MF_STRING, ID_M_LOG, T(L"Show the app &log"));
+    AppendMenuW(help, MF_STRING, ID_M_REPORTS, T(L"Show saved error &reports"));
     AppendMenuW(help, MF_STRING, ID_M_ABOUT, T(L"&About BRODALF"));
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, T(L"&Help"));
     SetMenu(hwnd, bar);
@@ -5667,15 +5867,24 @@ static void create_menu_bar(HWND hwnd)
 
 /* File works with no database open (new, open, recover, exit); View
  * always switches tabs; Tools needs a database; Help always works. While
- * a job runs only View's tabs and Help do. */
+ * a job runs only View's tabs, Tools' Stop and Help do. */
 static void update_menus(void)
 {
     HMENU bar = GetMenu(g_main);
     if (!bar) return;
     int n = GetMenuItemCount(bar);
     for (int i = 0; i < n; i++) {
-        int on = i == 0 ? !g_busy : i == 2 ? !g_busy && g_cat : 1;
+        int on = i == 0 ? !g_busy : i == 2 ? g_cat != NULL : 1;
         EnableMenuItem(bar, (UINT)i, MF_BYPOSITION | (on ? MF_ENABLED : MF_GRAYED));
+    }
+    /* Tools: while a job runs, only Stop. */
+    HMENU tools = GetSubMenu(bar, 2);
+    if (tools) {
+        int k = GetMenuItemCount(tools);
+        for (int i = 0; i < k; i++) {
+            int on = (int)GetMenuItemID(tools, i) == ID_M_STOP ? g_busy && !g_stopping : !g_busy && g_cat;
+            EnableMenuItem(tools, (UINT)i, MF_BYPOSITION | (on ? MF_ENABLED : MF_GRAYED));
+        }
     }
     HMENU file = GetSubMenu(bar, 0);
     if (file) {
@@ -5687,6 +5896,7 @@ static void update_menus(void)
                                      ID_M_CONFLICTS, ID_M_REFRESH};
         for (int i = 0; i < 8; i++)
             EnableMenuItem(g_menu_view, views[i], MF_BYCOMMAND | (g_cat && !g_busy ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(g_menu_view, ID_M_FIND, MF_BYCOMMAND | (g_cat ? MF_ENABLED : MF_GRAYED));
     }
     DrawMenuBar(g_main);
 }
@@ -6470,7 +6680,7 @@ static void page_list(int page, int id, const wchar_t **cols, const int *widths,
 
 static void page_text(int page, int id)
 {
-    page_ctl(page, WC_EDITW, L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, WS_EX_CLIENTEDGE, id);
+    read_only_keys(page_ctl(page, WC_EDITW, L"", WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, WS_EX_CLIENTEDGE, id));
 }
 
 static void page_label(int page, int id, const wchar_t *text)
@@ -6770,6 +6980,7 @@ static void show_tab(int i)
     ShowWindow(g_page[i], SW_SHOW);
     for (int k = 0; k < N_TABS; k++)
         if (k != i) ShowWindow(g_page[k], SW_HIDE);
+    keep_focus(g_tabs); /* the focus was on the page now hidden */
     if (g_menu_view) CheckMenuRadioItem(g_menu_view, ID_M_TAB_FIRST, ID_M_TAB_FIRST + N_TABS - 1, ID_M_TAB_FIRST + i, MF_BYCOMMAND);
     DWORD v = (DWORD)i;
     RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"LastTab", REG_DWORD, &v, sizeof(v));
@@ -8333,7 +8544,7 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
 
 static HWND make_button(const wchar_t *text, int id)
 {
-    HWND b = CreateWindowExW(0, WC_BUTTONW, text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 10, 10, g_main,
+    HWND b = CreateWindowExW(0, WC_BUTTONW, text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, g_main,
                              (HMENU)(INT_PTR)id, g_inst, NULL);
     SendMessageW(b, WM_SETFONT, (WPARAM)g_font, TRUE);
     return b;
@@ -8342,18 +8553,20 @@ static HWND make_button(const wchar_t *text, int id)
 static void create_children(HWND hwnd)
 {
     g_main = hwnd;
-    g_buttons[0] = make_button(T(L"Add backup root..."), ID_BTN_ADD);
-    g_buttons[1] = make_button(T(L"Scan now"), ID_BTN_SCAN);
-    g_buttons[2] = make_button(T(L"Back up..."), ID_BTN_BACKUP);
-    g_buttons[3] = make_button(T(L"Check drive..."), ID_BTN_CHECK);
-    g_buttons[4] = make_button(T(L"Restore..."), ID_BTN_RESTORE);
-    g_buttons[5] = make_button(T(L"Drives..."), ID_BTN_DRIVES);
-    g_buttons[6] = make_button(T(L"Settings..."), ID_BTN_SECURITY);
-    g_buttons[7] = make_button(T(L"At risk..."), ID_BTN_RISK);
-    g_nodb_open = make_button(T(L"Open database..."), ID_M_OPEN_DB);
-    g_nodb_new = make_button(T(L"New database..."), ID_M_NEW_DB);
+    /* The & letters (Alt+letter) differ from each other and from the
+     * menus' in every language. */
+    g_buttons[0] = make_button(T(L"&Add backup root..."), ID_BTN_ADD);
+    g_buttons[1] = make_button(T(L"&Scan now"), ID_BTN_SCAN);
+    g_buttons[2] = make_button(T(L"&Back up..."), ID_BTN_BACKUP);
+    g_buttons[3] = make_button(T(L"&Check drive..."), ID_BTN_CHECK);
+    g_buttons[4] = make_button(T(L"&Restore..."), ID_BTN_RESTORE);
+    g_buttons[5] = make_button(T(L"&Drives..."), ID_BTN_DRIVES);
+    g_buttons[6] = make_button(T(L"Settin&gs..."), ID_BTN_SECURITY);
+    g_buttons[7] = make_button(T(L"At ris&k..."), ID_BTN_RISK);
+    g_nodb_open = make_button(T(L"&Open a database..."), ID_M_OPEN_DB);
+    g_nodb_new = make_button(T(L"&New database..."), ID_M_NEW_DB);
 
-    g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
+    g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_NOPREFIX, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
     SendMessageW(g_drives, WM_SETFONT, (WPARAM)g_font, TRUE);
 
@@ -8369,6 +8582,8 @@ static void create_children(HWND hwnd)
                                g_page[TAB_DB], (HMENU)ID_SEARCH, g_inst, NULL);
     SendMessageW(g_search, WM_SETFONT, (WPARAM)g_font, TRUE);
     SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)T(L"Search files and folders by name"));
+    /* Tab reaches the search box before the tree under it. */
+    SetWindowPos(g_search, CTL(ID_DB_EXPORT), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     g_results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 0, 0,
                                 10, 10, g_page[TAB_DB], (HMENU)ID_RESULTS, g_inst, NULL);
@@ -8380,11 +8595,12 @@ static void create_children(HWND hwnd)
     }
 
     g_detail = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
-                               WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10,
-                               g_page[TAB_DB], (HMENU)ID_DETAIL, g_inst, NULL);
+                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0,
+                               10, 10, g_page[TAB_DB], (HMENU)ID_DETAIL, g_inst, NULL);
     SendMessageW(g_detail, WM_SETFONT, (WPARAM)g_font, TRUE);
+    read_only_keys(g_detail);
 
-    g_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER,
+    g_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER,
                              0, 0, 10, 10, g_page[TAB_DB], (HMENU)ID_LIST, g_inst, NULL);
     SendMessageW(g_list, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
@@ -8401,30 +8617,70 @@ static void create_children(HWND hwnd)
 
     g_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 10, 10, hwnd,
                                  (HMENU)ID_PROGRESS, g_inst, NULL);
-    g_prog_text = CreateWindowExW(0, WC_STATICW, T(L"Ready."), WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE,
+    g_prog_text = CreateWindowExW(0, WC_STATICW, T(L"Ready."), WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX,
                                   0, 0, 10, 10, hwnd, (HMENU)ID_PROGTEXT, g_inst, NULL);
     SendMessageW(g_prog_text, WM_SETFONT, (WPARAM)g_font, TRUE);
-    g_stop = make_button(T(L"Stop"), ID_BTN_STOP);
+    g_stop = make_button(T(L"Sto&p"), ID_BTN_STOP);
     ShowWindow(g_stop, SW_HIDE);
     g_file_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 10, 10, hwnd, NULL, g_inst, NULL);
-    g_file_text = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_PATHELLIPSIS | SS_CENTERIMAGE, 0, 0,
+    g_file_text = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_PATHELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX, 0, 0,
                                   10, 10, hwnd, NULL, g_inst, NULL);
     SendMessageW(g_file_text, WM_SETFONT, (WPARAM)g_font, TRUE);
     for (int i = 0; i < MAX_SET_BARS; i++) {
         g_set_bar[i] = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_SMOOTH, 0, 0, 10, 10, hwnd, NULL, g_inst, NULL);
-        g_set_text[i] = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE, 0, 0, 10, 10,
+        g_set_text[i] = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX, 0, 0, 10, 10,
                                         hwnd, NULL, g_inst, NULL);
         SendMessageW(g_set_text[i], WM_SETFONT, (WPARAM)g_font, TRUE);
     }
 
     g_log = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
-                            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10, hwnd,
-                            (HMENU)ID_LOG, g_inst, NULL);
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10,
+                            hwnd, (HMENU)ID_LOG, g_inst, NULL);
     SendMessageW(g_log, WM_SETFONT, (WPARAM)g_font, TRUE);
+    read_only_keys(g_log);
 
     g_status = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, hwnd,
                                (HMENU)ID_STATUS, g_inst, NULL);
     SendMessageW(g_status, WM_SETFONT, (WPARAM)g_font, TRUE);
+}
+
+/* Esc stops the job that is running, or leaves the search results. Enter
+ * presses the button with the focus, searches now in the search box, and
+ * in a list does what a double-click does. */
+static void enter_or_esc(int esc)
+{
+    HWND f = GetFocus();
+    if (esc) {
+        if (g_busy) {
+            if (!g_stopping) stop_job();
+        } else if ((f == g_search || f == g_results) && GetWindowTextLengthW(g_search) > 0) {
+            end_search();
+        }
+        return;
+    }
+    if (!f || !IsChild(g_main, f)) return;
+    if (SendMessageW(f, WM_GETDLGCODE, 0, 0) & (DLGC_DEFPUSHBUTTON | DLGC_UNDEFPUSHBUTTON)) {
+        SendMessageW(f, BM_CLICK, 0, 0);
+        return;
+    }
+    if (f == g_search) {
+        KillTimer(g_main, ID_SEARCH_TIMER);
+        run_search();
+        return;
+    }
+    if (f == g_results) {
+        if (g_hit_n) end_search();
+        return;
+    }
+    wchar_t cls[64];
+    int id = GetDlgCtrlID(f);
+    if (id >= ID_PAGE_FIRST && id < ID_PAGE_LAST && f == CTL(id) && GetClassNameW(f, cls, 64) && wcscmp(cls, WC_LISTVIEWW) == 0) {
+        NMHDR nh;
+        nh.hwndFrom = f;
+        nh.idFrom = (UINT_PTR)id;
+        nh.code = NM_DBLCLK;
+        page_notify(&nh);
+    }
 }
 
 static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -8446,6 +8702,18 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (theme_want_dark() != g_dark) theme_apply();
         }
         break;
+    case WM_ACTIVATE:
+        if (LOWORD(wp) == WA_INACTIVE) {
+            HWND f = GetFocus();
+            if (f && IsChild(hwnd, f)) g_focus = f;
+        }
+        break; /* activating it sets the focus on the window: WM_SETFOCUS passes it on */
+    case WM_SETFOCUS: {
+        HWND f = usable(g_focus) ? g_focus : usable(g_focus_job) && !g_busy ? g_focus_job : NULL;
+        if (!f) f = g_tab == TAB_DB && usable(g_tree) ? g_tree : g_tabs;
+        if (usable(f)) SetFocus(f);
+        return 0;
+    }
     case WM_CREATE:
         create_children(hwnd);
         create_menu_bar(hwnd);
@@ -8477,6 +8745,31 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_COMMAND:
+        /* Enter and Esc (IsDialogMessage sends them as IDOK and IDCANCEL). */
+        if (!lp && (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL)) {
+            enter_or_esc(LOWORD(wp) == IDCANCEL);
+            return 0;
+        }
+        /* A shortcut does nothing when its menu item is greyed out. */
+        if (!lp && HIWORD(wp) == 1) {
+            UINT st = GetMenuState(GetMenu(hwnd), LOWORD(wp), MF_BYCOMMAND);
+            if (st != (UINT)-1 && (st & (MF_GRAYED | MF_DISABLED))) return 0;
+        }
+        if (!lp && LOWORD(wp) == ID_M_STOP) {
+            stop_job();
+            return 0;
+        }
+        if (!lp && (LOWORD(wp) == ID_M_NEXT_TAB || LOWORD(wp) == ID_M_PREV_TAB)) {
+            show_tab((g_tab + (LOWORD(wp) == ID_M_NEXT_TAB ? 1 : N_TABS - 1)) % N_TABS);
+            return 0;
+        }
+        if (!lp && LOWORD(wp) == ID_M_FIND) {
+            if (g_cat) {
+                show_tab(TAB_DB);
+                focus_control(g_search);
+            }
+            return 0;
+        }
         if (LOWORD(wp) == ID_SEARCH) {
             if (HIWORD(wp) == EN_CHANGE) SetTimer(hwnd, ID_SEARCH_TIMER, 250, NULL);
             return 0;
@@ -8592,8 +8885,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
          * answered, the buttons stay disabled and nothing new starts. */
         g_ui_depth++;
         InterlockedExchange(&g_busy, 0);
-        EnableWindow(g_stop, FALSE);
-        ShowWindow(g_stop, SW_HIDE);
+        hide_stop();
         j->summary[SUMMARY_LEN - 1] = 0;
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
         show_progress(j->status == BD_OK ? 100 : 0, j->summary);
@@ -9323,11 +9615,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (!g_cat) log_append(T(L"No database is open. Use File > New database, Open database or Recover the database from a backup drive."));
     start_next_job();
 
+    /* The menus' shortcuts, then Tab and the other dialog keys, for the
+     * main window and everything in it. Dialogs and message boxes have
+     * their own loop. */
+    g_accel = make_accels();
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
+        if (g_main && (m.hwnd == g_main || IsChild(g_main, m.hwnd))) {
+            if (g_accel && TranslateAcceleratorW(g_main, g_accel, &m)) continue;
+            if (tab_key(&m)) continue;
+            if (IsDialogMessageW(g_main, &m)) continue;
+        }
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
+    if (g_accel) DestroyAcceleratorTable(g_accel);
 
     if (g_cat) {
         bd_catalog_save(g_cat);

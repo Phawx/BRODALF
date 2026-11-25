@@ -4,6 +4,9 @@
 
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "brodalf.manifest"
 
+/* The app's icon (tools/make_icon.py draws it); the lowest ID, so Explorer shows it. */
+IDI_BRODALF ICON "brodalf.ico"
+
 /* The window app's text in other languages (tools/lang.py). */
 IDR_LANG_DE RCDATA "lang/de.po"
 IDR_LANG_ES RCDATA "lang/es.po"
@@ -53,9 +56,9 @@ BEGIN
     LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Drives with no place set count as one place together.", -1, 8, 60, 404, 18
     LTEXT "Back up to these next (double-click a plugged-in one to start):", -1, 8, 82, 316, 10
     PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 328, 78, 84, 14
-    CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 94, 404, 56
+    CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 8, 94, 404, 56
     LTEXT "Files short of the target, fewest copies first:", IDC_RISK_FILES_TEXT, 8, 156, 404, 10
-    CONTROL "", IDC_RISK_FILES, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 168, 404, 120
+    CONTROL "", IDC_RISK_FILES, "SysListView32", LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 8, 168, 404, 120
     DEFPUSHBUTTON "Close", IDCANCEL, 362, 294, 50, 14
 END
 
@@ -90,7 +93,7 @@ CAPTION ""
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
     LTEXT "", IDC_TABLE_TEXT, 8, 8, 444, 26
-    CONTROL "", IDC_TABLE_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 38, 444, 196
+    CONTROL "", IDC_TABLE_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 8, 38, 444, 196
     PUSHBUTTON "Details...", IDC_TABLE_OPEN, 8, 242, 124, 14
     DEFPUSHBUTTON "Close", IDCANCEL, 402, 242, 50, 14
 END
@@ -101,7 +104,7 @@ CAPTION "Deleted files"
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
     LTEXT "", IDC_DEL_SUMMARY, 8, 8, 464, 34
-    CONTROL "", IDC_DEL_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 46, 464, 206
+    CONTROL "", IDC_DEL_LIST, "SysListView32", LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 8, 46, 464, 206
     PUSHBUTTON "Restore selected files...", IDC_DEL_FILES, 8, 260, 102, 14
     PUSHBUTTON "Restore their folders...", IDC_DEL_FOLDERS, 114, 260, 98, 14
     PUSHBUTTON "Keep tracking them", IDC_DEL_ACK, 216, 260, 90, 14

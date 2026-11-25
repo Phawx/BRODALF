@@ -1122,10 +1122,24 @@ static LRESULT CALLBACK dark_tab_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UI
             TabCtrl_GetItem(h, i, &it);
             SetTextColor(dc, i == sel ? DARK_TEXT : DARK_GRAY);
             DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            /* The keyboard focus, as the light theme shows it (not after a
+             * click, while Windows hides focus marks). */
+            if (i == sel && GetFocus() == h && !(SendMessageW(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)) {
+                RECT fr = r;
+                InflateRect(&fr, -S(3), -S(3));
+                SetTextColor(dc, DARK_TEXT);
+                SetBkColor(dc, DARK_HOT);
+                DrawFocusRect(dc, &fr);
+            }
         }
         if (old) SelectObject(dc, old);
         EndPaint(h, &ps);
         return 0;
+    }
+    if (g_dark && (msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == WM_UPDATEUISTATE)) {
+        LRESULT r = DefSubclassProc(h, msg, wp, lp);
+        InvalidateRect(h, NULL, FALSE);
+        return r;
     }
     return DefSubclassProc(h, msg, wp, lp);
 }
@@ -3520,8 +3534,176 @@ static void update_drives_label(void)
 
 #define RISK_ROWS 2000
 
+/* ---- Tables sorted by a click on a column's header ------------------------ */
+
+#ifndef SORT_DIGITSASNUMBERS
+#define SORT_DIGITSASNUMBERS 0x00000008
+#endif
+#define LV_SORT_PROP L"BrodalfSort" /* (column + 1) * 2, plus 1 when descending; none when not sorted */
+#define LV_RESORT (WM_APP + 90)     /* posted to a table after it is filled again */
+
+/* Each row keeps, as its lParam, the place it was added at: that is where
+ * its data is in the arrays the table was filled from, however the rows are
+ * sorted. lv_index turns a row's place on the screen into that, lv_pos the
+ * other way. */
+static int lv_index(HWND lv, int pos)
+{
+    if (pos < 0) return -1;
+    LVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_PARAM;
+    it.iItem = pos;
+    if (!SendMessageW(lv, LVM_GETITEMW, 0, (LPARAM)&it)) return pos;
+    return (int)it.lParam;
+}
+
+static int lv_pos(HWND lv, int index)
+{
+    if (index < 0) return -1;
+    LVFINDINFOW fi;
+    memset(&fi, 0, sizeof(fi));
+    fi.flags = LVFI_PARAM;
+    fi.lParam = index;
+    int pos = (int)SendMessageW(lv, LVM_FINDITEMW, (WPARAM)-1, (LPARAM)&fi);
+    return pos >= 0 ? pos : index;
+}
+
+/* A cell that starts with a number, perhaps with a size after it: "12",
+ * "45%", "1.5 GB" (as bytes), or a date by its year (the rest of a date
+ * sorts as text, which works for 2026-11-25 14:03). */
+static int lv_number(const wchar_t *s, double *out)
+{
+    while (*s == L' ') s++;
+    if (!iswdigit(*s)) return 0;
+    wchar_t *end = NULL;
+    double v = wcstod(s, &end);
+    if (!end || end == s) return 0;
+    while (*end == L' ') end++;
+    const wchar_t *units[] = {T(L"KB"), T(L"MB"), T(L"GB"), T(L"TB")};
+    double scale = 1.0;
+    for (int u = 0; u < 4; u++) {
+        size_t k = wcslen(units[u]);
+        scale *= 1024.0;
+        if (k && _wcsnicmp(end, units[u], k) == 0 && !iswalpha(end[k])) {
+            v *= scale;
+            break;
+        }
+    }
+    *out = v;
+    return 1;
+}
+
+typedef struct { wchar_t **text; double *num; char *has_num; int n, desc; } lv_sort_data;
+
+/* By the rows' lParams: numbers and sizes as numbers, after cells with no
+ * number (such as "never"), the rest as text with digits read as numbers;
+ * rows that compare the same stay in the order they came. */
+static int CALLBACK lv_compare(LPARAM pa, LPARAM pb, LPARAM ctx)
+{
+    const lv_sort_data *d = (const lv_sort_data *)ctx;
+    int a = (int)pa, b = (int)pb, r = 0;
+    if (a >= 0 && a < d->n && b >= 0 && b < d->n) {
+        if (d->has_num[a] && d->has_num[b]) r = d->num[a] < d->num[b] ? -1 : d->num[a] > d->num[b] ? 1 : 0;
+        else if (d->has_num[a] != d->has_num[b]) r = d->has_num[a] ? 1 : -1;
+        if (r == 0) {
+            const wchar_t *x = d->text[a] ? d->text[a] : L"", *y = d->text[b] ? d->text[b] : L"";
+            int c = CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE | SORT_DIGITSASNUMBERS, x, -1, y, -1);
+            r = c ? c - CSTR_EQUAL : _wcsicmp(x, y);
+        }
+    }
+    if (r) return d->desc ? -r : r;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/* Sort the table as its header says, and show the arrow on that column. */
+static void lv_sort(HWND lv)
+{
+    INT_PTR st = (INT_PTR)GetPropW(lv, LV_SORT_PROP);
+    int col = (int)(st / 2) - 1, desc = (int)(st % 2);
+    HWND header = ListView_GetHeader(lv);
+    int ncol = header ? Header_GetItemCount(header) : 0;
+    for (int i = 0; i < ncol; i++) {
+        HDITEMW hi;
+        memset(&hi, 0, sizeof(hi));
+        hi.mask = HDI_FORMAT;
+        if (!SendMessageW(header, HDM_GETITEMW, (WPARAM)i, (LPARAM)&hi)) continue;
+        hi.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+        if (i == col) hi.fmt |= desc ? HDF_SORTDOWN : HDF_SORTUP;
+        SendMessageW(header, HDM_SETITEMW, (WPARAM)i, (LPARAM)&hi);
+    }
+    int n = ListView_GetItemCount(lv);
+    if (col < 0 || col >= ncol || n < 2) return;
+    lv_sort_data d;
+    d.n = n;
+    d.desc = desc;
+    d.text = calloc((size_t)n, sizeof(wchar_t *));
+    d.num = calloc((size_t)n, sizeof(double));
+    d.has_num = calloc((size_t)n, 1);
+    if (d.text && d.num && d.has_num) {
+        wchar_t buf[512];
+        for (int i = 0; i < n; i++) {
+            LVITEMW it;
+            memset(&it, 0, sizeof(it));
+            it.mask = LVIF_TEXT | LVIF_PARAM;
+            it.iItem = i;
+            it.iSubItem = col;
+            it.pszText = buf;
+            it.cchTextMax = 512;
+            buf[0] = 0;
+            if (!SendMessageW(lv, LVM_GETITEMW, 0, (LPARAM)&it)) continue;
+            if (it.lParam < 0 || it.lParam >= n || d.text[it.lParam]) continue;
+            d.text[it.lParam] = _wcsdup(it.pszText ? it.pszText : L"");
+            if (d.text[it.lParam]) d.has_num[it.lParam] = (char)lv_number(d.text[it.lParam], &d.num[it.lParam]);
+        }
+        ListView_SortItems(lv, lv_compare, (LPARAM)&d);
+        int focus = ListView_GetNextItem(lv, -1, LVNI_FOCUSED);
+        if (focus >= 0) ListView_EnsureVisible(lv, focus, FALSE);
+    }
+    if (d.text)
+        for (int i = 0; i < n; i++) free(d.text[i]);
+    free(d.text);
+    free(d.num);
+    free(d.has_num);
+}
+
+/* A click on a column's header sorts by it, a second click the other way.
+ * A table filled again is sorted again the same way once it is filled. */
+static LRESULT CALLBACK lv_sort_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)ref;
+    if (msg == WM_NOTIFY) {
+        const NMHDR *nh = (const NMHDR *)lp;
+        if (nh && nh->hwndFrom == ListView_GetHeader(h) && (nh->code == HDN_ITEMCLICKW || nh->code == HDN_ITEMCLICKA)) {
+            int col = ((const NMHEADERW *)lp)->iItem;
+            INT_PTR st = (INT_PTR)GetPropW(h, LV_SORT_PROP);
+            int desc = (int)(st / 2) - 1 == col ? !(int)(st % 2) : 0;
+            if (col >= 0) {
+                SetPropW(h, LV_SORT_PROP, (HANDLE)(INT_PTR)((col + 1) * 2 + desc));
+                lv_sort(h);
+            }
+        }
+    } else if (msg == LVM_DELETEALLITEMS) {
+        LRESULT r = DefSubclassProc(h, msg, wp, lp);
+        if (GetPropW(h, LV_SORT_PROP)) PostMessageW(h, LV_RESORT, 0, 0);
+        return r;
+    } else if (msg == LV_RESORT) {
+        lv_sort(h);
+        return 0;
+    } else if (msg == WM_NCDESTROY) {
+        RemovePropW(h, LV_SORT_PROP);
+        RemoveWindowSubclass(h, lv_sort_proc, id);
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+static void lv_sortable(HWND lv)
+{
+    SetWindowSubclass(lv, lv_sort_proc, 7, 0);
+}
+
 static void lv_columns(HWND lv, const wchar_t **names, const int *widths, int n)
 {
+    lv_sortable(lv);
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
     for (int i = 0; i < n; i++) {
         LVCOLUMNW c;
@@ -3537,8 +3719,9 @@ static void lv_row(HWND lv, const wchar_t **cells, int n)
 {
     LVITEMW it;
     memset(&it, 0, sizeof(it));
-    it.mask = LVIF_TEXT;
+    it.mask = LVIF_TEXT | LVIF_PARAM;
     it.iItem = ListView_GetItemCount(lv);
+    it.lParam = it.iItem; /* where its data is: lv_index */
     it.pszText = (wchar_t *)cells[0];
     int row = (int)SendMessageW(lv, LVM_INSERTITEMW, 0, (LPARAM)&it);
     for (int i = 1; i < n; i++) {
@@ -3689,7 +3872,8 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 wp = MAKEWPARAM(IDC_RISK_APPLY, BN_CLICKED);
         }
         if (LOWORD(wp) == IDC_RISK_BACKUP) {
-            int row = ListView_GetNextItem(GetDlgItem(dlg, IDC_RISK_HELP), -1, LVNI_SELECTED);
+            HWND help = GetDlgItem(dlg, IDC_RISK_HELP);
+            int row = lv_index(help, ListView_GetNextItem(help, -1, LVNI_SELECTED));
             if (row < 0 || row >= g_risk_media_n) {
                 MessageBoxW(dlg, T(L"Pick a drive in the list first."), APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
@@ -3996,7 +4180,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (LOWORD(wp) == IDC_TABLE_OPEN) {
             HWND lv = GetDlgItem(dlg, IDC_TABLE_LIST);
-            int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+            int row = lv_index(lv, ListView_GetNextItem(lv, -1, LVNI_SELECTED));
             if (row < 0 || row >= g_table_n) {
                 MessageBoxW(dlg, T(L"Pick a row in the list first."), APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
@@ -5729,9 +5913,10 @@ static int deleted_pick(HWND lv, int folders)
     g_del_pick = calloc((size_t)sel, sizeof(del_row));
     if (!g_del_pick) return 0;
     g_del_npick = 0;
-    for (int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED); row >= 0 && g_del_npick < sel;
-         row = ListView_GetNextItem(lv, row, LVNI_SELECTED)) {
-        if (row >= g_del_n) continue;
+    for (int pos = ListView_GetNextItem(lv, -1, LVNI_SELECTED); pos >= 0 && g_del_npick < sel;
+         pos = ListView_GetNextItem(lv, pos, LVNI_SELECTED)) {
+        int row = lv_index(lv, pos);
+        if (row < 0 || row >= g_del_n) continue;
         char *rel = xstrdup(g_del[row].rel);
         if (!rel) continue;
         if (folders) {
@@ -5832,9 +6017,11 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             HWND lv = GetDlgItem(dlg, IDC_DEL_LIST);
             bd_status s = BD_OK;
             if (ListView_GetSelectedCount(lv) <= 0) s = bd_deleted_ack(g_cat, 0);
-            for (int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED); row >= 0 && s == BD_OK;
-                 row = ListView_GetNextItem(lv, row, LVNI_SELECTED))
-                if (row < g_del_n) s = bd_deleted_ack(g_cat, g_del[row].node_id);
+            for (int pos = ListView_GetNextItem(lv, -1, LVNI_SELECTED); pos >= 0 && s == BD_OK;
+                 pos = ListView_GetNextItem(lv, pos, LVNI_SELECTED)) {
+                int row = lv_index(lv, pos);
+                if (row >= 0 && row < g_del_n) s = bd_deleted_ack(g_cat, g_del[row].node_id);
+            }
             if (s == BD_OK) s = ui_save();
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
@@ -5860,10 +6047,11 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             if (MessageBoxW(dlg, q, APP_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES) return TRUE;
             bd_status s = BD_OK;
             int64_t gone = 0;
-            for (int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED); row >= 0 && s == BD_OK;
-                 row = ListView_GetNextItem(lv, row, LVNI_SELECTED)) {
+            for (int pos = ListView_GetNextItem(lv, -1, LVNI_SELECTED); pos >= 0 && s == BD_OK;
+                 pos = ListView_GetNextItem(lv, pos, LVNI_SELECTED)) {
                 int64_t one = 0;
-                if (row < g_del_n) s = bd_deleted_forget(g_cat, g_del[row].node_id, &one);
+                int row = lv_index(lv, pos);
+                if (row >= 0 && row < g_del_n) s = bd_deleted_forget(g_cat, g_del[row].node_id, &one);
                 gone += one;
             }
             if (s == BD_OK) s = ui_save();
@@ -7263,8 +7451,8 @@ static void page_check(int page, const wchar_t *text, int id)
 
 static void page_list(int page, int id, const wchar_t **cols, const int *widths, int n)
 {
-    HWND lv = page_ctl(page, WC_LISTVIEWW, L"", WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
-                       WS_EX_CLIENTEDGE, id);
+    HWND lv = page_ctl(page, WC_LISTVIEWW, L"", WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, WS_EX_CLIENTEDGE, id);
+    lv_sortable(lv);
     if (n) lv_columns(lv, cols, widths, n);
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
 }
@@ -7282,18 +7470,22 @@ static void page_label(int page, int id, const wchar_t *text)
 static void lv_clear_columns(HWND lv)
 {
     while (ListView_DeleteColumn(lv, 0)) {}
+    RemovePropW(lv, LV_SORT_PROP); /* other columns: not sorted */
 }
 
+/* The selected row of a page's table, as where its data is (lv_index). */
 static int lv_selected(int id)
 {
-    return (int)SendMessageW(CTL(id), LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED);
+    return lv_index(CTL(id), (int)SendMessageW(CTL(id), LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED));
 }
 
+/* Select the row whose data is at row (lv_index). */
 static void lv_select(HWND lv, int row)
 {
-    if (row < 0) return;
-    ListView_SetItemState(lv, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(lv, row, FALSE);
+    int pos = lv_pos(lv, row);
+    if (pos < 0) return;
+    ListView_SetItemState(lv, pos, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(lv, pos, FALSE);
 }
 
 /* Text for a read-only edit control, which wants \r\n between lines. */
@@ -9285,7 +9477,7 @@ static void create_children(HWND hwnd)
     /* Tab reaches the search box before the tree under it. */
     SetWindowPos(g_search, CTL(ID_DB_EXPORT), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     g_results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 0, 0,
+                                WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0, 0,
                                 10, 10, g_page[TAB_DB], (HMENU)ID_RESULTS, g_inst, NULL);
     SendMessageW(g_results, WM_SETFONT, (WPARAM)g_font, TRUE);
     {
@@ -9433,6 +9625,21 @@ static BOOL CALLBACK refont_child(HWND h, LPARAM lp)
     return TRUE;
 }
 
+/* The app's icon on the window, at the window's DPI (the class has it at
+ * the system's). */
+static void set_window_icons(HWND hwnd)
+{
+    int sys = g_sys_dpi > 0 ? g_sys_dpi : 96;
+    int big_px = MulDiv(GetSystemMetrics(SM_CXICON), g_dpi, sys), small_px = MulDiv(GetSystemMetrics(SM_CXSMICON), g_dpi, sys);
+    HICON b = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(IDI_BRODALF), IMAGE_ICON, big_px, big_px, 0);
+    HICON s = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(IDI_BRODALF), IMAGE_ICON, small_px, small_px, 0);
+    /* What was set before was set here too (WM_SETICON gives NULL the first time). */
+    HICON old_b = b ? (HICON)SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)b) : NULL;
+    HICON old_s = s ? (HICON)SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)s) : NULL;
+    if (old_b) DestroyIcon(old_b);
+    if (old_s) DestroyIcon(old_s);
+}
+
 /* WM_DPICHANGED: new fonts for every control, the warning icon at the new
  * size, the window at the size Windows suggests, and everything laid out
  * again. */
@@ -9460,6 +9667,7 @@ static void dpi_changed(HWND hwnd, int dpi, const RECT *want)
         for (int i = 0; i < 4; i++)
             if (r.from[i]) DeleteObject(r.from[i]);
         load_warn_icon();
+        set_window_icons(hwnd);
     }
     if (want)
         SetWindowPos(hwnd, NULL, want->left, want->top, want->right - want->left, want->bottom - want->top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -9571,6 +9779,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             for (int i = 0; i < 4; i++)
                 if (old[i]) DeleteObject(old[i]);
         }
+        set_window_icons(hwnd);
         create_children(hwnd);
         create_menu_bar(hwnd);
         show_tab(last_tab());
@@ -9737,8 +9946,9 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (nh->idFrom == ID_RESULTS) {
             if (nh->code == LVN_ITEMCHANGED) {
                 NMLISTVIEW *lv = (NMLISTVIEW *)lp;
-                if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED) && lv->iItem >= 0 && lv->iItem < g_hit_n)
-                    reveal_node(g_hits[lv->iItem].source_id, g_hits[lv->iItem].rel);
+                int hit = lv->iItem >= 0 ? lv_index(g_results, lv->iItem) : -1;
+                if ((lv->uNewState & LVIS_SELECTED) && !(lv->uOldState & LVIS_SELECTED) && hit >= 0 && hit < g_hit_n)
+                    reveal_node(g_hits[hit].source_id, g_hits[hit].rel);
             } else if ((nh->code == NM_DBLCLK || nh->code == NM_RETURN) && g_hit_n) {
                 end_search();
             }
@@ -10575,7 +10785,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    wc.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    /* The app's own icon, at the sizes the title bar and Alt+Tab want. */
+    wc.hIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_BRODALF), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+    wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_BRODALF), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     wc.lpszClassName = L"BrodalfMain";
     RegisterClassExW(&wc);
     register_page_class();

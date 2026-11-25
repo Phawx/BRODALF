@@ -187,6 +187,7 @@ enum {
     ID_M_NEXT_TAB, /* View: Ctrl+Tab */
     ID_M_PREV_TAB, /* View: Ctrl+Shift+Tab */
     ID_M_STOP,     /* Tools: Esc, the same as the Stop button */
+    ID_M_LEGEND,   /* Help: what the list of files shows */
     /* Right-click menus (TrackPopupMenu with TPM_RETURNCMD). */
     ID_CTX_OPEN = 800,
     ID_CTX_RESTORE,
@@ -866,10 +867,16 @@ static uxtheme_void_fn p_refresh_policy, p_flush_menus;
 static dwm_set_fn p_dwm_set;
 static DWORD g_win_build;
 
-/* Colours the tree uses for each state, readable on either background. */
-static COLORREF theme_older(void) { return g_dark ? RGB(225, 175, 70) : RGB(150, 100, 0); }
-static COLORREF theme_gray(void) { return g_dark ? DARK_GRAY : GetSysColor(COLOR_GRAYTEXT); }
-static COLORREF theme_bad(void) { return g_dark ? RGB(255, 115, 115) : RGB(180, 30, 30); }
+/* Windows' high contrast is on: the window uses its colours only. */
+static int g_hc;
+
+/* Colours the tree uses for each state, readable on either background.
+ * Each state also has its words after the name (state_suffix) and its own
+ * font, so the colour is never all there is to it. In high contrast they
+ * are the theme's own: the link colour, grey text and the text colour. */
+static COLORREF theme_older(void) { return g_hc ? GetSysColor(COLOR_HOTLIGHT) : g_dark ? RGB(225, 175, 70) : RGB(150, 100, 0); }
+static COLORREF theme_gray(void) { return g_hc ? GetSysColor(COLOR_GRAYTEXT) : g_dark ? DARK_GRAY : GetSysColor(COLOR_GRAYTEXT); }
+static COLORREF theme_bad(void) { return g_hc ? GetSysColor(COLOR_WINDOWTEXT) : g_dark ? RGB(255, 115, 115) : RGB(180, 30, 30); }
 
 static int high_contrast(void)
 {
@@ -1209,6 +1216,7 @@ static int theme_menu_bar(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT *ou
  * and the tree's colours. */
 static void theme_apply(void)
 {
+    g_hc = high_contrast();
     g_dark = theme_want_dark();
     theme_app_mode();
     if (!g_main) return;
@@ -2345,6 +2353,36 @@ static int collect_child(void *ctx, const bd_node_info *info)
     return 0;
 }
 
+/* The words after a name in the tree that say its state, as its colour
+ * and font do, for anyone who cannot tell those apart and for screen
+ * readers; NULL for a good copy on a plugged-in drive, and for a folder
+ * whose count says it. */
+static const wchar_t *state_suffix(const bd_node_info *n, const char *label)
+{
+    switch (n->state) {
+    case BD_STATE_AVAILABLE_OLDER: return T(L"changed since backup");
+    case BD_STATE_BAD: return T(L"copy damaged");
+    case BD_STATE_DELETED: return T(L"deleted");
+    case BD_STATE_NO_COPY: return n->is_dir ? NULL : T(L"not backed up");
+    case BD_STATE_OFFLINE: return n->is_dir || label ? NULL : T(L"drive not plugged in"); /* else "on <drive>" says it */
+    default: return NULL;
+    }
+}
+
+/* What the tree shows, for the details pane and Help. */
+static const wchar_t *tree_legend(void)
+{
+    return T(L"How the list of files shows each one:\r\n"
+             L"    Name: a good copy is on a drive that is plugged in.\r\n"
+             L"    Name   on <drive>, in italics: its copy is on a drive that is not plugged in.\r\n"
+             L"    Name   - not backed up, in italics: it has no copy yet.\r\n"
+             L"    Name   - changed since backup, in another colour: only an older version is backed up.\r\n"
+             L"    Name   - copy damaged, in bold: the copy on the plugged-in drive is missing or damaged; back up again to fix it.\r\n"
+             L"    Name   - deleted, struck through: gone from its folder; BRODALF still keeps track of its copies.\r\n"
+             L"    Folder   (3 of 10 available): how many files in it have a good copy on a plugged-in drive.\r\n"
+             L"    \x2605 starred: also copied to your extra places. [encrypted]: encrypted on every drive and extra place it is copied to.");
+}
+
 static void item_text(const bd_node_info *n, const char *name, const char *label, wchar_t *out, size_t cap)
 {
     wchar_t *wn = widen(name), *wl = widen(label);
@@ -2360,6 +2398,9 @@ static void item_text(const bd_node_info *n, const char *name, const char *label
     } else {
         swprintf(out, cap, L"%ls", wn);
     }
+    const wchar_t *words = state_suffix(n, label);
+    size_t len = wcslen(out);
+    if (words && len + 1 < cap) swprintf(out + len, cap - len, L"   - %ls", words);
     free(wn);
     free(wl);
 }
@@ -3005,7 +3046,12 @@ static void show_detail(void)
     clear_copy_rows();
     if (!g_cat) { SetWindowTextW(g_detail, L""); return; }
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
-    if (!r) { SetWindowTextW(g_detail, T(L"Select a file to see what it is, its versions, and which drives hold it.")); return; }
+    if (!r) {
+        wchar_t text[2400];
+        swprintf(text, 2400, L"%ls\r\n\r\n%ls", T(L"Select a file to see what it is, its versions, and which drives hold it."), tree_legend());
+        SetWindowTextW(g_detail, text);
+        return;
+    }
     wchar_t *rel = widen(r->rel && *r->rel ? r->rel : "(whole folder)");
     wtext t = {NULL, 0, 0};
     wadd(&t, L"%ls\r\n%ls\r\n", rel, state_words(r->state));
@@ -6357,6 +6403,7 @@ static void create_menu_bar(HWND hwnd)
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, ID_M_LOG, T(L"Show the app &log"));
     AppendMenuW(help, MF_STRING, ID_M_REPORTS, T(L"Show saved error &reports"));
+    AppendMenuW(help, MF_STRING, ID_M_LEGEND, T(L"What the file list &shows"));
     AppendMenuW(help, MF_STRING, ID_M_ABOUT, T(L"&About BRODALF"));
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, T(L"&Help"));
     SetMenu(hwnd, bar);
@@ -6656,6 +6703,9 @@ static void menu_command(int cmd)
         free(w);
         return;
     }
+    case ID_M_LEGEND:
+        MessageBoxW(g_main, tree_legend(), APP_NAME, MB_ICONINFORMATION);
+        return;
     case ID_M_ABOUT: {
         wchar_t *v = widen(bd_version()), msg[700];
         swprintf(msg, 700, T(L"BRODALF %ls\n\nKeeps track of what has been backed up from your backup roots, and to which drive, and "
@@ -9303,6 +9353,13 @@ static void enter_or_esc(int esc)
     }
 }
 
+static BOOL CALLBACK syscolor_child(HWND h, LPARAM lp)
+{
+    (void)lp;
+    SendMessageW(h, WM_SYSCOLORCHANGE, 0, 0);
+    return TRUE;
+}
+
 static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     LRESULT themed;
@@ -9317,11 +9374,16 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_SETTINGCHANGE:
-        /* Windows' app mode or high contrast changed. */
-        if (g_theme_choice == THEME_FOLLOW || wp == SPI_SETHIGHCONTRAST) {
-            if (theme_want_dark() != g_dark) theme_apply();
-        }
+        /* Windows' app mode or high contrast changed. High contrast always
+         * re-colours the window: its colours are the theme's. */
+        if (wp == SPI_SETHIGHCONTRAST || high_contrast() != g_hc) theme_apply();
+        else if (g_theme_choice == THEME_FOLLOW && theme_want_dark() != g_dark) theme_apply();
         break;
+    case WM_SYSCOLORCHANGE:
+        /* The common controls need to hear of it too. */
+        EnumChildWindows(hwnd, syscolor_child, 0);
+        theme_apply();
+        return 0;
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE) {
             HWND f = GetFocus();
@@ -9389,6 +9451,12 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (!lp && LOWORD(wp) == ID_M_STOP) {
             stop_job();
+            return 0;
+        }
+        /* Help works while a job runs: the log and the reports are what
+         * tells what went wrong. */
+        if (!lp && (LOWORD(wp) == ID_M_LOG || LOWORD(wp) == ID_M_REPORTS || LOWORD(wp) == ID_M_LEGEND || LOWORD(wp) == ID_M_ABOUT)) {
+            menu_command(LOWORD(wp));
             return 0;
         }
         if (!lp && (LOWORD(wp) == ID_M_NEXT_TAB || LOWORD(wp) == ID_M_PREV_TAB)) {
@@ -10298,6 +10366,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                                                  ICC_PROGRESS_CLASS | ICC_DATE_CLASSES | ICC_TAB_CLASSES};
     InitCommonControlsEx(&icc);
     theme_load();
+    g_hc = high_contrast();
     g_dark = theme_want_dark();
     theme_app_mode();
     HDC screen = GetDC(NULL);

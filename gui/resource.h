@@ -56,3 +56,4 @@
 /* Translations of the window app, from gui/lang. */
 #define IDR_LANG_DE 201
 #define IDR_LANG_ES 202
+#define IDI_BRODALF 1

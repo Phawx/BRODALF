@@ -6,6 +6,7 @@
 #define IDC_LABEL_ENCRYPT 1003
 #define IDC_LABEL_LOC_TEXT 1004
 #define IDC_LABEL_LOCATION 1005
+#define IDC_LABEL_HIDE 1006
 #define IDD_DRIVE 104
 #define IDC_DRIVE_INFO 1020
 #define IDC_DRIVE_NAME 1021
@@ -51,3 +52,7 @@
 #define IDC_PLACE_LIMIT 1102
 #define IDC_PLACE_ENCRYPT 1103
 #define IDC_PLACE_LIMIT_TEXT 1104
+#define IDC_PLACE_HIDE 1105
+/* Translations of the window app, from gui/lang. */
+#define IDR_LANG_DE 201
+#define IDR_LANG_ES 202

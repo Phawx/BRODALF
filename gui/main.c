@@ -178,6 +178,9 @@ enum {
     ID_M_THEME_FOLLOW, /* View > Appearance */
     ID_M_THEME_LIGHT,
     ID_M_THEME_DARK,
+    ID_M_LANG_FOLLOW, /* View > Language */
+    ID_M_LANG_FIRST,
+    ID_M_LANG_LAST = ID_M_LANG_FIRST + 15,
     /* Right-click menus (TrackPopupMenu with TPM_RETURNCMD). */
     ID_CTX_OPEN = 800,
     ID_CTX_RESTORE,
@@ -215,6 +218,333 @@ enum {
     WM_APP_DONE               /* lParam: job* */
 };
 
+/* ---- Languages -----------------------------------------------------------
+ *
+ * The window app's text is written in English in this file. Everything the
+ * person reads goes through T(), or TN() for a sentence with a count, which
+ * gives it in the chosen language when gui/lang/<code>.po has it and in
+ * English otherwise. The .po files are ordinary gettext files built into
+ * brodalf.exe; tools/lang.py makes the template from this file and checks
+ * every translation. A translation whose %-codes differ from the English
+ * (in number, order or kind) is never used, since it would show the wrong
+ * values: the English is shown instead. N_() only marks text in a table,
+ * which is translated where it is shown. */
+
+#define N_(s) (s)
+
+typedef struct {
+    const wchar_t *code, *name; /* the name in the language itself */
+    int res;                    /* its .po file in brodalf.rc; 0 for English */
+} lang_info;
+
+static const lang_info g_langs[] = {
+    {L"en", L"English", 0},
+    {L"de", L"Deutsch", IDR_LANG_DE},
+    {L"es", L"Espa\u00f1ol", IDR_LANG_ES},
+};
+#define N_LANGS ((int)(sizeof(g_langs) / sizeof(g_langs[0])))
+
+typedef struct {
+    wchar_t *id;     /* the English */
+    wchar_t *str[2]; /* the translation; for a count, [0] for one and [1] for more */
+} lang_entry;
+
+static lang_entry *g_tr;  /* open addressing, a power of two long */
+static size_t g_tr_cap;
+static int g_plural_gt1;   /* "one" also for 0, as in French */
+static int g_lang;         /* the language in use, in g_langs */
+static int g_lang_choice;  /* what View > Language says: -1 like Windows */
+
+static size_t lang_hash(const wchar_t *s)
+{
+    size_t h = 2166136261u;
+    for (; *s; s++) h = (h ^ (size_t)*s) * 16777619u;
+    return h;
+}
+
+static const lang_entry *lang_find(const wchar_t *s)
+{
+    if (!g_tr || !s) return NULL;
+    for (size_t i = lang_hash(s) & (g_tr_cap - 1);; i = (i + 1) & (g_tr_cap - 1)) {
+        if (!g_tr[i].id) return NULL;
+        if (wcscmp(g_tr[i].id, s) == 0) return &g_tr[i];
+    }
+}
+
+/* Text in the chosen language. */
+static const wchar_t *T(const wchar_t *s)
+{
+    const lang_entry *e = lang_find(s);
+    return e ? e->str[0] : s;
+}
+
+/* A sentence with a count: one is the English for 1, many for any other n. */
+static const wchar_t *TN(long long n, const wchar_t *one, const wchar_t *many)
+{
+    const lang_entry *e = lang_find(one);
+    if (e && e->str[1]) return e->str[(g_plural_gt1 ? n > 1 : n != 1) ? 1 : 0];
+    return n == 1 ? one : many;
+}
+
+/* The %-codes of a format, in order, as one string, to compare two. 0 when
+ * they do not fit in out. */
+static int lang_codes(const wchar_t *s, wchar_t *out, size_t n)
+{
+    size_t o = 0;
+    for (; *s; s++) {
+        if (*s != L'%') continue;
+        const wchar_t *start = s++;
+        while (*s && wcschr(L"-+ #0", *s)) s++;
+        while (*s && (iswdigit(*s) || *s == L'*')) s++;
+        if (*s == L'.') {
+            s++;
+            while (*s && (iswdigit(*s) || *s == L'*')) s++;
+        }
+        while (*s && wcschr(L"hlLIjztw0123456789", *s)) s++;
+        if (!*s) s--; /* a % at the end */
+        size_t len = (size_t)(s - start) + 1;
+        if (o + len + 2 > n) return 0;
+        memcpy(out + o, start, len * sizeof(wchar_t));
+        o += len;
+        out[o++] = L'|';
+    }
+    out[o] = 0;
+    return 1;
+}
+
+static int lang_same_codes(const wchar_t *a, const wchar_t *b)
+{
+    wchar_t ca[256], cb[256];
+    return lang_codes(a, ca, 256) && lang_codes(b, cb, 256) && wcscmp(ca, cb) == 0;
+}
+
+static wchar_t *lang_widen(const char *s, size_t len)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, (int)len, NULL, 0);
+    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n + 1));
+    if (!w) return NULL;
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s, (int)len, w, n);
+    w[n > 0 ? n : 0] = 0;
+    return w;
+}
+
+static void lang_add(wchar_t *id, wchar_t *one, wchar_t *more)
+{
+    if (!g_tr) {
+        g_tr_cap = 4096;
+        g_tr = calloc(g_tr_cap, sizeof(*g_tr));
+        if (!g_tr) return;
+    }
+    static size_t used;
+    if ((used + 1) * 4 > g_tr_cap * 3) return; /* far more than BRODALF has */
+    size_t i = lang_hash(id) & (g_tr_cap - 1);
+    while (g_tr[i].id) {
+        if (wcscmp(g_tr[i].id, id) == 0) return; /* the first one counts */
+        i = (i + 1) & (g_tr_cap - 1);
+    }
+    g_tr[i].id = id;
+    g_tr[i].str[0] = one;
+    g_tr[i].str[1] = more;
+    used++;
+}
+
+/* One string of a .po file, from its opening quote; the end of the line
+ * is the end of the text. Appended to buf. */
+typedef struct { char *p; size_t len, cap; } lang_buf;
+
+static void lang_put(lang_buf *b, char c)
+{
+    if (b->len + 2 > b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 256;
+        char *p = realloc(b->p, cap);
+        if (!p) return;
+        b->p = p;
+        b->cap = cap;
+    }
+    b->p[b->len++] = c;
+    b->p[b->len] = 0;
+}
+
+static void lang_quoted(lang_buf *b, const char *s, const char *end)
+{
+    if (s >= end || *s != '"') return;
+    for (s++; s < end && *s != '"'; s++) {
+        if (*s != '\\' || s + 1 >= end) {
+            lang_put(b, *s);
+            continue;
+        }
+        char c = *++s;
+        lang_put(b, c == 'n' ? '\n' : c == 't' ? '\t' : c == 'r' ? '\r' : c);
+    }
+}
+
+/* What one entry of the file says; used once it is complete. */
+typedef struct {
+    lang_buf id, plural, str[2];
+    int fuzzy, has_ctx, seen_str;
+} lang_po_entry;
+
+static void lang_po_done(lang_po_entry *e)
+{
+    if (e->id.len == 0 && e->str[0].len) {
+        /* The header: only the plural rule matters here. */
+        const char *rule = strstr(e->str[0].p, "plural=");
+        if (rule) {
+            char compact[32];
+            size_t o = 0;
+            for (rule += 7; *rule && *rule != ';' && *rule != '\n' && o + 1 < sizeof(compact); rule++)
+                if (*rule != ' ' && *rule != '(' && *rule != ')') compact[o++] = *rule;
+            compact[o] = 0;
+            g_plural_gt1 = strcmp(compact, "n>1") == 0;
+        }
+    } else if (e->id.len && e->str[0].len && !e->fuzzy && !e->has_ctx && (!e->plural.len || e->str[1].len)) {
+        wchar_t *id = lang_widen(e->id.p, e->id.len), *one = lang_widen(e->str[0].p, e->str[0].len);
+        wchar_t *many = e->plural.len ? lang_widen(e->plural.p, e->plural.len) : NULL;
+        wchar_t *more = e->plural.len ? lang_widen(e->str[1].p, e->str[1].len) : NULL;
+        int good = id && one && (!e->plural.len || (many && more)) && lang_same_codes(id, one) &&
+                   (!e->plural.len || lang_same_codes(many, more));
+        free(many);
+        if (good) lang_add(id, one, more);
+        else {
+            free(id);
+            free(one);
+            free(more);
+        }
+    }
+    e->id.len = e->plural.len = e->str[0].len = e->str[1].len = 0;
+    e->fuzzy = e->has_ctx = e->seen_str = 0;
+}
+
+static int lang_word(const char *s, size_t k, const char *word)
+{
+    return strlen(word) == k && memcmp(s, word, k) == 0;
+}
+
+static void lang_parse(const char *p, size_t size)
+{
+    const char *end = p + size;
+    lang_po_entry e;
+    memset(&e, 0, sizeof(e));
+    lang_buf *field = NULL;
+    while (p < end) {
+        const char *eol = memchr(p, '\n', (size_t)(end - p));
+        if (!eol) eol = end;
+        const char *s = p, *line_end = eol;
+        while (s < eol && (*s == ' ' || *s == '\t' || *s == '\r')) s++;
+        while (line_end > s && (line_end[-1] == '\r' || line_end[-1] == ' ' || line_end[-1] == '\t')) line_end--;
+        p = eol + 1;
+        if (s >= line_end) continue;
+        if (*s == '"') {
+            if (field) lang_quoted(field, s, line_end);
+            continue;
+        }
+        if (*s == '#') {
+            /* Comments come before the entry they are about. */
+            if (e.seen_str) lang_po_done(&e);
+            field = NULL;
+            if (line_end - s > 1 && s[1] == ',')
+                for (const char *f = s; f + 5 <= line_end; f++)
+                    if (memcmp(f, "fuzzy", 5) == 0) e.fuzzy = 1;
+            continue;
+        }
+        size_t k = 0;
+        while (s + k < line_end && s[k] != ' ' && s[k] != '\t' && s[k] != '"') k++;
+        if ((lang_word(s, k, "msgid") || lang_word(s, k, "msgctxt")) && e.seen_str) lang_po_done(&e);
+        field = NULL;
+        if (lang_word(s, k, "msgctxt")) e.has_ctx = 1;
+        else if (lang_word(s, k, "msgid")) field = &e.id;
+        else if (lang_word(s, k, "msgid_plural")) field = &e.plural;
+        else if (lang_word(s, k, "msgstr") || lang_word(s, k, "msgstr[0]")) field = &e.str[0];
+        else if (lang_word(s, k, "msgstr[1]")) field = &e.str[1];
+        if (k >= 6 && memcmp(s, "msgstr", 6) == 0) e.seen_str = 1;
+        if (field) {
+            const char *q = s + k;
+            while (q < line_end && (*q == ' ' || *q == '\t')) q++;
+            lang_quoted(field, q, line_end);
+        }
+    }
+    lang_po_done(&e);
+    free(e.id.p);
+    free(e.plural.p);
+    free(e.str[0].p);
+    free(e.str[1].p);
+}
+
+/* The language Windows shows its own text in, if BRODALF has it. */
+static int lang_windows(void)
+{
+    wchar_t name[LOCALE_NAME_MAX_LENGTH];
+    if (LCIDToLocaleName(MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT), name, LOCALE_NAME_MAX_LENGTH, 0) <= 0) return 0;
+    for (int i = 0; i < N_LANGS; i++) {
+        size_t len = wcslen(g_langs[i].code);
+        if (_wcsnicmp(name, g_langs[i].code, len) == 0 && (name[len] == 0 || name[len] == L'-')) return i;
+    }
+    return 0;
+}
+
+/* At start, before any window: View > Language's choice, or Windows'. */
+static void lang_load(void)
+{
+    wchar_t code[16];
+    DWORD size = sizeof(code);
+    g_lang_choice = -1;
+    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"Language", RRF_RT_REG_SZ, NULL, code, &size) == ERROR_SUCCESS) {
+        for (int i = 0; i < N_LANGS; i++)
+            if (_wcsicmp(code, g_langs[i].code) == 0) g_lang_choice = i;
+    }
+    g_lang = g_lang_choice >= 0 ? g_lang_choice : lang_windows();
+    if (!g_langs[g_lang].res) return;
+    HRSRC r = FindResourceW(NULL, MAKEINTRESOURCEW(g_langs[g_lang].res), MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+    HGLOBAL h = r ? LoadResource(NULL, r) : NULL;
+    const char *data = h ? LockResource(h) : NULL;
+    if (data) lang_parse(data, SizeofResource(NULL, r));
+}
+
+/* A dialog from brodalf.rc: its title and the text of its buttons, check
+ * boxes and labels, in the chosen language. */
+static BOOL CALLBACK lang_child(HWND w, LPARAM lp)
+{
+    (void)lp;
+    wchar_t cls[16], text[1024];
+    GetClassNameW(w, cls, 16);
+    if (_wcsicmp(cls, L"Button") != 0 && _wcsicmp(cls, L"Static") != 0) return TRUE;
+    if (GetWindowTextW(w, text, 1024) > 0) {
+        const wchar_t *t = T(text);
+        if (t != text) SetWindowTextW(w, t);
+    }
+    return TRUE;
+}
+
+static void lang_dialog(HWND dlg)
+{
+    if (!g_tr) return;
+    wchar_t text[256];
+    if (GetWindowTextW(dlg, text, 256) > 0) {
+        const wchar_t *t = T(text);
+        if (t != text) SetWindowTextW(dlg, t);
+    }
+    EnumChildWindows(dlg, lang_child, 0);
+}
+
+/* A file dialog's filter from pairs of a name (translated) and a pattern. */
+static const wchar_t *file_filter(wchar_t *out, size_t n, int count, ...)
+{
+    va_list ap;
+    size_t o = 0;
+    va_start(ap, count);
+    for (int i = 0; i < count; i++) {
+        const wchar_t *s = va_arg(ap, const wchar_t *);
+        if (i % 2 == 0) s = T(s);
+        size_t len = wcslen(s);
+        if (o + len + 2 >= n) break;
+        memcpy(out + o, s, (len + 1) * sizeof(wchar_t));
+        o += len + 1;
+    }
+    va_end(ap);
+    out[o] = 0;
+    return out;
+}
+
 /* ---- Small helpers ------------------------------------------------------ */
 
 static wchar_t *widen(const char *s)
@@ -250,17 +580,17 @@ static char *xstrdup(const char *s)
 
 static void format_bytes(int64_t b, wchar_t *out, size_t n)
 {
-    const wchar_t *units[] = {L"bytes", L"KB", L"MB", L"GB", L"TB"};
+    const wchar_t *units[] = {T(L"bytes"), T(L"KB"), T(L"MB"), T(L"GB"), T(L"TB")};
     double v = (double)b;
     int u = 0;
     while (v >= 1024.0 && u < 4) { v /= 1024.0; u++; }
-    if (u == 0) swprintf(out, n, L"%lld bytes", (long long)b);
+    if (u == 0) swprintf(out, n, T(L"%lld bytes"), (long long)b);
     else swprintf(out, n, L"%.1f %ls", v, units[u]);
 }
 
 static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 {
-    if (ms <= 0) { swprintf(out, n, L"never"); return; }
+    if (ms <= 0) { swprintf(out, n, T(L"never")); return; }
     ULONGLONG t = (ULONGLONG)ms * 10000ULL + 116444736000000000ULL;
     FILETIME ft = {(DWORD)t, (DWORD)(t >> 32)}, local;
     SYSTEMTIME st;
@@ -288,9 +618,9 @@ static int g_tab;
 static HWND g_ctl[ID_PAGE_LAST - ID_PAGE_FIRST];
 static char g_ctl_btn[ID_PAGE_LAST - ID_PAGE_FIRST]; /* a button, check box or list: works only with a database and no job */
 #define CTL(id) g_ctl[(id) - ID_PAGE_FIRST]
-static HMENU g_menu_view;
-static const wchar_t *g_tab_names[N_TABS] = {L"Primary Database", L"Next backup", L"Local backups",
-                                             L"Starred files and extra places", L"Encryption", L"Restore"};
+static HMENU g_menu_view, g_menu_lang;
+static const wchar_t *g_tab_names[N_TABS] = {N_(L"Primary Database"), N_(L"Next backup"), N_(L"Local backups"),
+                                             N_(L"Starred files and extra places"), N_(L"Encryption"), N_(L"Restore")};
 static int g_label_encrypt_default; /* the new-drive dialog starts with Encrypt ticked */
 #define N_BUTTONS 8
 static HWND g_buttons[N_BUTTONS];
@@ -532,10 +862,12 @@ static int theme_ctlcolor(UINT msg, WPARAM wp, LPARAM lp, LRESULT *out)
     return 0;
 }
 
-/* A dialog's own messages: theme it as it is first shown, and colour its
- * controls. Each dialog procedure calls this first. */
+/* A dialog's own messages: put its text in the chosen language as it is
+ * made, theme it as it is first shown, and colour its controls. Each
+ * dialog procedure calls this first. */
 static int theme_dialog(HWND dlg, UINT msg, WPARAM wp, LPARAM lp, INT_PTR *out)
 {
+    if (msg == WM_INITDIALOG) lang_dialog(dlg); /* before the dialog sets its own text */
     if (msg == WM_SHOWWINDOW && wp && g_dark && !GetPropW(dlg, L"BrodalfDark")) {
         SetPropW(dlg, L"BrodalfDark", (HANDLE)1);
         theme_window(dlg);
@@ -715,6 +1047,18 @@ static void theme_apply(void)
     DrawMenuBar(g_main);
 }
 
+/* View > Language. It takes effect the next time BRODALF starts, since
+ * most of the window's text is set once, when it is made. */
+static void lang_choose(int choice)
+{
+    const wchar_t *code = choice >= 0 ? g_langs[choice].code : L"";
+    RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"Language", REG_SZ, code, (DWORD)((wcslen(code) + 1) * sizeof(wchar_t)));
+    int now = choice >= 0 ? choice : lang_windows();
+    g_lang_choice = choice;
+    if (now != g_lang)
+        MessageBoxW(g_main, T(L"BRODALF shows the new language the next time you open it."), APP_NAME, MB_ICONINFORMATION);
+}
+
 static void theme_choose(int choice)
 {
     g_theme_choice = choice;
@@ -730,7 +1074,7 @@ static void theme_choose(int choice)
 /* ---- Jobs --------------------------------------------------------------- */
 
 typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW, JOB_COMPRESS } job_kind;
-#define SUMMARY_LEN 768
+#define SUMMARY_LEN 2048 /* room for the longer translations */
 
 /* A file a restore left alone because another file was already where it
  * would go. Collected over every part of one restore. */
@@ -746,7 +1090,7 @@ typedef struct job {
     char *root;         /* backup to a drive given by folder */
     char *label;        /* set up a new drive with this name first */
     char *location;     /* and say where it is kept */
-    unsigned flags;     /* for the new drive: BD_MEDIA_ENCRYPTED */
+    unsigned flags;     /* for the new drive: BD_MEDIA_ENCRYPTED, BD_MEDIA_HIDE_NAMES */
     int64_t source_id;  /* restore */
     char *rel;          /* restore */
     char *dest;         /* restore */
@@ -828,6 +1172,7 @@ static void say(job *j, const wchar_t *fmt, ...)
     va_start(ap, fmt);
     vswprintf(j->summary + len, SUMMARY_LEN - len, fmt, ap);
     va_end(ap);
+    j->summary[SUMMARY_LEN - 1] = 0; /* cut off, not lost, if it did not fit */
 }
 
 static void post_text(UINT msg, const wchar_t *text)
@@ -873,9 +1218,12 @@ static void format_left(int64_t bytes_left, double rate, wchar_t *out, size_t n)
     out[0] = 0;
     if (rate <= 0 || bytes_left <= 0) return;
     double secs = (double)bytes_left / rate;
-    if (secs < 60) swprintf(out, n, L", less than a minute left");
-    else if (secs < 3600) swprintf(out, n, L", about %d minute%ls left", (int)(secs / 60 + 0.5), (int)(secs / 60 + 0.5) == 1 ? L"" : L"s");
-    else swprintf(out, n, L", about %.1f hours left", secs / 3600.0);
+    if (secs < 60) swprintf(out, n, T(L", less than a minute left"));
+    else if (secs < 3600) {
+        int mins = (int)(secs / 60 + 0.5);
+        swprintf(out, n, TN(mins, L", about %d minute left", L", about %d minutes left"), mins);
+    }
+    else swprintf(out, n, T(L", about %.1f hours left"), secs / 3600.0);
 }
 
 static void job_progress(void *ctx, const bd_progress *p)
@@ -887,11 +1235,11 @@ static void job_progress(void *ctx, const bd_progress *p)
     prog_msg *m = calloc(1, sizeof(*m));
     if (!m) return;
     const char *ph = p->phase;
-    const wchar_t *verb = strcmp(ph, "scan") == 0 ? L"Scanning" : strcmp(ph, "backup") == 0 ? L"Backing up"
-                        : strcmp(ph, "restore") == 0 ? L"Restoring" : strcmp(ph, "verify") == 0 ? L"Reading back copies"
-                        : L"Checking copies";
-    const wchar_t *unit = strcmp(ph, "scan") == 0 ? L"files looked at" : strcmp(ph, "backup") == 0 ? L"files copied"
-                        : strcmp(ph, "restore") == 0 ? L"files restored" : L"copies read";
+    const wchar_t *verb = strcmp(ph, "scan") == 0 ? T(L"Scanning") : strcmp(ph, "backup") == 0 ? T(L"Backing up")
+                        : strcmp(ph, "restore") == 0 ? T(L"Restoring") : strcmp(ph, "verify") == 0 ? T(L"Reading back copies")
+                        : T(L"Checking copies");
+    const wchar_t *unit = strcmp(ph, "scan") == 0 ? T(L"files looked at") : strcmp(ph, "backup") == 0 ? T(L"files copied")
+                        : strcmp(ph, "restore") == 0 ? T(L"files restored") : T(L"copies read");
     wchar_t done[64], total[64], rate[64] = L"", left[64] = L"", *c = widen(p->current);
     format_bytes(p->bytes_done, done, 64);
     double r = p->done ? -1.0 : rate_add(p->bytes_done);
@@ -900,16 +1248,16 @@ static void job_progress(void *ctx, const bd_progress *p)
         format_bytes(p->bytes_total, total, 64);
         format_left(p->bytes_total - p->bytes_done, r, left, 64);
         m->percent = (int)(p->bytes_done * 100 / p->bytes_total);
-        swprintf(m->text, 1024, L"%ls: %lld of %lld %ls, %ls of %ls%ls%ls%ls.", verb, (long long)p->files_done,
+        swprintf(m->text, 1024, T(L"%ls: %lld of %lld %ls, %ls of %ls%ls%ls%ls."), verb, (long long)p->files_done,
                  (long long)p->files_total, unit, done, total, *rate ? L", " : L"", rate, left);
     } else if (p->files_total > 0) {
         m->percent = (int)(p->files_done * 100 / p->files_total);
-        swprintf(m->text, 1024, L"%ls: %lld of about %lld %ls, %ls read%ls%ls.", verb, (long long)p->files_done,
-                 (long long)p->files_total, unit, done, *rate ? L" at " : L"", rate);
+        swprintf(m->text, 1024, T(L"%ls: %lld of about %lld %ls, %ls read%ls%ls."), verb, (long long)p->files_done,
+                 (long long)p->files_total, unit, done, *rate ? T(L" at ") : L"", rate);
     } else {
         m->percent = -1;
-        swprintf(m->text, 1024, L"%ls: %lld %ls, %ls read%ls%ls.", verb, (long long)p->files_done, unit, done,
-                 *rate ? L" at " : L"", rate);
+        swprintf(m->text, 1024, T(L"%ls: %lld %ls, %ls read%ls%ls."), verb, (long long)p->files_done, unit, done,
+                 *rate ? T(L" at ") : L"", rate);
     }
     if (p->done) m->percent = 100;
     if (m->percent > 100) m->percent = 100;
@@ -921,7 +1269,7 @@ static void job_progress(void *ctx, const bd_progress *p)
             format_bytes(p->file_bytes_total, ft, 64);
             m->file_percent = (int)(p->file_bytes_done * 100 / p->file_bytes_total);
             if (m->file_percent > 100) m->file_percent = 100;
-            swprintf(m->file, 600, L"%ls (%ls of %ls)", c, fd, ft);
+            swprintf(m->file, 600, T(L"%ls (%ls of %ls)"), c, fd, ft);
         } else {
             swprintf(m->file, 600, L"%ls", c);
         }
@@ -1039,7 +1387,7 @@ static void run_drives(job *j)
     bd_list_media(g_cat, connected_drive_cb, &after);
     for (int i = 0; i < after.n && j->n_new < 16; i++)
         if (!id_in(&before, after.ids[i])) j->new_ids[j->n_new++] = after.ids[i];
-    swprintf(j->summary, SUMMARY_LEN, found ? L"Found %d BRODALF drive(s)." : L"No BRODALF drives are plugged in.", found);
+    swprintf(j->summary, SUMMARY_LEN, found ? TN(found, L"Found %d BRODALF drive.", L"Found %d BRODALF drives.") : T(L"No BRODALF drives are plugged in."), found);
 }
 
 typedef struct { int64_t ids[256]; char *roots[256]; int n; } media_snapshot;
@@ -1137,28 +1485,28 @@ static bd_status run_backup_many(job *j)
         if (bs[i].files_in_use > j->in_use) j->in_use = bs[i].files_in_use;
         media_name(j->many[i], name, 600);
         format_bytes(bs[i].bytes_copied, size, 64);
-        swprintf(line, 1000, L"%ls: %lld files copied (%ls), %lld already there, %lld failed%ls.", name, (long long)bs[i].files_copied,
+        swprintf(line, 1000, T(L"%ls: %lld files copied (%ls), %lld already there, %lld failed%ls."), name, (long long)bs[i].files_copied,
                  size, (long long)bs[i].files_already_there, (long long)bs[i].files_failed,
-                 bs[i].files_no_room ? L", some did not fit" : L"");
+                 bs[i].files_no_room ? T(L", some did not fit") : L"");
         post_text(WM_APP_LOG, line);
     }
     int drives = j->n_many - j->many_places;
     wchar_t what[160];
-    if (drives && j->many_places)
-        swprintf(what, 160, L"%d drive%ls and %d extra place%ls", drives, drives == 1 ? L"" : L"s", j->many_places,
-                 j->many_places == 1 ? L"" : L"s");
-    else if (drives) swprintf(what, 160, L"%d drives", drives);
-    else swprintf(what, 160, L"%d extra places", j->many_places);
+    wchar_t some_drives[64], some_places[64];
+    swprintf(some_drives, 64, TN(drives, L"%d drive", L"%d drives"), drives);
+    swprintf(some_places, 64, TN(j->many_places, L"%d extra place", L"%d extra places"), j->many_places);
+    if (drives && j->many_places) swprintf(what, 160, T(L"%ls and %ls"), some_drives, some_places);
+    else wcscpy(what, drives ? some_drives : some_places);
     format_bytes(bytes, size, 64);
-    swprintf(j->summary, SUMMARY_LEN, L"Backup to %ls %ls, %ls: %lld files copied (%ls) in all, %lld failed.", what,
-             s == BD_ERR_CANCELLED ? L"stopped" : L"done", parallel ? L"all at once" : L"one after another", (long long)copied, size,
+    swprintf(j->summary, SUMMARY_LEN, T(L"Backup to %ls %ls, %ls: %lld files copied (%ls) in all, %lld failed."), what,
+             s == BD_ERR_CANCELLED ? T(L"stopped") : T(L"done"), parallel ? T(L"all at once") : T(L"one after another"), (long long)copied, size,
              (long long)failed);
     if (alongside)
-        say(j, L" %lld went alongside an older copy (under .versions): nothing there was overwritten.", (long long)alongside);
+        say(j, T(L" %lld went alongside an older copy (under .versions): nothing there was overwritten."), (long long)alongside);
     if (no_room) {
         format_bytes(no_room_bytes, size, 64);
-        say(j, L" %lld cop%ls (%ls) did not fit and wait%ls for another drive.", (long long)no_room, no_room == 1 ? L"y" : L"ies", size,
-            no_room == 1 ? L"s" : L"");
+        say(j, TN(no_room, L" %lld copy (%ls) did not fit and waits for another drive.", L" %lld copies (%ls) did not fit and wait for another drive."),
+            (long long)no_room, size);
     }
     return s;
 }
@@ -1183,18 +1531,21 @@ static DWORD WINAPI worker(LPVOID arg)
         so.bitrot = j->bitrot;
         s = bd_scan_ex(g_cat, &so, &st, job_log, j);
         format_bytes(st.bytes_hashed, size, 64);
-        swprintf(j->summary, SUMMARY_LEN, L"%ls done: %lld files, %lld new, %lld changed, %lld moved or renamed, %lld deleted, %ls read.",
-                 j->bitrot ? L"Bit-rot scan" : L"Scan", (long long)st.files_seen, (long long)st.files_new,
+        swprintf(j->summary, SUMMARY_LEN, T(L"%ls done: %lld files, %lld new, %lld changed, %lld moved or renamed, %lld deleted, %ls read."),
+                 j->bitrot ? T(L"Bit-rot scan") : T(L"Scan"), (long long)st.files_seen, (long long)st.files_new,
                  (long long)st.files_changed, (long long)st.files_moved, (long long)st.files_deleted, size);
-        if (st.deleted_no_copy) say(j, L" %lld of the deleted files were never backed up.", (long long)st.deleted_no_copy);
-        if (st.skipped) say(j, L" %lld left out by the skip lists.", (long long)st.skipped);
-        if (st.files_in_use) say(j, L" %lld in use by another program.", (long long)st.files_in_use);
-        if (st.files_online_only) say(j, L" %lld online-only cloud files left alone (not downloaded).", (long long)st.files_online_only);
+        if (st.deleted_no_copy) say(j, T(L" %lld of the deleted files were never backed up."), (long long)st.deleted_no_copy);
+        if (st.skipped) say(j, T(L" %lld left out by the skip lists."), (long long)st.skipped);
+        if (st.files_in_use) say(j, T(L" %lld in use by another program."), (long long)st.files_in_use);
+        if (st.files_online_only) say(j, T(L" %lld online-only cloud files left alone (not downloaded)."), (long long)st.files_online_only);
         if (st.files_damaged)
-            say(j, L" %lld file%ls changed without their size or time changing: they may be damaged.", (long long)st.files_damaged,
-                st.files_damaged == 1 ? L"" : L"s");
-        if (st.roots_missing) say(j, L" %lld backup root%ls could not be found.", (long long)st.roots_missing, st.roots_missing == 1 ? L"" : L"s");
-        if (st.roots_stopped) say(j, L" %lld stopped root%ls left alone.", (long long)st.roots_stopped, st.roots_stopped == 1 ? L"" : L"s");
+            say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: it may be damaged.",
+                      L" %lld files changed without their size or time changing: they may be damaged."),
+                (long long)st.files_damaged);
+        if (st.roots_missing)
+            say(j, TN(st.roots_missing, L" %lld backup root could not be found.", L" %lld backup roots could not be found."), (long long)st.roots_missing);
+        if (st.roots_stopped)
+            say(j, TN(st.roots_stopped, L" %lld stopped root left alone.", L" %lld stopped roots left alone."), (long long)st.roots_stopped);
         j->in_use = st.files_in_use;
         j->damaged = st.files_damaged;
         j->found_deleted = st.files_deleted;
@@ -1225,18 +1576,19 @@ static DWORD WINAPI worker(LPVOID arg)
              * catalog and puts its newest revision on the drive. */
             s = bd_backup(g_cat, id, 0, &bs, job_log, j);
             format_bytes(bs.bytes_copied, size, 64);
-            swprintf(j->summary, SUMMARY_LEN, L"Backup done: %lld files copied (%ls), %lld already there, %lld failed.",
+            swprintf(j->summary, SUMMARY_LEN, T(L"Backup done: %lld files copied (%ls), %lld already there, %lld failed."),
                      (long long)bs.files_copied, size, (long long)bs.files_already_there, (long long)bs.files_failed);
             if (bs.copies_alongside)
-                say(j, L" %lld went alongside an older copy (under .versions on the drive): nothing there was overwritten.",
+                say(j, T(L" %lld went alongside an older copy (under .versions on the drive): nothing there was overwritten."),
                     (long long)bs.copies_alongside);
-            if (bs.files_rehashed) say(j, L" %lld changed since the scan and were read again first.", (long long)bs.files_rehashed);
-            if (bs.files_in_use) say(j, L" %lld in use by another program.", (long long)bs.files_in_use);
-            if (bs.files_online_only) say(j, L" %lld online-only cloud files not copied.", (long long)bs.files_online_only);
+            if (bs.files_rehashed) say(j, T(L" %lld changed since the scan and were read again first."), (long long)bs.files_rehashed);
+            if (bs.files_in_use) say(j, T(L" %lld in use by another program."), (long long)bs.files_in_use);
+            if (bs.files_online_only) say(j, T(L" %lld online-only cloud files not copied."), (long long)bs.files_online_only);
             if (bs.files_no_room) {
                 format_bytes(bs.bytes_no_room, size, 64);
-                say(j, L" The drive is full: %lld file%ls (%ls) did not fit and wait for another drive.", (long long)bs.files_no_room,
-                    bs.files_no_room == 1 ? L"" : L"s", size);
+                say(j, TN(bs.files_no_room, L" The drive is full: %lld file (%ls) did not fit and waits for another drive.",
+                          L" The drive is full: %lld files (%ls) did not fit and wait for another drive."),
+                    (long long)bs.files_no_room, size);
             }
             j->no_room = bs.files_no_room;
             j->bytes_no_room = bs.bytes_no_room;
@@ -1250,22 +1602,22 @@ static DWORD WINAPI worker(LPVOID arg)
         int days = bd_option_get(g_cat, "verify_days");
         s = bd_media_verify(g_cat, j->media_id, days, &cs, job_log, j);
         if (cs.rehashed == 0 && s == BD_OK)
-            swprintf(j->summary, SUMMARY_LEN, L"Read back: every copy on the drive was read back within the last %d days.", days);
+            swprintf(j->summary, SUMMARY_LEN, T(L"Read back: every copy on the drive was read back within the last %d days."), days);
         else
-            swprintf(j->summary, SUMMARY_LEN, L"Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls",
+            swprintf(j->summary, SUMMARY_LEN, T(L"Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls"),
                      (long long)cs.rehashed, (long long)cs.ok, (long long)cs.bad, (long long)cs.missing,
-                     cs.bad || cs.missing ? L" The next backup to this drive writes them again." : L"");
-        if (cs.skipped) say(j, L" %lld encrypted copies need the passphrase to check.", (long long)cs.skipped);
+                     cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
+        if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
         break;
     }
     case JOB_CHECK: {
         bd_check_stats cs;
         memset(&cs, 0, sizeof(cs));
         s = bd_media_check(g_cat, j->media_id, &cs, job_log, j);
-        swprintf(j->summary, SUMMARY_LEN, L"Check done: %lld copies read, %lld good, %lld missing, %lld damaged.%ls",
+        swprintf(j->summary, SUMMARY_LEN, T(L"Check done: %lld copies read, %lld good, %lld missing, %lld damaged.%ls"),
                  (long long)cs.copies, (long long)cs.ok, (long long)cs.missing,
-                 (long long)cs.bad, cs.bad || cs.missing ? L" The next backup to this drive writes them again." : L"");
-        if (cs.skipped) say(j, L" %lld encrypted copies need the passphrase to check.", (long long)cs.skipped);
+                 (long long)cs.bad, cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
+        if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
         break;
     }
     case JOB_SHADOW:
@@ -1278,11 +1630,11 @@ static DWORD WINAPI worker(LPVOID arg)
         wchar_t room[64];
         format_bytes(zs.bytes, size, 64);
         format_bytes(zs.bytes_on_disk, room, 64);
-        swprintf(j->summary, SUMMARY_LEN, L"Compression %ls: %lld files; their %ls now take %ls on the drive.",
-                 j->compress_on ? L"turned on" : L"turned off", (long long)zs.files, size, room);
+        swprintf(j->summary, SUMMARY_LEN, T(L"Compression %ls: %lld files; their %ls now take %ls on the drive."),
+                 j->compress_on ? T(L"turned on") : T(L"turned off"), (long long)zs.files, size, room);
         if (zs.failed)
-            say(j, L" %lld could not be changed (another program may have them open).", (long long)zs.failed);
-        if (j->compress_on) say(j, L" Copies made from now on are compressed too.");
+            say(j, T(L" %lld could not be changed (another program may have them open)."), (long long)zs.failed);
+        if (j->compress_on) say(j, T(L" Copies made from now on are compressed too."));
         break;
     }
     case JOB_RESTORE: {
@@ -1315,31 +1667,31 @@ static DWORD WINAPI worker(LPVOID arg)
             rs.files_conflict += one.files_conflict;
         }
         format_bytes(rs.bytes_restored, size, 64);
-        swprintf(j->summary, SUMMARY_LEN, L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed.",
+        swprintf(j->summary, SUMMARY_LEN, T(L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed."),
                  (long long)rs.files_restored, size, (long long)rs.files_already_there, (long long)rs.files_offline,
                  (long long)rs.files_no_copy, (long long)rs.files_failed);
         if (rs.files_conflict)
-            say(j, L" %lld left alone because another file was already there: nothing was overwritten.", (long long)rs.files_conflict);
+            say(j, T(L" %lld left alone because another file was already there: nothing was overwritten."), (long long)rs.files_conflict);
         j->offline = rs.files_offline;
-        if (rs.files_need_passphrase) say(j, L" %lld need the passphrase.", (long long)rs.files_need_passphrase);
+        if (rs.files_need_passphrase) say(j, T(L" %lld need the passphrase."), (long long)rs.files_need_passphrase);
         break;
     }
     }
     j->status = s;
     if (s == BD_ERR_CANCELLED) {
-        swprintf(j->summary, SUMMARY_LEN, L"Stopped. What was done until then is kept.");
+        swprintf(j->summary, SUMMARY_LEN, T(L"Stopped. What was done until then is kept."));
     } else if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        swprintf(j->summary, SUMMARY_LEN, L"Stopped: %ls", e ? e : L"unknown error");
+        swprintf(j->summary, SUMMARY_LEN, T(L"Stopped: %ls"), e ? e : T(L"unknown error"));
         free(e);
     }
     if (bd_catalog_save(g_cat) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         if (j->status == BD_OK) {
             j->status = BD_ERR_IO;
-            swprintf(j->summary, SUMMARY_LEN, L"Could not save the database: %ls", e ? e : L"unknown error");
+            swprintf(j->summary, SUMMARY_LEN, T(L"Could not save the database: %ls"), e ? e : T(L"unknown error"));
         } else {
-            post_text(WM_APP_LOG, L"Could not save the database:");
+            post_text(WM_APP_LOG, T(L"Could not save the database:"));
             if (e) post_text(WM_APP_LOG, e);
         }
         free(e);
@@ -1380,13 +1732,13 @@ static void start_next_job(void)
     InterlockedExchange(&g_stopping, 0);
     g_running_kind = j->kind;
     set_busy(1);
-    static const wchar_t *starting[] = {L"Looking for BRODALF drives...", L"Scanning your backup roots...",
-                                        L"Backing up...", L"Checking every copy on the drive...", L"Restoring...",
-                                        L"Reading back copies not read lately...", L"Reading files that are in use from a shadow copy...",
-                                        L"Compressing the copies on the drive..."};
-    const wchar_t *what = j->kind == JOB_SCAN && j->bitrot      ? L"Bit-rot scan: reading every file again..."
-                          : j->kind == JOB_COMPRESS && !j->compress_on ? L"Making the copies on the drive whole again..."
-                                                                  : starting[j->kind];
+    static const wchar_t *starting[] = {N_(L"Looking for BRODALF drives..."), N_(L"Scanning your backup roots..."),
+                                        N_(L"Backing up..."), N_(L"Checking every copy on the drive..."), N_(L"Restoring..."),
+                                        N_(L"Reading back copies not read lately..."), N_(L"Reading files that are in use from a shadow copy..."),
+                                        N_(L"Compressing the copies on the drive...")};
+    const wchar_t *what = j->kind == JOB_SCAN && j->bitrot      ? T(L"Bit-rot scan: reading every file again...")
+                          : j->kind == JOB_COMPRESS && !j->compress_on ? T(L"Making the copies on the drive whole again...")
+                                                                  : T(starting[j->kind]);
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
     show_progress(-1, what);
     show_file_progress(-1, L"");
@@ -1407,8 +1759,8 @@ static void stop_job(void)
         job_free(q);
     }
     EnableWindow(g_stop, FALSE);
-    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)L"Stopping...");
-    show_progress(-1, L"Stopping...");
+    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)T(L"Stopping..."));
+    show_progress(-1, T(L"Stopping..."));
 }
 
 static void enqueue(job *j)
@@ -1474,12 +1826,12 @@ static void report_error(HWND owner, const wchar_t *what)
     wchar_t msg[4096];
     if (wpath)
         swprintf(msg, 4096,
-                 L"%ls\n\nAn error report was saved to:\n%ls\n\n"
+                 T(L"%ls\n\nAn error report was saved to:\n%ls\n\n"
                  L"To let the BRODALF developers know, post it as a new issue at %ls. "
-                 L"The report starts with step-by-step instructions.\n\nShow the report file now?",
+                 L"The report starts with step-by-step instructions.\n\nShow the report file now?"),
                  what, wpath, url ? url : L"");
     else
-        swprintf(msg, 4096, L"%ls\n\nThe error report could not be saved.", what);
+        swprintf(msg, 4096, T(L"%ls\n\nThe error report could not be saved."), what);
     if (MessageBoxW(owner, msg, APP_NAME, MB_ICONERROR | (wpath ? MB_YESNO : MB_OK)) == IDYES) {
         wchar_t args[MAX_PATH * 2 + 16];
         swprintf(args, MAX_PATH * 2 + 16, L"/select,\"%ls\"", wpath);
@@ -1502,7 +1854,7 @@ static LONG WINAPI on_crash(EXCEPTION_POINTERS *ep)
         GetModuleFileNameW(mod, name, MAX_PATH);
     const wchar_t *base = wcsrchr(name, L'\\');
     wchar_t what[512];
-    swprintf(what, 512, L"BRODALF crashed (exception 0x%08lX in %ls at +0x%llx).",
+    swprintf(what, 512, T(L"BRODALF crashed (exception 0x%08lX in %ls at +0x%llx)."),
              (unsigned long)ep->ExceptionRecord->ExceptionCode, base ? base + 1 : name,
              (unsigned long long)((uintptr_t)addr - (uintptr_t)mod));
     report_error(NULL, what);
@@ -1549,14 +1901,14 @@ static void item_text(const bd_node_info *n, const char *name, const char *label
 {
     wchar_t *wn = widen(name), *wl = widen(label);
     if (n->is_dir && n->state == BD_STATE_OFFLINE && label) {
-        swprintf(out, cap, L"%ls   (0 of %lld available, copies on %ls)", wn, (long long)n->files_total, wl);
+        swprintf(out, cap, T(L"%ls   (0 of %lld available, copies on %ls)"), wn, (long long)n->files_total, wl);
     } else if (n->is_dir) {
-        swprintf(out, cap, L"%ls   (%lld of %lld available)", wn, (long long)n->files_available, (long long)n->files_total);
+        swprintf(out, cap, T(L"%ls   (%lld of %lld available)"), wn, (long long)n->files_available, (long long)n->files_total);
     } else if (n->state == BD_STATE_OFFLINE && label) {
-        if (n->version_count > 1) swprintf(out, cap, L"%ls   v%d  on %ls", wn, n->version_no, wl);
-        else swprintf(out, cap, L"%ls   on %ls", wn, wl);
+        if (n->version_count > 1) swprintf(out, cap, T(L"%ls   v%d  on %ls"), wn, n->version_no, wl);
+        else swprintf(out, cap, T(L"%ls   on %ls"), wn, wl);
     } else if (n->version_count > 1) {
-        swprintf(out, cap, L"%ls   v%d", wn, n->version_no);
+        swprintf(out, cap, T(L"%ls   v%d"), wn, n->version_no);
     } else {
         swprintf(out, cap, L"%ls", wn);
     }
@@ -1611,10 +1963,10 @@ static void add_marks(wchar_t *text, size_t cap, int64_t source_id, const char *
 {
     size_t n = wcslen(text);
     if (marks_has(&g_star_keys, source_id, rel) && n < cap) {
-        swprintf(text + n, cap - n, L"   \x2605 starred");
+        swprintf(text + n, cap - n, T(L"   \x2605 starred"));
         n = wcslen(text);
     }
-    if (marks_has(&g_enc_keys, source_id, rel) && n < cap) swprintf(text + n, cap - n, L"   [encrypted]");
+    if (marks_has(&g_enc_keys, source_id, rel) && n < cap) swprintf(text + n, cap - n, T(L"   [encrypted]"));
 }
 
 static HTREEITEM insert_item(HTREEITEM parent, const wchar_t *text, node_ref *ref, int has_children)
@@ -1780,8 +2132,8 @@ static void rebuild_tree(void)
         wchar_t bytes[64];
         format_bytes(l.items[i].bytes_total, bytes, 64);
         swprintf(text, 1024, L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
-                 l.items[i].missing ? L"   - not found: unplugged, moved or renamed?"
-                 : !l.items[i].active ? L"   - no longer backed up" : L"");
+                 l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
+                 : !l.items[i].active ? T(L"   - no longer backed up") : L"");
         add_marks(text, 1024, l.items[i].source_id, "");
         HTREEITEM h = insert_item(TVI_ROOT, text, r, 1);
         if (first_build) keys_add(&expanded, r ? r->source_id : 0, 0);
@@ -1828,22 +2180,22 @@ static int add_copy_row(void *ctx, const bd_copy_info *c)
     it.mask = LVIF_TEXT | LVIF_PARAM;
     it.iItem = *row;
     it.lParam = *row;
-    swprintf(buf, 512, c->is_current ? L"v%d (current)" : L"v%d", c->version_no);
+    swprintf(buf, 512, c->is_current ? T(L"v%d (current)") : T(L"v%d"), c->version_no);
     it.pszText = buf;
     SendMessageW(g_list, LVM_INSERTITEMW, 0, (LPARAM)&it);
     it.mask = LVIF_TEXT;
 
     wchar_t *where = widen(c->media_id ? c->media_label : "no copy yet"), where_buf[300];
-    swprintf(where_buf, 300, L"%ls%ls", where ? where : L"", c->media_id && c->encrypted ? L" (encrypted)" : L"");
+    swprintf(where_buf, 300, L"%ls%ls", where ? where : L"", c->media_id && c->encrypted ? T(L" (encrypted)") : L"");
     it.iSubItem = 1;
     it.pszText = where_buf;
     SendMessageW(g_list, LVM_SETITEMTEXTW, *row, (LPARAM)&it);
     free(where);
 
     if (!c->media_id) swprintf(buf, 512, L"");
-    else if (strcmp(c->copy_state, "ok") != 0) swprintf(buf, 512, strcmp(c->copy_state, "missing") == 0 ? L"Missing from drive" : L"Damaged");
-    else if (c->media_lost) swprintf(buf, 512, L"Drive marked lost or broken: does not count");
-    else swprintf(buf, 512, c->connected ? L"Good, plugged in" : L"Good, drive not plugged in");
+    else if (strcmp(c->copy_state, "ok") != 0) swprintf(buf, 512, strcmp(c->copy_state, "missing") == 0 ? T(L"Missing from drive") : T(L"Damaged"));
+    else if (c->media_lost) swprintf(buf, 512, T(L"Drive marked lost or broken: does not count"));
+    else swprintf(buf, 512, c->connected ? T(L"Good, plugged in") : T(L"Good, drive not plugged in"));
     it.iSubItem = 2;
     it.pszText = buf;
     SendMessageW(g_list, LVM_SETITEMTEXTW, *row, (LPARAM)&it);
@@ -1872,13 +2224,13 @@ static int add_copy_row(void *ctx, const bd_copy_info *c)
 static const wchar_t *state_words(bd_node_state s)
 {
     switch (s) {
-    case BD_STATE_AVAILABLE: return L"Available: a good copy is on a drive that is plugged in.";
-    case BD_STATE_AVAILABLE_OLDER: return L"Changed since the last backup. Only an older version is on a plugged-in drive.";
-    case BD_STATE_OFFLINE: return L"Backed up, but the drive is not plugged in.";
-    case BD_STATE_NO_COPY: return L"Not backed up yet.";
-    case BD_STATE_BAD: return L"The copy on the plugged-in drive is missing or damaged. Back up again to fix it.";
-    case BD_STATE_DELETED: return L"Deleted from your folder. BRODALF still tracks its copies.";
-    case BD_STATE_PARTIAL: return L"Some files inside are available.";
+    case BD_STATE_AVAILABLE: return T(L"Available: a good copy is on a drive that is plugged in.");
+    case BD_STATE_AVAILABLE_OLDER: return T(L"Changed since the last backup. Only an older version is on a plugged-in drive.");
+    case BD_STATE_OFFLINE: return T(L"Backed up, but the drive is not plugged in.");
+    case BD_STATE_NO_COPY: return T(L"Not backed up yet.");
+    case BD_STATE_BAD: return T(L"The copy on the plugged-in drive is missing or damaged. Back up again to fix it.");
+    case BD_STATE_DELETED: return T(L"Deleted from your folder. BRODALF still tracks its copies.");
+    case BD_STATE_PARTIAL: return T(L"Some files inside are available.");
     }
     return L"";
 }
@@ -1888,6 +2240,7 @@ typedef struct {
     int64_t id;
     char label[256], kind[16], root[512], location[256];
     int connected, encrypted, has_hw;
+    int hide_names; /* encrypted, and the names of the files and folders on it are hidden too */
     int64_t last_seen_ms, hw_read_ms, total, freeb, copies, added_ms, space_ms;
     int64_t lost_ms, oldest_check_ms, bytes_held, reserve_bytes;
     char lost_why[16];
@@ -1918,6 +2271,7 @@ static int drive_snap_cb(void *ctx, const bd_media_info *m)
     snprintf(d->location, sizeof(d->location), "%s", m->location ? m->location : "");
     d->connected = m->connected;
     d->encrypted = m->encrypted;
+    d->hide_names = m->hide_names;
     d->last_seen_ms = m->last_seen_ms;
     d->total = m->total_bytes;
     d->freeb = m->free_bytes;
@@ -1979,10 +2333,10 @@ static const wchar_t *replace_advice(const drive_snap *d)
     if (!d->has_hw || d->lost_ms) return NULL;
     const bd_drive_hw *h = &d->hw;
     if (strcmp(h->health, "failing") == 0)
-        return L"The drive says it is failing. Set up another drive and back up to it; then mark this one broken.";
-    if (h->percent_used >= 90) return L"The drive is nearly worn out. Plan to set up another drive.";
+        return T(L"The drive says it is failing. Set up another drive and back up to it; then mark this one broken.");
+    if (h->percent_used >= 90) return T(L"The drive is nearly worn out. Plan to set up another drive.");
     if (strcmp(h->health, "warning") == 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
-        return L"The drive reports problems reading some of its sectors. Plan to set up another drive.";
+        return T(L"The drive reports problems reading some of its sectors. Plan to set up another drive.");
     return NULL;
 }
 
@@ -1992,7 +2346,7 @@ static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent
     wchar_t when[64], a[64], b[64];
     if (strcmp(d->kind, "drive") != 0) return; /* a cloud account from an earlier version: the heading says so */
     if (!d->has_hw) {
-        wadd(t, L"%lsNo hardware details yet; they are read the next time the drive is plugged in.\r\n", indent);
+        wadd(t, T(L"%lsNo hardware details yet; they are read the next time the drive is plugged in.\r\n"), indent);
         return;
     }
     const bd_drive_hw *h = &d->hw;
@@ -2006,33 +2360,33 @@ static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent
     const wchar_t *parts[3] = {name, a, bus};
     for (int i = 0; i < 3; i++)
         if (*parts[i]) swprintf(line + wcslen(line), 512 - wcslen(line), L"%ls%ls", *line ? L", " : L"", parts[i]);
-    if (*line) wadd(t, L"%lsDisk: %ls\r\n", indent, line);
-    if (*serial) wadd(t, L"%lsSerial number %ls%ls%ls\r\n", indent, serial, *fw ? L", firmware " : L"", fw);
-    if (*vser) wadd(t, L"%lsVolume \"%ls\" (%ls, serial %ls)\r\n", indent, *vname ? vname : L"no name", fs, vser);
+    if (*line) wadd(t, T(L"%lsDisk: %ls\r\n"), indent, line);
+    if (*serial) wadd(t, T(L"%lsSerial number %ls%ls%ls\r\n"), indent, serial, *fw ? T(L", firmware ") : L"", fw);
+    if (*vser) wadd(t, T(L"%lsVolume \"%ls\" (%ls, serial %ls)\r\n"), indent, *vname ? vname : T(L"no name"), fs, vser);
     if (h->smart) {
-        wadd(t, L"%lsHealth: %ls", indent, *health ? health : L"unknown");
+        wadd(t, T(L"%lsHealth: %ls"), indent, *health ? health : T(L"unknown"));
         if (h->temperature_c >= 0) wadd(t, L", %d \x00B0" L"C", h->temperature_c);
-        if (h->power_on_hours >= 0) wadd(t, L", %lld hours powered on", (long long)h->power_on_hours);
-        if (h->power_cycles >= 0) wadd(t, L", %lld power cycles", (long long)h->power_cycles);
-        if (h->percent_used >= 0) wadd(t, L", %d%% worn", h->percent_used);
+        if (h->power_on_hours >= 0) wadd(t, T(L", %lld hours powered on"), (long long)h->power_on_hours);
+        if (h->power_cycles >= 0) wadd(t, T(L", %lld power cycles"), (long long)h->power_cycles);
+        if (h->percent_used >= 0) wadd(t, T(L", %d%% worn"), h->percent_used);
         wadd(t, L"\r\n");
         if (h->reallocated_sectors > 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
-            wadd(t, L"%ls%lld reallocated, %lld waiting to be reallocated, %lld unreadable sectors\r\n", indent,
+            wadd(t, T(L"%ls%lld reallocated, %lld waiting to be reallocated, %lld unreadable sectors\r\n"), indent,
                  (long long)(h->reallocated_sectors > 0 ? h->reallocated_sectors : 0),
                  (long long)(h->pending_sectors > 0 ? h->pending_sectors : 0),
                  (long long)(h->uncorrectable_sectors > 0 ? h->uncorrectable_sectors : 0));
     } else if (h->temperature_c >= 0) {
-        wadd(t, L"%lsTemperature %d \x00B0" L"C\r\n", indent, h->temperature_c);
+        wadd(t, T(L"%lsTemperature %d \x00B0" L"C\r\n"), indent, h->temperature_c);
     }
     if (*note) wadd(t, L"%ls(%ls)\r\n", indent, note);
     const wchar_t *advice = replace_advice(d);
     if (advice) wadd(t, L"%ls%ls\r\n", indent, advice);
     format_time_ms(d->hw_read_ms, when, 64);
-    wadd(t, L"%lsRead from the drive %ls\r\n", indent, when);
+    wadd(t, T(L"%lsRead from the drive %ls\r\n"), indent, when);
     if (d->total > 0) {
         format_bytes(d->freeb, a, 64);
         format_bytes(d->total, b, 64);
-        wadd(t, L"%ls%ls free of %ls when last seen\r\n", indent, a, b);
+        wadd(t, T(L"%ls%ls free of %ls when last seen\r\n"), indent, a, b);
     }
     free(vendor); free(model); free(bus); free(serial); free(fw); free(vname); free(vser); free(fs); free(health); free(note);
 }
@@ -2043,22 +2397,24 @@ static void add_drive_heading(wtext *t, const drive_snap *d, const wchar_t *inde
     wchar_t when[64];
     wchar_t *label = widen(d->label), *loc = widen(d->location), *root = widen(d->root);
     format_time_ms(d->last_seen_ms, when, 64);
-    wadd(t, L"%ls%ls%ls\r\n", indent, label, d->encrypted ? L" (encrypted)" : L"");
-    if (*loc) wadd(t, L"%ls    Kept in: %ls\r\n", indent, loc);
-    if (strcmp(d->kind, "drive") != 0) wadd(t, L"%ls    Cloud account from an earlier version (not supported in this version)\r\n", indent);
-    else if (d->connected) wadd(t, L"%ls    Plugged in now at %ls\r\n", indent, root);
-    else wadd(t, L"%ls    Not plugged in. Last seen %ls%ls%ls\r\n", indent, when, *root ? L" at " : L"", root);
+    wadd(t, L"%ls%ls%ls\r\n", indent, label,
+         d->hide_names ? T(L" (encrypted, names hidden)") : d->encrypted ? T(L" (encrypted)") : L"");
+    if (*loc) wadd(t, T(L"%ls    Kept in: %ls\r\n"), indent, loc);
+    if (strcmp(d->kind, "drive") != 0) wadd(t, T(L"%ls    Cloud account from an earlier version (not supported in this version)\r\n"), indent);
+    else if (d->connected) wadd(t, T(L"%ls    Plugged in now at %ls\r\n"), indent, root);
+    else if (*root) wadd(t, T(L"%ls    Not plugged in. Last seen %ls at %ls\r\n"), indent, when, root);
+    else wadd(t, T(L"%ls    Not plugged in. Last seen %ls\r\n"), indent, when);
     if (d->lost_ms) {
         wchar_t lost[64];
         format_time_ms(d->lost_ms, lost, 64);
-        wadd(t, L"%ls    Marked %ls %ls: its copies no longer count and nothing is backed up to it\r\n", indent,
-             strcmp(d->lost_why, "broken") == 0 ? L"broken" : L"lost", lost);
+        wadd(t, T(L"%ls    Marked %ls %ls: its copies no longer count and nothing is backed up to it\r\n"), indent,
+             strcmp(d->lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"), lost);
     } else if (strcmp(d->kind, "drive") == 0 && d->copies) {
         wchar_t held[64], checked[64];
         format_bytes(d->bytes_held, held, 64);
         format_time_ms(d->oldest_check_ms, checked, 64);
-        wadd(t, L"%ls    Holds %ls of good copies; the oldest was last read back %ls%ls\r\n", indent, held, checked,
-             d->check_due ? L" (due for a check)" : L"");
+        wadd(t, T(L"%ls    Holds %ls of good copies; the oldest was last read back %ls%ls\r\n"), indent, held, checked,
+             d->check_due ? T(L" (due for a check)") : L"");
     }
     free(label); free(loc); free(root);
 }
@@ -2122,7 +2478,7 @@ static void show_detail(void)
     clear_copy_rows();
     if (!g_cat) { SetWindowTextW(g_detail, L""); return; }
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
-    if (!r) { SetWindowTextW(g_detail, L"Select a file to see what it is, its versions, and which drives hold it."); return; }
+    if (!r) { SetWindowTextW(g_detail, T(L"Select a file to see what it is, its versions, and which drives hold it.")); return; }
     wchar_t *rel = widen(r->rel && *r->rel ? r->rel : "(whole folder)");
     wtext t = {NULL, 0, 0};
     wadd(&t, L"%ls\r\n%ls\r\n", rel, state_words(r->state));
@@ -2131,11 +2487,11 @@ static void show_detail(void)
         const char *mr = r->rel ? r->rel : "";
         int st = bd_starred(g_cat, r->source_id, mr), en = bd_encrypt_marked(g_cat, r->source_id, mr);
         if (st)
-            wadd(&t, L"%ls\r\n", st == 1 ? L"Starred: also backed up to your extra places"
-                                         : L"Starred with its folder: also backed up to your extra places");
+            wadd(&t, L"%ls\r\n", st == 1 ? T(L"Starred: also backed up to your extra places")
+                                         : T(L"Starred with its folder: also backed up to your extra places"));
         if (en)
-            wadd(&t, L"%ls\r\n", en == 1 ? L"Encrypted on every drive and extra place it is copied to"
-                                         : L"Encrypted with its folder, on every drive and extra place it is copied to");
+            wadd(&t, L"%ls\r\n", en == 1 ? T(L"Encrypted on every drive and extra place it is copied to")
+                                         : T(L"Encrypted with its folder, on every drive and extra place it is copied to"));
     }
     if (!r->is_dir) {
         copy_list cl = {NULL, 0, 0};
@@ -2154,14 +2510,14 @@ static void show_detail(void)
             format_ns(c->mtime_ns, mod, 64);
             format_time_ms(c->first_seen_ms, seen, 64);
             wchar_t *hash = widen(cl.items[i].hash);
-            wadd(&t, L"\r\nFile\r\n    Size %ls, modified %ls\r\n    Version %d of %d, first seen %ls\r\n    BLAKE3 %ls\r\n",
+            wadd(&t, T(L"\r\nFile\r\n    Size %ls, modified %ls\r\n    Version %d of %d, first seen %ls\r\n    BLAKE3 %ls\r\n"),
                  size, mod, current, versions, seen, hash);
             free(hash);
             break;
         }
         /* Where the current version is. */
         int any = 0;
-        wadd(&t, L"\r\nCopies of this version\r\n");
+        wadd(&t, T(L"\r\nCopies of this version\r\n"));
         for (int i = 0; i < cl.n; i++) {
             const bd_copy_info *c = &cl.items[i].c;
             if (!c->is_current || !c->media_id) continue;
@@ -2170,13 +2526,13 @@ static void show_detail(void)
             any = 1;
             add_drive_heading(&t, d, L"    ");
             wchar_t *path = widen(cl.items[i].path);
-            wadd(&t, L"        Copy %ls, at %ls\r\n",
-                 strcmp(cl.items[i].state, "ok") == 0 ? L"good" : strcmp(cl.items[i].state, "missing") == 0 ? L"missing" : L"damaged",
+            wadd(&t, T(L"        Copy %ls, at %ls\r\n"),
+                 strcmp(cl.items[i].state, "ok") == 0 ? T(L"good") : strcmp(cl.items[i].state, "missing") == 0 ? T(L"missing") : T(L"damaged"),
                  path);
             free(path);
             add_drive_lines(&t, d, L"        ");
         }
-        if (!any) wadd(&t, L"    None yet. Back up to put a copy on a drive.\r\n");
+        if (!any) wadd(&t, T(L"    None yet. Back up to put a copy on a drive.\r\n"));
         /* Drives holding only older versions. */
         int header = 0;
         for (int i = 0; i < cl.n; i++) {
@@ -2187,7 +2543,7 @@ static void show_detail(void)
             if (dup) continue;
             const drive_snap *d = find_drive(&dl, c->media_id);
             if (!d) continue;
-            if (!header) { wadd(&t, L"\r\nOlder versions are also on\r\n"); header = 1; }
+            if (!header) { wadd(&t, T(L"\r\nOlder versions are also on\r\n")); header = 1; }
             add_drive_heading(&t, d, L"    ");
         }
         g_copy_rows = calloc((size_t)(cl.n ? cl.n : 1), sizeof(copy_row));
@@ -2202,7 +2558,7 @@ static void show_detail(void)
                 g_copy_rows[i].full = copy_full_path(d, c->path_on_media);
             g_n_copy_rows = i + 1;
         }
-        wadd(&t, L"\r\nRight-click a version below to restore it or to open it on its drive.\r\n");
+        wadd(&t, T(L"\r\nRight-click a version below to restore it or to open it on its drive.\r\n"));
         free(cl.items);
         free(dl.items);
     }
@@ -2219,11 +2575,11 @@ static void media_name(int64_t id, wchar_t *out, size_t cap);
 /* How a job ended, in words. */
 static const wchar_t *job_end_words(const char *status, int64_t finished_ms)
 {
-    if (!finished_ms || strcmp(status, "running") == 0) return L"did not finish (BRODALF was closed during it)";
-    if (strcmp(status, "done") == 0) return L"finished";
-    if (strcmp(status, "partial") == 0) return L"finished with problems";
-    if (strcmp(status, "stopped") == 0) return L"stopped";
-    return L"failed";
+    if (!finished_ms || strcmp(status, "running") == 0) return T(L"did not finish (BRODALF was closed during it)");
+    if (strcmp(status, "done") == 0) return T(L"finished");
+    if (strcmp(status, "partial") == 0) return T(L"finished with problems");
+    if (strcmp(status, "stopped") == 0) return T(L"stopped");
+    return T(L"failed");
 }
 
 /* Where a drive stands, from the catalog: what is on it as it is now, what
@@ -2233,43 +2589,43 @@ static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
     bd_media_status ms;
     if (bd_media_status_get(g_cat, id, &ms) != BD_OK) return;
     wchar_t a[64], when[64];
-    wadd(t, L"%lsWhere it stands\r\n", indent);
+    wadd(t, T(L"%lsWhere it stands\r\n"), indent);
     format_bytes(ms.bytes_current, a, 64);
-    wadd(t, L"%ls    %lld files as they are now (%ls)\r\n", indent, (long long)ms.files_current, a);
+    wadd(t, T(L"%ls    %lld files as they are now (%ls)\r\n"), indent, (long long)ms.files_current, a);
     if (ms.files_behind) {
         format_bytes(ms.bytes_behind, a, 64);
-        wadd(t, L"%ls    %lld changed since (%ls): only an older version is on it\r\n", indent, (long long)ms.files_behind, a);
+        wadd(t, T(L"%ls    %lld changed since (%ls): only an older version is on it\r\n"), indent, (long long)ms.files_behind, a);
     }
     if (ms.files_not_here) {
         format_bytes(ms.bytes_not_here, a, 64);
-        wadd(t, L"%ls    %lld not on it at all (%ls)\r\n", indent, (long long)ms.files_not_here, a);
+        wadd(t, T(L"%ls    %lld not on it at all (%ls)\r\n"), indent, (long long)ms.files_not_here, a);
     }
     if (ms.deleted_kept)
-        wadd(t, L"%ls    %lld deleted from their folders, still kept on it\r\n", indent, (long long)ms.deleted_kept);
+        wadd(t, T(L"%ls    %lld deleted from their folders, still kept on it\r\n"), indent, (long long)ms.deleted_kept);
     if (ms.old_versions) {
         format_bytes(ms.old_bytes, a, 64);
-        wadd(t, L"%ls    %lld older versions kept on it (%ls)\r\n", indent, (long long)ms.old_versions, a);
+        wadd(t, T(L"%ls    %lld older versions kept on it (%ls)\r\n"), indent, (long long)ms.old_versions, a);
     }
     if (ms.last_backup_ms) {
         format_time_ms(ms.last_backup_ms, when, 64);
-        wadd(t, L"%ls    Last backup %ls: %ls, %lld files copied", indent, when,
+        wadd(t, T(L"%ls    Last backup %ls: %ls, %lld files copied"), indent, when,
              job_end_words(ms.last_backup_status, ms.last_backup_end_ms), (long long)ms.last_backup_files);
-        if (ms.last_backup_failed) wadd(t, L", %lld failed", (long long)ms.last_backup_failed);
+        if (ms.last_backup_failed) wadd(t, T(L", %lld failed"), (long long)ms.last_backup_failed);
         wadd(t, L"\r\n");
     } else
-        wadd(t, L"%ls    Never backed up to\r\n", indent);
+        wadd(t, T(L"%ls    Never backed up to\r\n"), indent);
     if (ms.last_check_ms) {
         format_time_ms(ms.last_check_ms, when, 64);
-        wchar_t *kind = widen(ms.last_check_kind);
-        wadd(t, L"%ls    Last %ls %ls: %ls\r\n", indent, kind ? kind : L"check", when, job_end_words(ms.last_check_status, ms.last_check_ms));
-        free(kind);
+        /* The kind is "check" (or "quick check", "full check" before 0.7.0) or "read back". */
+        wadd(t, strcmp(ms.last_check_kind, "read back") == 0 ? T(L"%ls    Last read back %ls: %ls\r\n") : T(L"%ls    Last check %ls: %ls\r\n"),
+             indent, when, job_end_words(ms.last_check_status, ms.last_check_ms));
     } else
-        wadd(t, L"%ls    Its copies were never checked (Check drive...)\r\n", indent);
+        wadd(t, T(L"%ls    Its copies were never checked (Check drive...)\r\n"), indent);
     if (ms.copies_bad)
-        wadd(t, L"%ls    %lld copies were missing or damaged when last checked: the next backup to it writes them again\r\n", indent,
+        wadd(t, T(L"%ls    %lld copies were missing or damaged when last checked: the next backup to it writes them again\r\n"), indent,
              (long long)ms.copies_bad);
     if (ms.copies_never_read)
-        wadd(t, L"%ls    %lld copies were never read back since they were written (Check drive..., Read back)\r\n", indent,
+        wadd(t, T(L"%ls    %lld copies were never read back since they were written (Check drive..., Read back)\r\n"), indent,
              (long long)ms.copies_never_read);
 }
 
@@ -2289,17 +2645,17 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         add_drive_heading(&t, d, L"");
         format_time_ms(d->added_ms, added, 64);
         swprintf(copies, 32, L"%lld", (long long)d->copies);
-        wadd(&t, L"    Set up %ls, %ls copies recorded\r\n\r\n", added, copies);
+        wadd(&t, T(L"    Set up %ls, %ls copies recorded\r\n\r\n"), added, copies);
         if (strcmp(d->kind, "drive") == 0) {
             add_drive_status(&t, d->id, L"");
             wadd(&t, L"\r\n");
         }
         add_drive_lines(&t, d, L"");
         if (d->lost_ms)
-            wadd(&t, L"\r\nIts copies still restore if it turns up, but they no longer count toward your full copies, so the "
-                     L"files it held are backed up again to your other drives. If you find it, choose Found it.\r\n");
+            wadd(&t, T(L"\r\nIts copies still restore if it turns up, but they no longer count toward your full copies, so the "
+                     L"files it held are backed up again to your other drives. If you find it, choose Found it.\r\n"));
         SetDlgItemTextW(dlg, IDC_DRIVE_INFO, t.p ? t.p : L"");
-        SetDlgItemTextW(dlg, IDC_DRIVE_LOST, d->lost_ms ? L"Found it" : L"Mark lost or broken...");
+        SetDlgItemTextW(dlg, IDC_DRIVE_LOST, d->lost_ms ? T(L"Found it") : T(L"Mark lost or broken..."));
         EnableWindow(GetDlgItem(dlg, IDC_DRIVE_LOST), strcmp(d->kind, "drive") == 0);
         free(t.p);
         wchar_t *name = widen(d->label), *loc = widen(d->location);
@@ -2336,7 +2692,7 @@ static void cmd_drives(void)
 {
     drive_list dl = load_drives();
     if (!dl.n) {
-        MessageBoxW(g_main, L"No drives yet. Use Back up to set one up.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"No drives yet. Use Back up to set one up."), APP_NAME, MB_ICONINFORMATION);
         free(dl.items);
         return;
     }
@@ -2345,12 +2701,12 @@ static void cmd_drives(void)
         const drive_snap *d = &dl.items[i];
         wchar_t *label = widen(d->label), *loc = widen(d->location), text[600];
         swprintf(text, 600, L"%ls%ls%ls%ls", label, *loc ? L"  (" : L"", loc, *loc ? L")" : L"");
-        if (d->secondary) wcsncat(text, L"  - extra place for starred files", 599 - wcslen(text));
-        if (strcmp(d->kind, "drive") != 0) wcsncat(text, L"  - Cloud account from an earlier version (not supported in this version)", 599 - wcslen(text));
-        else if (d->connected) wcsncat(text, L"  - plugged in", 599 - wcslen(text));
-        if (d->lost_ms) wcsncat(text, strcmp(d->lost_why, "broken") == 0 ? L"  - marked broken" : L"  - marked lost", 599 - wcslen(text));
-        else if (replace_advice(d)) wcsncat(text, L"  - its health data warns", 599 - wcslen(text));
-        else if (d->check_due) wcsncat(text, L"  - due for a check", 599 - wcslen(text));
+        if (d->secondary) wcsncat(text, T(L"  - extra place for starred files"), 599 - wcslen(text));
+        if (strcmp(d->kind, "drive") != 0) wcsncat(text, T(L"  - Cloud account from an earlier version (not supported in this version)"), 599 - wcslen(text));
+        else if (d->connected) wcsncat(text, T(L"  - plugged in"), 599 - wcslen(text));
+        if (d->lost_ms) wcsncat(text, strcmp(d->lost_why, "broken") == 0 ? T(L"  - marked broken") : T(L"  - marked lost"), 599 - wcslen(text));
+        else if (replace_advice(d)) wcsncat(text, T(L"  - its health data warns"), 599 - wcslen(text));
+        else if (d->check_due) wcsncat(text, T(L"  - due for a check"), 599 - wcslen(text));
         AppendMenuW(m, MF_STRING, (UINT_PTR)(ID_MENU_DRIVE_BASE + i), text);
         free(label);
         free(loc);
@@ -2392,11 +2748,11 @@ static void update_set_bars(void)
         format_bytes(s->bytes_done, done, 64);
         format_bytes(s->bytes_total, total, 64);
         if (s->files_total == 0)
-            swprintf(text, 256, L"Full copy %d of %d: nothing to back up yet", s->set, n);
+            swprintf(text, 256, T(L"Full copy %d of %d: nothing to back up yet"), s->set, n);
         else if (s->files_done >= s->files_total)
-            swprintf(text, 256, L"Full copy %d of %d: complete, %lld files (%ls)", s->set, n, (long long)s->files_total, total);
+            swprintf(text, 256, T(L"Full copy %d of %d: complete, %lld files (%ls)"), s->set, n, (long long)s->files_total, total);
         else
-            swprintf(text, 256, L"Full copy %d of %d: %d%%, %lld of %lld files (%ls of %ls)", s->set, n, pct,
+            swprintf(text, 256, T(L"Full copy %d of %d: %d%%, %lld of %lld files (%ls of %ls)"), s->set, n, pct,
                      (long long)s->files_done, (long long)s->files_total, done, total);
         set_bar(g_set_bar[i], pct);
         SetWindowTextW(g_set_text[i], text);
@@ -2416,8 +2772,8 @@ static void update_drives_label(void)
 {
     if (g_busy) return; /* the catalog belongs to the running job */
     if (!g_cat) {
-        SetWindowTextW(g_drives, L"No database is open. Open one or create a new one below; to start again from a backup drive, "
-                                 L"use File > Recover.");
+        SetWindowTextW(g_drives, T(L"No database is open. Open one or create a new one below; to start again from a backup drive, "
+                                 L"use File > Recover."));
         update_set_bars();
         return;
     }
@@ -2441,52 +2797,54 @@ static void update_drives_label(void)
         total++;
         if (!d->connected) continue;
         wchar_t *l = widen(d->label), *root = widen(d->root);
-        wadd(&t, L"%ls%ls (%ls): ", connected ? L"   " : L"Plugged in: ", l, root);
+        wadd(&t, L"%ls%ls (%ls): ", connected ? L"   " : T(L"Plugged in: "), l, root);
         connected++;
         free(l);
         free(root);
         if (d->lost_ms) {
-            wadd(&t, L"marked %ls.", strcmp(d->lost_why, "broken") == 0 ? L"broken" : L"lost");
+            wadd(&t, T(L"marked %ls."), strcmp(d->lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"));
             continue;
         }
         bd_backup_preview_info pv;
         if (bd_backup_preview(g_cat, d->id, 0, &pv) != BD_OK) {
-            wadd(&t, L"cannot tell what a backup would copy.");
+            wadd(&t, T(L"cannot tell what a backup would copy."));
             continue;
         }
         wchar_t size[64], shortb[64];
         format_bytes(pv.bytes_to_copy, size, 64);
-        if (pv.files_to_copy == 0) wadd(&t, L"up to date.");
-        else wadd(&t, L"%lld file%ls (%ls) to back up", (long long)pv.files_to_copy, pv.files_to_copy == 1 ? L"" : L"s", size);
+        if (pv.files_to_copy == 0) wadd(&t, T(L"up to date."));
+        else wadd(&t, TN(pv.files_to_copy, L"%lld file (%ls) to back up", L"%lld files (%ls) to back up"), (long long)pv.files_to_copy, size);
         if (pv.files_to_copy && pv.bytes_short > 0) {
             format_bytes(pv.bytes_short, shortb, 64);
-            wadd(&t, L", about %ls will not fit", shortb);
+            wadd(&t, T(L", about %ls will not fit"), shortb);
         }
         if (pv.files_to_copy) wadd(&t, L".");
-        if (pv.mass_change) wadd(&t, L" Many files changed at once: look before backing up.");
-        if (d->check_due) wadd(&t, L" Due for a check.");
+        if (pv.mass_change) wadd(&t, T(L" Many files changed at once: look before backing up."));
+        if (d->check_due) wadd(&t, T(L" Due for a check."));
     }
     if (total == 0) {
         free(t.p);
-        t.p = _wcsdup(L"No backup drives yet. Use Back up to set one up.");
+        t.p = _wcsdup(T(L"No backup drives yet. Use Back up to set one up."));
     } else if (connected == 0) {
         wchar_t none[256];
-        swprintf(none, 256, L"None of your %d backup drive%ls are plugged in. Plug one in to back up.", total, total == 1 ? L"" : L"s");
+        swprintf(none, 256, TN(total, L"Your %d backup drive is not plugged in. Plug it in to back up.",
+                               L"None of your %d backup drives are plugged in. Plug one in to back up."), total);
         free(t.p);
         t.p = _wcsdup(none);
     }
     if (places && place_wait)
-        wadd(&t, L"   Extra places: %lld starred file%ls to copy.", (long long)place_wait, place_wait == 1 ? L"" : L"s");
+        wadd(&t, TN(place_wait, L"   Extra places: %lld starred file to copy.", L"   Extra places: %lld starred files to copy."), (long long)place_wait);
     else if (places)
-        wadd(&t, L"   Extra places: up to date.");
+        wadd(&t, T(L"   Extra places: up to date."));
     SetWindowTextW(g_drives, t.p ? t.p : L"");
     free(t.p);
     free(dl.items);
     /* The button says how many files are short of the target. */
     bd_risk_stats rs;
-    wchar_t risk[64] = L"At risk...";
+    wchar_t risk[64];
+    wcscpy(risk, T(L"At risk..."));
     if (bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK && rs.files_at_risk > 0)
-        swprintf(risk, 64, L"At risk (%lld)...", (long long)rs.files_at_risk);
+        swprintf(risk, 64, T(L"At risk (%lld)..."), (long long)rs.files_at_risk);
     SetWindowTextW(g_buttons[7], risk);
     update_set_bars();
 }
@@ -2502,7 +2860,7 @@ static void lv_columns(HWND lv, const wchar_t **names, const int *widths, int n)
         LVCOLUMNW c;
         memset(&c, 0, sizeof(c));
         c.mask = LVCF_TEXT | LVCF_WIDTH;
-        c.pszText = (wchar_t *)names[i];
+        c.pszText = (wchar_t *)T(names[i]); /* the tables mark their names with N_ */
         c.cx = S(widths[i]);
         ListView_InsertColumn(lv, i, &c);
     }
@@ -2545,8 +2903,8 @@ static int risk_file_cb(void *ctx, const bd_risk_info *r)
     swprintf(places, 16, L"%d", r->places);
     format_bytes(r->size, size, 64);
     note[0] = 0;
-    if (r->older_copies) wcscat(note, L"Changed since its last backup. ");
-    if (r->unknown_place) wcscat(note, L"On a drive with no place set.");
+    if (r->older_copies) wcscat(note, T(L"Changed since its last backup. "));
+    if (r->unknown_place) wcscat(note, T(L"On a drive with no place set."));
     const wchar_t *cells[] = {file, copies, places, size, note};
     lv_row(f->lv, cells, 5);
     free(src);
@@ -2559,22 +2917,24 @@ static int risk_help_cb(void *ctx, const bd_risk_help *h)
     risk_fill_ctx *f = ctx;
     if (strcmp(h->kind, "drive") != 0) return 0; /* a cloud account from an earlier version: nothing can be backed up to it */
     wchar_t *label = widen(h->label), *loc = widen(h->location), name[300], files[32], size[64];
-    swprintf(name, 300, L"%ls%ls", label ? label : L"", h->connected ? L"  (plugged in)" : L"");
-    swprintf(files, 32, L"%lld file%ls", (long long)h->files, h->files == 1 ? L"" : L"s");
+    swprintf(name, 300, L"%ls%ls", label ? label : L"", h->connected ? T(L"  (plugged in)") : L"");
+    swprintf(files, 32, TN(h->files, L"%lld file", L"%lld files"), (long long)h->files);
     format_bytes(h->bytes, size, 64);
-    const wchar_t *kind = L"Drive";
-    wchar_t room[96] = L"unknown";
+    const wchar_t *kind = T(L"Drive");
+    wchar_t room[96];
+    wcsncpy(room, T(L"unknown"), 95);
+    room[95] = 0;
     if (h->free_bytes >= 0) {
         wchar_t fb[64];
         format_bytes(h->free_bytes, fb, 64);
-        swprintf(room, 96, L"%ls free%ls", fb, h->fits ? L", room for all of it" : L", not enough");
+        swprintf(room, 96, T(L"%ls free%ls"), fb, h->fits ? T(L", room for all of it") : T(L", not enough"));
     }
-    const wchar_t *cells[] = {name, kind, loc && *loc ? loc : L"(not set)", files, size, room};
+    const wchar_t *cells[] = {name, kind, loc && *loc ? loc : T(L"(not set)"), files, size, room};
     lv_row(f->lv, cells, 6);
     if (g_risk_media_n < 64) {
         g_risk_media[g_risk_media_n] = h->media_id;
         g_risk_connected[g_risk_media_n] = h->connected;
-        swprintf(g_risk_media_name[g_risk_media_n], 128, L"%ls%ls%ls%ls", label ? label : L"", loc && *loc ? L" (kept in " : L"",
+        swprintf(g_risk_media_name[g_risk_media_n], 128, L"%ls%ls%ls%ls", label ? label : L"", loc && *loc ? T(L" (kept in ") : L"",
                  loc && *loc ? loc : L"", loc && *loc ? L")" : L"");
         g_risk_media_n++;
     }
@@ -2595,16 +2955,21 @@ static void risk_fill(HWND dlg)
     wchar_t text[1024], size[64];
     format_bytes(st.bytes_at_risk, size, 64);
     if (st.files_total == 0)
-        swprintf(text, 1024, L"No files yet. Add a folder and scan it first.");
+        swprintf(text, 1024, T(L"No files yet. Add a folder and scan it first."));
     else if (st.files_at_risk == 0)
-        swprintf(text, 1024, L"All %lld files have at least %d copies in %d different places.", (long long)st.files_total, t.copies, t.places);
-    else
-        swprintf(text, 1024, L"%lld of %lld files (%ls) %ls fewer than %d copies in %d different places. %lld %ls no copy of %ls current version at all.",
-                 (long long)st.files_at_risk, (long long)st.files_total, size, st.files_at_risk == 1 ? L"has" : L"have", t.copies, t.places,
-                 (long long)st.files_no_copy, st.files_no_copy == 1 ? L"has" : L"have", st.files_no_copy == 1 ? L"its" : L"their");
+        swprintf(text, 1024, T(L"All %lld files have at least %d copies in %d different places."), (long long)st.files_total, t.copies, t.places);
+    else {
+        wchar_t short_of[600], none[300];
+        swprintf(short_of, 600, TN(st.files_at_risk, L"%lld of %lld files (%ls) has fewer than %d copies in %d different places.",
+                                   L"%lld of %lld files (%ls) have fewer than %d copies in %d different places."),
+                 (long long)st.files_at_risk, (long long)st.files_total, size, t.copies, t.places);
+        swprintf(none, 300, TN(st.files_no_copy, L"%lld has no copy of its current version at all.",
+                               L"%lld have no copy of their current version at all."), (long long)st.files_no_copy);
+        swprintf(text, 1024, L"%ls %ls", short_of, none);
+    }
     if (st.deleted_kept || st.old_versions_kept) {
         size_t len = wcslen(text);
-        swprintf(text + len, 1024 - len, L" Also kept: %lld deleted files (%lld short of the target) and %lld older versions (%lld short).",
+        swprintf(text + len, 1024 - len, T(L" Also kept: %lld deleted files (%lld short of the target) and %lld older versions (%lld short)."),
                  (long long)st.deleted_kept, (long long)st.deleted_short, (long long)st.old_versions_kept, (long long)st.old_versions_short);
     }
     SetDlgItemTextW(dlg, IDC_RISK_SUMMARY, text);
@@ -2617,14 +2982,14 @@ static void risk_fill(HWND dlg)
     g_risk_media_n = 0;
     if (st.files_at_risk) bd_list_risk_help(g_cat, risk_help_cb, &hc);
     if (st.files_at_risk && !hc.rows) {
-        const wchar_t *cells[] = {L"None of your drives would help. Set up another drive, or one kept somewhere else.", L"", L"", L"", L""};
+        const wchar_t *cells[] = {T(L"None of your drives would help. Set up another drive, or one kept somewhere else."), L"", L"", L"", L""};
         lv_row(help, cells, 5);
     }
     risk_fill_ctx fc = {files, 0};
     if (st.files_at_risk) bd_list_at_risk(g_cat, 0, risk_file_cb, &fc, NULL);
     if (st.files_at_risk > fc.rows) {
         wchar_t more[128];
-        swprintf(more, 128, L"... and %lld more", (long long)(st.files_at_risk - fc.rows));
+        swprintf(more, 128, T(L"... and %lld more"), (long long)(st.files_at_risk - fc.rows));
         const wchar_t *cells[] = {more, L"", L"", L"", L""};
         lv_row(files, cells, 5);
     }
@@ -2636,9 +3001,9 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
-        static const wchar_t *help_cols[] = {L"Drive", L"Kind", L"Kept in", L"Would help", L"Size", L"Free space"};
+        static const wchar_t *help_cols[] = {N_(L"Drive"), N_(L"Kind"), N_(L"Kept in"), N_(L"Would help"), N_(L"Size"), N_(L"Free space")};
         static const int help_w[] = {150, 60, 100, 80, 70, 190};
-        static const wchar_t *file_cols[] = {L"File", L"Copies", L"Places", L"Size", L"Note"};
+        static const wchar_t *file_cols[] = {N_(L"File"), N_(L"Copies"), N_(L"Places"), N_(L"Size"), N_(L"Note")};
         static const int file_w[] = {280, 56, 56, 70, 200};
         lv_columns(GetDlgItem(dlg, IDC_RISK_HELP), help_cols, help_w, 6);
         lv_columns(GetDlgItem(dlg, IDC_RISK_FILES), file_cols, file_w, 5);
@@ -2659,12 +3024,12 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) == IDC_RISK_BACKUP) {
             int row = ListView_GetNextItem(GetDlgItem(dlg, IDC_RISK_HELP), -1, LVNI_SELECTED);
             if (row < 0 || row >= g_risk_media_n) {
-                MessageBoxW(dlg, L"Pick a drive in the list first.", APP_NAME, MB_ICONINFORMATION);
+                MessageBoxW(dlg, T(L"Pick a drive in the list first."), APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
             }
             if (!g_risk_connected[row]) {
                 wchar_t m[400];
-                swprintf(m, 400, L"Plug in %ls first, then try again.", g_risk_media_name[row]);
+                swprintf(m, 400, T(L"Plug in %ls first, then try again."), g_risk_media_name[row]);
                 MessageBoxW(dlg, m, APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
             }
@@ -2680,11 +3045,11 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             if (s == BD_OK) s = bd_catalog_save(g_cat);
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
-                MessageBoxW(dlg, e ? e : L"Could not change the target.", APP_NAME, MB_ICONWARNING);
+                MessageBoxW(dlg, e ? e : T(L"Could not change the target."), APP_NAME, MB_ICONWARNING);
                 free(e);
                 return TRUE;
             }
-            log_append(L"The number of full copies to keep changed.");
+            log_append(T(L"The number of full copies to keep changed."));
             risk_fill(dlg);
             return TRUE;
         }
@@ -2726,7 +3091,7 @@ static void table_count(int64_t n, int64_t bytes, wchar_t *out, size_t cap)
 
 static void table_drives(HWND lv)
 {
-    static const wchar_t *cols[] = {L"Drive", L"Plugged in", L"As it is now", L"Changed since", L"Not on it", L"Last backup", L"Last check", L"Problems"};
+    static const wchar_t *cols[] = {N_(L"Drive"), N_(L"Plugged in"), N_(L"As it is now"), N_(L"Changed since"), N_(L"Not on it"), N_(L"Last backup"), N_(L"Last check"), N_(L"Problems")};
     static const int w[] = {130, 60, 100, 100, 100, 150, 150, 160};
     lv_columns(lv, cols, w, 8);
     drive_list dl = load_drives();
@@ -2736,7 +3101,10 @@ static void table_drives(HWND lv)
         if (strcmp(d->kind, "drive") != 0) continue;
         bd_media_status ms;
         if (bd_media_status_get(g_cat, d->id, &ms) != BD_OK) continue;
-        wchar_t name[600], cur[96], behind[96], notit[96], backup[128] = L"Never", check[128] = L"Never", probs[160] = L"";
+        wchar_t name[600], cur[96], behind[96], notit[96], backup[128], check[128], probs[160] = L"";
+        wcsncpy(backup, T(L"Never"), 127);
+        backup[127] = 0;
+        wcscpy(check, backup);
         drive_name(d->label, d->location, name, 600);
         table_count(ms.files_current, ms.bytes_current, cur, 96);
         table_count(ms.files_behind, ms.bytes_behind, behind, 96);
@@ -2745,37 +3113,36 @@ static void table_drives(HWND lv)
             wchar_t when[64];
             format_time_ms(ms.last_backup_ms, when, 64);
             const char *st = ms.last_backup_status;
-            swprintf(backup, 128, L"%ls%ls", when, !ms.last_backup_end_ms ? L", did not finish" : strcmp(st, "done") == 0 ? L""
-                                                   : strcmp(st, "partial") == 0 ? L", with problems" : strcmp(st, "stopped") == 0 ? L", stopped"
-                                                   : L", failed");
+            swprintf(backup, 128, L"%ls%ls", when, !ms.last_backup_end_ms ? T(L", did not finish") : strcmp(st, "done") == 0 ? L""
+                                                   : strcmp(st, "partial") == 0 ? T(L", with problems") : strcmp(st, "stopped") == 0 ? T(L", stopped")
+                                                   : T(L", failed"));
         }
         if (ms.last_check_ms) {
-            wchar_t when[64], *kind = widen(ms.last_check_kind);
+            wchar_t when[64];
             format_time_ms(ms.last_check_ms, when, 64);
-            swprintf(check, 128, L"%ls, %ls", when, kind ? kind : L"check");
-            free(kind);
+            swprintf(check, 128, L"%ls, %ls", when, strcmp(ms.last_check_kind, "read back") == 0 ? T(L"read back") : T(L"check"));
         }
-        if (ms.copies_bad) swprintf(probs, 160, L"%lld missing or damaged", (long long)ms.copies_bad);
+        if (ms.copies_bad) swprintf(probs, 160, T(L"%lld missing or damaged"), (long long)ms.copies_bad);
         if (ms.copies_never_read) {
             size_t len = wcslen(probs);
-            swprintf(probs + len, 160 - len, L"%ls%lld never read back", len ? L", " : L"", (long long)ms.copies_never_read);
+            swprintf(probs + len, 160 - len, T(L"%ls%lld never read back"), len ? L", " : L"", (long long)ms.copies_never_read);
         }
         if (d->lost_ms) {
             size_t len = wcslen(probs);
-            swprintf(probs + len, 160 - len, L"%lsmarked %ls", len ? L", " : L"", strcmp(d->lost_why, "broken") == 0 ? L"broken" : L"lost");
+            swprintf(probs + len, 160 - len, T(L"%lsmarked %ls"), len ? L", " : L"", strcmp(d->lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"));
         } else if (d->check_due) {
             size_t len = wcslen(probs);
-            swprintf(probs + len, 160 - len, L"%lsdue for a check", len ? L", " : L"");
+            swprintf(probs + len, 160 - len, T(L"%lsdue for a check"), len ? L", " : L"");
         }
-        const wchar_t *cells[] = {name, d->connected ? L"Yes" : L"No", cur, behind, notit, backup, check, probs};
+        const wchar_t *cells[] = {name, d->connected ? T(L"Yes") : T(L"No"), cur, behind, notit, backup, check, probs};
         lv_row(lv, cells, 8);
         g_table_ids[g_table_n++] = d->id;
     }
     free(dl.items);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    g_table_n ? L"Where each drive stands, from the database (the drives need not be plugged in). \"Changed since\": only an "
-                                L"older version of the file is on the drive. Double-click a drive for its details."
-                              : L"No drives yet. Use Back up to set one up.");
+                    g_table_n ? T(L"Where each drive stands, from the database (the drives need not be plugged in). \"Changed since\": only an "
+                                L"older version of the file is on the drive. Double-click a drive for its details.")
+                              : T(L"No drives yet. Use Back up to set one up."));
 }
 
 typedef struct { HWND lv; int rows; } table_rows;
@@ -2797,7 +3164,7 @@ static int table_largest_cb(void *ctx, const bd_risk_info *r)
 
 static void table_largest(HWND lv)
 {
-    static const wchar_t *cols[] = {L"Size", L"Backup root", L"File", L"Good copies", L"Places"};
+    static const wchar_t *cols[] = {N_(L"Size"), N_(L"Backup root"), N_(L"File"), N_(L"Good copies"), N_(L"Places")};
     static const int w[] = {80, 110, 360, 80, 60};
     lv_columns(lv, cols, w, 5);
     table_rows t = {lv, 0};
@@ -2805,8 +3172,8 @@ static void table_largest(HWND lv)
     bd_list_largest(g_cat, 200, table_largest_cb, &t);
     SetCursor(old);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    t.rows ? L"The largest files in your backup roots, largest first (the top 200): where the space on your drives goes."
-                           : L"No files yet. Add a backup root and scan it.");
+                    t.rows ? T(L"The largest files in your backup roots, largest first (the top 200): where the space on your drives goes.")
+                           : T(L"No files yet. Add a backup root and scan it."));
 }
 
 typedef struct { HWND lv; int rows, cap; } damaged_rows;
@@ -2833,7 +3200,7 @@ static int table_damaged_cb(void *ctx, const bd_damaged_info *d)
 
 static void table_damaged(HWND lv)
 {
-    static const wchar_t *cols[] = {L"Backup root", L"File", L"Size"};
+    static const wchar_t *cols[] = {N_(L"Backup root"), N_(L"File"), N_(L"Size")};
     static const int w[] = {120, 440, 80};
     lv_columns(lv, cols, w, 3);
     damaged_rows t = {lv, 0, 0};
@@ -2842,15 +3209,15 @@ static void table_damaged(HWND lv)
     bd_list_damaged(g_cat, table_damaged_cb, &t);
     g_table_n = t.rows;
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    t.rows ? L"These files changed although their size and modified time did not: that is what a failing disk or bit rot "
+                    t.rows ? T(L"These files changed although their size and modified time did not: that is what a failing disk or bit rot "
                              L"looks like. Their copies on your drives are the good ones: restore a file to get it back. If you changed "
-                             L"one on purpose, pick it and choose Keep as it is now."
-                           : L"No damaged files. A bit-rot scan (Database > Bit-rot scan) reads every file again to look for them.");
+                             L"one on purpose, pick it and choose Keep as it is now.")
+                           : T(L"No damaged files. A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them."));
 }
 
 static void table_conflicts(HWND lv)
 {
-    static const wchar_t *cols[] = {L"File", L"Was going to", L"Backup has", L"Already there"};
+    static const wchar_t *cols[] = {N_(L"File"), N_(L"Was going to"), N_(L"Backup has"), N_(L"Already there")};
     static const int w[] = {260, 240, 150, 150};
     lv_columns(lv, cols, w, 4);
     for (int i = 0; i < g_n_conflicts; i++) {
@@ -2859,7 +3226,7 @@ static void table_conflicts(HWND lv)
         format_bytes(c->want_size, sz, 64);
         format_ns(c->want_mtime_ns, when, 64);
         swprintf(want, 160, L"%ls, %ls", sz, when);
-        if (c->have_size < 0) wcscpy(have, L"a folder");
+        if (c->have_size < 0) wcscpy(have, T(L"a folder"));
         else {
             format_bytes(c->have_size, sz, 64);
             format_ns(c->have_mtime_ns, when, 64);
@@ -2870,9 +3237,9 @@ static void table_conflicts(HWND lv)
     }
     g_table_n = g_n_conflicts;
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    g_n_conflicts ? L"The last restore left these alone because another file was already where each would go: nothing "
-                                    L"was overwritten. Compare them, move or rename the one that is there, and restore again."
-                                  : L"The last restore left nothing alone.");
+                    g_n_conflicts ? T(L"The last restore left these alone because another file was already where each would go: nothing "
+                                    L"was overwritten. Compare them, move or rename the one that is there, and restore again.")
+                                  : T(L"The last restore left nothing alone."));
 }
 
 static int table_changed_cb(void *ctx, const bd_changed_info *c)
@@ -2881,9 +3248,9 @@ static int table_changed_cb(void *ctx, const bd_changed_info *c)
     if (t->rows >= 5000) return 1;
     wchar_t *src = widen(c->source_name), *rel = widen(c->rel_path), was[96], now[96], when[64], a[64];
     format_bytes(c->size_on_drive, a, 64);
-    swprintf(was, 96, L"v%lld, %ls", (long long)c->version_on_drive, a);
+    swprintf(was, 96, T(L"v%lld, %ls"), (long long)c->version_on_drive, a);
     format_bytes(c->size_now, a, 64);
-    swprintf(now, 96, L"v%lld, %ls", (long long)c->version_now, a);
+    swprintf(now, 96, T(L"v%lld, %ls"), (long long)c->version_now, a);
     format_time_ms(c->changed_ms, when, 64);
     wchar_t where[1200];
     swprintf(where, 1200, L"%ls\\%ls", src ? src : L"", rel ? rel : L"");
@@ -2897,14 +3264,14 @@ static int table_changed_cb(void *ctx, const bd_changed_info *c)
 
 static void table_changed(HWND lv)
 {
-    static const wchar_t *cols[] = {L"File", L"On the drive", L"Now", L"Changed"};
+    static const wchar_t *cols[] = {N_(L"File"), N_(L"On the drive"), N_(L"Now"), N_(L"Changed")};
     static const int w[] = {380, 110, 110, 120};
     lv_columns(lv, cols, w, 4);
     table_rows t = {lv, 0};
     bd_list_changed_on_media(g_cat, g_table_media, table_changed_cb, &t);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    L"These files changed since their copy on this drive was made (the first 5000). If you did not change them, "
-                    L"do not trust them as they are: restore them from the drive.");
+                    T(L"These files changed since their copy on this drive was made (the first 5000). If you did not change them, "
+                    L"do not trust them as they are: restore them from the drive."));
 }
 
 static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -2913,11 +3280,11 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
-        static const wchar_t *titles[] = {L"Status of every drive", L"Largest files", L"Damaged files", L"Left alone by the last restore",
-                                          L"Changed since the copy on the drive"};
-        static const wchar_t *buttons[] = {L"Details...", L"", L"Keep as it is now", L"Open in Explorer", L""};
-        SetWindowTextW(dlg, titles[g_table_mode]);
-        SetDlgItemTextW(dlg, IDC_TABLE_OPEN, buttons[g_table_mode]);
+        static const wchar_t *titles[] = {N_(L"Status of every drive"), N_(L"Largest files"), N_(L"Damaged files"), N_(L"Left alone by the last restore"),
+                                          N_(L"Changed since the copy on the drive")};
+        static const wchar_t *buttons[] = {N_(L"Details..."), L"", N_(L"Keep as it is now"), N_(L"Open in Explorer"), L""};
+        SetWindowTextW(dlg, T(titles[g_table_mode]));
+        SetDlgItemTextW(dlg, IDC_TABLE_OPEN, T(buttons[g_table_mode]));
         ShowWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), *buttons[g_table_mode] ? SW_SHOW : SW_HIDE);
         HWND lv = GetDlgItem(dlg, IDC_TABLE_LIST);
         g_table_n = 0;
@@ -2934,17 +3301,17 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             HWND lv = GetDlgItem(dlg, IDC_TABLE_LIST);
             int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
             if (row < 0 || row >= g_table_n) {
-                MessageBoxW(dlg, L"Pick a row in the list first.", APP_NAME, MB_ICONINFORMATION);
+                MessageBoxW(dlg, T(L"Pick a row in the list first."), APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
             }
             if (g_table_mode == TABLE_DAMAGED) {
-                if (MessageBoxW(dlg, L"Keep this file as it is now? It is recorded as a new version and backed up like any "
-                                     L"change; the older copies on your drives stay as they are.",
+                if (MessageBoxW(dlg, T(L"Keep this file as it is now? It is recorded as a new version and backed up like any "
+                                     L"change; the older copies on your drives stay as they are."),
                                 APP_NAME, MB_YESNO | MB_ICONQUESTION) != IDYES)
                     return TRUE;
                 if (bd_damaged_accept(g_cat, g_table_nodes[row]) != BD_OK) {
                     wchar_t *e = widen(bd_catalog_error(g_cat));
-                    MessageBoxW(dlg, e ? e : L"Could not record it.", APP_NAME, MB_ICONWARNING);
+                    MessageBoxW(dlg, e ? e : T(L"Could not record it."), APP_NAME, MB_ICONWARNING);
                     free(e);
                     return TRUE;
                 }
@@ -2997,16 +3364,18 @@ static void show_changed(int64_t media_id)
 /* Every file and where it is, as a CSV file for a spreadsheet. */
 static void cmd_export(void)
 {
-    wchar_t path[MAX_PATH * 2] = L"BRODALF files.csv";
+    wchar_t path[MAX_PATH * 2];
+    wcscpy(path, T(L"BRODALF files.csv"));
     OPENFILENAMEW of;
     memset(&of, 0, sizeof(of));
     of.lStructSize = sizeof(of);
     of.hwndOwner = g_main;
-    of.lpstrFilter = L"CSV file (*.csv)\0*.csv\0All files\0*.*\0";
+    wchar_t filter_text[256];
+    of.lpstrFilter = file_filter(filter_text, 256, 4, L"CSV file (*.csv)", L"*.csv", L"All files", L"*.*");
     of.lpstrFile = path;
     of.nMaxFile = MAX_PATH * 2;
     of.lpstrDefExt = L"csv";
-    of.lpstrTitle = L"Export the file list";
+    of.lpstrTitle = T(L"Export the file list");
     of.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&of)) return;
     char *u = narrow(path);
@@ -3017,13 +3386,13 @@ static void cmd_export(void)
     free(u);
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat)), m[1200];
-        swprintf(m, 1200, L"Could not export the file list: %ls", e && *e ? e : L"the file could not be written.");
+        swprintf(m, 1200, T(L"Could not export the file list: %ls"), e && *e ? e : T(L"the file could not be written."));
         MessageBoxW(g_main, m, APP_NAME, MB_ICONWARNING);
         free(e);
         return;
     }
     wchar_t line[MAX_PATH * 2 + 128];
-    swprintf(line, MAX_PATH * 2 + 128, L"Exported %lld files to %ls.", (long long)rows, path);
+    swprintf(line, MAX_PATH * 2 + 128, T(L"Exported %lld files to %ls."), (long long)rows, path);
     log_append(line);
 }
 
@@ -3055,7 +3424,7 @@ static char *pick_folder(HWND owner, const wchar_t *title)
 }
 
 static wchar_t g_label_buf[256];
-static int g_label_encrypt;
+static int g_label_encrypt, g_label_hide;
 static wchar_t g_label_location[256];
 
 static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -3068,13 +3437,21 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf);
         g_label_location[0] = 0;
         CheckDlgButton(dlg, IDC_LABEL_ENCRYPT, g_label_encrypt_default ? BST_CHECKED : BST_UNCHECKED);
+        EnableWindow(GetDlgItem(dlg, IDC_LABEL_HIDE), g_label_encrypt_default); /* hiding names needs encryption */
         SendDlgItemMessageW(dlg, IDC_LABEL_EDIT, EM_SETSEL, 0, -1);
         return TRUE;
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_LABEL_ENCRYPT) {
+            int on = IsDlgButtonChecked(dlg, IDC_LABEL_ENCRYPT) == BST_CHECKED;
+            EnableWindow(GetDlgItem(dlg, IDC_LABEL_HIDE), on);
+            if (!on) CheckDlgButton(dlg, IDC_LABEL_HIDE, BST_UNCHECKED);
+            return TRUE;
+        }
         if (LOWORD(wp) == IDOK) {
             GetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf, 256);
             if (!g_label_buf[0]) { MessageBeep(MB_ICONWARNING); return TRUE; }
             g_label_encrypt = IsDlgButtonChecked(dlg, IDC_LABEL_ENCRYPT) == BST_CHECKED;
+            g_label_hide = g_label_encrypt && IsDlgButtonChecked(dlg, IDC_LABEL_HIDE) == BST_CHECKED;
             GetDlgItemTextW(dlg, IDC_LABEL_LOCATION, g_label_location, 256);
             EndDialog(dlg, IDOK);
             return TRUE;
@@ -3103,7 +3480,7 @@ static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         if (GetDlgItem(dlg, IDC_PASS_RECOVERY) && g_pass_mode != 1) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
         if (g_pass_mode == 2) {
             /* A recovery key is long and read off paper: show what is typed. */
-            SetWindowTextW(dlg, L"Enter the recovery key");
+            SetWindowTextW(dlg, T(L"Enter the recovery key"));
             SendDlgItemMessageW(dlg, IDC_PASS_EDIT, EM_SETPASSWORDCHAR, 0, 0);
         }
         SetFocus(GetDlgItem(dlg, IDC_PASS_EDIT));
@@ -3117,11 +3494,11 @@ static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 int same = wcscmp(again, g_pass_buf) == 0;
                 SecureZeroMemory(again, sizeof(again));
                 if (wcslen(g_pass_buf) < 8) {
-                    MessageBoxW(dlg, L"Use at least 8 characters. A few unrelated words make a good passphrase.", APP_NAME, MB_ICONWARNING);
+                    MessageBoxW(dlg, T(L"Use at least 8 characters. A few unrelated words make a good passphrase."), APP_NAME, MB_ICONWARNING);
                     return TRUE;
                 }
                 if (!same) {
-                    MessageBoxW(dlg, L"The two passphrases are different. Type them again.", APP_NAME, MB_ICONWARNING);
+                    MessageBoxW(dlg, T(L"The two passphrases are different. Type them again."), APP_NAME, MB_ICONWARNING);
                     return TRUE;
                 }
                 g_pass_catalog = IsDlgButtonChecked(dlg, IDC_PASS_CATALOG) == BST_CHECKED;
@@ -3158,7 +3535,7 @@ static char *ask_unlock_secret(HWND owner, const wchar_t *text, int allow_recove
     g_pass_mode = allow_recovery ? 1 : 0;
     INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
     if (rc == IDC_PASS_RECOVERY) {
-        g_pass_text = L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.";
+        g_pass_text = T(L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.");
         g_pass_mode = 2;
         rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
         *is_recovery = 1;
@@ -3175,8 +3552,8 @@ static void cmd_sheet(int with_key);
 /* After unlocking with the recovery key the passphrase may be lost. */
 static void offer_new_passphrase(HWND owner)
 {
-    if (MessageBoxW(owner, L"Unlocked with the recovery key. If you no longer know the passphrase, set a new one now. "
-                           L"The recovery key keeps working.\n\nSet a new passphrase now?",
+    if (MessageBoxW(owner, T(L"Unlocked with the recovery key. If you no longer know the passphrase, set a new one now. "
+                           L"The recovery key keeps working.\n\nSet a new passphrase now?"),
                     APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES)
         set_passphrase_ui();
 }
@@ -3203,8 +3580,8 @@ static int unlock_ui(const wchar_t *why)
             if (recovery) offer_new_passphrase(g_main);
             return 1;
         }
-        MessageBoxW(g_main, recovery ? L"That recovery key is not right. Check it against the sheet and try again."
-                                     : L"That passphrase is not right. Try again.",
+        MessageBoxW(g_main, recovery ? T(L"That recovery key is not right. Check it against the sheet and try again.")
+                                     : T(L"That passphrase is not right. Try again."),
                     APP_NAME, MB_ICONWARNING);
     }
 }
@@ -3213,10 +3590,10 @@ static int unlock_ui(const wchar_t *why)
 static int set_passphrase_ui(void)
 {
     int changing = bd_catalog_has_passphrase(g_cat);
-    if (changing && !unlock_ui(L"Enter the current passphrase first.")) return 0;
+    if (changing && !unlock_ui(T(L"Enter the current passphrase first."))) return 0;
     char *p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE,
-                             L"The passphrase protects encrypted drives and, if you choose, this database file. "
-                             L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone.");
+                             T(L"The passphrase protects encrypted drives and, if you choose, this database file. "
+                             L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone."));
     if (!p) return 0;
     SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
     bd_status s = bd_catalog_set_passphrase(g_cat, p);
@@ -3225,14 +3602,14 @@ static int set_passphrase_ui(void)
     if (s == BD_OK) s = bd_catalog_save(g_cat);
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        report_error(g_main, e && e[0] ? e : L"Could not set the passphrase.");
+        report_error(g_main, e && e[0] ? e : T(L"Could not set the passphrase."));
         free(e);
         return 0;
     }
-    log_append(changing ? L"Passphrase changed." : L"Passphrase set.");
+    log_append(changing ? T(L"Passphrase changed.") : T(L"Passphrase set."));
     if (!changing && g_main &&
-        MessageBoxW(g_main, L"Print a recovery sheet now? It lists your drives and holds a recovery key, which opens your "
-                            L"encrypted backups if you ever forget the passphrase.",
+        MessageBoxW(g_main, T(L"Print a recovery sheet now? It lists your drives and holds a recovery key, which opens your "
+                            L"encrypted backups if you ever forget the passphrase."),
                     APP_NAME, MB_YESNO | MB_ICONQUESTION) == IDYES)
         cmd_sheet(1);
     return 1;
@@ -3261,7 +3638,7 @@ static void cmd_risk(void)
     INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_RISK), g_main, risk_proc);
     update_drives_label();
     if (r != IDC_RISK_BACKUP || g_risk_pick <= 0) return;
-    if (media_encryption(g_risk_pick).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it.")) return;
+    if (media_encryption(g_risk_pick).encrypted && !unlock_ui(T(L"This drive is encrypted. Enter the passphrase to back up to it."))) return;
     job *j = new_job(JOB_BACKUP);
     if (!j) return;
     j->media_id = g_risk_pick;
@@ -3287,7 +3664,7 @@ static int media_one_cb(void *ctx, const bd_media_info *m)
 static void drive_name(const char *label, const char *location, wchar_t *out, size_t cap)
 {
     wchar_t *l = widen(label), *loc = widen(location);
-    if (loc && *loc) swprintf(out, cap, L"%ls (kept in %ls)", l ? l : L"", loc);
+    if (loc && *loc) swprintf(out, cap, T(L"%ls (kept in %ls)"), l ? l : L"", loc);
     else swprintf(out, cap, L"%ls", l ? l : L"");
     free(l);
     free(loc);
@@ -3297,7 +3674,7 @@ static void drive_name(const char *label, const char *location, wchar_t *out, si
  * its checksum. */
 static void enqueue_check(int64_t id)
 {
-    if (media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to check its copies.")) return;
+    if (media_encryption(id).encrypted && !unlock_ui(T(L"This drive is encrypted. Enter the passphrase to check its copies."))) return;
     job *c = new_job(JOB_CHECK);
     if (!c) return;
     c->media_id = id;
@@ -3306,7 +3683,7 @@ static void enqueue_check(int64_t id)
 
 static void enqueue_verify(int64_t id)
 {
-    if (media_encryption(id).encrypted && !unlock_ui(L"This drive is encrypted. Enter the passphrase to read its copies.")) return;
+    if (media_encryption(id).encrypted && !unlock_ui(T(L"This drive is encrypted. Enter the passphrase to read its copies."))) return;
     job *v = new_job(JOB_VERIFY);
     if (!v) return;
     v->media_id = id;
@@ -3327,18 +3704,18 @@ static void check_drive(int64_t id)
     drive_name(o.label, o.location, name, 600);
     if (o.info.oldest_check_ms > 0) {
         format_time_ms(o.info.oldest_check_ms, since, 64);
-        swprintf(content, 1400, L"Some copies on %ls have not been read back since %ls.%ls Checking changes nothing on the drive.", name,
-                 since, o.info.check_due ? L" That is longer than Settings asks for, so a check is due." : L"");
+        swprintf(content, 1400, T(L"Some copies on %ls have not been read back since %ls.%ls Checking changes nothing on the drive."), name,
+                 since, o.info.check_due ? T(L" That is longer than Settings asks for, so a check is due.") : L"");
     } else
-        swprintf(content, 1400, L"Checking reads the copies on %ls and compares each one with its checksum. It changes nothing on the drive.", name);
+        swprintf(content, 1400, T(L"Checking reads the copies on %ls and compares each one with its checksum. It changes nothing on the drive."), name);
     int days = bd_option_get(g_cat, "verify_days");
     if (days > 0)
-        swprintf(verify, 400, L"Read back copies not read lately\nReads the copies not read back in the last %d days, and new ones. "
-                              L"A full check spread over time.", days);
+        swprintf(verify, 400, T(L"Read back copies not read lately\nReads the copies not read back in the last %d days, and new ones. "
+                              L"A full check spread over time."), days);
     else
-        swprintf(verify, 400, L"Read back every copy\nThe same as checking every copy (Settings has read-back set to every copy).");
+        swprintf(verify, 400, T(L"Read back every copy\nThe same as checking every copy (Settings has read-back set to every copy)."));
     TASKDIALOG_BUTTON b[2] = {
-        {611, L"Check every copy\nReads every copy and compares its size, time and checksum. Takes a while on a big drive."},
+        {611, T(L"Check every copy\nReads every copy and compares its size, time and checksum. Takes a while on a big drive.")},
         {612, verify},
     };
     TASKDIALOGCONFIG tc;
@@ -3349,7 +3726,7 @@ static void check_drive(int64_t id)
     tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
     tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
     tc.pszWindowTitle = APP_NAME;
-    tc.pszMainInstruction = L"How should BRODALF check the drive?";
+    tc.pszMainInstruction = T(L"How should BRODALF check the drive?");
     tc.pszContent = content;
     tc.cButtons = 2;
     tc.pButtons = b;
@@ -3385,7 +3762,7 @@ static void start_backup(job *b, int offer_scan)
         int64_t id = 0;
         if (bd_media_connect(g_cat, b->root, &id, NULL, NULL) != BD_OK || !id) {
             wchar_t *e = widen(bd_catalog_error(g_cat)), m[1200];
-            swprintf(m, 1200, L"BRODALF could not use that drive: %ls", e && *e ? e : L"it is not a BRODALF drive for this database.");
+            swprintf(m, 1200, T(L"BRODALF could not use that drive: %ls"), e && *e ? e : T(L"it is not a BRODALF drive for this database."));
             MessageBoxW(g_main, m, APP_NAME, MB_ICONWARNING);
             free(e);
             job_free(b);
@@ -3402,8 +3779,8 @@ static void start_backup(job *b, int offer_scan)
     bd_list_media(g_cat, media_one_cb, &o);
     if (o.found && o.info.lost_ms) {
         wchar_t m[1000];
-        swprintf(m, 1000, L"%ls is marked %ls, so nothing is backed up to it. If it is back and working, open Drives..., choose it "
-                          L"and press Found it.", name, strcmp(o.info.lost_why, "broken") == 0 ? L"broken" : L"lost");
+        swprintf(m, 1000, T(L"%ls is marked %ls, so nothing is backed up to it. If it is back and working, open Drives..., choose it "
+                          L"and press Found it."), name, strcmp(o.info.lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"));
         MessageBoxW(g_main, m, APP_NAME, MB_ICONINFORMATION);
         job_free(b);
         return;
@@ -3418,23 +3795,23 @@ static void start_backup(job *b, int offer_scan)
         TASKDIALOG_BUTTON btn[2];
         wchar_t title[700];
         if (pv.mass_change) {
-            swprintf(title, 700, L"Many files changed at once. Back up to %ls?", name);
-            wadd(&t, L"%lld of the %lld files whose copies on this drive were up to date have changed since. That many at once can "
+            swprintf(title, 700, T(L"Many files changed at once. Back up to %ls?"), name);
+            wadd(&t, T(L"%lld of the %lld files whose copies on this drive were up to date have changed since. That many at once can "
                      L"mean ransomware encrypted your files.\n\nBacking up overwrites nothing: the copies already on the drive stay as "
                      L"they are and the changed files go alongside them. If you did not change these files, look at them first, and "
-                     L"restore from this drive instead.",
+                     L"restore from this drive instead."),
                  (long long)pv.held_changed, (long long)pv.files_held);
             btn[0].nButtonID = 622;
-            btn[0].pszButtonText = L"Show the changed files";
+            btn[0].pszButtonText = T(L"Show the changed files");
             btn[1].nButtonID = 620;
-            btn[1].pszButtonText = L"Back up anyway\nThe copies already on the drive are kept.";
+            btn[1].pszButtonText = T(L"Back up anyway\nThe copies already on the drive are kept.");
         } else {
-            swprintf(title, 700, L"Scan your backup roots first?");
-            wadd(&t, L"Your backup roots have not been scanned yet, so BRODALF does not know of any files to put on %ls.", name);
+            swprintf(title, 700, T(L"Scan your backup roots first?"));
+            wadd(&t, T(L"Your backup roots have not been scanned yet, so BRODALF does not know of any files to put on %ls."), name);
             btn[0].nButtonID = 621;
-            btn[0].pszButtonText = L"Scan first, then back up";
+            btn[0].pszButtonText = T(L"Scan first, then back up");
             btn[1].nButtonID = 620;
-            btn[1].pszButtonText = L"Back up anyway\nOnly the database is saved to the drive.";
+            btn[1].pszButtonText = T(L"Back up anyway\nOnly the database is saved to the drive.");
         }
         TASKDIALOGCONFIG tc;
         memset(&tc, 0, sizeof(tc));
@@ -3491,11 +3868,12 @@ static void after_backup(job *j)
         wchar_t other[600];
         int64_t other_id = best->id;
         drive_name(best->label, best->location, other, 600);
-        swprintf(msg, 1600, L"%ls is full: %lld file%ls (%ls) did not fit. They wait for another drive.\n\nBack up to %ls now?", name,
-                 (long long)j->no_room, j->no_room == 1 ? L"" : L"s", size, other);
+        swprintf(msg, 1600, TN(j->no_room, L"%ls is full: %lld file (%ls) did not fit. It waits for another drive.\n\nBack up to %ls now?",
+                               L"%ls is full: %lld files (%ls) did not fit. They wait for another drive.\n\nBack up to %ls now?"),
+                 name, (long long)j->no_room, size, other);
         free(dl.items);
         if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES &&
-            (!media_encryption(other_id).encrypted || unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it."))) {
+            (!media_encryption(other_id).encrypted || unlock_ui(T(L"This drive is encrypted. Enter the passphrase to back up to it.")))) {
             job *b = new_job(JOB_BACKUP);
             if (b) {
                 b->media_id = other_id;
@@ -3505,11 +3883,13 @@ static void after_backup(job *j)
         return;
     }
     free(dl.items);
-    swprintf(msg, 1600,
-             L"%ls is full: %lld file%ls (%ls) did not fit. They wait for another drive.\n\n"
-             L"Plug in another backup drive (or set up a new one with Back up... > Another drive or folder) and back up to it. "
-             L"Each drive gets whatever it is missing.",
-             name, (long long)j->no_room, j->no_room == 1 ? L"" : L"s", size);
+    wchar_t full[600];
+    swprintf(full, 600, TN(j->no_room, L"%ls is full: %lld file (%ls) did not fit. It waits for another drive.",
+                           L"%ls is full: %lld files (%ls) did not fit. They wait for another drive."),
+             name, (long long)j->no_room, size);
+    swprintf(msg, 1600, L"%ls\n\n%ls", full,
+             T(L"Plug in another backup drive (or set up a new one with Back up... > Another drive or folder) and back up to it. "
+               L"Each drive gets whatever it is missing."));
     MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
 }
 
@@ -3521,8 +3901,8 @@ static int plan_text_cb(void *ctx, const bd_restore_step *st)
     wchar_t name[600], size[64];
     drive_name(st->label, st->location, name, 600);
     format_bytes(st->bytes, size, 64);
-    wadd(&p->t, L"    %d. %ls: %lld file%ls (%ls)%ls\n", ++p->n, name, (long long)st->files, st->files == 1 ? L"" : L"s",
-         size, st->connected ? L", plugged in" : L"");
+    wadd(&p->t, TN(st->files, L"    %d. %ls: %lld file (%ls)%ls\n", L"    %d. %ls: %lld files (%ls)%ls\n"), ++p->n, name,
+         (long long)st->files, size, st->connected ? T(L", plugged in") : L"");
     if (!st->connected) p->any_offline = 1;
     if (p->nid < 64) p->ids[p->nid++] = st->media_id;
     return 0;
@@ -3546,24 +3926,27 @@ static void after_restore(job *j)
     j->n_conf = j->cap_conf = 0;
     if (g_n_conflicts > 0) {
         wchar_t msg[600];
-        swprintf(msg, 600, L"%d file%ls left alone because another file was already where %ls would go. Nothing was overwritten.\n\n"
-                           L"Show them, to compare?", g_n_conflicts, g_n_conflicts == 1 ? L" was" : L"s were",
-                 g_n_conflicts == 1 ? L"it" : L"each");
+        swprintf(msg, 600, TN(g_n_conflicts, L"%d file was left alone because another file was already where it would go. "
+                                             L"Nothing was overwritten.\n\nShow them, to compare?",
+                              L"%d files were left alone because another file was already where each would go. "
+                              L"Nothing was overwritten.\n\nShow them, to compare?"),
+                 g_n_conflicts);
         if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION | MB_YESNO) == IDYES) cmd_table(TABLE_CONFLICTS);
     }
     if (j->deleted || j->version_id) {
         /* Not kept waiting: the user picks them again. */
         if (j->offline > 0) {
             wchar_t line[300];
-            swprintf(line, 300, L"%lld file%ls on drives that are not plugged in. Plug one in, then restore again.", (long long)j->offline,
-                     j->offline == 1 ? L" is" : L"s are");
+            swprintf(line, 300, TN(j->offline, L"%lld file is on drives that are not plugged in. Plug one in, then restore again.",
+                                   L"%lld files are on drives that are not plugged in. Plug one in, then restore again."),
+                     (long long)j->offline);
             log_append(line);
         }
         return;
     }
     if (j->n_picks) return;
     if (j->offline <= 0) {
-        if (g_pending.active) log_append(L"The restore is complete: every file that has a copy is back.");
+        if (g_pending.active) log_append(T(L"The restore is complete: every file that has a copy is back."));
         clear_pending();
         return;
     }
@@ -3578,9 +3961,11 @@ static void after_restore(job *j)
     bd_restore_plan(g_cat, j->source_id, j->rel, j->dest, plan_text_cb, &p, NULL, NULL);
     if (p.t.p) {
         wtext msg = {NULL, 0, 0};
-        wadd(&msg, L"%lld file%ls on drives that are not plugged in. Plug these in, one at a time, and press Restore... "
-                   L"after each to continue:\r\n%ls",
-             (long long)j->offline, j->offline == 1 ? L" is" : L"s are", p.t.p);
+        wadd(&msg, TN(j->offline, L"%lld file is on drives that are not plugged in. Plug these in, one at a time, and press Restore... "
+                                  L"after each to continue:\r\n%ls",
+                      L"%lld files are on drives that are not plugged in. Plug these in, one at a time, and press Restore... "
+                      L"after each to continue:\r\n%ls"),
+             (long long)j->offline, p.t.p);
         for (wchar_t *c = msg.p; c && *c; c++) if (*c == L'\n' && (c == msg.p || c[-1] != L'\r')) *c = L' ';
         log_append(msg.p);
         free(msg.p);
@@ -3606,7 +3991,7 @@ static void continue_restore(void)
 {
     if (!g_pending.active) return;
     if (media_encryption(0).any_connected_encrypted && !bd_catalog_is_unlocked(g_cat) &&
-        !unlock_ui(L"Some copies are on an encrypted drive. Enter the passphrase to restore them."))
+        !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
         return;
     job *r = new_job(JOB_RESTORE);
     if (!r) return;
@@ -3676,16 +4061,16 @@ static void offer_new_disk(const wchar_t *root)
     GetVolumeInformationW(root, vname, MAX_PATH + 1, NULL, NULL, NULL, NULL, 0);
     ULARGE_INTEGER total;
     if (GetDiskFreeSpaceExW(root, NULL, &total, NULL)) format_bytes((int64_t)total.QuadPart, size, 64);
-    if (*vname) swprintf(content, 900, L"\"%ls\" (%ls) was plugged in. It is not one of your backup drives.", vname, root);
-    else swprintf(content, 900, L"The disk at %ls was plugged in. It is not one of your backup drives.", root);
+    if (*vname) swprintf(content, 900, T(L"\"%ls\" (%ls) was plugged in. It is not one of your backup drives."), vname, root);
+    else swprintf(content, 900, T(L"The disk at %ls was plugged in. It is not one of your backup drives."), root);
     if (*size) {
         size_t len = wcslen(content);
-        swprintf(content + len, 900 - len, L" It holds %ls.", size);
+        swprintf(content + len, 900 - len, T(L" It holds %ls."), size);
     }
     TASKDIALOG_BUTTON b[3] = {
-        {640, L"Set it up as a backup drive\nBRODALF makes its own folder on it and backs up to it. Nothing else on the disk is touched."},
-        {641, L"Not now"},
-        {642, L"Never ask about this disk"},
+        {640, T(L"Set it up as a backup drive\nBRODALF makes its own folder on it and backs up to it. Nothing else on the disk is touched.")},
+        {641, T(L"Not now")},
+        {642, T(L"Never ask about this disk")},
     };
     TASKDIALOGCONFIG tc;
     memset(&tc, 0, sizeof(tc));
@@ -3694,7 +4079,7 @@ static void offer_new_disk(const wchar_t *root)
     tc.hInstance = g_inst;
     tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
     tc.pszWindowTitle = APP_NAME;
-    tc.pszMainInstruction = L"Use this disk for backups?";
+    tc.pszMainInstruction = T(L"Use this disk for backups?");
     tc.pszContent = content;
     tc.cButtons = *serial ? 3 : 2;
     tc.pButtons = b;
@@ -3731,14 +4116,14 @@ static void after_drives(job *j)
         if (!o.found) continue;
         wchar_t name[600], line[1400];
         drive_name(o.label, o.location, name, 600);
-        swprintf(line, 1400, L"%ls is plugged in.", name);
+        swprintf(line, 1400, T(L"%ls is plugged in."), name);
         if (o.info.lost_ms)
-            wcsncat(line, L" It is marked lost or broken, so its copies do not count: if it is back and working, open Drives..., "
-                          L"choose it and press Found it.", 1399 - wcslen(line));
+            wcsncat(line, T(L" It is marked lost or broken, so its copies do not count: if it is back and working, open Drives..., "
+                          L"choose it and press Found it."), 1399 - wcslen(line));
         else if (o.info.check_due && n_due < 16)
             due[n_due++] = o.id;
         if (g_pending.active && pending_needs(o.id))
-            wcsncat(line, L" It holds files for the restore that is waiting: press Restore... to continue it.", 1399 - wcslen(line));
+            wcsncat(line, T(L" It holds files for the restore that is waiting: press Restore... to continue it."), 1399 - wcslen(line));
         log_append(line);
     }
     advise_new_drives(j);
@@ -3752,9 +4137,9 @@ static void after_drives(job *j)
         wchar_t name[600], since[64], msg[1200];
         drive_name(o.label, o.location, name, 600);
         format_time_ms(o.info.oldest_check_ms, since, 64);
-        swprintf(msg, 1200, L"%ls is due for a check: some of its copies have not been read back since %ls.\n\n"
+        swprintf(msg, 1200, T(L"%ls is due for a check: some of its copies have not been read back since %ls.\n\n"
                             L"Check every copy on it now? It changes nothing on the drive. (No: BRODALF does not ask again until "
-                            L"it is opened again.)", name, since);
+                            L"it is opened again.)"), name, since);
         if (MessageBoxW(g_main, msg, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES) enqueue_check(due[i]);
     }
     for (int i = 0; i < j->n_other; i++) offer_new_disk(j->other[i]);
@@ -3792,18 +4177,18 @@ static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         free(list);
         if (g_skip_source) {
             wchar_t title[400], text[900];
-            swprintf(title, 400, L"What to leave out in %ls", g_skip_root_name);
+            swprintf(title, 400, T(L"What to leave out in %ls"), g_skip_root_name);
             SetWindowTextW(dlg, title);
-            swprintf(text, 900, L"Scans of %ls leave out what matches these, as well as what the list for every backup root (Settings) "
+            swprintf(text, 900, T(L"Scans of %ls leave out what matches these, as well as what the list for every backup root (Settings) "
                                 L"leaves out. One per line: * matches anything, ? one character, a line ending in / matches folders. "
-                                L"A file now left out shows among the deleted files, for you to keep or forget.", g_skip_root_name);
+                                L"A file now left out shows among the deleted files, for you to keep or forget."), g_skip_root_name);
             SetDlgItemTextW(dlg, IDC_SKIP_TEXT, text);
-            SetDlgItemTextW(dlg, IDC_SKIP_DEFAULT, L"Clear");
+            SetDlgItemTextW(dlg, IDC_SKIP_DEFAULT, T(L"Clear"));
         } else {
             SetDlgItemTextW(dlg, IDC_SKIP_TEXT,
-                            L"Scans of every backup root leave out files and folders that match these, one per line. * matches anything, "
+                            T(L"Scans of every backup root leave out files and folders that match these, one per line. * matches anything, "
                             L"? one character. End a line with / for folders only (and everything in them). A line with / in the middle, "
-                            L"like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes.");
+                            L"like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes."));
         }
         SetFocus(GetDlgItem(dlg, IDC_SKIP_EDIT));
         SendDlgItemMessageW(dlg, IDC_SKIP_EDIT, EM_SETSEL, 0, 0);
@@ -3833,7 +4218,7 @@ static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             if (s == BD_OK) s = bd_catalog_save(g_cat);
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
-                MessageBoxW(dlg, e ? e : L"Could not save the list.", APP_NAME, MB_ICONWARNING);
+                MessageBoxW(dlg, e ? e : T(L"Could not save the list."), APP_NAME, MB_ICONWARNING);
                 free(e);
                 return TRUE;
             }
@@ -3852,7 +4237,7 @@ static void cmd_skip(int64_t source_id, const wchar_t *root_name)
     g_skip_source = source_id;
     swprintf(g_skip_root_name, 300, L"%ls", root_name ? root_name : L"");
     if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_SKIP), g_main, skip_proc) == IDOK) {
-        log_append(L"The skip list changed. Scanning your backup roots again.");
+        log_append(T(L"The skip list changed. Scanning your backup roots again."));
         enqueue(new_job(JOB_SCAN));
     }
 }
@@ -3863,37 +4248,37 @@ static void cmd_security(void)
 {
     int has = bd_catalog_has_passphrase(g_cat), unlocked = bd_catalog_is_unlocked(g_cat);
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, ID_MENU_SET_PASS, has ? L"Change the passphrase..." : L"Set a passphrase...");
+    AppendMenuW(m, MF_STRING, ID_MENU_SET_PASS, has ? T(L"Change the passphrase...") : T(L"Set a passphrase..."));
     AppendMenuW(m, MF_STRING | (has ? 0 : MF_GRAYED) | (bd_catalog_file_encrypted(g_cat) ? MF_CHECKED : 0),
-                ID_MENU_ENCRYPT_CATALOG, L"Encrypt the database file");
-    AppendMenuW(m, MF_STRING | (has && unlocked ? 0 : MF_GRAYED), ID_MENU_LOCK, L"Forget the passphrase until it is needed");
+                ID_MENU_ENCRYPT_CATALOG, T(L"Encrypt the database file"));
+    AppendMenuW(m, MF_STRING | (has && unlocked ? 0 : MF_GRAYED), ID_MENU_LOCK, T(L"Forget the passphrase until it is needed"));
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     HMENU remind = CreatePopupMenu();
     int days = bd_option_get(g_cat, "check_days");
-    AppendMenuW(remind, MF_STRING | (days == 90 ? MF_CHECKED : 0), ID_MENU_CHECK_90, L"Every 3 months");
-    AppendMenuW(remind, MF_STRING | (days == 180 ? MF_CHECKED : 0), ID_MENU_CHECK_180, L"Every 6 months");
-    AppendMenuW(remind, MF_STRING | (days == 365 ? MF_CHECKED : 0), ID_MENU_CHECK_365, L"Every year");
-    AppendMenuW(remind, MF_STRING | (days == 0 ? MF_CHECKED : 0), ID_MENU_CHECK_NEVER, L"Never");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)remind, L"A plugged-in drive offers a check after");
+    AppendMenuW(remind, MF_STRING | (days == 90 ? MF_CHECKED : 0), ID_MENU_CHECK_90, T(L"Every 3 months"));
+    AppendMenuW(remind, MF_STRING | (days == 180 ? MF_CHECKED : 0), ID_MENU_CHECK_180, T(L"Every 6 months"));
+    AppendMenuW(remind, MF_STRING | (days == 365 ? MF_CHECKED : 0), ID_MENU_CHECK_365, T(L"Every year"));
+    AppendMenuW(remind, MF_STRING | (days == 0 ? MF_CHECKED : 0), ID_MENU_CHECK_NEVER, T(L"Never"));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)remind, T(L"A plugged-in drive offers a check after"));
     HMENU verify = CreatePopupMenu();
     int vd = bd_option_get(g_cat, "verify_days");
-    AppendMenuW(verify, MF_STRING | (vd == 7 ? MF_CHECKED : 0), ID_M_VERIFY_7, L"Copies not read back in a week");
-    AppendMenuW(verify, MF_STRING | (vd == 30 ? MF_CHECKED : 0), ID_M_VERIFY_30, L"Copies not read back in a month");
-    AppendMenuW(verify, MF_STRING | (vd == 90 ? MF_CHECKED : 0), ID_M_VERIFY_90, L"Copies not read back in 3 months");
-    AppendMenuW(verify, MF_STRING | (vd == 0 ? MF_CHECKED : 0), ID_M_VERIFY_NEVER, L"Every copy");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)verify, L"Check drive, Read back: which copies");
+    AppendMenuW(verify, MF_STRING | (vd == 7 ? MF_CHECKED : 0), ID_M_VERIFY_7, T(L"Copies not read back in a week"));
+    AppendMenuW(verify, MF_STRING | (vd == 30 ? MF_CHECKED : 0), ID_M_VERIFY_30, T(L"Copies not read back in a month"));
+    AppendMenuW(verify, MF_STRING | (vd == 90 ? MF_CHECKED : 0), ID_M_VERIFY_90, T(L"Copies not read back in 3 months"));
+    AppendMenuW(verify, MF_STRING | (vd == 0 ? MF_CHECKED : 0), ID_M_VERIFY_NEVER, T(L"Every copy"));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)verify, T(L"Check drive, Read back: which copies"));
     HMENU reserve = CreatePopupMenu();
     int rmb = bd_option_get(g_cat, "reserve_mb");
-    AppendMenuW(reserve, MF_STRING | (rmb == 256 ? MF_CHECKED : 0), ID_MENU_RESERVE_256, L"256 MB");
-    AppendMenuW(reserve, MF_STRING | (rmb == 512 ? MF_CHECKED : 0), ID_MENU_RESERVE_512, L"512 MB");
-    AppendMenuW(reserve, MF_STRING | (rmb == 1024 ? MF_CHECKED : 0), ID_MENU_RESERVE_1024, L"1 GB");
-    AppendMenuW(reserve, MF_STRING | (rmb == 2048 ? MF_CHECKED : 0), ID_MENU_RESERVE_2048, L"2 GB");
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)reserve, L"Space kept free on each drive for the database's copies");
+    AppendMenuW(reserve, MF_STRING | (rmb == 256 ? MF_CHECKED : 0), ID_MENU_RESERVE_256, T(L"256 MB"));
+    AppendMenuW(reserve, MF_STRING | (rmb == 512 ? MF_CHECKED : 0), ID_MENU_RESERVE_512, T(L"512 MB"));
+    AppendMenuW(reserve, MF_STRING | (rmb == 1024 ? MF_CHECKED : 0), ID_MENU_RESERVE_1024, T(L"1 GB"));
+    AppendMenuW(reserve, MF_STRING | (rmb == 2048 ? MF_CHECKED : 0), ID_MENU_RESERVE_2048, T(L"2 GB"));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)reserve, T(L"Space kept free on each drive for the database's copies"));
     AppendMenuW(m, MF_STRING | (bd_option_get(g_cat, "low_priority") ? MF_CHECKED : 0), ID_MENU_LOW_PRIORITY,
-                L"Let other programs come first while a job runs");
+                T(L"Let other programs come first while a job runs"));
     AppendMenuW(m, MF_STRING | (bd_option_get(g_cat, "parallel_copies") > 0 ? MF_CHECKED : 0), ID_MENU_PARALLEL,
-                L"Back up to several drives at once");
-    AppendMenuW(m, MF_STRING, ID_MENU_SKIP, L"What to leave out in every backup root...");
+                T(L"Back up to several drives at once"));
+    AppendMenuW(m, MF_STRING, ID_MENU_SKIP, T(L"What to leave out in every backup root..."));
     RECT r;
     GetWindowRect(g_buttons[6], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
@@ -3907,20 +4292,20 @@ static void settings_command(int cmd)
         set_passphrase_ui();
     } else if (cmd == ID_MENU_ENCRYPT_CATALOG) {
         int on = !bd_catalog_file_encrypted(g_cat);
-        if (on && !unlock_ui(L"Enter the passphrase to encrypt the database file.")) return;
+        if (on && !unlock_ui(T(L"Enter the passphrase to encrypt the database file."))) return;
         bd_status s = bd_catalog_set_file_encrypted(g_cat, on);
         if (s == BD_OK) s = bd_catalog_save(g_cat);
         if (s != BD_OK) {
             wchar_t *e = widen(bd_catalog_error(g_cat));
-            report_error(g_main, e && e[0] ? e : L"Could not change the database encryption.");
+            report_error(g_main, e && e[0] ? e : T(L"Could not change the database encryption."));
             free(e);
             return;
         }
-        log_append(on ? L"The database file is now encrypted. BRODALF will ask for the passphrase when it opens."
-                      : L"The database file is no longer encrypted.");
+        log_append(on ? T(L"The database file is now encrypted. BRODALF will ask for the passphrase when it opens.")
+                      : T(L"The database file is no longer encrypted."));
     } else if (cmd == ID_MENU_LOCK) {
         bd_catalog_lock_key(g_cat);
-        log_append(L"Passphrase forgotten. BRODALF will ask for it again when it needs it.");
+        log_append(T(L"Passphrase forgotten. BRODALF will ask for it again when it needs it."));
     } else if (cmd == ID_MENU_SKIP) {
         cmd_skip(0, NULL);
     } else if (cmd >= ID_M_VERIFY_7 && cmd <= ID_M_VERIFY_NEVER) {
@@ -3928,8 +4313,8 @@ static void settings_command(int cmd)
         int d = choice[cmd - ID_M_VERIFY_7];
         if (bd_option_set(g_cat, "verify_days", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
             wchar_t line[200];
-            if (d) swprintf(line, 200, L"Read back now reads the copies not read back in %d days, and new ones.", d);
-            else wcscpy(line, L"Read back now reads every copy on the drive.");
+            if (d) swprintf(line, 200, T(L"Read back now reads the copies not read back in %d days, and new ones."), d);
+            else wcscpy(line, T(L"Read back now reads every copy on the drive."));
             log_append(line);
         }
     } else if (cmd >= ID_MENU_CHECK_90 && cmd <= ID_MENU_CHECK_NEVER) {
@@ -3937,8 +4322,8 @@ static void settings_command(int cmd)
         int d = choice[cmd - ID_MENU_CHECK_90];
         if (bd_option_set(g_cat, "check_days", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
             wchar_t line[200];
-            if (d) swprintf(line, 200, L"A plugged-in drive whose copies have not been read back in %d days offers a check.", d);
-            else wcscpy(line, L"Drives never offer a check by themselves.");
+            if (d) swprintf(line, 200, T(L"A plugged-in drive whose copies have not been read back in %d days offers a check."), d);
+            else wcscpy(line, T(L"Drives never offer a check by themselves."));
             log_append(line);
             update_drives_label();
         }
@@ -3947,29 +4332,29 @@ static void settings_command(int cmd)
         int mb = choice[cmd - ID_MENU_RESERVE_256];
         if (bd_option_set(g_cat, "reserve_mb", mb) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
             wchar_t line[200];
-            swprintf(line, 200, L"Backups now keep %d MB free on each drive for the database's copies.", mb);
+            swprintf(line, 200, T(L"Backups now keep %d MB free on each drive for the database's copies."), mb);
             log_append(line);
             update_drives_label();
         }
     } else if (cmd == ID_MENU_LOW_PRIORITY) {
         int on = !bd_option_get(g_cat, "low_priority");
         if (bd_option_set(g_cat, "low_priority", on) == BD_OK && bd_catalog_save(g_cat) == BD_OK)
-            log_append(on ? L"Jobs now let other programs come first: they may take longer while the PC is busy."
-                          : L"Jobs now run at normal speed, even while other programs are busy.");
+            log_append(on ? T(L"Jobs now let other programs come first: they may take longer while the PC is busy.")
+                          : T(L"Jobs now run at normal speed, even while other programs are busy."));
     } else if (cmd == ID_MENU_PARALLEL) {
         int on = bd_option_get(g_cat, "parallel_copies") <= 0;
         if (on &&
-            MessageBoxW(g_main, L"Back up to several drives at once?\n\nWhen you back up to every plugged-in drive, BRODALF then reads "
+            MessageBoxW(g_main, T(L"Back up to several drives at once?\n\nWhen you back up to every plugged-in drive, BRODALF then reads "
                                 L"each file once and writes it to all of them at the same time. With two or more drives that is "
                                 L"quicker than one drive after another.\n\nWhat it means for your PC: it works harder while the "
                                 L"backup runs. The USB ports, memory and processor are shared by every drive at once, so other "
                                 L"programs may be slower, and the backup goes at the pace of the slowest drive.\n\nWhen it is off "
-                                L"(as it starts), drives are backed up one after another.",
+                                L"(as it starts), drives are backed up one after another."),
                         APP_NAME, MB_ICONQUESTION | MB_OKCANCEL) != IDOK)
             return;
         if (bd_option_set(g_cat, "parallel_copies", on) == BD_OK && bd_catalog_save(g_cat) == BD_OK)
-            log_append(on ? L"Backups to every plugged-in drive now write to all of them at once."
-                          : L"Backups to every plugged-in drive now go one drive after another.");
+            log_append(on ? T(L"Backups to every plugged-in drive now write to all of them at once.")
+                          : T(L"Backups to every plugged-in drive now go one drive after another."));
     }
 }
 
@@ -3982,9 +4367,9 @@ static void cmd_sheet(int with_key)
     char key[BD_RECOVERY_KEY_SIZE] = "";
     if (bd_catalog_has_passphrase(g_cat) && !with_key) {
         TASKDIALOG_BUTTON b[2] = {
-            {600, L"Put a new recovery key on it\nIt opens your encrypted backups if the passphrase is lost. "
-                  L"The key on any earlier sheet stops working."},
-            {601, L"Leave the recovery key off"},
+            {600, T(L"Put a new recovery key on it\nIt opens your encrypted backups if the passphrase is lost. "
+                  L"The key on any earlier sheet stops working.")},
+            {601, T(L"Leave the recovery key off")},
         };
         TASKDIALOGCONFIG tc;
         memset(&tc, 0, sizeof(tc));
@@ -3994,8 +4379,8 @@ static void cmd_sheet(int with_key)
         tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
         tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
         tc.pszWindowTitle = APP_NAME;
-        tc.pszMainInstruction = L"Put a recovery key on the sheet?";
-        tc.pszContent = L"Your backups are encrypted. The sheet lists your drives and what is on them. It never shows the passphrase.";
+        tc.pszMainInstruction = T(L"Put a recovery key on the sheet?");
+        tc.pszContent = T(L"Your backups are encrypted. The sheet lists your drives and what is on them. It never shows the passphrase.");
         tc.cButtons = 2;
         tc.pButtons = b;
         int pressed = IDCANCEL;
@@ -4003,13 +4388,13 @@ static void cmd_sheet(int with_key)
         with_key = pressed == 600;
     }
     if (with_key) {
-        if (!unlock_ui(L"Enter the passphrase to make a recovery key.")) return;
+        if (!unlock_ui(T(L"Enter the passphrase to make a recovery key."))) return;
         bd_status s = bd_catalog_make_recovery_key(g_cat, key);
         if (s == BD_OK) s = bd_catalog_save(g_cat);
         if (s != BD_OK) {
             SecureZeroMemory(key, sizeof(key));
             wchar_t *e = widen(bd_catalog_error(g_cat));
-            report_error(g_main, e && e[0] ? e : L"Could not make a recovery key.");
+            report_error(g_main, e && e[0] ? e : T(L"Could not make a recovery key."));
             free(e);
             return;
         }
@@ -4023,19 +4408,21 @@ static void cmd_sheet(int with_key)
                 if (e) log_append(e);
                 free(e);
             }
-        log_append(L"Made a new recovery key. Drives that are not plugged in learn it at their next backup.");
+        log_append(T(L"Made a new recovery key. Drives that are not plugged in learn it at their next backup."));
     }
 
-    wchar_t path[MAX_PATH * 2] = L"BRODALF recovery sheet.html";
+    wchar_t path[MAX_PATH * 2];
+    wcscpy(path, T(L"BRODALF recovery sheet.html"));
     OPENFILENAMEW of;
     memset(&of, 0, sizeof(of));
     of.lStructSize = sizeof(of);
     of.hwndOwner = g_main;
-    of.lpstrFilter = L"Web page (*.html)\0*.html\0";
+    wchar_t filter_text[256];
+    of.lpstrFilter = file_filter(filter_text, 256, 2, L"Web page (*.html)", L"*.html");
     of.lpstrFile = path;
     of.nMaxFile = MAX_PATH * 2;
     of.lpstrDefExt = L"html";
-    of.lpstrTitle = L"Save the recovery sheet";
+    of.lpstrTitle = T(L"Save the recovery sheet");
     of.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     int saved = GetSaveFileNameW(&of);
     bd_status s = BD_OK;
@@ -4047,21 +4434,21 @@ static void cmd_sheet(int with_key)
     SecureZeroMemory(key, sizeof(key));
     if (!saved) {
         if (with_key)
-            MessageBoxW(g_main, L"The new recovery key was not saved anywhere, so it cannot be used. Make the sheet again "
-                                L"to get one.", APP_NAME, MB_ICONINFORMATION);
+            MessageBoxW(g_main, T(L"The new recovery key was not saved anywhere, so it cannot be used. Make the sheet again "
+                                L"to get one."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        report_error(g_main, e && e[0] ? e : L"Could not write the recovery sheet.");
+        report_error(g_main, e && e[0] ? e : T(L"Could not write the recovery sheet."));
         free(e);
         return;
     }
     ShellExecuteW(g_main, L"open", path, NULL, NULL, SW_SHOWNORMAL);
     if (with_key)
-        MessageBoxW(g_main, L"The sheet is open in your browser. Print it and keep it somewhere safe, away from the PC and "
+        MessageBoxW(g_main, T(L"The sheet is open in your browser. Print it and keep it somewhere safe, away from the PC and "
                             L"the drives. Then delete the file: anyone who finds the recovery key can read your encrypted "
-                            L"backups.", APP_NAME, MB_ICONINFORMATION);
+                            L"backups."), APP_NAME, MB_ICONINFORMATION);
 }
 
 /* ---- A protected folder that is somewhere else (a new PC) ---------------- */
@@ -4140,27 +4527,27 @@ static int relocate_source(const source_place *sp)
     wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 96], head[512], body[MAX_PATH * 4 + 512];
     int have_guess = guess_new_place(sp->path, guess, MAX_PATH * 4);
     int here = is_folder(sp->path);
-    swprintf(head, 512, L"Where is \"%ls\" on this PC?", sp->name);
+    swprintf(head, 512, T(L"Where is \"%ls\" on this PC?"), sp->name);
     if (here)
-        swprintf(body, MAX_PATH * 4 + 512, L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
-                                            L"keep their copies and history.", sp->path);
+        swprintf(body, MAX_PATH * 4 + 512, T(L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
+                                            L"keep their copies and history."), sp->path);
     else
-        swprintf(body, MAX_PATH * 4 + 512, L"BRODALF backed up %ls, which the last scan could not find. If it is somewhere else, "
+        swprintf(body, MAX_PATH * 4 + 512, T(L"BRODALF backed up %ls, which the last scan could not find. If it is somewhere else, "
                                             L"for example under another user name or on another drive letter, choose where it is "
-                                            L"now. Its files keep their copies and history.", sp->path);
+                                            L"now. Its files keep their copies and history."), sp->path);
     for (;;) {
         TASKDIALOG_BUTTON b[3];
         int n = 0;
         if (have_guess) {
-            swprintf(guess_btn, MAX_PATH * 4 + 96, L"Use %ls\nThe same folder in your user folder on this PC", guess);
+            swprintf(guess_btn, MAX_PATH * 4 + 96, T(L"Use %ls\nThe same folder in your user folder on this PC"), guess);
             b[n].nButtonID = PLACE_GUESS;
             b[n++].pszButtonText = guess_btn;
         }
         b[n].nButtonID = PLACE_PICK;
-        b[n++].pszButtonText = L"Choose where it is now...";
+        b[n++].pszButtonText = T(L"Choose where it is now...");
         b[n].nButtonID = PLACE_LATER;
-        b[n++].pszButtonText = here ? L"Leave it where it is"
-                                    : L"I cannot find it\nBRODALF offers to restore it from your backup drives instead.";
+        b[n++].pszButtonText = here ? T(L"Leave it where it is")
+                                    : T(L"I cannot find it\nBRODALF offers to restore it from your backup drives instead.");
         TASKDIALOGCONFIG tc;
         memset(&tc, 0, sizeof(tc));
         tc.cbSize = sizeof(tc);
@@ -4178,7 +4565,7 @@ static int relocate_source(const source_place *sp)
         wchar_t *chosen = NULL;
         if (pressed == PLACE_GUESS) chosen = _wcsdup(guess);
         else if (pressed == PLACE_PICK) {
-            char *f = pick_folder(g_main, L"Choose where this backup root is now.");
+            char *f = pick_folder(g_main, T(L"Choose where this backup root is now."));
             if (!f) continue;
             chosen = widen(f);
             free(f);
@@ -4187,9 +4574,9 @@ static int relocate_source(const source_place *sp)
 
         if (folder_is_empty(chosen)) {
             wchar_t warn[MAX_PATH * 4 + 512];
-            swprintf(warn, MAX_PATH * 4 + 512, L"%ls is empty. If BRODALF backs up this folder, every file of \"%ls\" will look "
+            swprintf(warn, MAX_PATH * 4 + 512, T(L"%ls is empty. If BRODALF backs up this folder, every file of \"%ls\" will look "
                                                 L"deleted.\n\nTo get the files back instead, choose No and restore the backup root "
-                                                L"from your drives.\n\nUse this empty folder anyway?",
+                                                L"from your drives.\n\nUse this empty folder anyway?"),
                      chosen, sp->name);
             if (MessageBoxW(g_main, warn, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) { free(chosen); continue; }
         }
@@ -4198,14 +4585,14 @@ static int relocate_source(const source_place *sp)
         free(p);
         if (s == BD_OK) {
             wchar_t line[MAX_PATH * 4 + 128];
-            swprintf(line, MAX_PATH * 4 + 128, L"Backup root \"%ls\" is now at %ls", sp->name, chosen);
+            swprintf(line, MAX_PATH * 4 + 128, T(L"Backup root \"%ls\" is now at %ls"), sp->name, chosen);
             log_append(line);
             free(chosen);
             return 1;
         }
         free(chosen);
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        MessageBoxW(g_main, e ? e : L"That folder cannot be used.", APP_NAME, MB_ICONWARNING);
+        MessageBoxW(g_main, e ? e : T(L"That folder cannot be used."), APP_NAME, MB_ICONWARNING);
         free(e);
     }
 }
@@ -4214,7 +4601,7 @@ static void places_changed(void)
 {
     if (bd_catalog_save(g_cat) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        report_error(g_main, e ? e : L"The database could not be saved.");
+        report_error(g_main, e ? e : T(L"The database could not be saved."));
         free(e);
     }
     rebuild_tree();
@@ -4237,9 +4624,9 @@ static void ask_missing_roots(void)
         if (!sp->active || !sp->missing || is_folder(sp->path)) continue;
         if (relocate_source(sp)) { changed = 1; continue; }
         wchar_t q[MAX_PATH * 4 + 400];
-        swprintf(q, MAX_PATH * 4 + 400, L"Restore \"%ls\" from your backup drives?\n\nBRODALF shows which drives to plug in, then puts the "
+        swprintf(q, MAX_PATH * 4 + 400, T(L"Restore \"%ls\" from your backup drives?\n\nBRODALF shows which drives to plug in, then puts the "
                                          L"files in a folder you choose. Nothing in that folder is overwritten.\n\nNo: nothing changes, "
-                                         L"and its files are not marked deleted. The next scan asks again.", sp->name);
+                                         L"and its files are not marked deleted. The next scan asks again."), sp->name);
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES) restore_selection(1, sp->id);
     }
     source_places_free(&l);
@@ -4277,7 +4664,7 @@ static void cmd_relocate(void)
     for (int i = 0; i < l.n; i++)
         if ((r && l.items[i].id == r->source_id) || (!r && l.n == 1)) sp = &l.items[i];
     if (!sp)
-        MessageBoxW(g_main, L"Select the backup root in the list first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Select the backup root in the list first."), APP_NAME, MB_ICONINFORMATION);
     else
         relocate_one(sp);
     source_places_free(&l);
@@ -4287,7 +4674,7 @@ static void cmd_relocate(void)
 
 static void cmd_add_folder(void)
 {
-    char *folder = pick_folder(g_main, L"Choose a folder to back up. BRODALF will scan it and keep track of every file inside.");
+    char *folder = pick_folder(g_main, T(L"Choose a folder to back up. BRODALF will scan it and keep track of every file inside."));
     if (!folder) return;
     int64_t id;
     if (bd_source_add(g_cat, folder, &id) != BD_OK) {
@@ -4296,7 +4683,7 @@ static void cmd_add_folder(void)
         free(e);
     } else {
         wchar_t *w = widen(folder), line[1024];
-        swprintf(line, 1024, L"New backup root: %ls", w);
+        swprintf(line, 1024, T(L"New backup root: %ls"), w);
         log_append(line);
         free(w);
         rebuild_tree();
@@ -4313,8 +4700,8 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
     if (!m->connected || strcmp(m->kind, "drive") != 0) return 0; /* a cloud account from an earlier version is never listed */
     wchar_t *l = widen(m->label), *root = widen(m->last_root), text[512], freeb[64];
     format_bytes(m->free_bytes, freeb, 64);
-    swprintf(text, 512, L"%ls (%ls), %ls free%ls%ls%ls", l, root, freeb, m->encrypted ? L", encrypted" : L"",
-             m->secondary ? L", extra place for starred files" : L"", m->lost_ms ? L" - marked lost or broken" : L"");
+    swprintf(text, 512, T(L"%ls (%ls), %ls free%ls%ls%ls"), l, root, freeb, m->hide_names ? T(L", encrypted, names hidden") : m->encrypted ? T(L", encrypted") : L"",
+             m->secondary ? T(L", extra place for starred files") : L"", m->lost_ms ? T(L" - marked lost or broken") : L"");
     if (!m->lost_ms) c->usable++;
     /* A drive marked lost or broken takes no backups: shown greyed. */
     AppendMenuW(c->menu, MF_STRING | (m->lost_ms && c->greyed_lost ? MF_GRAYED : 0), (UINT_PTR)(ID_MENU_DRIVE_BASE + m->media_id), text);
@@ -4332,17 +4719,17 @@ static int64_t choose_drive(HWND button, int allow_other)
     bd_list_media(g_cat, drive_menu_cb, &c);
     if (allow_other == 2 && c.usable >= 2) {
         wchar_t every[200];
-        swprintf(every, 200, L"All %d of them, %ls", c.usable,
-                 bd_option_get(g_cat, "parallel_copies") > 0 ? L"at once" : L"one after another");
+        swprintf(every, 200, T(L"All %d of them, %ls"), c.usable,
+                 bd_option_get(g_cat, "parallel_copies") > 0 ? T(L"at once") : T(L"one after another"));
         AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(c.menu, MF_STRING, ID_MENU_EVERY, every);
     }
     if (allow_other) {
         if (c.count) AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(c.menu, MF_STRING, ID_MENU_OTHER, L"Another drive or folder...");
+        AppendMenuW(c.menu, MF_STRING, ID_MENU_OTHER, T(L"Another drive or folder..."));
     } else if (!c.count) {
         DestroyMenu(c.menu);
-        MessageBoxW(g_main, L"Plug in a backup drive first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Plug in a backup drive first."), APP_NAME, MB_ICONINFORMATION);
         return -1;
     }
     RECT r;
@@ -4364,7 +4751,7 @@ static void cmd_backup(void)
 
 static void add_disk(void)
 {
-    char *root = pick_folder(g_main, L"Choose the drive (or a folder on it) to back up to.");
+    char *root = pick_folder(g_main, T(L"Choose the drive (or a folder on it) to back up to."));
     if (root) add_disk_at(root);
 }
 
@@ -4380,17 +4767,17 @@ static void add_disk_at(char *root)
         if (!is_brodalf_drive(j->root)) {
             wchar_t *w = widen(j->root);
             const wchar_t *slash = w ? wcsrchr(w, L'\\') : NULL;
-            wcsncpy(g_label_buf, (!w || wcslen(w) <= 3 || !slash || !slash[1]) ? L"Backup drive" : slash + 1, 255);
+            wcsncpy(g_label_buf, (!w || wcslen(w) <= 3 || !slash || !slash[1]) ? T(L"Backup drive") : slash + 1, 255);
             g_label_buf[255] = 0;
             free(w);
             if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }
             j->label = narrow(g_label_buf);
             j->location = narrow(g_label_location);
             if (g_label_encrypt) {
-                int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(L"Enter the passphrase to set up an encrypted drive.")
+                int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(T(L"Enter the passphrase to set up an encrypted drive."))
                                                           : set_passphrase_ui();
                 if (!ok) { job_free(j); return; }
-                j->flags = BD_MEDIA_ENCRYPTED;
+                j->flags = BD_MEDIA_ENCRYPTED | (g_label_hide ? BD_MEDIA_HIDE_NAMES : 0);
             }
             enqueue(j);
             return;
@@ -4428,16 +4815,16 @@ static void restore_selection(int whole, int64_t source_id)
     node_ref all = {0}, *r = whole ? &all : item_ref(TreeView_GetSelection(g_tree));
     all.source_id = source_id;
     if (!r) {
-        MessageBoxW(g_main, L"Select a backup root, a folder inside it, or a file to restore.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Select a backup root, a folder inside it, or a file to restore."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
-    if (media_encryption(0).any_connected_encrypted && !unlock_ui(L"Some copies are on an encrypted drive. Enter the passphrase to restore them."))
+    if (media_encryption(0).any_connected_encrypted && !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
         return;
     /* With one root its files go straight into the folder chosen; with
      * several, each root gets a folder of its own there. */
     int flat = r->source_id || root_count() <= 1;
-    char *dest = pick_folder(g_main, flat ? L"Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten."
-                                          : L"Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten.");
+    char *dest = pick_folder(g_main, flat ? T(L"Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten.")
+                                          : T(L"Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten."));
     if (!dest) return;
 
     /* Which drives this needs, in order. */
@@ -4448,17 +4835,17 @@ static void restore_selection(int whole, int64_t source_id)
     if (total == 0) {
         free(p.t.p);
         free(dest);
-        MessageBoxW(g_main, L"Everything here is already restored in that folder.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Everything here is already restored in that folder."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     if (p.n > 1 || p.any_offline || none) {
         wtext msg = {NULL, 0, 0};
-        wadd(&msg, L"Restoring %lld file%ls needs these drives:\n\n%ls", (long long)total, total == 1 ? L"" : L"s",
-             p.t.p ? p.t.p : L"    (none)\n");
-        if (none) wadd(&msg, L"\n%lld file%ls no copy on any drive.\n", (long long)none, none == 1 ? L" has" : L"s have");
+        wadd(&msg, TN(total, L"Restoring %lld file needs these drives:\n\n%ls", L"Restoring %lld files needs these drives:\n\n%ls"),
+             (long long)total, p.t.p ? p.t.p : T(L"    (none)\n"));
+        if (none) wadd(&msg, TN(none, L"\n%lld file has no copy on any drive.\n", L"\n%lld files have no copy on any drive.\n"), (long long)none);
         if (p.any_offline)
-            wadd(&msg, L"\nBRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press "
-                       L"Restore... again to continue with its files.\n");
+            wadd(&msg, T(L"\nBRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press "
+                       L"Restore... again to continue with its files.\n"));
         int go = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION | MB_OKCANCEL) == IDOK;
         free(msg.p);
         if (!go) { free(p.t.p); free(dest); return; }
@@ -4481,13 +4868,13 @@ static void cmd_restore(void)
         plan_text p;
         memset(&p, 0, sizeof(p));
         bd_restore_plan(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, plan_text_cb, &p, NULL, NULL);
-        swprintf(content, 1200, L"A restore into %ls is waiting for these drives:\n\n%ls", dest ? dest : L"",
-                 p.t.p ? p.t.p : L"    (none: it can finish now)\n");
+        swprintf(content, 1200, T(L"A restore into %ls is waiting for these drives:\n\n%ls"), dest ? dest : L"",
+                 p.t.p ? p.t.p : T(L"    (none: it can finish now)\n"));
         free(dest);
         free(p.t.p);
         TASKDIALOG_BUTTON b[2] = {
-            {630, L"Continue the restore\nRestores what the drives plugged in now hold."},
-            {631, L"Restore something else\nThe waiting restore is forgotten."},
+            {630, T(L"Continue the restore\nRestores what the drives plugged in now hold.")},
+            {631, T(L"Restore something else\nThe waiting restore is forgotten.")},
         };
         TASKDIALOGCONFIG tc;
         memset(&tc, 0, sizeof(tc));
@@ -4497,7 +4884,7 @@ static void cmd_restore(void)
         tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
         tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
         tc.pszWindowTitle = APP_NAME;
-        tc.pszMainInstruction = L"Continue the restore that is waiting?";
+        tc.pszMainInstruction = T(L"Continue the restore that is waiting?");
         tc.pszContent = content;
         tc.cButtons = 2;
         tc.pButtons = b;
@@ -4548,9 +4935,9 @@ static int deleted_cb(void *ctx, const bd_deleted_info *d)
     for (wchar_t *c = file; *c; c++) if (*c == L'/') *c = L'\\';
     format_time_ms(d->last_seen_ms, when, 64);
     format_bytes(d->size, size, 64);
-    if (d->backed_up) swprintf(on, 600, L"%ls%ls", drv ? drv : L"", d->connected ? L"  (plugged in)" : L"");
-    else wcscpy(on, L"Never backed up");
-    const wchar_t *cells[] = {d->acknowledged ? L"" : L"New", file, when, size, on};
+    if (d->backed_up) swprintf(on, 600, L"%ls%ls", drv ? drv : L"", d->connected ? T(L"  (plugged in)") : L"");
+    else wcscpy(on, T(L"Never backed up"));
+    const wchar_t *cells[] = {d->acknowledged ? L"" : T(L"New"), file, when, size, on};
     lv_row(lv, cells, 5);
     free(src);
     free(wrel);
@@ -4622,14 +5009,18 @@ static void deleted_fill(HWND dlg)
     SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
     wchar_t text[700];
     if (total == 0)
-        swprintf(text, 700, L"No files have been deleted from your backup roots. When one is, it shows here with the drives that "
-                            L"still hold it, until you choose what to do with it.");
-    else
-        swprintf(text, 700, L"%lld file%ls deleted from your backup roots, most recently deleted first%ls; %lld %ls new. Select files to "
-                            L"restore them, keep tracking them (they stay in the database and on your drives), or forget them "
-                            L"(BRODALF stops tracking them; nothing on the drives is deleted).",
-                 (long long)total, total == 1 ? L"" : L"s", total > g_del_n ? L" (only the first ones are listed)" : L"",
-                 (long long)fresh, fresh == 1 ? L"is" : L"are");
+        swprintf(text, 700, T(L"No files have been deleted from your backup roots. When one is, it shows here with the drives that "
+                            L"still hold it, until you choose what to do with it."));
+    else {
+        wchar_t gone[300], fresh_text[100];
+        swprintf(gone, 300, TN(total, L"%lld file deleted from your backup roots%ls.",
+                               L"%lld files deleted from your backup roots, most recently deleted first%ls."),
+                 (long long)total, total > g_del_n ? T(L" (only the first ones are listed)") : L"");
+        swprintf(fresh_text, 100, TN(fresh, L"%lld is new.", L"%lld are new."), (long long)fresh);
+        swprintf(text, 700, L"%ls %ls %ls", gone, fresh_text,
+                 T(L"Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them "
+                   L"(BRODALF stops tracking them; nothing on the drives is deleted)."));
+    }
     SetDlgItemTextW(dlg, IDC_DEL_SUMMARY, text);
     EnableWindow(GetDlgItem(dlg, IDC_DEL_FILES), g_del_n > 0);
     EnableWindow(GetDlgItem(dlg, IDC_DEL_FOLDERS), g_del_n > 0);
@@ -4643,7 +5034,7 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
-        static const wchar_t *cols[] = {L"", L"File", L"Last seen", L"Size", L"On drives"};
+        static const wchar_t *cols[] = {L"", N_(L"File"), N_(L"Last seen"), N_(L"Size"), N_(L"On drives")};
         static const int widths[] = {40, 300, 110, 70, 180};
         lv_columns(GetDlgItem(dlg, IDC_DEL_LIST), cols, widths, 5);
         deleted_fill(dlg);
@@ -4655,7 +5046,7 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 del_rows_free(g_del_pick, g_del_npick);
                 g_del_pick = NULL;
                 g_del_npick = 0;
-                MessageBoxW(dlg, L"Select one or more files in the list first.", APP_NAME, MB_ICONINFORMATION);
+                MessageBoxW(dlg, T(L"Select one or more files in the list first."), APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
             }
             EndDialog(dlg, IDOK);
@@ -4672,7 +5063,7 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             if (s == BD_OK) s = bd_catalog_save(g_cat);
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
-                MessageBoxW(dlg, e ? e : L"Could not record that.", APP_NAME, MB_ICONWARNING);
+                MessageBoxW(dlg, e ? e : T(L"Could not record that."), APP_NAME, MB_ICONWARNING);
                 free(e);
             }
             deleted_fill(dlg);
@@ -4682,13 +5073,15 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             HWND lv = GetDlgItem(dlg, IDC_DEL_LIST);
             int sel = ListView_GetSelectedCount(lv);
             if (sel <= 0) {
-                MessageBoxW(dlg, L"Select the files to forget first.", APP_NAME, MB_ICONINFORMATION);
+                MessageBoxW(dlg, T(L"Select the files to forget first."), APP_NAME, MB_ICONINFORMATION);
                 return TRUE;
             }
             wchar_t q[700];
-            swprintf(q, 700, L"Forget %d deleted file%ls?\n\nBRODALF stops tracking %ls and %ls copies, so it can no longer restore "
-                             L"%ls. The copies stay on your drives: BRODALF never deletes anything there. This cannot be undone.",
-                     sel, sel == 1 ? L"" : L"s", sel == 1 ? L"it" : L"them", sel == 1 ? L"its" : L"their", sel == 1 ? L"it" : L"them");
+            swprintf(q, 700, TN(sel, L"Forget %d deleted file?\n\nBRODALF stops tracking it and its copies, so it can no longer restore "
+                                     L"it. The copies stay on your drives: BRODALF never deletes anything there. This cannot be undone.",
+                                L"Forget %d deleted files?\n\nBRODALF stops tracking them and their copies, so it can no longer restore "
+                                L"them. The copies stay on your drives: BRODALF never deletes anything there. This cannot be undone."),
+                     sel);
             if (MessageBoxW(dlg, q, APP_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES) return TRUE;
             bd_status s = BD_OK;
             int64_t gone = 0;
@@ -4701,11 +5094,12 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             if (s == BD_OK) s = bd_catalog_save(g_cat);
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
-                MessageBoxW(dlg, e ? e : L"Could not forget them.", APP_NAME, MB_ICONWARNING);
+                MessageBoxW(dlg, e ? e : T(L"Could not forget them."), APP_NAME, MB_ICONWARNING);
                 free(e);
             } else {
                 wchar_t line[200];
-                swprintf(line, 200, L"Forgot %lld deleted file%ls. Their copies stay on the drives.", (long long)gone, gone == 1 ? L"" : L"s");
+                swprintf(line, 200, TN(gone, L"Forgot %lld deleted file. Its copies stay on the drives.",
+                                       L"Forgot %lld deleted files. Their copies stay on the drives."), (long long)gone);
                 log_append(line);
             }
             deleted_fill(dlg);
@@ -4771,12 +5165,12 @@ static void cmd_deleted(void)
     char *dest = NULL;
     del_plan *p = calloc(1, sizeof(del_plan));
     if (!p) goto out;
-    if (media_encryption(0).any_connected_encrypted && !unlock_ui(L"Some copies are on an encrypted drive. Enter the passphrase to restore them."))
+    if (media_encryption(0).any_connected_encrypted && !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
         goto out;
     int several = 0;
     for (int i = 1; i < n; i++) if (picks[i].source_id != picks[0].source_id) several = 1;
-    dest = pick_folder(g_main, several ? L"Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten."
-                                       : L"Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten.");
+    dest = pick_folder(g_main, several ? T(L"Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten.")
+                                       : T(L"Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten."));
     if (!dest) goto out;
 
     int64_t total = 0;
@@ -4791,23 +5185,24 @@ static void cmd_deleted(void)
         total += t;
     }
     if (total == 0) {
-        MessageBoxW(g_main, L"Everything selected is already restored in that folder, or has no copy on any drive.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Everything selected is already restored in that folder, or has no copy on any drive."), APP_NAME, MB_ICONINFORMATION);
         goto out;
     }
     int offline = p->other;
     for (int i = 0; i < p->n; i++) if (!p->connected[i]) offline = 1;
     if (offline || p->n > 1) {
         wtext msg = {NULL, 0, 0};
-        wadd(&msg, L"Restoring %lld deleted file%ls needs these drives:\n\n", (long long)total, total == 1 ? L"" : L"s");
+        wadd(&msg, TN(total, L"Restoring %lld deleted file needs these drives:\n\n", L"Restoring %lld deleted files needs these drives:\n\n"),
+             (long long)total);
         for (int i = 0; i < p->n; i++) {
             wchar_t size[64];
             format_bytes(p->bytes[i], size, 64);
-            wadd(&msg, L"    %d. %ls: %lld file%ls (%ls)%ls\n", i + 1, p->name[i], (long long)p->files[i],
-                 p->files[i] == 1 ? L"" : L"s", size, p->connected[i] ? L", plugged in" : L"");
+            wadd(&msg, TN(p->files[i], L"    %d. %ls: %lld file (%ls)%ls\n", L"    %d. %ls: %lld files (%ls)%ls\n"), i + 1, p->name[i],
+                 (long long)p->files[i], size, p->connected[i] ? T(L", plugged in") : L"");
         }
         if (offline)
-            wadd(&msg, L"\nBRODALF restores what the plugged-in drives hold now. For the rest, plug in another drive "
-                       L"and restore them again from Deleted files.\n");
+            wadd(&msg, T(L"\nBRODALF restores what the plugged-in drives hold now. For the rest, plug in another drive "
+                       L"and restore them again from Deleted files.\n"));
         int go = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION | MB_OKCANCEL) == IDOK;
         free(msg.p);
         if (!go) goto out;
@@ -4828,7 +5223,7 @@ static void cmd_deleted(void)
     j->deleted = 1;
     j->dest = dest;
     dest = NULL;
-    log_append(L"Restoring deleted files.");
+    log_append(T(L"Restoring deleted files."));
     enqueue(j);
 out:
     free(p);
@@ -4840,9 +5235,9 @@ out:
  * user picks, under the file's own name. */
 static void restore_version(int64_t version_id)
 {
-    if (media_encryption(0).any_connected_encrypted && !unlock_ui(L"Some copies are on an encrypted drive. Enter the passphrase to restore them."))
+    if (media_encryption(0).any_connected_encrypted && !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
         return;
-    char *dest = pick_folder(g_main, L"Choose the folder to put this version in. It keeps the file's own name; nothing there is overwritten.");
+    char *dest = pick_folder(g_main, T(L"Choose the folder to put this version in. It keeps the file's own name; nothing there is overwritten."));
     if (!dest) return;
     job *j = new_job(JOB_RESTORE);
     if (!j) { free(dest); return; }
@@ -4975,7 +5370,7 @@ static bd_status run_shadow(job *j)
 {
     in_use_list l = {NULL, 0, 0, 0};
     bd_list_in_use(g_cat, in_use_cb, &l);
-    if (!l.n) { swprintf(j->summary, SUMMARY_LEN, L"No files are in use any more."); return BD_OK; }
+    if (!l.n) { swprintf(j->summary, SUMMARY_LEN, T(L"No files are in use any more.")); return BD_OK; }
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     swprintf(g_shadow_dir, MAX_PATH, L"%lsbrodalf-shadow-%lu", tmp, (unsigned long)GetCurrentProcessId());
@@ -4997,14 +5392,14 @@ static bd_status run_shadow(job *j)
     free(text);
     if (!written) {
         in_use_free(&l);
-        swprintf(j->summary, SUMMARY_LEN, L"Could not write the list of files in use.");
+        swprintf(j->summary, SUMMARY_LEN, T(L"Could not write the list of files in use."));
         return BD_ERR_IO;
     }
     GetModuleFileNameW(NULL, exe, MAX_PATH);
     wchar_t *whash = widen(hash);
     swprintf(params, MAX_PATH * 2 + 160, L"--shadow-copy \"%ls\" \"%ls\" %ls", out, list, whash ? whash : L"");
     free(whash);
-    post_text(WM_APP_LOG, L"Asking Windows for administrator permission to take a shadow copy...");
+    post_text(WM_APP_LOG, T(L"Asking Windows for administrator permission to take a shadow copy..."));
     SHELLEXECUTEINFOW sei;
     memset(&sei, 0, sizeof(sei));
     sei.cbSize = sizeof(sei);
@@ -5017,10 +5412,10 @@ static bd_status run_shadow(job *j)
         DWORD err = GetLastError();
         in_use_free(&l);
         if (err == ERROR_CANCELLED) {
-            swprintf(j->summary, SUMMARY_LEN, L"Without administrator permission the files in use stay as they were last backed up.");
+            swprintf(j->summary, SUMMARY_LEN, T(L"Without administrator permission the files in use stay as they were last backed up."));
             return BD_OK;
         }
-        swprintf(j->summary, SUMMARY_LEN, L"Could not start the shadow copy helper (Windows error %lu).", (unsigned long)err);
+        swprintf(j->summary, SUMMARY_LEN, T(L"Could not start the shadow copy helper (Windows error %lu)."), (unsigned long)err);
         return BD_ERR_IO;
     }
     WaitForSingleObject(sei.hProcess, INFINITE);
@@ -5050,18 +5445,18 @@ static bd_status run_shadow(job *j)
     in_use_free(&l);
     if (refused) {
         wchar_t line_w[200];
-        swprintf(line_w, 200, L"%d file%ls outside your backup roots %ls left alone.", refused, refused == 1 ? L"" : L"s",
-                 refused == 1 ? L"was" : L"were");
+        swprintf(line_w, 200, TN(refused, L"%d file outside your backup roots was left alone.",
+                                 L"%d files outside your backup roots were left alone."), refused);
         post_text(WM_APP_LOG, line_w);
     }
     if (!got) {
         wchar_t *e = widen(err);
-        swprintf(j->summary, SUMMARY_LEN, L"The shadow copy did not work: %ls", e && *e ? e : L"no reason was given (see the app log)");
+        swprintf(j->summary, SUMMARY_LEN, T(L"The shadow copy did not work: %ls"), e && *e ? e : T(L"no reason was given (see the app log)"));
         free(e);
         return BD_OK;
     }
     j->in_use = got;
-    swprintf(j->summary, SUMMARY_LEN, L"Read %d of %d files in use from a shadow copy. Scanning them now.", got, total);
+    swprintf(j->summary, SUMMARY_LEN, T(L"Read %d of %d files in use from a shadow copy. Scanning them now."), got, total);
     return BD_OK;
 }
 
@@ -5093,29 +5488,36 @@ static void show_in_use(int say_none, const job *after)
     in_use_list l = {NULL, 0, 0, 0};
     bd_list_in_use(g_cat, in_use_cb, &l);
     if (!l.n) {
-        if (say_none) MessageBoxW(g_main, L"No files were in use by another program at the last scan or backup.", APP_NAME, MB_ICONINFORMATION);
+        if (say_none) MessageBoxW(g_main, T(L"No files were in use by another program at the last scan or backup."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     wtext msg = {NULL, 0, 0};
     wchar_t size[64];
     format_bytes(l.bytes, size, 64);
-    wadd(&msg, L"%d file%ls (%ls) %ls in use by another program, so BRODALF could not read %ls:\n\n", l.n, l.n == 1 ? L"" : L"s",
-         size, l.n == 1 ? L"is" : L"are", l.n == 1 ? L"it" : L"them");
+    wadd(&msg, TN(l.n, L"%d file (%ls) is in use by another program, so BRODALF could not read it:\n\n",
+                  L"%d files (%ls) are in use by another program, so BRODALF could not read them:\n\n"),
+         l.n, size);
     for (int i = 0; i < l.n && i < 10; i++) {
         wchar_t *w = widen(l.paths[i]);
         wadd(&msg, L"    %ls\n", w ? w : L"");
         free(w);
     }
-    if (l.n > 10) wadd(&msg, L"    ... and %d more\n", l.n - 10);
+    if (l.n > 10) wadd(&msg, T(L"    ... and %d more\n"), l.n - 10);
     int offer = !(after && after->from_shadow); /* a shadow copy just tried and could not read them */
     if (offer) {
-        wadd(&msg, L"\nYou can close the program that has %ls open (an email program often keeps its mail files open) and scan "
-                   L"again. Or Windows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read "
-                   L"%ls from that. Windows will ask for administrator permission.\n\nRead %ls from a shadow copy now?",
-             l.n == 1 ? L"it" : L"them", l.n == 1 ? L"it" : L"them", l.n == 1 ? L"it" : L"them");
+        wadd(&msg, L"%ls",
+             TN(l.n, L"\nYou can close the program that has it open (an email program often keeps its mail files open) and scan "
+                     L"again. Or Windows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read "
+                     L"it from that. Windows will ask for administrator permission.\n\nRead it from a shadow copy now?",
+                L"\nYou can close the program that has them open (an email program often keeps its mail files open) and scan "
+                L"again. Or Windows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read "
+                L"them from that. Windows will ask for administrator permission.\n\nRead them from a shadow copy now?"));
     } else {
-        wadd(&msg, L"\nThe shadow copy could not read %ls either. Close the program that has %ls open, then press Scan folders, "
-                   L"and Back up if you were backing up.", l.n == 1 ? L"it" : L"them", l.n == 1 ? L"it" : L"them");
+        wadd(&msg, L"%ls",
+             TN(l.n, L"\nThe shadow copy could not read it either. Close the program that has it open, then press Scan now, "
+                     L"and Back up if you were backing up.",
+                L"\nThe shadow copy could not read them either. Close the program that has them open, then press Scan now, "
+                L"and Back up if you were backing up."));
     }
     int yes = MessageBoxW(g_main, msg.p, APP_NAME, offer ? MB_ICONQUESTION | MB_YESNO : MB_ICONINFORMATION) == IDYES;
     free(msg.p);
@@ -5151,23 +5553,23 @@ static int fill_menu_cb(void *ctx, const bd_media_info *m)
     int lost = m->lost_ms != 0;
     format_bytes(m->free_bytes, freeb, 64);
     format_time_ms(m->space_ms, when, 64);
-    if (lost) swprintf(text, 700, L"Marked %ls: its copies do not count", m->lost_why && strcmp(m->lost_why, "broken") == 0 ? L"broken" : L"lost");
-    else if (m->connected) swprintf(text, 700, L"Plugged in now at %ls, %ls free", root, freeb);
-    else if (m->space_ms > 0) swprintf(text, 700, L"Not plugged in. %ls free when last seen (%ls)", freeb, when);
-    else swprintf(text, 700, L"Not plugged in");
+    if (lost) swprintf(text, 700, T(L"Marked %ls: its copies do not count"), m->lost_why && strcmp(m->lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"));
+    else if (m->connected) swprintf(text, 700, T(L"Plugged in now at %ls, %ls free"), root, freeb);
+    else if (m->space_ms > 0) swprintf(text, 700, T(L"Not plugged in. %ls free when last seen (%ls)"), freeb, when);
+    else swprintf(text, 700, T(L"Not plugged in"));
     AppendMenuW(sub, MF_STRING | MF_GRAYED, 0, text);
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(sub, MF_STRING | (m->connected && !lost ? 0 : MF_GRAYED), base + 0, L"Back up to it now");
-    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, L"Check every copy on it");
-    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, L"Read back copies not read lately");
-    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 6, L"Open in Explorer");
-    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 4, L"Compress the copies on it...");
+    AppendMenuW(sub, MF_STRING | (m->connected && !lost ? 0 : MF_GRAYED), base + 0, T(L"Back up to it now"));
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, T(L"Check every copy on it"));
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, T(L"Read back copies not read lately"));
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 6, T(L"Open in Explorer"));
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 4, T(L"Compress the copies on it..."));
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(sub, MF_STRING, base + 3, L"Where it stands, name, where it is kept, hardware details...");
-    AppendMenuW(sub, MF_STRING, base + 5, lost ? L"Found it: count its copies again" : L"Mark it lost or broken...");
+    AppendMenuW(sub, MF_STRING, base + 3, T(L"Where it stands, name, where it is kept, hardware details..."));
+    AppendMenuW(sub, MF_STRING, base + 5, lost ? T(L"Found it: count its copies again") : T(L"Mark it lost or broken..."));
     swprintf(text, 700, L"%ls%ls%ls%ls%ls%ls", label, *loc ? L"  (" : L"", loc, *loc ? L")" : L"",
-             m->secondary ? L"  - extra place for starred files" : L"",
-             lost ? L"  - marked lost or broken" : m->connected ? (m->secondary ? L"  - found" : L"  - plugged in") : L"");
+             m->secondary ? T(L"  - extra place for starred files") : L"",
+             lost ? T(L"  - marked lost or broken") : m->connected ? (m->secondary ? T(L"  - found") : T(L"  - plugged in")) : L"");
     AppendMenuW(f->local, MF_POPUP, (UINT_PTR)sub, text);
     f->n_local++;
     free(label); free(loc); free(root);
@@ -5181,79 +5583,85 @@ static void fill_storage_menus(void)
     if (!g_cat) return;
     fill_menus f = {g_menu_local, 0};
     bd_list_media(g_cat, fill_menu_cb, &f);
-    if (!f.n_local) AppendMenuW(g_menu_local, MF_STRING | MF_GRAYED, 0, L"No backup disks yet");
+    if (!f.n_local) AppendMenuW(g_menu_local, MF_STRING | MF_GRAYED, 0, T(L"No backup disks yet"));
     AppendMenuW(g_menu_local, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_DISK, L"Set up an external or removable disk...");
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_PLACE, L"Add an extra place for starred files...");
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_BACKUP_ALL, L"Back up to every plugged-in drive");
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_DRIVES, L"All disks...");
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_STATUS_ALL, L"Status of every disk...");
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_RISK, L"What needs backing up, and which disk to plug in...");
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_DISK, T(L"Set up an external or removable disk..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_PLACE, T(L"Add an extra place for starred files..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_BACKUP_ALL, T(L"Back up to every plugged-in drive"));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_DRIVES, T(L"All disks..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every disk..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_RISK, T(L"What needs backing up, and which disk to plug in..."));
 }
 
 static void create_menu_bar(HWND hwnd)
 {
     HMENU bar = CreateMenu();
     HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, ID_M_NEW_DB, L"&New database...");
-    AppendMenuW(file, MF_STRING, ID_M_OPEN_DB, L"&Open database...");
-    AppendMenuW(file, MF_STRING, ID_M_RECOVER_DB, L"&Recover the database from a backup drive...");
+    AppendMenuW(file, MF_STRING, ID_M_NEW_DB, T(L"&New database..."));
+    AppendMenuW(file, MF_STRING, ID_M_OPEN_DB, T(L"&Open database..."));
+    AppendMenuW(file, MF_STRING, ID_M_RECOVER_DB, T(L"&Recover the database from a backup drive..."));
     AppendMenuW(file, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(file, MF_STRING, ID_M_SHEET, L"&Print a recovery sheet...");
-    AppendMenuW(file, MF_STRING, ID_M_EXPORT, L"&Export the file list (CSV)...");
+    AppendMenuW(file, MF_STRING, ID_M_SHEET, T(L"&Print a recovery sheet..."));
+    AppendMenuW(file, MF_STRING, ID_M_EXPORT, T(L"&Export the file list (CSV)..."));
     AppendMenuW(file, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(file, MF_STRING, ID_M_EXIT, L"E&xit");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, L"&File");
+    AppendMenuW(file, MF_STRING, ID_M_EXIT, T(L"E&xit"));
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, T(L"&File"));
 
     g_menu_view = CreatePopupMenu();
-    for (int i = 0; i < N_TABS; i++) AppendMenuW(g_menu_view, MF_STRING, (UINT_PTR)(ID_M_TAB_FIRST + i), g_tab_names[i]);
+    for (int i = 0; i < N_TABS; i++) AppendMenuW(g_menu_view, MF_STRING, (UINT_PTR)(ID_M_TAB_FIRST + i), T(g_tab_names[i]));
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_STATUS_ALL, L"Status of every drive...");
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, L"Files short of your copies, and which drive to plug in...");
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_LARGEST, L"Largest files...");
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_DELETED, L"Deleted files...");
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_DAMAGED, L"Damaged files (found by a bit-rot scan)...");
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_IN_USE, L"Files that were in use at the last scan...");
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_CONFLICTS, L"Files the last restore left alone...");
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every drive..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, T(L"Files short of your copies, and which drive to plug in..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_LARGEST, T(L"Largest files..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_DELETED, T(L"Deleted files..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_DAMAGED, T(L"Damaged files (found by a bit-rot scan)..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_IN_USE, T(L"Files that were in use at the last scan..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_CONFLICTS, T(L"Files the last restore left alone..."));
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_REFRESH, L"&Refresh");
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_REFRESH, T(L"&Refresh"));
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
     HMENU look = g_menu_look = CreatePopupMenu();
-    AppendMenuW(look, MF_STRING, ID_M_THEME_FOLLOW, L"Like Windows (its app mode, light or dark)");
-    AppendMenuW(look, MF_STRING, ID_M_THEME_LIGHT, L"Light");
-    AppendMenuW(look, MF_STRING, ID_M_THEME_DARK, L"Dark");
+    AppendMenuW(look, MF_STRING, ID_M_THEME_FOLLOW, T(L"Like Windows (its app mode, light or dark)"));
+    AppendMenuW(look, MF_STRING, ID_M_THEME_LIGHT, T(L"Light"));
+    AppendMenuW(look, MF_STRING, ID_M_THEME_DARK, T(L"Dark"));
     CheckMenuRadioItem(look, ID_M_THEME_FOLLOW, ID_M_THEME_DARK, ID_M_THEME_FOLLOW + (UINT)g_theme_choice, MF_BYCOMMAND);
-    AppendMenuW(g_menu_view, MF_POPUP, (UINT_PTR)look, L"&Appearance");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)g_menu_view, L"&View");
+    AppendMenuW(g_menu_view, MF_POPUP, (UINT_PTR)look, T(L"&Appearance"));
+    HMENU lang = g_menu_lang = CreatePopupMenu();
+    AppendMenuW(lang, MF_STRING, ID_M_LANG_FOLLOW, T(L"Like Windows (its display language)"));
+    for (int i = 0; i < N_LANGS; i++) AppendMenuW(lang, MF_STRING, (UINT_PTR)(ID_M_LANG_FIRST + i), g_langs[i].name);
+    CheckMenuRadioItem(lang, ID_M_LANG_FOLLOW, ID_M_LANG_FIRST + N_LANGS - 1,
+                       g_lang_choice < 0 ? ID_M_LANG_FOLLOW : (UINT)(ID_M_LANG_FIRST + g_lang_choice), MF_BYCOMMAND);
+    AppendMenuW(g_menu_view, MF_POPUP, (UINT_PTR)lang, T(L"&Language"));
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)g_menu_view, T(L"&View"));
 
     HMENU tools = CreatePopupMenu();
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_FOLDER, L"Add a backup root...");
-    AppendMenuW(tools, MF_STRING, ID_M_SCAN, L"Scan the backup roots for changes now");
-    AppendMenuW(tools, MF_STRING, ID_M_BITROT, L"Bit-rot scan: read every file again...");
-    AppendMenuW(tools, MF_STRING, ID_M_RELOCATE, L"Change where a backup root is...");
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_FOLDER, T(L"Add a backup root..."));
+    AppendMenuW(tools, MF_STRING, ID_M_SCAN, T(L"Scan the backup roots for changes now"));
+    AppendMenuW(tools, MF_STRING, ID_M_BITROT, T(L"Bit-rot scan: read every file again..."));
+    AppendMenuW(tools, MF_STRING, ID_M_RELOCATE, T(L"Change where a backup root is..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_BACKUP, L"Back up...");
-    AppendMenuW(tools, MF_STRING, ID_M_BACKUP_ALL, L"Back up to every plugged-in drive");
-    AppendMenuW(tools, MF_STRING, ID_M_CHECK, L"Check a drive...");
+    AppendMenuW(tools, MF_STRING, ID_M_BACKUP, T(L"Back up..."));
+    AppendMenuW(tools, MF_STRING, ID_M_BACKUP_ALL, T(L"Back up to every plugged-in drive"));
+    AppendMenuW(tools, MF_STRING, ID_M_CHECK, T(L"Check a drive..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_RESTORE, L"Restore what is selected...");
-    AppendMenuW(tools, MF_STRING, ID_M_RESTORE_DELETED, L"Restore deleted files...");
+    AppendMenuW(tools, MF_STRING, ID_M_RESTORE, T(L"Restore what is selected..."));
+    AppendMenuW(tools, MF_STRING, ID_M_RESTORE_DELETED, T(L"Restore deleted files..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_DISK, L"Set up an external or removable disk...");
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_PLACE, L"Add an extra place for starred files...");
-    AppendMenuW(tools, MF_STRING, ID_M_STAR, L"Star or unstar what is selected");
-    AppendMenuW(tools, MF_STRING, ID_M_ENCRYPT, L"Encrypt what is selected, or stop...");
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_DISK, T(L"Set up an external or removable disk..."));
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_PLACE, T(L"Add an extra place for starred files..."));
+    AppendMenuW(tools, MF_STRING, ID_M_STAR, T(L"Star or unstar what is selected"));
+    AppendMenuW(tools, MF_STRING, ID_M_ENCRYPT, T(L"Encrypt what is selected, or stop..."));
     g_menu_local = CreatePopupMenu();
-    AppendMenuW(tools, MF_POPUP, (UINT_PTR)g_menu_local, L"Backup drives and extra places");
+    AppendMenuW(tools, MF_POPUP, (UINT_PTR)g_menu_local, T(L"Backup drives and extra places"));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_SETTINGS, L"&Settings...");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)tools, L"&Tools");
+    AppendMenuW(tools, MF_STRING, ID_M_SETTINGS, T(L"&Settings..."));
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)tools, T(L"&Tools"));
 
     HMENU help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, ID_M_LOG, L"Show the app log");
-    AppendMenuW(help, MF_STRING, ID_M_REPORTS, L"Show saved error reports");
-    AppendMenuW(help, MF_STRING, ID_M_ABOUT, L"&About BRODALF");
-    AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
+    AppendMenuW(help, MF_STRING, ID_M_LOG, T(L"Show the app log"));
+    AppendMenuW(help, MF_STRING, ID_M_REPORTS, T(L"Show saved error reports"));
+    AppendMenuW(help, MF_STRING, ID_M_ABOUT, T(L"&About BRODALF"));
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, T(L"&Help"));
     SetMenu(hwnd, bar);
 }
 
@@ -5310,10 +5718,10 @@ static void mark_lost_ui(const drive_snap *d)
 {
     wchar_t name[600], head[700];
     drive_name(d->label, d->location, name, 600);
-    swprintf(head, 700, L"What happened to %ls?", name);
+    swprintf(head, 700, T(L"What happened to %ls?"), name);
     TASKDIALOG_BUTTON b[2] = {
-        {650, L"It is lost\nYou do not know where it is."},
-        {651, L"It is broken\nIt no longer works, or its files cannot be read."},
+        {650, T(L"It is lost\nYou do not know where it is.")},
+        {651, T(L"It is broken\nIt no longer works, or its files cannot be read.")},
     };
     TASKDIALOGCONFIG tc;
     memset(&tc, 0, sizeof(tc));
@@ -5324,34 +5732,34 @@ static void mark_lost_ui(const drive_snap *d)
     tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
     tc.pszWindowTitle = APP_NAME;
     tc.pszMainInstruction = head;
-    tc.pszContent = L"BRODALF stops counting its copies, so your full copies show what you really have, and backs the files it "
-                    L"held up again to your other drives. Nothing on any drive is deleted, and you can undo this with Found it.";
+    tc.pszContent = T(L"BRODALF stops counting its copies, so your full copies show what you really have, and backs the files it "
+                    L"held up again to your other drives. Nothing on any drive is deleted, and you can undo this with Found it.");
     tc.cButtons = 2;
     tc.pButtons = b;
     int pressed = IDCANCEL;
     if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) || (pressed != 650 && pressed != 651)) return;
     const char *why = pressed == 651 ? "broken" : "lost";
-    const wchar_t *wwhy = pressed == 651 ? L"broken" : L"lost";
+    const wchar_t *wwhy = pressed == 651 ? T(L"broken") : T(L"lost");
     sets_snap before = read_sets();
     bd_status st = bd_media_mark_lost(g_cat, d->id, why);
     if (st != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        MessageBoxW(g_main, e ? e : L"The drive could not be marked.", APP_NAME, MB_ICONWARNING);
+        MessageBoxW(g_main, e ? e : T(L"The drive could not be marked."), APP_NAME, MB_ICONWARNING);
         free(e);
         return;
     }
     sets_snap after = read_sets();
     wtext t = {NULL, 0, 0};
-    wadd(&t, L"Marking %ls %ls changes your full copies:\n\n", name, wwhy);
+    wadd(&t, T(L"Marking %ls %ls changes your full copies:\n\n"), name, wwhy);
     int changed = 0;
     for (int i = 0; i < before.n || i < after.n; i++) {
         int a = i < before.n ? set_percent(&before.s[i]) : 0, z = i < after.n ? set_percent(&after.s[i]) : 0;
         int64_t fa = i < before.n ? before.s[i].files_done : 0, fz = i < after.n ? after.s[i].files_done : 0;
         if (fa != fz) changed = 1;
-        wadd(&t, L"    Full copy %d: %d%% now, %d%% after (%lld files fewer)\n", i + 1, a, z, (long long)(fa - fz));
+        wadd(&t, T(L"    Full copy %d: %d%% now, %d%% after (%lld files fewer)\n"), i + 1, a, z, (long long)(fa - fz));
     }
-    if (!changed) wadd(&t, L"    No change: every file it held has enough good copies elsewhere.\n");
-    wadd(&t, L"\nMark it %ls?", wwhy);
+    if (!changed) wadd(&t, T(L"    No change: every file it held has enough good copies elsewhere.\n"));
+    wadd(&t, T(L"\nMark it %ls?"), wwhy);
     int ok = MessageBoxW(g_main, t.p ? t.p : L"", APP_NAME, MB_ICONWARNING | MB_YESNO) == IDYES;
     free(t.p);
     if (!ok) {
@@ -5360,7 +5768,7 @@ static void mark_lost_ui(const drive_snap *d)
     }
     if (bd_catalog_save(g_cat) == BD_OK) {
         wchar_t line[800];
-        swprintf(line, 800, L"%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it.", name, wwhy);
+        swprintf(line, 800, T(L"%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it."), name, wwhy);
         log_append(line);
     }
 }
@@ -5370,8 +5778,8 @@ static void mark_found_ui(const drive_snap *d)
     wchar_t name[600], line[800];
     drive_name(d->label, d->location, name, 600);
     if (bd_media_found(g_cat, d->id) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
-        swprintf(line, 800, L"%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are "
-                            L"still good.", name);
+        swprintf(line, 800, T(L"%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are "
+                            L"still good."), name);
         log_append(line);
     }
 }
@@ -5390,8 +5798,8 @@ static void edit_drive(int64_t id)
         char *name = narrow(g_edit_name), *loc = narrow(g_edit_location);
         if (name && *name && strcmp(name, d->label) != 0) {
             if (d->secondary && !good_description(g_edit_name))
-                MessageBoxW(g_main, L"An extra place keeps its old description: describe it in at least two words, saying what it is and "
-                                    L"where it lives, like \"Dropbox folder on the laptop\".", APP_NAME, MB_ICONINFORMATION);
+                MessageBoxW(g_main, T(L"An extra place keeps its old description: describe it in at least two words, saying what it is and "
+                                    L"where it lives, like \"Dropbox folder on the laptop\"."), APP_NAME, MB_ICONINFORMATION);
             else
                 st = bd_media_rename(g_cat, id, name);
         }
@@ -5406,7 +5814,7 @@ static void edit_drive(int64_t id)
     }
     if (st != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        MessageBoxW(g_main, e ? e : L"The drive could not be changed.", APP_NAME, MB_ICONWARNING);
+        MessageBoxW(g_main, e ? e : T(L"The drive could not be changed."), APP_NAME, MB_ICONWARNING);
         free(e);
     }
     free(dl.items);
@@ -5438,7 +5846,7 @@ static void compress_drive_ui(int64_t id)
     const char *why = NULL;
     if (g_busy) return;
     if (bd_media_compression(g_cat, id, &can, &on, &why) != BD_OK) {
-        MessageBoxW(g_main, L"Plug the drive in first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Plug the drive in first."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     wchar_t name[600];
@@ -5446,23 +5854,23 @@ static void compress_drive_ui(int64_t id)
     wtext msg = {NULL, 0, 0};
     int yes;
     if (on) {
-        wadd(&msg, L"Compression is on for %ls: Windows keeps BRODALF's copies there smaller, and makes them whole again as "
+        wadd(&msg, T(L"Compression is on for %ls: Windows keeps BRODALF's copies there smaller, and makes them whole again as "
                    L"they are read.\n\nTurn it off? Every copy on the drive is made whole again, which needs room for them to "
-                   L"grow back to their full size, and takes about as long as reading and writing every copy there.", name);
+                   L"grow back to their full size, and takes about as long as reading and writing every copy there."), name);
         yes = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) == IDYES;
     } else if (!can) {
         wchar_t *w = widen(why);
-        wadd(&msg, L"%ls cannot be compressed. %ls", name, w ? w : L"");
+        wadd(&msg, T(L"%ls cannot be compressed. %ls"), name, w ? w : L"");
         free(w);
         MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION);
         yes = 0;
     } else {
-        wadd(&msg, L"Windows can compress the copies on %ls with its own file compression. They stay ordinary files that any "
+        wadd(&msg, T(L"Windows can compress the copies on %ls with its own file compression. They stay ordinary files that any "
                    L"Windows PC reads without BRODALF; they just take less room on the drive.\n\n"
                    L"Documents and similar files often shrink to half their size or less. Photos, videos, music and zipped "
                    L"files are compressed already and barely shrink.\n\n"
                    L"Compressing takes about as long as reading and writing every copy on the drive, and later backups to it "
-                   L"are a little slower. You can turn it off again here.\n\nCompress the copies on this drive now?", name);
+                   L"are a little slower. You can turn it off again here.\n\nCompress the copies on this drive now?"), name);
         yes = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) == IDYES;
     }
     free(msg.p);
@@ -5480,7 +5888,7 @@ static void drive_action(int64_t id, int action)
     const drive_snap *d = find_drive(&dl, id);
     if (!d) { free(dl.items); return; }
     if (action == 0) {
-        if (!d->lost_ms && (!d->encrypted || unlock_ui(L"This drive is encrypted. Enter the passphrase to back up to it."))) {
+        if (!d->lost_ms && (!d->encrypted || unlock_ui(T(L"This drive is encrypted. Enter the passphrase to back up to it.")))) {
             job *j = new_job(JOB_BACKUP);
             if (j) {
                 j->media_id = id;
@@ -5543,8 +5951,8 @@ static void menu_command(int cmd)
     }
     case ID_M_ABOUT: {
         wchar_t *v = widen(bd_version()), msg[700];
-        swprintf(msg, 700, L"BRODALF %ls\n\nKeeps track of what has been backed up from your backup roots, and to which drive, and "
-                           L"whether each copy is still good. It does nothing until you press a button.\n\nhttps://github.com/Phawx/BRODALF",
+        swprintf(msg, 700, T(L"BRODALF %ls\n\nKeeps track of what has been backed up from your backup roots, and to which drive, and "
+                           L"whether each copy is still good. It does nothing until you press a button.\n\nhttps://github.com/Phawx/BRODALF"),
                  v ? v : L"");
         free(v);
         MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
@@ -5586,9 +5994,9 @@ static void menu_command(int cmd)
  * good ones. */
 static void cmd_bitrot(void)
 {
-    if (MessageBoxW(g_main, L"A bit-rot scan reads every file in your backup roots again and compares it with its checksum, to find "
+    if (MessageBoxW(g_main, T(L"A bit-rot scan reads every file in your backup roots again and compares it with its checksum, to find "
                             L"files that changed although their size and time did not (damage on this PC's disk). It takes as long as "
-                            L"the first scan did. Nothing is changed or backed up.\n\nStart it now?",
+                            L"the first scan did. Nothing is changed or backed up.\n\nStart it now?"),
                     APP_NAME, MB_ICONQUESTION | MB_YESNO) != IDYES)
         return;
     job *j = new_job(JOB_SCAN);
@@ -5652,23 +6060,23 @@ static void tree_context_menu(int x, int y)
     free(l.labels);
     int is_root = r->node_id == 0;
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING | (missing || r->state == BD_STATE_DELETED ? MF_GRAYED : 0), ID_CTX_OPEN, L"Open in Explorer");
-    AppendMenuW(m, MF_STRING, ID_CTX_RESTORE, L"Restore...");
+    AppendMenuW(m, MF_STRING | (missing || r->state == BD_STATE_DELETED ? MF_GRAYED : 0), ID_CTX_OPEN, T(L"Open in Explorer"));
+    AppendMenuW(m, MF_STRING, ID_CTX_RESTORE, T(L"Restore..."));
     {
         const char *mr = r->rel ? r->rel : "";
         int st = bd_starred(g_cat, r->source_id, mr), en = bd_encrypt_marked(g_cat, r->source_id, mr);
         AppendMenuW(m, MF_SEPARATOR, 0, NULL);
         AppendMenuW(m, MF_STRING | (st == 2 ? MF_GRAYED : 0), ID_CTX_STAR,
-                    st == 1 ? L"Unstar it" : st == 2 ? L"Starred with its folder" : L"Star it: also back it up to the extra places");
+                    st == 1 ? T(L"Unstar it") : st == 2 ? T(L"Starred with its folder") : T(L"Star it: also back it up to the extra places"));
         AppendMenuW(m, MF_STRING | (en == 2 ? MF_GRAYED : 0), ID_CTX_ENCRYPT,
-                    en == 1 ? L"Stop encrypting it..." : en == 2 ? L"Encrypted with its folder" : L"Encrypt it on every drive...");
+                    en == 1 ? T(L"Stop encrypting it...") : en == 2 ? T(L"Encrypted with its folder") : T(L"Encrypt it on every drive..."));
     }
     if (is_root) {
         AppendMenuW(m, MF_SEPARATOR, 0, NULL);
         AppendMenuW(m, MF_STRING, active ? ID_CTX_STOP_ROOT : ID_CTX_RESUME_ROOT,
-                    active ? L"Stop backing up this root..." : L"Back up this root again");
-        AppendMenuW(m, MF_STRING, ID_CTX_ROOT_SKIP, L"What to leave out in this root...");
-        AppendMenuW(m, MF_STRING, ID_CTX_RELOCATE, L"Change where it is...");
+                    active ? T(L"Stop backing up this root...") : T(L"Back up this root again"));
+        AppendMenuW(m, MF_STRING, ID_CTX_ROOT_SKIP, T(L"What to leave out in this root..."));
+        AppendMenuW(m, MF_STRING, ID_CTX_RELOCATE, T(L"Change where it is..."));
     }
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, g_main, NULL);
     DestroyMenu(m);
@@ -5694,13 +6102,13 @@ static void tree_context_menu(int x, int y)
         cmd_restore();
     } else if (cmd == ID_CTX_STOP_ROOT) {
         wchar_t q[900];
-        swprintf(q, 900, L"Stop backing up %ls?\n\nScans leave it alone and nothing new from it is backed up. Everything BRODALF "
+        swprintf(q, 900, T(L"Stop backing up %ls?\n\nScans leave it alone and nothing new from it is backed up. Everything BRODALF "
                          L"knows about it stays, and its copies on your drives stay and still restore. You can back it up again "
-                         L"at any time.", root_name);
+                         L"at any time."), root_name);
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES && bd_source_set_active(g_cat, r->source_id, 0) == BD_OK &&
             bd_catalog_save(g_cat) == BD_OK) {
             wchar_t line[400];
-            swprintf(line, 400, L"%ls is no longer backed up.", root_name);
+            swprintf(line, 400, T(L"%ls is no longer backed up."), root_name);
             log_append(line);
             rebuild_tree();
             update_drives_label();
@@ -5708,7 +6116,7 @@ static void tree_context_menu(int x, int y)
     } else if (cmd == ID_CTX_RESUME_ROOT) {
         if (bd_source_set_active(g_cat, r->source_id, 1) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
             wchar_t line[400];
-            swprintf(line, 400, L"%ls is backed up again. Scanning it.", root_name);
+            swprintf(line, 400, T(L"%ls is backed up again. Scanning it."), root_name);
             log_append(line);
             enqueue(new_job(JOB_SCAN));
         }
@@ -5741,8 +6149,8 @@ static void list_context_menu(int x, int y)
     if (row < 0 || row >= g_n_copy_rows) return;
     const copy_row *c = &g_copy_rows[row];
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, ID_CTX_RESTORE_VERSION, L"Restore this version...");
-    AppendMenuW(m, MF_STRING | (c->full ? 0 : MF_GRAYED), ID_CTX_OPEN_VERSION, L"Open in Explorer (on its drive)");
+    AppendMenuW(m, MF_STRING, ID_CTX_RESTORE_VERSION, T(L"Restore this version..."));
+    AppendMenuW(m, MF_STRING | (c->full ? 0 : MF_GRAYED), ID_CTX_OPEN_VERSION, T(L"Open in Explorer (on its drive)"));
     int64_t version_id = c->version_id;
     wchar_t *full = c->full ? _wcsdup(c->full) : NULL;
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, g_main, NULL);
@@ -5762,20 +6170,23 @@ static void after_scan(job *j)
     if (j->roots_missing) ask_missing_roots();
     if (j->damaged) {
         wchar_t q[600];
-        swprintf(q, 600, L"%lld file%ls changed although %ls size and time did not. That usually means damage on this PC's disk "
-                         L"(bit rot), and the copies on your drives are the good ones.\n\nShow %ls now? You can restore %ls or "
-                         L"accept %ls as they are.",
-                 (long long)j->damaged, j->damaged == 1 ? L"" : L"s", j->damaged == 1 ? L"its" : L"their",
-                 j->damaged == 1 ? L"it" : L"them", j->damaged == 1 ? L"it" : L"them", j->damaged == 1 ? L"it" : L"them");
+        swprintf(q, 600, TN(j->damaged, L"%lld file changed although its size and time did not. That usually means damage on this PC's disk "
+                                        L"(bit rot), and the copies on your drives are the good ones.\n\nShow it now? You can restore it or "
+                                        L"accept it as it is.",
+                            L"%lld files changed although their size and time did not. That usually means damage on this PC's disk "
+                            L"(bit rot), and the copies on your drives are the good ones.\n\nShow them now? You can restore them or "
+                            L"accept them as they are."),
+                 (long long)j->damaged);
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONWARNING | MB_YESNO) == IDYES) cmd_table(TABLE_DAMAGED);
     }
     int64_t gone = 0;
     if ((j->found_deleted || j->after_open) && bd_list_deleted(g_cat, 0, 1, NULL, NULL, &gone) == BD_OK && gone > 0) {
         wchar_t q[600];
-        swprintf(q, 600, L"%lld file%ls gone from your backup roots since you last looked. BRODALF keeps tracking %ls and %ls "
-                         L"copies on your drives.\n\nLook at %ls now? You can restore %ls, keep tracking %ls, or forget %ls.",
-                 (long long)gone, gone == 1 ? L" is" : L"s are", gone == 1 ? L"it" : L"them", gone == 1 ? L"its" : L"their",
-                 gone == 1 ? L"it" : L"them", gone == 1 ? L"it" : L"them", gone == 1 ? L"it" : L"them", gone == 1 ? L"it" : L"them");
+        swprintf(q, 600, TN(gone, L"%lld file is gone from your backup roots since you last looked. BRODALF keeps tracking it and its "
+                                  L"copies on your drives.\n\nLook at it now? You can restore it, keep tracking it, or forget it.",
+                            L"%lld files are gone from your backup roots since you last looked. BRODALF keeps tracking them and their "
+                            L"copies on your drives.\n\nLook at them now? You can restore them, keep tracking them, or forget them."),
+                 (long long)gone);
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES) cmd_deleted();
     }
     if (j->then_backup) {
@@ -5806,13 +6217,13 @@ static void clear_hits(void)
 static const wchar_t *short_state(bd_node_state s)
 {
     switch (s) {
-    case BD_STATE_AVAILABLE: return L"Available";
-    case BD_STATE_AVAILABLE_OLDER: return L"Changed since backup";
-    case BD_STATE_OFFLINE: return L"Drive not plugged in";
-    case BD_STATE_NO_COPY: return L"Not backed up";
-    case BD_STATE_BAD: return L"Copy damaged";
-    case BD_STATE_DELETED: return L"Deleted";
-    case BD_STATE_PARTIAL: return L"Partly available";
+    case BD_STATE_AVAILABLE: return T(L"Available");
+    case BD_STATE_AVAILABLE_OLDER: return T(L"Changed since backup");
+    case BD_STATE_OFFLINE: return T(L"Drive not plugged in");
+    case BD_STATE_NO_COPY: return T(L"Not backed up");
+    case BD_STATE_BAD: return T(L"Copy damaged");
+    case BD_STATE_DELETED: return T(L"Deleted");
+    case BD_STATE_PARTIAL: return T(L"Partly available");
     }
     return L"";
 }
@@ -5840,7 +6251,7 @@ static int search_cb(void *ctx, const bd_search_info *r)
     if (cut) *cut = 0;
     else if ((cut = wcschr(folder, L'\\')) != NULL) cut[0] = 0;
     for (wchar_t *c = folder; *c; c++) if (*c == L'/') *c = L'\\';
-    const wchar_t *cells[] = {shown, folder, short_state(r->state), where && *where ? where : L"(no copies)"};
+    const wchar_t *cells[] = {shown, folder, short_state(r->state), where && *where ? where : T(L"(no copies)")};
     lv_row(g_results, cells, 4);
     free(name);
     free(src);
@@ -5867,7 +6278,7 @@ static void run_search(void)
     }
     if (g_busy) {
         /* The catalog belongs to the job; the search runs again when it ends. */
-        const wchar_t *cells[] = {L"Search is available when the current job finishes.", L"", L"", L""};
+        const wchar_t *cells[] = {T(L"Search is available when the current job finishes."), L"", L"", L""};
         lv_row(g_results, cells, 4);
         SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(g_results, NULL, TRUE);
@@ -5879,7 +6290,7 @@ static void run_search(void)
     if (u) bd_search(g_cat, u, 500, search_cb, NULL);
     free(u);
     if (!g_hit_n) {
-        const wchar_t *cells[] = {L"No files or folders match.", L"", L"", L""};
+        const wchar_t *cells[] = {T(L"No files or folders match."), L"", L"", L""};
         lv_row(g_results, cells, 4);
     }
     SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
@@ -6103,11 +6514,11 @@ static void set_edit_text(HWND ed, const wchar_t *text)
 /* "under a second", "40 seconds", "12 minutes", "3.5 hours" */
 static void format_duration(double s, wchar_t *out, size_t n)
 {
-    if (s < 1) swprintf(out, n, L"under a second");
-    else if (s < 90) swprintf(out, n, L"%.0f seconds", s);
-    else if (s < 90 * 60) swprintf(out, n, L"%.0f minutes", s / 60);
-    else if (s < 48 * 3600) swprintf(out, n, L"%.1f hours", s / 3600);
-    else swprintf(out, n, L"%.1f days", s / 86400);
+    if (s < 1) swprintf(out, n, T(L"under a second"));
+    else if (s < 90) swprintf(out, n, T(L"%.0f seconds"), s);
+    else if (s < 90 * 60) swprintf(out, n, T(L"%.0f minutes"), s / 60);
+    else if (s < 48 * 3600) swprintf(out, n, T(L"%.1f hours"), s / 3600);
+    else swprintf(out, n, T(L"%.1f days"), s / 86400);
 }
 
 static int mv(HWND h, int x, int y, int w, int hh)
@@ -6232,7 +6643,7 @@ static void create_pages(HWND hwnd)
         TCITEMW it;
         memset(&it, 0, sizeof(it));
         it.mask = TCIF_TEXT;
-        it.pszText = (LPWSTR)g_tab_names[i];
+        it.pszText = (LPWSTR)T(g_tab_names[i]);
         SendMessageW(g_tabs, TCM_INSERTITEMW, (WPARAM)i, (LPARAM)&it);
         g_page[i] = CreateWindowExW(WS_EX_CONTROLPARENT, L"BrodalfPage", L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 10, 10,
                                     hwnd, NULL, g_inst, NULL);
@@ -6240,110 +6651,110 @@ static void create_pages(HWND hwnd)
     /* The tab control is drawn under its pages. */
     SetWindowPos(g_tabs, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
-    page_button(TAB_DB, L"Add backup root...", ID_DB_ADD);
-    page_button(TAB_DB, L"Star it", ID_DB_STAR);
-    page_button(TAB_DB, L"Encrypt it...", ID_DB_ENCRYPT);
-    page_button(TAB_DB, L"Bit-rot scan...", ID_DB_BITROT);
-    page_button(TAB_DB, L"Change where a root is...", ID_DB_RELOCATE);
-    page_button(TAB_DB, L"What to leave out...", ID_DB_SKIP);
-    page_button(TAB_DB, L"Deleted files...", ID_DB_DELETED);
-    page_button(TAB_DB, L"Damaged files...", ID_DB_DAMAGED);
-    page_button(TAB_DB, L"In use at the last scan...", ID_DB_IN_USE);
-    page_button(TAB_DB, L"Largest files...", ID_DB_LARGEST);
-    page_button(TAB_DB, L"Export the list (CSV)...", ID_DB_EXPORT);
+    page_button(TAB_DB, T(L"Add backup root..."), ID_DB_ADD);
+    page_button(TAB_DB, T(L"Star it"), ID_DB_STAR);
+    page_button(TAB_DB, T(L"Encrypt it..."), ID_DB_ENCRYPT);
+    page_button(TAB_DB, T(L"Bit-rot scan..."), ID_DB_BITROT);
+    page_button(TAB_DB, T(L"Change where a root is..."), ID_DB_RELOCATE);
+    page_button(TAB_DB, T(L"What to leave out..."), ID_DB_SKIP);
+    page_button(TAB_DB, T(L"Deleted files..."), ID_DB_DELETED);
+    page_button(TAB_DB, T(L"Damaged files..."), ID_DB_DAMAGED);
+    page_button(TAB_DB, T(L"In use at the last scan..."), ID_DB_IN_USE);
+    page_button(TAB_DB, T(L"Largest files..."), ID_DB_LARGEST);
+    page_button(TAB_DB, T(L"Export the list (CSV)..."), ID_DB_EXPORT);
 
-    page_label(TAB_NEXT, ID_NEXT_FOR_LABEL, L"What the next backup copies to:");
+    page_label(TAB_NEXT, ID_NEXT_FOR_LABEL, T(L"What the next backup copies to:"));
     page_ctl(TAB_NEXT, WC_COMBOBOXW, L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, ID_NEXT_FOR);
     g_ctl_btn[ID_NEXT_FOR - ID_PAGE_FIRST] = 1;
     page_text(TAB_NEXT, ID_NEXT_TEXT);
-    page_button(TAB_NEXT, L"Back up...", ID_NEXT_BACKUP);
-    page_button(TAB_NEXT, L"Back up to every plugged-in drive", ID_NEXT_ALL);
-    page_button(TAB_NEXT, L"Files changed on it...", ID_NEXT_CHANGED);
-    page_button(TAB_NEXT, L"Which drive to plug in...", ID_NEXT_RISK);
-    page_button(TAB_NEXT, L"Refresh", ID_NEXT_REFRESH);
+    page_button(TAB_NEXT, T(L"Back up..."), ID_NEXT_BACKUP);
+    page_button(TAB_NEXT, T(L"Back up to every plugged-in drive"), ID_NEXT_ALL);
+    page_button(TAB_NEXT, T(L"Files changed on it..."), ID_NEXT_CHANGED);
+    page_button(TAB_NEXT, T(L"Which drive to plug in..."), ID_NEXT_RISK);
+    page_button(TAB_NEXT, T(L"Refresh"), ID_NEXT_REFRESH);
     page_list(TAB_NEXT, ID_NEXT_LIST, NULL, NULL, 0);
 
-    page_button(TAB_LOCAL, L"Set up a disk...", ID_LOCAL_ADD);
-    page_button(TAB_LOCAL, L"Back up to it", ID_LOCAL_BACKUP);
-    page_button(TAB_LOCAL, L"Back up to every plugged-in drive", ID_LOCAL_ALL);
-    page_button(TAB_LOCAL, L"Check every copy", ID_LOCAL_CHECK);
-    page_button(TAB_LOCAL, L"Read back copies not read lately", ID_LOCAL_VERIFY);
-    page_button(TAB_LOCAL, L"Open in Explorer", ID_LOCAL_OPEN);
-    page_button(TAB_LOCAL, L"Compress copies...", ID_LOCAL_COMPRESS);
-    page_button(TAB_LOCAL, L"Files changed since...", ID_LOCAL_CHANGED);
-    page_button(TAB_LOCAL, L"Name and where it is kept...", ID_LOCAL_EDIT);
-    page_button(TAB_LOCAL, L"Mark lost or broken...", ID_LOCAL_LOST);
-    page_button(TAB_LOCAL, L"Where every drive stands...", ID_LOCAL_STATUS);
-    page_button(TAB_LOCAL, L"Which drive to plug in...", ID_LOCAL_RISK);
-    page_check(TAB_LOCAL, L"Back up to several drives at once", ID_LOCAL_PARALLEL);
+    page_button(TAB_LOCAL, T(L"Set up a disk..."), ID_LOCAL_ADD);
+    page_button(TAB_LOCAL, T(L"Back up to it"), ID_LOCAL_BACKUP);
+    page_button(TAB_LOCAL, T(L"Back up to every plugged-in drive"), ID_LOCAL_ALL);
+    page_button(TAB_LOCAL, T(L"Check every copy"), ID_LOCAL_CHECK);
+    page_button(TAB_LOCAL, T(L"Read back copies not read lately"), ID_LOCAL_VERIFY);
+    page_button(TAB_LOCAL, T(L"Open in Explorer"), ID_LOCAL_OPEN);
+    page_button(TAB_LOCAL, T(L"Compress copies..."), ID_LOCAL_COMPRESS);
+    page_button(TAB_LOCAL, T(L"Files changed since..."), ID_LOCAL_CHANGED);
+    page_button(TAB_LOCAL, T(L"Name and where it is kept..."), ID_LOCAL_EDIT);
+    page_button(TAB_LOCAL, T(L"Mark lost or broken..."), ID_LOCAL_LOST);
+    page_button(TAB_LOCAL, T(L"Where every drive stands..."), ID_LOCAL_STATUS);
+    page_button(TAB_LOCAL, T(L"Which drive to plug in..."), ID_LOCAL_RISK);
+    page_check(TAB_LOCAL, T(L"Back up to several drives at once"), ID_LOCAL_PARALLEL);
     {
-        static const wchar_t *cols[] = {L"Drive", L"Plugged in", L"Size", L"Free", L"BRODALF's copies", L"Other files",
-                                        L"Kept free", L"Health", L"Temperature", L"Hours on", L"Worn", L"Oldest read-back",
-                                        L"Copies", L"Problems"};
+        static const wchar_t *cols[] = {N_(L"Drive"), N_(L"Plugged in"), N_(L"Size"), N_(L"Free"), N_(L"BRODALF's copies"), N_(L"Other files"),
+                                        N_(L"Kept free"), N_(L"Health"), N_(L"Temperature"), N_(L"Hours on"), N_(L"Worn"), N_(L"Oldest read-back"),
+                                        N_(L"Copies"), N_(L"Problems")};
         static const int widths[] = {200, 80, 70, 70, 100, 80, 70, 70, 80, 70, 50, 120, 70, 220};
         page_list(TAB_LOCAL, ID_LOCAL_LIST, cols, widths, 14);
     }
     page_text(TAB_LOCAL, ID_LOCAL_TEXT);
 
     page_label(TAB_STARRED, ID_STAR_TEXT,
-               L"Starred files are backed up to your drives like every file, and also to the extra places below: a second, "
+               T(L"Starred files are backed up to your drives like every file, and also to the extra places below: a second, "
                L"secondary backup of the files that matter most, such as your Dropbox, OneDrive or Google Drive folder on this PC, "
                L"a network share or a folder on another disk. BRODALF only copies files into the folder; that folder's own app does "
-               L"any syncing. Copies in extra places never count toward your full copies.");
-    page_button(TAB_STARRED, L"Star what is selected in Primary Database", ID_STAR_ADD);
-    page_button(TAB_STARRED, L"Unstar it", ID_STAR_REMOVE);
-    page_button(TAB_STARRED, L"Show it in Primary Database", ID_STAR_SHOW);
+               L"any syncing. Copies in extra places never count toward your full copies."));
+    page_button(TAB_STARRED, T(L"Star what is selected in Primary Database"), ID_STAR_ADD);
+    page_button(TAB_STARRED, T(L"Unstar it"), ID_STAR_REMOVE);
+    page_button(TAB_STARRED, T(L"Show it in Primary Database"), ID_STAR_SHOW);
     {
-        static const wchar_t *cols[] = {L"Starred", L"Backup root", L"Files", L"Size", L"Starred on", L"Note"};
+        static const wchar_t *cols[] = {N_(L"Starred"), N_(L"Backup root"), N_(L"Files"), N_(L"Size"), N_(L"Starred on"), N_(L"Note")};
         static const int widths[] = {300, 160, 70, 80, 120, 260};
         page_list(TAB_STARRED, ID_STAR_LIST, cols, widths, 6);
     }
-    page_label(TAB_STARRED, ID_PLACE_LABEL, L"Extra places");
-    page_button(TAB_STARRED, L"Add an extra place...", ID_PLACE_ADD);
-    page_button(TAB_STARRED, L"Back up starred files to it", ID_PLACE_BACKUP);
-    page_button(TAB_STARRED, L"Change its size limit...", ID_PLACE_LIMIT);
-    page_button(TAB_STARRED, L"Open in Explorer", ID_PLACE_OPEN);
-    page_button(TAB_STARRED, L"Description and details...", ID_PLACE_EDIT);
-    page_button(TAB_STARRED, L"Mark lost or broken...", ID_PLACE_LOST);
+    page_label(TAB_STARRED, ID_PLACE_LABEL, T(L"Extra places"));
+    page_button(TAB_STARRED, T(L"Add an extra place..."), ID_PLACE_ADD);
+    page_button(TAB_STARRED, T(L"Back up starred files to it"), ID_PLACE_BACKUP);
+    page_button(TAB_STARRED, T(L"Change its size limit..."), ID_PLACE_LIMIT);
+    page_button(TAB_STARRED, T(L"Open in Explorer"), ID_PLACE_OPEN);
+    page_button(TAB_STARRED, T(L"Description and details..."), ID_PLACE_EDIT);
+    page_button(TAB_STARRED, T(L"Mark lost or broken..."), ID_PLACE_LOST);
     {
-        static const wchar_t *cols[] = {L"Extra place", L"Folder", L"Found now", L"Size limit", L"Starred files there",
-                                        L"Waiting", L"Over the limit", L"Space used", L"Encrypted"};
+        static const wchar_t *cols[] = {N_(L"Extra place"), N_(L"Folder"), N_(L"Found now"), N_(L"Size limit"), N_(L"Starred files there"),
+                                        N_(L"Waiting"), N_(L"Over the limit"), N_(L"Space used"), N_(L"Encrypted")};
         static const int widths[] = {240, 220, 70, 80, 120, 110, 110, 80, 70};
         page_list(TAB_STARRED, ID_PLACE_LIST, cols, widths, 9);
     }
 
-    page_button(TAB_ENCRYPT, L"Set a passphrase...", ID_ENC_PASS);
-    page_button(TAB_ENCRYPT, L"Forget the passphrase until it is needed", ID_ENC_LOCK);
-    page_button(TAB_ENCRYPT, L"Make a new recovery key...", ID_ENC_KEY);
-    page_button(TAB_ENCRYPT, L"Print the recovery sheet...", ID_ENC_SHEET);
-    page_button(TAB_ENCRYPT, L"Set up an encrypted drive...", ID_ENC_DRIVE);
-    page_check(TAB_ENCRYPT, L"Encrypt the database file", ID_ENC_CATALOG);
+    page_button(TAB_ENCRYPT, T(L"Set a passphrase..."), ID_ENC_PASS);
+    page_button(TAB_ENCRYPT, T(L"Forget the passphrase until it is needed"), ID_ENC_LOCK);
+    page_button(TAB_ENCRYPT, T(L"Make a new recovery key..."), ID_ENC_KEY);
+    page_button(TAB_ENCRYPT, T(L"Print the recovery sheet..."), ID_ENC_SHEET);
+    page_button(TAB_ENCRYPT, T(L"Set up an encrypted drive..."), ID_ENC_DRIVE);
+    page_check(TAB_ENCRYPT, T(L"Encrypt the database file"), ID_ENC_CATALOG);
     page_text(TAB_ENCRYPT, ID_ENC_TEXT);
-    page_label(TAB_ENCRYPT, ID_ENC_LABEL, L"Folders encrypted on every drive and extra place they are copied to:");
-    page_button(TAB_ENCRYPT, L"Encrypt what is selected in Primary Database", ID_ENC_ADD);
-    page_button(TAB_ENCRYPT, L"Choose a folder to encrypt...", ID_ENC_PICK);
-    page_button(TAB_ENCRYPT, L"Stop encrypting it...", ID_ENC_REMOVE);
-    page_button(TAB_ENCRYPT, L"Show it in Primary Database", ID_ENC_SHOW);
+    page_label(TAB_ENCRYPT, ID_ENC_LABEL, T(L"Folders encrypted on every drive and extra place they are copied to:"));
+    page_button(TAB_ENCRYPT, T(L"Encrypt what is selected in Primary Database"), ID_ENC_ADD);
+    page_button(TAB_ENCRYPT, T(L"Choose a folder to encrypt..."), ID_ENC_PICK);
+    page_button(TAB_ENCRYPT, T(L"Stop encrypting it..."), ID_ENC_REMOVE);
+    page_button(TAB_ENCRYPT, T(L"Show it in Primary Database"), ID_ENC_SHOW);
     {
-        static const wchar_t *cols[] = {L"Encrypted", L"Backup root", L"Files", L"Size", L"Encrypting them takes", L"Chosen on"};
+        static const wchar_t *cols[] = {N_(L"Encrypted"), N_(L"Backup root"), N_(L"Files"), N_(L"Size"), N_(L"Encrypting them takes"), N_(L"Chosen on")};
         static const int widths[] = {300, 160, 70, 80, 150, 120};
         page_list(TAB_ENCRYPT, ID_ENC_LIST, cols, widths, 6);
     }
 
     page_label(TAB_RESTORE, ID_REST_TEXT,
-               L"Restoring copies files from your drives into a folder you choose. Nothing there is overwritten: a file already "
-               L"where one would go is left alone and listed below, so you can compare the two.");
-    page_button(TAB_RESTORE, L"Restore what is selected in Primary Database...", ID_REST_SEL);
-    page_button(TAB_RESTORE, L"Restore everything...", ID_REST_ALL);
-    page_button(TAB_RESTORE, L"Restore deleted files...", ID_REST_DELETED);
-    page_button(TAB_RESTORE, L"Continue the restore that waits for drives", ID_REST_CONTINUE);
+               T(L"Restoring copies files from your drives into a folder you choose. Nothing there is overwritten: a file already "
+               L"where one would go is left alone and listed below, so you can compare the two."));
+    page_button(TAB_RESTORE, T(L"Restore what is selected in Primary Database..."), ID_REST_SEL);
+    page_button(TAB_RESTORE, T(L"Restore everything..."), ID_REST_ALL);
+    page_button(TAB_RESTORE, T(L"Restore deleted files..."), ID_REST_DELETED);
+    page_button(TAB_RESTORE, T(L"Continue the restore that waits for drives"), ID_REST_CONTINUE);
     page_text(TAB_RESTORE, ID_REST_PLAN);
-    page_label(TAB_RESTORE, ID_REST_LABEL, L"Files the last restore left alone");
-    page_button(TAB_RESTORE, L"Show it in Explorer", ID_REST_OPEN);
-    page_button(TAB_RESTORE, L"Show them in a window...", ID_REST_TABLE);
+    page_label(TAB_RESTORE, ID_REST_LABEL, T(L"Files the last restore left alone"));
+    page_button(TAB_RESTORE, T(L"Show it in Explorer"), ID_REST_OPEN);
+    page_button(TAB_RESTORE, T(L"Show them in a window..."), ID_REST_TABLE);
     {
-        static const wchar_t *cols[] = {L"File", L"Where it would go", L"Backed-up size", L"Backed-up modified", L"Size there",
-                                        L"Modified there", L"Newer"};
+        static const wchar_t *cols[] = {N_(L"File"), N_(L"Where it would go"), N_(L"Backed-up size"), N_(L"Backed-up modified"), N_(L"Size there"),
+                                        N_(L"Modified there"), N_(L"Newer")};
         static const int widths[] = {260, 260, 90, 120, 80, 120, 140};
         page_list(TAB_RESTORE, ID_REST_LIST, cols, widths, 7);
     }
@@ -6390,7 +6801,7 @@ static void mark_name(const bd_mark_info *m, wchar_t *out, size_t cap)
 {
     wchar_t *rel = widen(m->rel_path);
     if (rel && *rel) swprintf(out, cap, L"%ls", rel);
-    else swprintf(out, cap, L"(the whole backup root)");
+    else swprintf(out, cap, T(L"(the whole backup root)"));
     for (wchar_t *c = out; *c; c++) if (*c == L'/') *c = L'\\';
     free(rel);
 }
@@ -6414,13 +6825,13 @@ static int next_row_cb(void *ctx, const bd_pending_info *p)
     int n = 0;
     cells[n++] = file;
     cells[n++] = size;
-    if (f->drive) cells[n++] = p->is_new ? L"Not there yet" : L"An older version";
-    cells[n++] = p->backed_up ? L"Yes" : L"No";
+    if (f->drive) cells[n++] = p->is_new ? T(L"Not there yet") : T(L"An older version");
+    cells[n++] = p->backed_up ? T(L"Yes") : T(L"No");
     cells[n++] = copies;
     cells[n++] = places;
     for (int k = 1; k <= f->sets; k++) cells[n++] = p->copies >= k ? L"\x2713" : L"";
     cells[n++] = p->starred ? L"\x2605" : L"";
-    cells[n++] = p->encrypt ? L"Yes" : L"";
+    cells[n++] = p->encrypt ? T(L"Yes") : L"";
     lv_row(f->lv, cells, n);
     rows_add(&g_next_rows, &g_next_nrows, p->source_id, p->rel_path);
     free(src);
@@ -6453,7 +6864,7 @@ static void fill_next(void)
     }
     /* What to show it for: every file short of its copies, or one drive or extra place. */
     drive_list dl = load_drives();
-    SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"Any drive: every file that does not have all the copies you want yet");
+    SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)T(L"Any drive: every file that does not have all the copies you want yet"));
     memset(&g_next_opts[0], 0, sizeof(g_next_opts[0]));
     g_next_nopts = 1;
     int sel = 0;
@@ -6462,8 +6873,8 @@ static void fill_next(void)
         if (strcmp(d->kind, "drive") != 0 || d->lost_ms) continue;
         wchar_t name[600], item[700];
         drive_name(d->label, d->location, name, 600);
-        swprintf(item, 700, L"%ls %ls%ls", d->secondary ? L"Extra place:" : L"Drive:", name,
-                 d->secondary ? (d->connected ? L"" : L" (not found now)") : d->connected ? L" (plugged in)" : L" (not plugged in)");
+        swprintf(item, 700, L"%ls %ls%ls", d->secondary ? T(L"Extra place:") : T(L"Drive:"), name,
+                 d->secondary ? (d->connected ? L"" : T(L" (not found now)")) : d->connected ? T(L" (plugged in)") : T(L" (not plugged in)"));
         SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)item);
         media_row *o = &g_next_opts[g_next_nopts];
         o->id = d->id;
@@ -6490,18 +6901,18 @@ static void fill_next(void)
     const wchar_t *cols[8 + MAX_COPY_COLS];
     int widths[8 + MAX_COPY_COLS], n = 0;
     wchar_t setcol[MAX_COPY_COLS][24];
-    cols[n] = L"File", widths[n++] = 380;
-    cols[n] = L"Size", widths[n++] = 70;
-    if (drive) cols[n] = o->secondary ? L"In this extra place" : L"On this drive", widths[n++] = 120;
-    cols[n] = L"Has all its copies", widths[n++] = 110;
-    cols[n] = L"Copies", widths[n++] = 55;
-    cols[n] = L"Places", widths[n++] = 55;
+    cols[n] = T(L"File"), widths[n++] = 380;
+    cols[n] = T(L"Size"), widths[n++] = 70;
+    if (drive) cols[n] = o->secondary ? T(L"In this extra place") : T(L"On this drive"), widths[n++] = 120;
+    cols[n] = T(L"Has all its copies"), widths[n++] = 110;
+    cols[n] = T(L"Copies"), widths[n++] = 55;
+    cols[n] = T(L"Places"), widths[n++] = 55;
     for (int k = 0; k < sets; k++) {
-        swprintf(setcol[k], 24, L"Copy %d", k + 1);
+        swprintf(setcol[k], 24, T(L"Copy %d"), k + 1);
         cols[n] = setcol[k], widths[n++] = 58;
     }
-    cols[n] = L"Starred", widths[n++] = 60;
-    cols[n] = L"Encrypted", widths[n++] = 70;
+    cols[n] = T(L"Starred"), widths[n++] = 60;
+    cols[n] = T(L"Encrypted"), widths[n++] = 70;
     lv_columns(lv, cols, widths, n);
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
 
@@ -6513,68 +6924,73 @@ static void fill_next(void)
         if (bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK) {
             format_bytes(rs.bytes_at_risk, a, 64);
             if (rs.files_at_risk == 0)
-                wadd(&t, L"Every file has the %d copies in %d places you want. Nothing waits for a backup.", tg.copies, tg.places);
+                wadd(&t, T(L"Every file has the %d copies in %d places you want. Nothing waits for a backup."), tg.copies, tg.places);
             else {
-                wadd(&t, L"%lld of your %lld files (%ls) do not have the %d copies in %d places you want yet",
+                wadd(&t, T(L"%lld of your %lld files (%ls) do not have the %d copies in %d places you want yet"),
                      (long long)rs.files_at_risk, (long long)rs.files_total, a, tg.copies, tg.places);
-                if (rs.files_no_copy) wadd(&t, L", and %lld of them have no copy anywhere", (long long)rs.files_no_copy);
-                wadd(&t, L". A backup to any drive brings them closer; Which drive to plug in... says which drive helps most.");
+                if (rs.files_no_copy) wadd(&t, T(L", and %lld of them have no copy anywhere"), (long long)rs.files_no_copy);
+                wadd(&t, T(L". A backup to any drive brings them closer; Which drive to plug in... says which drive helps most."));
             }
         }
-        wadd(&t, L"\r\nEach Copy column is one full copy: a tick means the file is in it. Choose a drive above to see what a backup "
-                 L"to it would copy.");
+        wadd(&t, T(L"\r\nEach Copy column is one full copy: a tick means the file is in it. Choose a drive above to see what a backup "
+                 L"to it would copy."));
     } else if (!o->secondary) {
         bd_backup_preview_info pv;
         memset(&pv, 0, sizeof(pv));
         if (bd_backup_preview(g_cat, g_next_media, 0, &pv) == BD_OK) {
             format_bytes(pv.bytes_to_copy, a, 64);
-            if (pv.files_to_copy == 0) wadd(&t, L"This drive is up to date: the next backup to it copies nothing.");
+            if (pv.files_to_copy == 0) wadd(&t, T(L"This drive is up to date: the next backup to it copies nothing."));
             else
-                wadd(&t, L"The next backup to this drive copies %lld file%ls (%ls): %lld new, %lld changed. A changed file goes "
-                         L"alongside its older copy; nothing on the drive is overwritten.",
-                     (long long)pv.files_to_copy, pv.files_to_copy == 1 ? L"" : L"s", a, (long long)pv.files_new, (long long)pv.files_changed);
+                wadd(&t, TN(pv.files_to_copy, L"The next backup to this drive copies %lld file (%ls): %lld new, %lld changed. A changed file goes "
+                                              L"alongside its older copy; nothing on the drive is overwritten.",
+                            L"The next backup to this drive copies %lld files (%ls): %lld new, %lld changed. A changed file goes "
+                            L"alongside its older copy; nothing on the drive is overwritten."),
+                     (long long)pv.files_to_copy, a, (long long)pv.files_new, (long long)pv.files_changed);
             if (pv.free_bytes >= 0) {
                 format_bytes(pv.free_bytes, b, 64);
-                wadd(&t, L"\r\nFree on it: %ls%ls.", b, pv.free_is_current ? L" (read just now)" : L" (when it was last plugged in)");
+                wadd(&t, T(L"\r\nFree on it: %ls%ls."), b, pv.free_is_current ? T(L" (read just now)") : T(L" (when it was last plugged in)"));
             }
             if (pv.bytes_short > 0) {
                 format_bytes(pv.bytes_short, b, 64);
-                wadd(&t, L" About %ls will not fit and waits for another drive.", b);
+                wadd(&t, T(L" About %ls will not fit and waits for another drive."), b);
             }
             if (pv.last_scan_ms) {
                 format_time_ms(pv.last_scan_ms, when, 64);
-                wadd(&t, L"\r\nIt copies what the scans found; the oldest scan of your backup roots was %ls.", when);
+                wadd(&t, T(L"\r\nIt copies what the scans found; the oldest scan of your backup roots was %ls."), when);
             } else
-                wadd(&t, L"\r\nYour backup roots have not been scanned yet, so there is nothing to copy. Press Scan now.");
+                wadd(&t, T(L"\r\nYour backup roots have not been scanned yet, so there is nothing to copy. Press Scan now."));
             if (pv.mass_change)
-                wadd(&t, L"\r\nWarning: %lld of the %lld files whose copies on this drive were up to date have changed at once. That "
-                         L"can mean ransomware. Look at Files changed on it... before backing up.",
+                wadd(&t, T(L"\r\nWarning: %lld of the %lld files whose copies on this drive were up to date have changed at once. That "
+                         L"can mean ransomware. Look at Files changed on it... before backing up."),
                      (long long)pv.held_changed, (long long)pv.files_held);
-            if (!o->connected) wadd(&t, L"\r\nPlug it in to back up to it.");
+            if (!o->connected) wadd(&t, T(L"\r\nPlug it in to back up to it."));
         }
     } else {
         bd_place_status ps;
         memset(&ps, 0, sizeof(ps));
         if (bd_place_status_get(g_cat, g_next_media, &ps) == BD_OK) {
             format_bytes(ps.starred_bytes, a, 64);
-            wadd(&t, L"An extra place takes only starred files, as a second, secondary backup; its copies do not count toward your "
-                     L"full copies. %lld starred file%ls (%ls) in all; %lld of them are there as they are now.",
-                 (long long)ps.starred_files, ps.starred_files == 1 ? L"" : L"s", a, (long long)ps.have_files);
+            wadd(&t, L"%ls ", T(L"An extra place takes only starred files, as a second, secondary backup; its copies do not count toward "
+                               L"your full copies."));
+            wadd(&t, TN(ps.starred_files, L"%lld starred file (%ls) in all; %lld of them is there as it is now.",
+                        L"%lld starred files (%ls) in all; %lld of them are there as they are now."),
+                 (long long)ps.starred_files, a, (long long)ps.have_files);
             if (ps.waiting_files) {
                 format_bytes(ps.waiting_bytes, b, 64);
-                wadd(&t, L"\r\nThe next backup to it copies %lld (%ls).", (long long)(ps.waiting_files - ps.over_limit_files), b);
+                wadd(&t, T(L"\r\nThe next backup to it copies %lld (%ls)."), (long long)(ps.waiting_files - ps.over_limit_files), b);
             }
             if (ps.limit_bytes > 0) {
                 format_bytes(ps.limit_bytes, b, 64);
-                wadd(&t, L" It may take at most %ls of starred files.", b);
+                wadd(&t, T(L" It may take at most %ls of starred files."), b);
                 if (ps.over_limit_files) {
                     format_bytes(ps.over_limit_bytes, a, 64);
-                    wadd(&t, L" %lld file%ls (%ls) would go over that and %ls not copied there.", (long long)ps.over_limit_files,
-                         ps.over_limit_files == 1 ? L"" : L"s", a, ps.over_limit_files == 1 ? L"is" : L"are");
+                    wadd(&t, TN(ps.over_limit_files, L" %lld file (%ls) would go over that and is not copied there.",
+                                L" %lld files (%ls) would go over that and are not copied there."),
+                         (long long)ps.over_limit_files, a);
                 }
             }
-            if (ps.starred_files == 0) wadd(&t, L"\r\nNothing is starred yet: star files or folders on the Primary Database tab.");
-            if (!o->connected) wadd(&t, L"\r\nThe folder was not found the last time BRODALF looked.");
+            if (ps.starred_files == 0) wadd(&t, T(L"\r\nNothing is starred yet: star files or folders on the Primary Database tab."));
+            if (!o->connected) wadd(&t, T(L"\r\nThe folder was not found the last time BRODALF looked."));
         }
     }
 
@@ -6582,7 +6998,7 @@ static void fill_next(void)
     int64_t total = 0;
     bd_list_pending(g_cat, g_next_media, NEXT_ROWS, next_row_cb, &f, &total);
     if (total > g_next_nrows)
-        wadd(&t, L"\r\nThe list shows the first %d of %lld files, by backup root and path.", g_next_nrows, (long long)total);
+        wadd(&t, T(L"\r\nThe list shows the first %d of %lld files, by backup root and path."), g_next_nrows, (long long)total);
     set_edit_text(ed, t.p ? t.p : L"");
     free(t.p);
     SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
@@ -6598,9 +7014,9 @@ static void local_detail(void)
     int r = lv_selected(ID_LOCAL_LIST);
     if (!g_cat) { SetWindowTextW(ed, L""); return; }
     if (r < 0 || r >= g_local_n) {
-        SetWindowTextW(ed, g_local_n ? L"Select a drive to see where it stands, its space and its health."
-                                     : L"No backup drives yet. Set up a disk... makes one: an external or removable disk, or a "
-                                       L"folder on one.");
+        SetWindowTextW(ed, g_local_n ? T(L"Select a drive to see where it stands, its space and its health.")
+                                     : T(L"No backup drives yet. Set up a disk... makes one: an external or removable disk, or a "
+                                       L"folder on one."));
         return;
     }
     drive_list dl = load_drives();
@@ -6610,7 +7026,7 @@ static void local_detail(void)
         wchar_t added[64];
         add_drive_heading(&t, d, L"");
         format_time_ms(d->added_ms, added, 64);
-        wadd(&t, L"    Set up %ls, %lld copies recorded\r\n\r\n", added, (long long)d->copies);
+        wadd(&t, T(L"    Set up %ls, %lld copies recorded\r\n\r\n"), added, (long long)d->copies);
         add_drive_status(&t, d->id, L"");
         wadd(&t, L"\r\n");
         add_drive_lines(&t, d, L"");
@@ -6638,8 +7054,8 @@ static void fill_local(void)
             wchar_t health[32] = L"", temp[32] = L"", hours[32] = L"", worn[16] = L"", oldest[64] = L"", copies[32], probs[200] = L"";
             drive_name(d->label, d->location, name, 600);
             wchar_t *root = widen(d->root);
-            if (d->connected) swprintf(plugged, 600, L"Yes, at %ls", root ? root : L"");
-            else wcscpy(plugged, L"No");
+            if (d->connected) swprintf(plugged, 600, T(L"Yes, at %ls"), root ? root : L"");
+            else wcscpy(plugged, T(L"No"));
             free(root);
             if (d->total > 0) {
                 format_bytes(d->total, size, 64);
@@ -6651,20 +7067,20 @@ static void fill_local(void)
             format_bytes(d->reserve_bytes, reserve, 64);
             if (d->has_hw && d->hw.smart) {
                 wchar_t *h = widen(d->hw.health);
-                swprintf(health, 32, L"%ls", h && *h ? h : L"unknown");
+                swprintf(health, 32, L"%ls", h && *h ? h : T(L"unknown"));
                 free(h);
                 if (d->hw.power_on_hours >= 0) swprintf(hours, 32, L"%lld", (long long)d->hw.power_on_hours);
                 if (d->hw.percent_used >= 0) swprintf(worn, 16, L"%d%%", d->hw.percent_used);
             } else
-                wcscpy(health, d->has_hw ? L"not reported" : L"not read yet");
+                wcscpy(health, d->has_hw ? T(L"not reported") : T(L"not read yet"));
             if (d->has_hw && d->hw.temperature_c >= 0) swprintf(temp, 32, L"%d \x00B0" L"C", d->hw.temperature_c);
             if (d->copies) format_time_ms(d->oldest_check_ms, oldest, 64);
             swprintf(copies, 32, L"%lld", (long long)d->copies);
             bd_media_status ms;
             if (bd_media_status_get(g_cat, d->id, &ms) == BD_OK && ms.copies_bad)
-                swprintf(probs, 200, L"%lld missing or damaged", (long long)ms.copies_bad);
-            const wchar_t *add = d->lost_ms ? (strcmp(d->lost_why, "broken") == 0 ? L"marked broken" : L"marked lost")
-                               : replace_advice(d) ? L"its health data warns" : d->check_due ? L"due for a check" : NULL;
+                swprintf(probs, 200, T(L"%lld missing or damaged"), (long long)ms.copies_bad);
+            const wchar_t *add = d->lost_ms ? (strcmp(d->lost_why, "broken") == 0 ? T(L"marked broken") : T(L"marked lost"))
+                               : replace_advice(d) ? T(L"its health data warns") : d->check_due ? T(L"due for a check") : NULL;
             if (add) {
                 size_t len = wcslen(probs);
                 swprintf(probs + len, 200 - len, L"%ls%ls", len ? L", " : L"", add);
@@ -6703,7 +7119,7 @@ static int star_row_cb(void *ctx, const bd_mark_info *m)
     format_bytes(m->bytes, size, 64);
     format_time_ms(m->added_ms, when, 64);
     const wchar_t *cells[] = {what, src ? src : L"", files, size, when,
-                              m->found ? L"" : L"Not in the last scan: renamed, moved or deleted?"};
+                              m->found ? L"" : T(L"Not in the last scan: renamed, moved or deleted?")};
     lv_row(f->lv, cells, 6);
     free(src);
     return 0;
@@ -6751,9 +7167,9 @@ static void fill_starred(void)
             drive_name(d->label, d->location, name, 600);
             wchar_t *root = widen(d->root);
             if (ps.limit_bytes > 0) format_bytes(ps.limit_bytes, limit, 64);
-            else wcscpy(limit, L"No limit");
+            else wcscpy(limit, T(L"No limit"));
             format_bytes(ps.have_bytes, a, 64);
-            swprintf(there, 96, L"%lld of %lld (%ls)", (long long)ps.have_files, (long long)ps.starred_files, a);
+            swprintf(there, 96, T(L"%lld of %lld (%ls)"), (long long)ps.have_files, (long long)ps.starred_files, a);
             if (ps.waiting_files > ps.over_limit_files) {
                 format_bytes(ps.waiting_bytes - ps.over_limit_bytes, a, 64);
                 swprintf(waiting, 96, L"%lld (%ls)", (long long)(ps.waiting_files - ps.over_limit_files), a);
@@ -6763,9 +7179,9 @@ static void fill_starred(void)
                 swprintf(over, 96, L"%lld (%ls)", (long long)ps.over_limit_files, a);
             }
             format_bytes(ps.used_bytes, used, 64);
-            const wchar_t *found = d->lost_ms ? (strcmp(d->lost_why, "broken") == 0 ? L"Marked broken" : L"Marked lost")
-                                 : d->connected ? L"Yes" : L"No";
-            const wchar_t *cells[] = {name, root ? root : L"", found, limit, there, waiting, over, used, d->encrypted ? L"Yes" : L"No"};
+            const wchar_t *found = d->lost_ms ? (strcmp(d->lost_why, "broken") == 0 ? T(L"Marked broken") : T(L"Marked lost"))
+                                 : d->connected ? T(L"Yes") : T(L"No");
+            const wchar_t *cells[] = {name, root ? root : L"", found, limit, there, waiting, over, used, d->encrypted ? T(L"Yes") : T(L"No")};
             lv_row(pl, cells, 9);
             free(root);
             media_row *m = &g_place_rows[g_place_n];
@@ -6777,8 +7193,9 @@ static void fill_starred(void)
             g_place_n++;
         }
         free(dl.items);
-        swprintf(label, 400, L"Extra places: a second, secondary backup of your %lld starred file%ls (%ls)%ls", (long long)files,
-                 files == 1 ? L"" : L"s", size, g_place_n ? L"" : L". None yet: Add an extra place... sets one up.");
+        swprintf(label, 400, TN(files, L"Extra places: a second, secondary backup of your %lld starred file (%ls)%ls",
+                                L"Extra places: a second, secondary backup of your %lld starred files (%ls)%ls"),
+                 (long long)files, size, g_place_n ? L"" : T(L". None yet: Add an extra place... sets one up."));
         int changed = 0;
         set_text_if(ID_PLACE_LABEL, label, &changed);
         if (changed) layout_pages();
@@ -6808,7 +7225,7 @@ static int enc_row_cb(void *ctx, const bd_mark_info *m)
     swprintf(files, 32, L"%lld", (long long)m->files);
     format_bytes(m->bytes, size, 64);
     if (f->bps > 0) format_duration((double)m->bytes / (double)f->bps, takes, 64);
-    else wcscpy(takes, L"not measured yet");
+    else wcscpy(takes, T(L"not measured yet"));
     format_time_ms(m->added_ms, when, 64);
     const wchar_t *cells[] = {what, src ? src : L"", files, size, takes, when};
     lv_row(f->lv, cells, 6);
@@ -6844,25 +7261,25 @@ static void fill_encrypt(void)
 
     wtext t = {NULL, 0, 0};
     wchar_t a[64];
-    wadd(&t, L"Nothing is encrypted unless you choose it, and every kind below is optional: use none, any one of them, or all "
-             L"of them together.\r\n\r\n");
-    wadd(&t, L"Passphrase\r\n");
+    wadd(&t, T(L"Nothing is encrypted unless you choose it, and every kind below is optional: use none, any one of them, or all "
+             L"of them together.\r\n\r\n"));
+    wadd(&t, T(L"Passphrase\r\n"));
     if (!has)
-        wadd(&t, L"    None set. Each kind of encryption needs one: Set a passphrase... above. Write it down somewhere safe: "
-                 L"without it, encrypted copies cannot be read, by you or anyone.\r\n");
+        wadd(&t, T(L"    None set. Each kind of encryption needs one: Set a passphrase... above. Write it down somewhere safe: "
+                 L"without it, encrypted copies cannot be read, by you or anyone.\r\n"));
     else {
-        wadd(&t, L"    Set. %ls\r\n", unlocked ? L"Entered for now: BRODALF can encrypt, and read encrypted copies, until you press "
-                                                L"Forget the passphrase or close it."
-                                              : L"Not entered now: BRODALF asks for it when a job needs it.");
-        wadd(&t, L"    Recovery key: %ls\r\n", bd_catalog_has_recovery_key(g_cat)
-                                                   ? L"made. It is on the recovery sheet, and opens your encrypted backups if the "
-                                                     L"passphrase is ever forgotten."
-                                                   : L"none yet. Make a new recovery key... puts one on a recovery sheet to print.");
+        wadd(&t, T(L"    Set. %ls\r\n"), unlocked ? T(L"Entered for now: BRODALF can encrypt, and read encrypted copies, until you press "
+                                                L"Forget the passphrase or close it.")
+                                              : T(L"Not entered now: BRODALF asks for it when a job needs it."));
+        wadd(&t, T(L"    Recovery key: %ls\r\n"), bd_catalog_has_recovery_key(g_cat)
+                                                   ? T(L"made. It is on the recovery sheet, and opens your encrypted backups if the "
+                                                     L"passphrase is ever forgotten.")
+                                                   : T(L"none yet. Make a new recovery key... puts one on a recovery sheet to print."));
     }
-    wadd(&t, L"\r\nThis database file (the list of your files and where their copies are)\r\n    %ls\r\n",
-         bd_catalog_file_encrypted(g_cat) ? L"Encrypted: BRODALF asks for the passphrase when it opens it."
-                                          : L"Not encrypted. Tick Encrypt the database file above to encrypt it.");
-    wadd(&t, L"\r\nWhole drives and extra places\r\n");
+    wadd(&t, T(L"\r\nThis database file (the list of your files and where their copies are)\r\n    %ls\r\n"),
+         bd_catalog_file_encrypted(g_cat) ? T(L"Encrypted: BRODALF asks for the passphrase when it opens it.")
+                                          : T(L"Not encrypted. Tick Encrypt the database file above to encrypt it."));
+    wadd(&t, T(L"\r\nWhole drives and extra places\r\n"));
     drive_list dl = load_drives();
     int n_enc = 0;
     for (int i = 0; i < dl.n; i++) {
@@ -6870,37 +7287,45 @@ static void fill_encrypt(void)
         if (!d->encrypted || strcmp(d->kind, "drive") != 0) continue;
         wchar_t name[600];
         drive_name(d->label, d->location, name, 600);
-        wadd(&t, L"    %ls%ls: every copy on it is encrypted\r\n", name, d->secondary ? L" (extra place)" : L"");
+        wadd(&t, T(L"    %ls%ls: every copy on it is encrypted\r\n"), name, d->secondary ? T(L" (extra place)") : L"");
         n_enc++;
     }
     free(dl.items);
     if (!n_enc)
-        wadd(&t, L"    None. You choose it when you set up a drive (Set up an encrypted drive... above) or add an extra place: every "
-                 L"copy on it is then encrypted. A drive already set up stays as it is.\r\n");
-    wadd(&t, L"\r\nOnly the folders you choose (listed below)\r\n");
+        wadd(&t, T(L"    None. You choose it when you set up a drive (Set up an encrypted drive... above) or add an extra place: every "
+                 L"copy on it is then encrypted. A drive already set up stays as it is.\r\n"));
+    wadd(&t, T(L"\r\nOnly the folders you choose (listed below)\r\n"));
     if (!g_enc_nrows)
-        wadd(&t, L"    None. Choose a folder below to encrypt just it, on every drive and extra place it is copied to, also drives "
-                 L"that are not encrypted. Everything else stays plain, which is quicker to back up and to restore.\r\n");
+        wadd(&t, T(L"    None. Choose a folder below to encrypt just it, on every drive and extra place it is copied to, also drives "
+                 L"that are not encrypted. Everything else stays plain, which is quicker to back up and to restore.\r\n"));
     else {
         format_bytes(es.bytes, a, 64);
-        wadd(&t, L"    %lld file%ls (%ls) in them are encrypted wherever they are copied. Names stay readable: a copy is the "
-                 L"file's name with .bdenc after it.\r\n", (long long)es.files, es.files == 1 ? L"" : L"s", a);
-        wadd(&t, L"    %lld encrypted cop%ls so far; %lld file%ls still wait%ls for a first encrypted copy, which the next backups make.\r\n",
-             (long long)es.sealed_copies, es.sealed_copies == 1 ? L"y" : L"ies", (long long)es.files_waiting,
-             es.files_waiting == 1 ? L"" : L"s", es.files_waiting == 1 ? L"s" : L"");
+        wadd(&t, TN(es.files, L"    %lld file (%ls) in them is encrypted wherever it is copied. Names stay readable: a copy is the "
+                              L"file's name with .bdenc after it.\r\n",
+                    L"    %lld files (%ls) in them are encrypted wherever they are copied. Names stay readable: a copy is the "
+                    L"file's name with .bdenc after it.\r\n"),
+             (long long)es.files, a);
+        wchar_t sealed[200], waiting[300];
+        swprintf(sealed, 200, TN(es.sealed_copies, L"%lld encrypted copy so far", L"%lld encrypted copies so far"), (long long)es.sealed_copies);
+        swprintf(waiting, 300, TN(es.files_waiting, L"%lld file still waits for a first encrypted copy, which the next backups make.",
+                                  L"%lld files still wait for a first encrypted copy, which the next backups make."),
+                 (long long)es.files_waiting);
+        wadd(&t, L"    %ls; %ls\r\n", sealed, waiting);
         if (es.plain_copies)
-            wadd(&t, L"    %lld plain cop%ls were made before you chose to encrypt them. They stay as they are, since BRODALF "
-                     L"never overwrites or deletes anything on a drive.\r\n",
-                 (long long)es.plain_copies, es.plain_copies == 1 ? L"y" : L"ies");
+            wadd(&t, TN(es.plain_copies, L"    %lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF "
+                                         L"never overwrites or deletes anything on a drive.\r\n",
+                        L"    %lld plain copies were made before you chose to encrypt them. They stay as they are, since BRODALF "
+                        L"never overwrites or deletes anything on a drive.\r\n"),
+                 (long long)es.plain_copies);
     }
-    wadd(&t, L"\r\nWhat it means for time\r\n");
+    wadd(&t, T(L"\r\nWhat it means for time\r\n"));
     char cost[1200];
     bd_encrypt_cost_text(es.bytes, cost, sizeof(cost));
     wchar_t *wc = widen(cost);
     wadd(&t, L"    %ls\r\n", wc ? wc : L"");
     free(wc);
     if (has && !unlocked && (g_enc_nrows || n_enc))
-        wadd(&t, L"    Backing up, checking and restoring what is encrypted need the passphrase entered; BRODALF asks for it.\r\n");
+        wadd(&t, T(L"    Backing up, checking and restoring what is encrypted need the passphrase entered; BRODALF asks for it.\r\n"));
     SetWindowTextW(ed, t.p ? t.p : L"");
     free(t.p);
     if (sel < 0 && g_enc_nrows) sel = 0;
@@ -6957,21 +7382,21 @@ static void fill_restore(void)
     wtext t = {NULL, 0, 0};
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
     if (!r)
-        wadd(&t, L"Select a backup root, a folder or a file on the Primary Database tab to see which drives restoring it needs.\n");
+        wadd(&t, T(L"Select a backup root, a folder or a file on the Primary Database tab to see which drives restoring it needs.\n"));
     else {
         wchar_t *what = where_text(r->source_id, r->rel);
-        wadd(&t, L"Selected on the Primary Database tab: %ls\n", what ? what : L"");
+        wadd(&t, T(L"Selected on the Primary Database tab: %ls\n"), what ? what : L"");
         free(what);
         plan_text p;
         memset(&p, 0, sizeof(p));
         int64_t total = 0, none = 0;
         bd_restore_plan(g_cat, r->source_id, r->rel ? r->rel : "", NULL, plan_text_cb, &p, &total, &none);
-        if (total == 0 && none == 0) wadd(&t, L"    There is nothing in it to restore.\n");
+        if (total == 0 && none == 0) wadd(&t, T(L"    There is nothing in it to restore.\n"));
         else {
-            if (p.n) wadd(&t, L"Restoring it takes these drives, in this order:\n%ls", p.t.p);
-            if (none) wadd(&t, L"%lld file%ls no copy on any drive.\n", (long long)none, none == 1 ? L" has" : L"s have");
+            if (p.n) wadd(&t, T(L"Restoring it takes these drives, in this order:\n%ls"), p.t.p);
+            if (none) wadd(&t, TN(none, L"%lld file has no copy on any drive.\n", L"%lld files have no copy on any drive.\n"), (long long)none);
             if (p.any_offline)
-                wadd(&t, L"BRODALF restores what the plugged-in drives hold first; then plug in each other drive and press Continue.\n");
+                wadd(&t, T(L"BRODALF restores what the plugged-in drives hold first; then plug in each other drive and press Continue.\n"));
         }
         free(p.t.p);
     }
@@ -6980,8 +7405,8 @@ static void fill_restore(void)
         plan_text p;
         memset(&p, 0, sizeof(p));
         bd_restore_plan(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, plan_text_cb, &p, NULL, NULL);
-        wadd(&t, L"\nA restore into %ls is waiting for these drives:\n%ls", dest ? dest : L"",
-             p.t.p ? p.t.p : L"    (none: it can finish now; press Continue)\n");
+        wadd(&t, T(L"\nA restore into %ls is waiting for these drives:\n%ls"), dest ? dest : L"",
+             p.t.p ? p.t.p : T(L"    (none: it can finish now; press Continue)\n"));
         free(p.t.p);
         free(dest);
     }
@@ -6990,10 +7415,10 @@ static void fill_restore(void)
 
     wchar_t label[300];
     if (g_n_conflicts)
-        swprintf(label, 300, L"Files the last restore left alone (%d), because another file was already where each would go. "
-                             L"Nothing was overwritten:", g_n_conflicts);
+        swprintf(label, 300, T(L"Files the last restore left alone (%d), because another file was already where each would go. "
+                             L"Nothing was overwritten:"), g_n_conflicts);
     else
-        wcscpy(label, L"Files the last restore left alone: none.");
+        wcscpy(label, T(L"Files the last restore left alone: none."));
     int changed = 0;
     set_text_if(ID_REST_LABEL, label, &changed);
     if (changed) layout_pages();
@@ -7002,12 +7427,12 @@ static void fill_restore(void)
         wchar_t ws[64], wm[64], hs[64], hm[64];
         format_bytes(c->want_size, ws, 64);
         format_ns(c->want_mtime_ns, wm, 64);
-        if (c->have_size < 0) wcscpy(hs, L"a folder");
+        if (c->have_size < 0) wcscpy(hs, T(L"a folder"));
         else format_bytes(c->have_size, hs, 64);
         format_ns(c->have_mtime_ns, hm, 64);
-        const wchar_t *newer = c->want_mtime_ns > c->have_mtime_ns ? L"The backed-up copy"
-                             : c->want_mtime_ns < c->have_mtime_ns ? L"The file there"
-                             : c->want_size != c->have_size ? L"Same time, other size" : L"Same time and size";
+        const wchar_t *newer = c->want_mtime_ns > c->have_mtime_ns ? T(L"The backed-up copy")
+                             : c->want_mtime_ns < c->have_mtime_ns ? T(L"The file there")
+                             : c->want_size != c->have_size ? T(L"Same time, other size") : T(L"Same time and size");
         const wchar_t *cells[] = {c->where ? c->where : L"", c->dest ? c->dest : L"", ws, wm, hs, hm, newer};
         lv_row(lv, cells, 7);
     }
@@ -7032,13 +7457,13 @@ static void page_buttons_state(void)
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
     const char *rel = r && r->rel ? r->rel : "";
     int st = r ? bd_starred(g_cat, r->source_id, rel) : 0, en = r ? bd_encrypt_marked(g_cat, r->source_id, rel) : 0;
-    set_text_if(ID_DB_STAR, st == 1 ? L"Unstar it" : st == 2 ? L"Starred with its folder" : L"Star it", &changed);
+    set_text_if(ID_DB_STAR, st == 1 ? T(L"Unstar it") : st == 2 ? T(L"Starred with its folder") : T(L"Star it"), &changed);
     EnableWindow(CTL(ID_DB_STAR), r && st != 2);
-    set_text_if(ID_DB_ENCRYPT, en == 1 ? L"Stop encrypting it..." : en == 2 ? L"Encrypted with its folder" : L"Encrypt it...", &changed);
+    set_text_if(ID_DB_ENCRYPT, en == 1 ? T(L"Stop encrypting it...") : en == 2 ? T(L"Encrypted with its folder") : T(L"Encrypt it..."), &changed);
     EnableWindow(CTL(ID_DB_ENCRYPT), r && en != 2);
 
     const media_row *o = next_opt();
-    set_text_if(ID_NEXT_BACKUP, g_next_media ? L"Back up to it now" : L"Back up...", &changed);
+    set_text_if(ID_NEXT_BACKUP, g_next_media ? T(L"Back up to it now") : T(L"Back up..."), &changed);
     EnableWindow(CTL(ID_NEXT_BACKUP), !g_next_media || (o && o->connected && !o->lost));
     EnableWindow(CTL(ID_NEXT_CHANGED), g_next_media && o && !o->secondary);
 
@@ -7052,7 +7477,7 @@ static void page_buttons_state(void)
     EnableWindow(CTL(ID_LOCAL_CHANGED), m != NULL);
     EnableWindow(CTL(ID_LOCAL_EDIT), m != NULL);
     EnableWindow(CTL(ID_LOCAL_LOST), m != NULL);
-    set_text_if(ID_LOCAL_LOST, m && m->lost ? L"Found it" : L"Mark lost or broken...", &changed);
+    set_text_if(ID_LOCAL_LOST, m && m->lost ? T(L"Found it") : T(L"Mark lost or broken..."), &changed);
     SendMessageW(CTL(ID_LOCAL_PARALLEL), BM_SETCHECK, bd_option_get(g_cat, "parallel_copies") > 0 ? BST_CHECKED : BST_UNCHECKED, 0);
 
     EnableWindow(CTL(ID_STAR_ADD), r && st == 0);
@@ -7066,10 +7491,10 @@ static void page_buttons_state(void)
     EnableWindow(CTL(ID_PLACE_OPEN), p && p->connected);
     EnableWindow(CTL(ID_PLACE_EDIT), p != NULL);
     EnableWindow(CTL(ID_PLACE_LOST), p != NULL);
-    set_text_if(ID_PLACE_LOST, p && p->lost ? L"Found it" : L"Mark lost or broken...", &changed);
+    set_text_if(ID_PLACE_LOST, p && p->lost ? T(L"Found it") : T(L"Mark lost or broken..."), &changed);
 
     int has = bd_catalog_has_passphrase(g_cat);
-    set_text_if(ID_ENC_PASS, has ? L"Change the passphrase..." : L"Set a passphrase...", &changed);
+    set_text_if(ID_ENC_PASS, has ? T(L"Change the passphrase...") : T(L"Set a passphrase..."), &changed);
     EnableWindow(CTL(ID_ENC_LOCK), has && bd_catalog_is_unlocked(g_cat));
     EnableWindow(CTL(ID_ENC_KEY), has);
     EnableWindow(CTL(ID_ENC_CATALOG), has);
@@ -7184,23 +7609,23 @@ static void cmd_add_place(void);
 static void set_star(int64_t source_id, const char *rel, int on)
 {
     bd_status s = bd_star_set(g_cat, source_id, rel, on);
-    if (!save_or_say(s, on ? L"Could not star it." : L"Could not unstar it.")) return;
+    if (!save_or_say(s, on ? T(L"Could not star it.") : T(L"Could not unstar it."))) return;
     wchar_t *w = where_text(source_id, rel), line[1600];
     int places = count_places();
     if (on)
-        swprintf(line, 1600, L"Starred %ls. %ls", w ? w : L"",
-                 places ? L"The next backup to each extra place copies it there."
-                        : L"Add an extra place on the Starred files tab to give it a second, secondary copy there.");
+        swprintf(line, 1600, T(L"Starred %ls. %ls"), w ? w : L"",
+                 places ? T(L"The next backup to each extra place copies it there.")
+                        : T(L"Add an extra place on the Starred files tab to give it a second, secondary copy there."));
     else
-        swprintf(line, 1600, L"Unstarred %ls. Its copies in extra places stay there; nothing new of it goes there.", w ? w : L"");
+        swprintf(line, 1600, T(L"Unstarred %ls. Its copies in extra places stay there; nothing new of it goes there."), w ? w : L"");
     free(w);
     log_append(line);
     load_marks();
     rebuild_tree();
     show_detail();
     if (on && !places &&
-        MessageBoxW(g_main, L"Starred files are copied to your extra places as a second, secondary backup, and you have none "
-                            L"yet. Add one now, like your Dropbox or OneDrive folder on this PC?",
+        MessageBoxW(g_main, T(L"Starred files are copied to your extra places as a second, secondary backup, and you have none "
+                            L"yet. Add one now, like your Dropbox or OneDrive folder on this PC?"),
                     APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES)
         cmd_add_place();
 }
@@ -7209,13 +7634,13 @@ static void toggle_star_selected(void)
 {
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
     if (!r) {
-        MessageBoxW(g_main, L"Select a backup root, a folder or a file on the Primary Database tab first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Select a backup root, a folder or a file on the Primary Database tab first."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     const char *rel = r->rel ? r->rel : "";
     int st = bd_starred(g_cat, r->source_id, rel);
     if (st == 2) {
-        MessageBoxW(g_main, L"It is already starred, with a folder above it. Unstar that folder on the Starred files tab to change it.",
+        MessageBoxW(g_main, T(L"It is already starred, with a folder above it. Unstar that folder on the Starred files tab to change it."),
                     APP_NAME, MB_ICONINFORMATION);
         return;
     }
@@ -7244,11 +7669,11 @@ static void set_encrypt(int64_t source_id, const char *rel, int on)
     wchar_t *w = where_text(source_id, rel);
     if (!on) {
         wchar_t q[1600];
-        swprintf(q, 1600, L"Stop encrypting %ls?\n\nNew copies of it are then plain. The encrypted copies already on your drives stay "
-                          L"as they are and still restore with the passphrase.", w ? w : L"");
+        swprintf(q, 1600, T(L"Stop encrypting %ls?\n\nNew copies of it are then plain. The encrypted copies already on your drives stay "
+                          L"as they are and still restore with the passphrase."), w ? w : L"");
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES &&
-            save_or_say(bd_encrypt_path_set(g_cat, source_id, rel, 0), L"Could not change the encryption.")) {
-            swprintf(q, 1600, L"New copies of %ls are plain from now on.", w ? w : L"");
+            save_or_say(bd_encrypt_path_set(g_cat, source_id, rel, 0), T(L"Could not change the encryption."))) {
+            swprintf(q, 1600, T(L"New copies of %ls are plain from now on."), w ? w : L"");
             log_append(q);
         }
         free(w);
@@ -7258,8 +7683,8 @@ static void set_encrypt(int64_t source_id, const char *rel, int on)
         return;
     }
     if (!bd_catalog_has_passphrase(g_cat) &&
-        (MessageBoxW(g_main, L"Encrypting needs a passphrase, and none is set yet. Without it, encrypted copies cannot be read, by you "
-                             L"or anyone.\n\nSet one now?", APP_NAME, MB_ICONQUESTION | MB_YESNO) != IDYES ||
+        (MessageBoxW(g_main, T(L"Encrypting needs a passphrase, and none is set yet. Without it, encrypted copies cannot be read, by you "
+                             L"or anyone.\n\nSet one now?"), APP_NAME, MB_ICONQUESTION | MB_YESNO) != IDYES ||
          !set_passphrase_ui())) {
         free(w);
         return;
@@ -7267,7 +7692,7 @@ static void set_encrypt(int64_t source_id, const char *rel, int on)
     /* Set it to see what it covers; taken back if the user says no. */
     bd_status s = bd_encrypt_path_set(g_cat, source_id, rel, 1);
     if (s != BD_OK) {
-        save_or_say(s, L"Could not encrypt it.");
+        save_or_say(s, T(L"Could not encrypt it."));
         free(w);
         return;
     }
@@ -7278,20 +7703,23 @@ static void set_encrypt(int64_t source_id, const char *rel, int on)
     wchar_t *wc = widen(cost), size[64];
     format_bytes(fm.bytes, size, 64);
     wtext q = {NULL, 0, 0};
-    wadd(&q, L"Encrypt %ls?\n\nIts %lld file%ls (%ls), and any added to it later, are then encrypted on every drive and extra place "
-             L"they are copied to, also drives that are not encrypted. Everything else stays as it is. Names stay readable: a copy is "
-             L"the file's name with .bdenc after it.\n\n",
-         w ? w : L"", (long long)fm.files, fm.files == 1 ? L"" : L"s", size);
-    wadd(&q, L"What it means for time: %ls\n\n", wc ? wc : L"");
-    wadd(&q, L"Copies already on your drives stay as they are, since BRODALF never overwrites or deletes anything there: new copies "
-             L"and new versions are encrypted. Backing up, checking and restoring them need the passphrase entered.");
+    wadd(&q, TN(fm.files, L"Encrypt %ls?\n\nIts %lld file (%ls), and any added to it later, are then encrypted on every drive and extra place "
+                          L"they are copied to, also drives that are not encrypted. Everything else stays as it is. Names stay readable: a copy is "
+                          L"the file's name with .bdenc after it.\n\n",
+                L"Encrypt %ls?\n\nIts %lld files (%ls), and any added to it later, are then encrypted on every drive and extra place "
+                L"they are copied to, also drives that are not encrypted. Everything else stays as it is. Names stay readable: a copy is "
+                L"the file's name with .bdenc after it.\n\n"),
+         w ? w : L"", (long long)fm.files, size);
+    wadd(&q, T(L"What it means for time: %ls\n\n"), wc ? wc : L"");
+    wadd(&q, T(L"Copies already on your drives stay as they are, since BRODALF never overwrites or deletes anything there: new copies "
+             L"and new versions are encrypted. Backing up, checking and restoring them need the passphrase entered."));
     free(wc);
     int yes = MessageBoxW(g_main, q.p ? q.p : L"", APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES;
     free(q.p);
     if (!yes) bd_encrypt_path_set(g_cat, source_id, rel, 0);
-    else if (save_or_say(BD_OK, L"Could not encrypt it.")) {
+    else if (save_or_say(BD_OK, T(L"Could not encrypt it."))) {
         wchar_t line[1600];
-        swprintf(line, 1600, L"%ls is encrypted on every drive and extra place from now on (%lld files, %ls).", w ? w : L"",
+        swprintf(line, 1600, T(L"%ls is encrypted on every drive and extra place from now on (%lld files, %ls)."), w ? w : L"",
                  (long long)fm.files, size);
         log_append(line);
     }
@@ -7305,13 +7733,13 @@ static void toggle_encrypt_selected(void)
 {
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
     if (!r) {
-        MessageBoxW(g_main, L"Select a backup root, a folder or a file on the Primary Database tab first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Select a backup root, a folder or a file on the Primary Database tab first."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     const char *rel = r->rel ? r->rel : "";
     int en = bd_encrypt_marked(g_cat, r->source_id, rel);
     if (en == 2) {
-        MessageBoxW(g_main, L"It is already encrypted, with a folder above it. Change that folder on the Encryption tab.", APP_NAME,
+        MessageBoxW(g_main, T(L"It is already encrypted, with a folder above it. Change that folder on the Encryption tab."), APP_NAME,
                     MB_ICONINFORMATION);
         return;
     }
@@ -7323,16 +7751,16 @@ static void toggle_encrypt_selected(void)
 
 static void encrypt_picked_folder(void)
 {
-    char *folder = pick_folder(g_main, L"Choose a folder in one of your backup roots. Its files are encrypted on every drive and extra "
-                                       L"place they are copied to.");
+    char *folder = pick_folder(g_main, T(L"Choose a folder in one of your backup roots. Its files are encrypted on every drive and extra "
+                                       L"place they are copied to."));
     if (!folder) return;
     int64_t sid = 0;
     char *rel = NULL;
     if (!path_to_source(folder, &sid, &rel))
-        MessageBoxW(g_main, L"That folder is not in any of your backup roots, so BRODALF does not back it up. Choose a folder inside "
-                            L"a backup root, or add it as a backup root first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"That folder is not in any of your backup roots, so BRODALF does not back it up. Choose a folder inside "
+                            L"a backup root, or add it as a backup root first."), APP_NAME, MB_ICONINFORMATION);
     else if (bd_encrypt_marked(g_cat, sid, rel))
-        MessageBoxW(g_main, L"It is already encrypted, or a folder above it is.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"It is already encrypted, or a folder above it is."), APP_NAME, MB_ICONINFORMATION);
     else
         set_encrypt(sid, rel, 1);
     free(rel);
@@ -7340,7 +7768,7 @@ static void encrypt_picked_folder(void)
 }
 
 /* IDD_PLACE: a new extra place (mode 0), or the size limit of one (mode 1). */
-static int g_place_mode, g_place_encrypt;
+static int g_place_mode, g_place_encrypt, g_place_hide;
 static wchar_t g_place_text[1600], g_place_label[256];
 static int64_t g_place_limit;
 
@@ -7390,33 +7818,41 @@ static INT_PTR CALLBACK place_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(dlg, IDC_PLACE_LIMIT, gb);
         }
         if (g_place_mode == 1) {
-            SetWindowTextW(dlg, L"Size limit of an extra place");
+            SetWindowTextW(dlg, T(L"Size limit of an extra place"));
             SendDlgItemMessageW(dlg, IDC_PLACE_LABEL, EM_SETREADONLY, TRUE, 0);
             ShowWindow(GetDlgItem(dlg, IDC_PLACE_ENCRYPT), SW_HIDE);
-            SetDlgItemTextW(dlg, IDOK, L"Save");
+            ShowWindow(GetDlgItem(dlg, IDC_PLACE_HIDE), SW_HIDE);
+            SetDlgItemTextW(dlg, IDOK, T(L"Save"));
             SetFocus(GetDlgItem(dlg, IDC_PLACE_LIMIT));
             SendDlgItemMessageW(dlg, IDC_PLACE_LIMIT, EM_SETSEL, 0, -1);
         } else {
             CheckDlgButton(dlg, IDC_PLACE_ENCRYPT, g_place_encrypt ? BST_CHECKED : BST_UNCHECKED);
+            EnableWindow(GetDlgItem(dlg, IDC_PLACE_HIDE), g_place_encrypt); /* hiding names needs encryption */
             SetFocus(GetDlgItem(dlg, IDC_PLACE_LABEL));
             SendDlgItemMessageW(dlg, IDC_PLACE_LABEL, EM_SETSEL, 0, -1);
         }
         return FALSE;
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_PLACE_ENCRYPT) {
+            int on = IsDlgButtonChecked(dlg, IDC_PLACE_ENCRYPT) == BST_CHECKED;
+            EnableWindow(GetDlgItem(dlg, IDC_PLACE_HIDE), on);
+            if (!on) CheckDlgButton(dlg, IDC_PLACE_HIDE, BST_UNCHECKED);
+            return TRUE;
+        }
         if (LOWORD(wp) == IDOK) {
             wchar_t label[256], limit[64];
             int64_t bytes = 0;
             GetDlgItemTextW(dlg, IDC_PLACE_LABEL, label, 256);
             GetDlgItemTextW(dlg, IDC_PLACE_LIMIT, limit, 64);
             if (g_place_mode == 0 && !good_description(label)) {
-                MessageBoxW(dlg, L"Describe it in at least two words, saying what it is and where it lives, like \"Dropbox folder "
-                                 L"on the laptop\" or \"NAS share in the office\". It is how you tell your extra places apart later.",
+                MessageBoxW(dlg, T(L"Describe it in at least two words, saying what it is and where it lives, like \"Dropbox folder "
+                                 L"on the laptop\" or \"NAS share in the office\". It is how you tell your extra places apart later."),
                             APP_NAME, MB_ICONINFORMATION);
                 SetFocus(GetDlgItem(dlg, IDC_PLACE_LABEL));
                 return TRUE;
             }
             if (!parse_gb(limit, &bytes)) {
-                MessageBoxW(dlg, L"Type the most it may take in GB, like 2 or 15.5, or leave it empty for no limit.", APP_NAME,
+                MessageBoxW(dlg, T(L"Type the most it may take in GB, like 2 or 15.5, or leave it empty for no limit."), APP_NAME,
                             MB_ICONINFORMATION);
                 SetFocus(GetDlgItem(dlg, IDC_PLACE_LIMIT));
                 return TRUE;
@@ -7425,6 +7861,7 @@ static INT_PTR CALLBACK place_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             g_place_label[255] = 0;
             g_place_limit = bytes;
             g_place_encrypt = g_place_mode == 0 && IsDlgButtonChecked(dlg, IDC_PLACE_ENCRYPT) == BST_CHECKED;
+            g_place_hide = g_place_encrypt && IsDlgButtonChecked(dlg, IDC_PLACE_HIDE) == BST_CHECKED;
             EndDialog(dlg, IDOK);
             return TRUE;
         }
@@ -7438,47 +7875,47 @@ static INT_PTR CALLBACK place_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
  * backup that never counts toward the full copies. */
 static void cmd_add_place(void)
 {
-    char *folder = pick_folder(g_main, L"Choose the folder for a second copy of your starred files: your Dropbox, OneDrive or Google "
-                                       L"Drive folder on this PC, a network share, or a folder on another disk.");
+    char *folder = pick_folder(g_main, T(L"Choose the folder for a second copy of your starred files: your Dropbox, OneDrive or Google "
+                                       L"Drive folder on this PC, a network share, or a folder on another disk."));
     if (!folder) return;
     if (is_brodalf_drive(folder)) {
-        MessageBoxW(g_main, L"That folder is already one of your backup drives or extra places.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"That folder is already one of your backup drives or extra places."), APP_NAME, MB_ICONINFORMATION);
         free(folder);
         return;
     }
     wchar_t *w = widen(folder), pc[MAX_COMPUTERNAME_LENGTH + 1] = L"";
     DWORD pcn = MAX_COMPUTERNAME_LENGTH + 1;
-    if (!GetComputerNameW(pc, &pcn)) wcscpy(pc, L"this PC");
+    if (!GetComputerNameW(pc, &pcn)) wcscpy(pc, T(L"this PC"));
     const wchar_t *slash = w ? wcsrchr(w, L'\\') : NULL;
-    swprintf(g_place_label, 256, L"%ls folder on %ls", slash && slash[1] ? slash + 1 : L"Backup", pc);
+    swprintf(g_place_label, 256, T(L"%ls folder on %ls"), slash && slash[1] ? slash + 1 : T(L"Backup"), pc);
     swprintf(g_place_text, 1600,
-             L"Your starred files get a second, secondary copy in %ls. It is not one of your backup drives: its copies never count "
+             T(L"Your starred files get a second, secondary copy in %ls. It is not one of your backup drives: its copies never count "
              L"toward the full copies you want. BRODALF only copies files into it, in a BRODALF folder; that folder's own app does any "
-             L"syncing, and BRODALF talks to no cloud service. Nothing is copied until you back up to it.",
+             L"syncing, and BRODALF talks to no cloud service. Nothing is copied until you back up to it."),
              w ? w : L"");
     free(w);
     g_place_mode = 0;
     g_place_limit = 0;
-    g_place_encrypt = 0;
+    g_place_encrypt = g_place_hide = 0;
     if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PLACE), g_main, place_proc) != IDOK) {
         free(folder);
         return;
     }
     unsigned flags = 0;
     if (g_place_encrypt) {
-        int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(L"Enter the passphrase to encrypt the copies in the extra place.")
+        int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(T(L"Enter the passphrase to encrypt the copies in the extra place."))
                                                   : set_passphrase_ui();
         if (!ok) { free(folder); return; }
-        flags = BD_MEDIA_ENCRYPTED;
+        flags = BD_MEDIA_ENCRYPTED | (g_place_hide ? BD_MEDIA_HIDE_NAMES : 0);
     }
     char *label = narrow(g_place_label);
     int64_t id = 0;
     bd_status s = label ? bd_place_add(g_cat, folder, label, g_place_limit, flags, &id) : BD_ERR_NOMEM;
     free(label);
-    int ok = save_or_say(s, L"Could not add the extra place.");
+    int ok = save_or_say(s, T(L"Could not add the extra place."));
     if (ok) {
         wchar_t *wf = widen(folder), line[1400];
-        swprintf(line, 1400, L"Extra place added: %ls, at %ls. Only starred files go there.", g_place_label, wf ? wf : L"");
+        swprintf(line, 1400, T(L"Extra place added: %ls, at %ls. Only starred files go there."), g_place_label, wf ? wf : L"");
         free(wf);
         log_append(line);
     }
@@ -7490,11 +7927,12 @@ static void cmd_add_place(void)
     if (files > 0) {
         wchar_t size[64], q[600];
         format_bytes(bytes, size, 64);
-        swprintf(q, 600, L"Back up your %lld starred file%ls (%ls) to it now?", (long long)files, files == 1 ? L"" : L"s", size);
+        swprintf(q, 600, TN(files, L"Back up your %lld starred file (%ls) to it now?", L"Back up your %lld starred files (%ls) to it now?"),
+                 (long long)files, size);
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES) drive_action(id, 0);
     } else
-        MessageBoxW(g_main, L"Nothing is starred yet. Star files or folders on the Primary Database tab (Star it, or right-click), "
-                            L"then back up to the extra place.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Nothing is starred yet. Star files or folders on the Primary Database tab (Star it, or right-click), "
+                            L"then back up to the extra place."), APP_NAME, MB_ICONINFORMATION);
 }
 
 static void cmd_place_limit(int64_t id)
@@ -7507,16 +7945,16 @@ static void cmd_place_limit(int64_t id)
     free(l);
     g_place_limit = d->limit_bytes;
     free(dl.items);
-    swprintf(g_place_text, 1600, L"How much of your starred files may go to this extra place in all, so a small free account does not "
+    swprintf(g_place_text, 1600, T(L"How much of your starred files may go to this extra place in all, so a small free account does not "
                                  L"fill up. Files that would go over it are not copied there; your drives still get them. Copies "
-                                 L"already there stay.");
+                                 L"already there stay."));
     g_place_mode = 1;
     if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PLACE), g_main, place_proc) != IDOK) return;
-    if (save_or_say(bd_place_set_limit(g_cat, id, g_place_limit), L"Could not change the size limit.")) {
+    if (save_or_say(bd_place_set_limit(g_cat, id, g_place_limit), T(L"Could not change the size limit."))) {
         wchar_t line[400], size[64];
         format_bytes(g_place_limit, size, 64);
-        if (g_place_limit > 0) swprintf(line, 400, L"%ls may now take at most %ls of starred files.", g_place_label, size);
-        else swprintf(line, 400, L"%ls now takes every starred file (no limit).", g_place_label);
+        if (g_place_limit > 0) swprintf(line, 400, T(L"%ls may now take at most %ls of starred files."), g_place_label, size);
+        else swprintf(line, 400, T(L"%ls now takes every starred file (no limit)."), g_place_label);
         log_append(line);
     }
 }
@@ -7550,13 +7988,13 @@ static void cmd_backup_all(int offer_scan)
     }
     free(dl.items);
     if (!n) {
-        MessageBoxW(g_main, L"Plug in a backup drive first.", APP_NAME, MB_ICONINFORMATION);
+        MessageBoxW(g_main, T(L"Plug in a backup drive first."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     bd_encrypt_stats es;
     memset(&es, 0, sizeof(es));
     bd_encrypt_stats_get(g_cat, &es);
-    if ((encrypted || es.files) && !unlock_ui(L"Some of what this backs up is encrypted. Enter the passphrase to back up.")) return;
+    if ((encrypted || es.files) && !unlock_ui(T(L"Some of what this backs up is encrypted. Enter the passphrase to back up."))) return;
     if (n == 1) {
         job *j = new_job(JOB_BACKUP);
         if (!j) return;
@@ -7575,12 +8013,12 @@ static void cmd_backup_all(int offer_scan)
         if (pv.mass_change) {
             wchar_t name[600];
             media_name(ids[i], name, 600);
-            wadd(&changed, L"    %ls: %lld of %lld files changed\n", name, (long long)pv.held_changed, (long long)pv.files_held);
+            wadd(&changed, T(L"    %ls: %lld of %lld files changed\n"), name, (long long)pv.held_changed, (long long)pv.files_held);
         }
     }
     if (unscanned && offer_scan) {
-        int r = MessageBoxW(g_main, L"Your backup roots have not been scanned yet, so BRODALF does not know of any files to back up.\n\n"
-                                    L"Scan first, then back up to every plugged-in drive?",
+        int r = MessageBoxW(g_main, T(L"Your backup roots have not been scanned yet, so BRODALF does not know of any files to back up.\n\n"
+                                    L"Scan first, then back up to every plugged-in drive?"),
                             APP_NAME, MB_ICONQUESTION | MB_YESNOCANCEL);
         if (r == IDCANCEL) { free(changed.p); return; }
         if (r == IDYES) {
@@ -7595,10 +8033,10 @@ static void cmd_backup_all(int offer_scan)
     }
     if (changed.p) {
         wtext q = {NULL, 0, 0};
-        wadd(&q, L"Many files changed at once since their copies were made:\n\n%ls\nThat many at once can mean ransomware encrypted "
+        wadd(&q, T(L"Many files changed at once since their copies were made:\n\n%ls\nThat many at once can mean ransomware encrypted "
                  L"your files. Backing up overwrites nothing: the copies already on the drives stay as they are and the changed "
                  L"files go alongside them. If you did not change these files, look at them first (Files changed on it... on the "
-                 L"Next backup tab) and restore from a drive instead.\n\nBack up anyway?",
+                 L"Next backup tab) and restore from a drive instead.\n\nBack up anyway?"),
              changed.p);
         int go = MessageBoxW(g_main, q.p ? q.p : L"", APP_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES;
         free(q.p);
@@ -7612,8 +8050,8 @@ static void cmd_backup_all(int offer_scan)
     j->many_places = places;
     if (left_out) {
         wchar_t line[200];
-        swprintf(line, 200, L"%d more plugged-in drive%ls left for the next backup: at most 16 at a time.", left_out,
-                 left_out == 1 ? L" is" : L"s are");
+        swprintf(line, 200, TN(left_out, L"%d more plugged-in drive is left for the next backup: at most 16 at a time.",
+                               L"%d more plugged-in drives are left for the next backup: at most 16 at a time."), left_out);
         log_append(line);
     }
     enqueue(j);
@@ -7738,8 +8176,8 @@ static void page_command(int id, int code)
     case ID_REST_SEL: cmd_restore(); break;
     case ID_REST_ALL:
         if (g_pending.active &&
-            MessageBoxW(g_main, L"A restore is waiting for more drives. Restoring everything forgets it (what it restored stays).\n\n"
-                                L"Restore everything instead?", APP_NAME, MB_ICONQUESTION | MB_YESNO) != IDYES)
+            MessageBoxW(g_main, T(L"A restore is waiting for more drives. Restoring everything forgets it (what it restored stays).\n\n"
+                                L"Restore everything instead?"), APP_NAME, MB_ICONQUESTION | MB_YESNO) != IDYES)
             break;
         restore_selection(1, 0);
         break;
@@ -7904,16 +8342,16 @@ static HWND make_button(const wchar_t *text, int id)
 static void create_children(HWND hwnd)
 {
     g_main = hwnd;
-    g_buttons[0] = make_button(L"Add backup root...", ID_BTN_ADD);
-    g_buttons[1] = make_button(L"Scan now", ID_BTN_SCAN);
-    g_buttons[2] = make_button(L"Back up...", ID_BTN_BACKUP);
-    g_buttons[3] = make_button(L"Check drive...", ID_BTN_CHECK);
-    g_buttons[4] = make_button(L"Restore...", ID_BTN_RESTORE);
-    g_buttons[5] = make_button(L"Drives...", ID_BTN_DRIVES);
-    g_buttons[6] = make_button(L"Settings...", ID_BTN_SECURITY);
-    g_buttons[7] = make_button(L"At risk...", ID_BTN_RISK);
-    g_nodb_open = make_button(L"Open database...", ID_M_OPEN_DB);
-    g_nodb_new = make_button(L"New database...", ID_M_NEW_DB);
+    g_buttons[0] = make_button(T(L"Add backup root..."), ID_BTN_ADD);
+    g_buttons[1] = make_button(T(L"Scan now"), ID_BTN_SCAN);
+    g_buttons[2] = make_button(T(L"Back up..."), ID_BTN_BACKUP);
+    g_buttons[3] = make_button(T(L"Check drive..."), ID_BTN_CHECK);
+    g_buttons[4] = make_button(T(L"Restore..."), ID_BTN_RESTORE);
+    g_buttons[5] = make_button(T(L"Drives..."), ID_BTN_DRIVES);
+    g_buttons[6] = make_button(T(L"Settings..."), ID_BTN_SECURITY);
+    g_buttons[7] = make_button(T(L"At risk..."), ID_BTN_RISK);
+    g_nodb_open = make_button(T(L"Open database..."), ID_M_OPEN_DB);
+    g_nodb_new = make_button(T(L"New database..."), ID_M_NEW_DB);
 
     g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
@@ -7930,13 +8368,13 @@ static void create_children(HWND hwnd)
     g_search = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10,
                                g_page[TAB_DB], (HMENU)ID_SEARCH, g_inst, NULL);
     SendMessageW(g_search, WM_SETFONT, (WPARAM)g_font, TRUE);
-    SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)L"Search files and folders by name");
+    SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)T(L"Search files and folders by name"));
     g_results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 0, 0,
                                 10, 10, g_page[TAB_DB], (HMENU)ID_RESULTS, g_inst, NULL);
     SendMessageW(g_results, WM_SETFONT, (WPARAM)g_font, TRUE);
     {
-        static const wchar_t *cols[] = {L"Name", L"Folder", L"State", L"Where it is"};
+        static const wchar_t *cols[] = {N_(L"Name"), N_(L"Folder"), N_(L"State"), N_(L"Where it is")};
         static const int widths[] = {150, 130, 120, 320};
         lv_columns(g_results, cols, widths, 4);
     }
@@ -7950,7 +8388,7 @@ static void create_children(HWND hwnd)
                              0, 0, 10, 10, g_page[TAB_DB], (HMENU)ID_LIST, g_inst, NULL);
     SendMessageW(g_list, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    const wchar_t *cols[] = {L"Version", L"Where", L"State", L"Last checked", L"Size", L"Path on drive"};
+    const wchar_t *cols[] = {T(L"Version"), T(L"Where"), T(L"State"), T(L"Last checked"), T(L"Size"), T(L"Path on drive")};
     int widths[] = {90, 130, 160, 120, 80, 260};
     for (int i = 0; i < 6; i++) {
         LVCOLUMNW c;
@@ -7963,10 +8401,10 @@ static void create_children(HWND hwnd)
 
     g_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 10, 10, hwnd,
                                  (HMENU)ID_PROGRESS, g_inst, NULL);
-    g_prog_text = CreateWindowExW(0, WC_STATICW, L"Ready.", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE,
+    g_prog_text = CreateWindowExW(0, WC_STATICW, T(L"Ready."), WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_CENTERIMAGE,
                                   0, 0, 10, 10, hwnd, (HMENU)ID_PROGTEXT, g_inst, NULL);
     SendMessageW(g_prog_text, WM_SETFONT, (WPARAM)g_font, TRUE);
-    g_stop = make_button(L"Stop", ID_BTN_STOP);
+    g_stop = make_button(T(L"Stop"), ID_BTN_STOP);
     ShowWindow(g_stop, SW_HIDE);
     g_file_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 10, 10, hwnd, NULL, g_inst, NULL);
     g_file_text = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_PATHELLIPSIS | SS_CENTERIMAGE, 0, 0,
@@ -8045,6 +8483,12 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (LOWORD(wp) == ID_BTN_STOP) {
             stop_job();
+            return 0;
+        }
+        /* View > Language: the same. */
+        if (!lp && LOWORD(wp) >= ID_M_LANG_FOLLOW && LOWORD(wp) < ID_M_LANG_FIRST + N_LANGS) {
+            CheckMenuRadioItem(g_menu_lang, ID_M_LANG_FOLLOW, ID_M_LANG_FIRST + N_LANGS - 1, LOWORD(wp), MF_BYCOMMAND);
+            lang_choose(LOWORD(wp) == ID_M_LANG_FOLLOW ? -1 : LOWORD(wp) - ID_M_LANG_FIRST);
             return 0;
         }
         /* View > Appearance: works with no database and while a job runs. */
@@ -8150,6 +8594,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         InterlockedExchange(&g_busy, 0);
         EnableWindow(g_stop, FALSE);
         ShowWindow(g_stop, SW_HIDE);
+        j->summary[SUMMARY_LEN - 1] = 0;
         SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
         show_progress(j->status == BD_OK ? 100 : 0, j->summary);
         show_file_progress(-1, L"");
@@ -8166,14 +8611,14 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             /* Nothing follows a job the user stopped, but a stopped scan
              * leaves the backup working from what the last scans found. */
             if (j->kind == JOB_SCAN)
-                MessageBoxW(hwnd, L"The scan was stopped before it finished, so BRODALF may not know about every new or changed "
+                MessageBoxW(hwnd, T(L"The scan was stopped before it finished, so BRODALF may not know about every new or changed "
                                   L"file yet. A backup now copies what the scans so far found.\n\nScan again when you can, so your "
-                                  L"backups are as up to date as possible.",
+                                  L"backups are as up to date as possible."),
                             APP_NAME, MB_ICONINFORMATION);
         } else {
             if (j->status == BD_ERR_PASSPHRASE && (j->kind == JOB_BACKUP || j->kind == JOB_CHECK || j->kind == JOB_VERIFY) &&
-                unlock_ui(L"Some of what this needs is encrypted: an encrypted drive, or folders you chose to encrypt. Enter the "
-                          L"passphrase to continue.")) {
+                unlock_ui(T(L"Some of what this needs is encrypted: an encrypted drive, or folders you chose to encrypt. Enter the "
+                          L"passphrase to continue."))) {
                 job *again = new_job(j->kind);
                 if (again) {
                     again->media_id = j->media_id;
@@ -8228,15 +8673,15 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return TRUE;
     case WM_CLOSE:
         if (g_busy) {
-            static const wchar_t *ask[] = {L"Stop looking for drives and close?", L"Stop the scan and close?",
-                                           L"Stop the backup and close?", L"Stop the check and close?",
-                                           L"Stop the restore and close?", L"Stop reading back the copies and close?",
-                                           L"Stop reading the files in use and close?",
-                                           L"Stop compressing the drive and close?"};
+            static const wchar_t *ask[] = {N_(L"Stop looking for drives and close?"), N_(L"Stop the scan and close?"),
+                                           N_(L"Stop the backup and close?"), N_(L"Stop the check and close?"),
+                                           N_(L"Stop the restore and close?"), N_(L"Stop reading back the copies and close?"),
+                                           N_(L"Stop reading the files in use and close?"),
+                                           N_(L"Stop compressing the drive and close?")};
             if (g_close_after) return 0; /* already stopping; closes when the job returns */
             wchar_t text[256];
-            swprintf(text, 256, L"%ls\n\nWhat was done until then is kept. BRODALF closes as soon as the job has stopped.",
-                     ask[g_running_kind]);
+            swprintf(text, 256, T(L"%ls\n\nWhat was done until then is kept. BRODALF closes as soon as the job has stopped."),
+                     T(ask[g_running_kind]));
             if (MessageBoxW(hwnd, text, APP_NAME, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
                 g_close_after = 1;
                 if (g_busy) stop_job();
@@ -8246,7 +8691,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         if (g_ui_depth) {
-            MessageBoxW(hwnd, L"BRODALF is still working. Close it when the status bar says the job is done.", APP_NAME, MB_ICONINFORMATION);
+            MessageBoxW(hwnd, T(L"BRODALF is still working. Close it when the status bar says the job is done."), APP_NAME, MB_ICONINFORMATION);
             return 0;
         }
         DestroyWindow(hwnd);
@@ -8299,12 +8744,13 @@ static int open_dialog(wchar_t *out, DWORD cap)
     memset(&of, 0, sizeof(of));
     of.lStructSize = sizeof(of);
     of.hwndOwner = g_main;
-    of.lpstrFilter = L"BRODALF databases (*.brodalf)\0*.brodalf\0All files\0*.*\0";
+    wchar_t filter_text[256];
+    of.lpstrFilter = file_filter(filter_text, 256, 4, L"BRODALF databases (*.brodalf)", L"*.brodalf", L"All files", L"*.*");
     of.lpstrFile = out;
     of.nMaxFile = cap;
     of.lpstrDefExt = L"brodalf";
     out[0] = 0;
-    of.lpstrTitle = L"Open a BRODALF database";
+    of.lpstrTitle = T(L"Open a BRODALF database");
     of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     return GetOpenFileNameW(&of);
 }
@@ -8318,8 +8764,9 @@ static int save_dialog(wchar_t *out, DWORD cap, const wchar_t *title)
         memset(&of, 0, sizeof(of));
         of.lStructSize = sizeof(of);
         of.hwndOwner = g_main;
-        of.lpstrFilter = L"BRODALF databases (*.brodalf)\0*.brodalf\0";
-        if (!out[0]) wcsncpy(out, L"My backups.brodalf", cap - 1);
+        wchar_t filter_text[256];
+        of.lpstrFilter = file_filter(filter_text, 256, 2, L"BRODALF databases (*.brodalf)", L"*.brodalf");
+        if (!out[0]) wcsncpy(out, T(L"My backups.brodalf"), cap - 1);
         of.lpstrFile = out;
         of.nMaxFile = cap;
         of.lpstrDefExt = L"brodalf";
@@ -8327,7 +8774,7 @@ static int save_dialog(wchar_t *out, DWORD cap, const wchar_t *title)
         of.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if (!GetSaveFileNameW(&of)) return 0;
         if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) return 1;
-        MessageBoxW(g_main, L"A file with that name is already there. Choose another name, so nothing is overwritten.", APP_NAME,
+        MessageBoxW(g_main, T(L"A file with that name is already there. Choose another name, so nothing is overwritten."), APP_NAME,
                     MB_ICONINFORMATION);
     }
 }
@@ -8338,17 +8785,17 @@ static int ask_database_choice(const wchar_t *last)
     TASKDIALOG_BUTTON buttons[4];
     int n = 0;
     if (last[0]) {
-        swprintf(last_btn, MAX_PATH * 2 + 64, L"Open the last database\n%ls", last);
+        swprintf(last_btn, MAX_PATH * 2 + 64, T(L"Open the last database\n%ls"), last);
         buttons[n].nButtonID = CHOICE_LAST;
         buttons[n++].pszButtonText = last_btn;
     }
     buttons[n].nButtonID = CHOICE_OPEN;
-    buttons[n++].pszButtonText = L"Open a database...\nA .brodalf file you made before";
+    buttons[n++].pszButtonText = T(L"Open a database...\nA .brodalf file you made before");
     buttons[n].nButtonID = CHOICE_NEW;
-    buttons[n++].pszButtonText = L"Create a new database...\nChoose the folders to back up, then where to keep the database file";
+    buttons[n++].pszButtonText = T(L"Create a new database...\nChoose the folders to back up, then where to keep the database file");
     buttons[n].nButtonID = CHOICE_RECOVER;
-    buttons[n++].pszButtonText = L"Recover the database from a backup drive...\nOn a new PC, or after losing the database file: "
-                                 L"start from the newest copy on your drives";
+    buttons[n++].pszButtonText = T(L"Recover the database from a backup drive...\nOn a new PC, or after losing the database file: "
+                                 L"start from the newest copy on your drives");
 
     TASKDIALOGCONFIG tc;
     memset(&tc, 0, sizeof(tc));
@@ -8358,9 +8805,9 @@ static int ask_database_choice(const wchar_t *last)
     tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
     tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
     tc.pszWindowTitle = APP_NAME;
-    tc.pszMainInstruction = L"Which database do you want to use?";
-    tc.pszContent = L"A database records every file in your backup roots and which drives hold a copy of it. It never holds the "
-                    L"files themselves.";
+    tc.pszMainInstruction = T(L"Which database do you want to use?");
+    tc.pszContent = T(L"A database records every file in your backup roots and which drives hold a copy of it. It never holds the "
+                    L"files themselves.");
     tc.cButtons = (UINT)n;
     tc.pButtons = buttons;
     int pressed = IDCANCEL;
@@ -8378,14 +8825,14 @@ static bd_status open_maybe_encrypted(const char *path, bd_catalog **out)
     int can_recover = bd_catalog_file_has_recovery_key(path);
     for (;;) {
         int recovery = 0;
-        char *p = ask_unlock_secret(g_main, L"This database is encrypted. Enter its passphrase to open it.", can_recover, &recovery);
+        char *p = ask_unlock_secret(g_main, T(L"This database is encrypted. Enter its passphrase to open it."), can_recover, &recovery);
         if (!p) return BD_ERR_PASSPHRASE;
         bd_status s = recovery ? bd_catalog_open_with_recovery(path, p, out) : bd_catalog_open_with(path, p, out);
         free_secret(p);
         if (s == BD_OK && recovery) g_opened_by_recovery = 1;
         if (s != BD_ERR_PASSPHRASE) return s;
-        MessageBoxW(g_main, recovery ? L"That recovery key is not right. Check it against the sheet and try again."
-                                     : L"That passphrase is not right. Try again.",
+        MessageBoxW(g_main, recovery ? T(L"That recovery key is not right. Check it against the sheet and try again.")
+                                     : T(L"That passphrase is not right. Try again."),
                     APP_NAME, MB_ICONWARNING);
     }
 }
@@ -8444,7 +8891,7 @@ static void database_opened(const wchar_t *path, int created, int recovered)
     reg_set_last(path);
     wchar_t title[MAX_PATH * 2 + 32];
     const wchar_t *base = wcsrchr(g_cat_path, L'\\');
-    swprintf(title, MAX_PATH * 2 + 32, L"%ls - BRODALF", base ? base + 1 : g_cat_path);
+    swprintf(title, MAX_PATH * 2 + 32, T(L"%ls - BRODALF"), base ? base + 1 : g_cat_path);
     SetWindowTextW(g_main, title);
     set_busy(0);
     if (g_opened_by_recovery) {
@@ -8458,13 +8905,13 @@ static void database_opened(const wchar_t *path, int created, int recovered)
     count_ctx c = {0};
     bd_list_sources(g_cat, count_source, &c);
     if (recovered)
-        log_append(L"Database recovered from a backup drive. Scanning your backup roots to see whether they are on this PC "
-                   L"and what changed since that copy was saved.");
+        log_append(T(L"Database recovered from a backup drive. Scanning your backup roots to see whether they are on this PC "
+                   L"and what changed since that copy was saved."));
     else if (created)
-        log_append(L"New database. Scanning your backup roots for the first time. Nothing is backed up until you press Back up.");
+        log_append(T(L"New database. Scanning your backup roots for the first time. Nothing is backed up until you press Back up."));
     else
-        log_append(L"Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed "
-                   L"up until you press Back up.");
+        log_append(T(L"Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed "
+                   L"up until you press Back up."));
     job *d = new_job(JOB_DRIVES);
     if (d) {
         d->startup = 1;
@@ -8477,7 +8924,7 @@ static void database_opened(const wchar_t *path, int created, int recovered)
             enqueue(s);
         }
     } else {
-        log_append(L"It has no backup roots yet: use Add backup root to choose what to back up.");
+        log_append(T(L"It has no backup roots yet: use Add backup root to choose what to back up."));
     }
 }
 
@@ -8492,7 +8939,7 @@ static int try_open(const wchar_t *path)
     free(p);
     if (s == BD_ERR_PASSPHRASE) return 0; /* declined */
     if (s != BD_OK) {
-        show_open_error(s, L"The database could not be opened.");
+        show_open_error(s, T(L"The database could not be opened."));
         return 0;
     }
     close_database();
@@ -8519,7 +8966,7 @@ static INT_PTR CALLBACK newdb_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDC_NEWDB_ADD: {
-            char *folder = pick_folder(dlg, L"Choose a folder to back up (a backup root).");
+            char *folder = pick_folder(dlg, T(L"Choose a folder to back up (a backup root)."));
             if (folder) {
                 int dup = 0;
                 for (int i = 0; i < g_newdb.n; i++)
@@ -8573,7 +9020,7 @@ static int new_database_ui(void)
     INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_NEWDB), g_main, newdb_proc);
     int ok = 0;
     wchar_t path[MAX_PATH * 2] = L"";
-    if (r == IDOK && g_newdb.n > 0 && save_dialog(path, MAX_PATH * 2, L"Choose where to keep the new database file")) {
+    if (r == IDOK && g_newdb.n > 0 && save_dialog(path, MAX_PATH * 2, T(L"Choose where to keep the new database file"))) {
         char *p = narrow(path);
         bd_catalog *nc = NULL;
         bd_status s = p ? bd_catalog_create(p, &nc) : BD_ERR_NOMEM;
@@ -8585,7 +9032,7 @@ static int new_database_ui(void)
                 int64_t id;
                 if (bd_source_add(g_cat, g_newdb.paths[i], &id) == BD_OK) continue;
                 wchar_t *e = widen(bd_catalog_error(g_cat)), *w = widen(g_newdb.paths[i]), msg[2048];
-                swprintf(msg, 2048, L"%ls was not added: %ls", w ? w : L"", e ? e : L"");
+                swprintf(msg, 2048, T(L"%ls was not added: %ls"), w ? w : L"", e ? e : L"");
                 MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
                 free(e);
                 free(w);
@@ -8594,7 +9041,7 @@ static int new_database_ui(void)
             database_opened(path, 1, 0);
             ok = 1;
         } else {
-            show_open_error(s, L"The database could not be created.");
+            show_open_error(s, T(L"The database could not be created."));
         }
     }
     for (int i = 0; i < g_newdb.n; i++) free(g_newdb.paths[i]);
@@ -8667,9 +9114,9 @@ static int pick_found(const found_list *l)
     for (int i = 0; i < l->n; i++) {
         wchar_t when[64], rev[64], *wp = widen(l->items[i].path);
         format_time_ms(l->items[i].saved_ms, when, 64);
-        if (l->items[i].revision > 0) swprintf(rev, 64, L"revision %lld", (long long)l->items[i].revision);
-        else swprintf(rev, 64, L"saved by BRODALF 0.6 or older");
-        swprintf(text[i], MAX_PATH * 2 + 160, L"Database saved %ls (%ls)\n%ls", when, rev, wp ? wp : L"");
+        if (l->items[i].revision > 0) swprintf(rev, 64, T(L"revision %lld"), (long long)l->items[i].revision);
+        else swprintf(rev, 64, T(L"saved by BRODALF 0.6 or older"));
+        swprintf(text[i], MAX_PATH * 2 + 160, T(L"Database saved %ls (%ls)\n%ls"), when, rev, wp ? wp : L"");
         free(wp);
         b[i].nButtonID = 400 + i;
         b[i].pszButtonText = text[i];
@@ -8682,8 +9129,8 @@ static int pick_found(const found_list *l)
     tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
     tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
     tc.pszWindowTitle = APP_NAME;
-    tc.pszMainInstruction = L"Your drives hold copies of more than one database. Which one is yours?";
-    tc.pszContent = L"Each is the newest copy found of that database.";
+    tc.pszMainInstruction = T(L"Your drives hold copies of more than one database. Which one is yours?");
+    tc.pszContent = T(L"Each is the newest copy found of that database.");
     tc.cButtons = (UINT)l->n;
     tc.pButtons = b;
     int pressed = IDCANCEL;
@@ -8700,26 +9147,26 @@ static int recover_database_ui(void)
     memset(&l, 0, sizeof(l));
     find_on_all_drives(&l);
     if (!l.n) {
-        if (MessageBoxW(g_main, L"No copy of a BRODALF database was found on the drives that are plugged in.\n\nEvery backup puts "
+        if (MessageBoxW(g_main, T(L"No copy of a BRODALF database was found on the drives that are plugged in.\n\nEvery backup puts "
                                 L"the newest copy of the database on its drive. Plug in one of your backup drives, then press OK. "
-                                L"If it is plugged in already, press OK to choose the folder that holds the copy.",
+                                L"If it is plugged in already, press OK to choose the folder that holds the copy."),
                         APP_NAME, MB_ICONINFORMATION | MB_OKCANCEL) != IDOK)
             return 0;
         find_on_all_drives(&l);
         if (!l.n) {
-            char *dir = pick_folder(g_main, L"Choose the backup drive, or the folder on it that holds the copy of your database.");
+            char *dir = pick_folder(g_main, T(L"Choose the backup drive, or the folder on it that holds the copy of your database."));
             if (!dir) return 0;
             bd_find_catalog_copies(dir, found_copy_cb, &l);
             free(dir);
             if (!l.n) {
-                MessageBoxW(g_main, L"No copy of a BRODALF database was found there.", APP_NAME, MB_ICONINFORMATION);
+                MessageBoxW(g_main, T(L"No copy of a BRODALF database was found there."), APP_NAME, MB_ICONINFORMATION);
                 return 0;
             }
         }
     }
     int pick = pick_found(&l), ok = 0;
     wchar_t dest[MAX_PATH * 2] = L"";
-    if (pick >= 0 && save_dialog(dest, MAX_PATH * 2, L"Choose where to keep your database on this PC")) {
+    if (pick >= 0 && save_dialog(dest, MAX_PATH * 2, T(L"Choose where to keep your database on this PC"))) {
         char *d8 = narrow(dest);
         bd_catalog *nc = NULL;
         bd_status s = d8 ? bd_catalog_recover(l.items[pick].path, d8) : BD_ERR_NOMEM;
@@ -8735,7 +9182,7 @@ static int recover_database_ui(void)
             database_opened(dest, 0, 1);
             ok = 1;
         } else if (s != BD_ERR_PASSPHRASE) {
-            show_open_error(s, L"The database could not be recovered.");
+            show_open_error(s, T(L"The database could not be recovered."));
         }
     }
     found_free(&l);
@@ -8832,6 +9279,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         LocalFree(argv);
         return 1;
     }
+    lang_load(); /* before any text is shown */
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES |
                                                  ICC_PROGRESS_CLASS | ICC_DATE_CLASSES | ICC_TAB_CLASSES};
@@ -8872,7 +9320,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (!(argc > 1 && argv[1][0] && try_open(argv[1]))) open_database_ui(0);
     g_ui_depth--;
     LocalFree(argv);
-    if (!g_cat) log_append(L"No database is open. Use File > New database, Open database or Recover the database from a backup drive.");
+    if (!g_cat) log_append(T(L"No database is open. Use File > New database, Open database or Recover the database from a backup drive."));
     start_next_job();
 
     MSG m;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf VERSION 0.8.0 LANGUAGES C)
+project(brodalf VERSION 0.9.0 LANGUAGES C)
 
 # Link the C runtime statically so brodalf.exe runs on a PC without the
 # Visual C++ redistributable.
@@ -146,6 +146,9 @@ endif()
 
 if(WIN32)
     add_executable(brodalf WIN32 gui/main.c gui/brodalf.rc)
+    # The translations are built into the .exe (tools/lang.py checks them).
+    file(GLOB BRODALF_PO ${CMAKE_CURRENT_SOURCE_DIR}/gui/lang/*.po)
+    set_source_files_properties(gui/brodalf.rc PROPERTIES OBJECT_DEPENDS "${BRODALF_PO}")
     target_link_libraries(brodalf PRIVATE brodalf_core comctl32 shell32 ole32 uuid uxtheme)
     target_compile_definitions(brodalf PRIVATE UNICODE _UNICODE)
     if(MSVC)

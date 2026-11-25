@@ -4,7 +4,11 @@
 
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "brodalf.manifest"
 
-IDD_LABEL DIALOGEX 0, 0, 240, 126
+/* The window app's text in other languages (tools/lang.py). */
+IDR_LANG_DE RCDATA "lang/de.po"
+IDR_LANG_ES RCDATA "lang/es.po"
+
+IDD_LABEL DIALOGEX 0, 0, 240, 140
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Name this drive"
 FONT 9, "Segoe UI", 0, 0, 1
@@ -14,8 +18,9 @@ BEGIN
     LTEXT "Where it is kept, or what is written on it (optional), like ""Box A"":", IDC_LABEL_LOC_TEXT, 8, 50, 224, 10
     EDITTEXT IDC_LABEL_LOCATION, 8, 62, 224, 14, ES_AUTOHSCROLL
     AUTOCHECKBOX "Encrypt the files on this drive (needs a passphrase)", IDC_LABEL_ENCRYPT, 8, 84, 224, 12
-    DEFPUSHBUTTON "Set up drive", IDOK, 118, 104, 60, 14
-    PUSHBUTTON "Cancel", IDCANCEL, 182, 104, 50, 14
+    AUTOCHECKBOX "Also hide the names of the files and folders on it", IDC_LABEL_HIDE, 20, 98, 212, 12
+    DEFPUSHBUTTON "Set up drive", IDOK, 118, 118, 60, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 182, 118, 50, 14
 END
 
 IDD_DRIVE DIALOGEX 0, 0, 300, 250
@@ -131,7 +136,7 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 198, 130, 54, 14
 END
 
-IDD_PLACE DIALOGEX 0, 0, 270, 186
+IDD_PLACE DIALOGEX 0, 0, 270, 200
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Extra place for starred files"
 FONT 9, "Segoe UI", 0, 0, 1
@@ -142,13 +147,14 @@ BEGIN
     LTEXT "Most it may take, in GB (leave empty for no limit), so a small free account does not fill up:", IDC_PLACE_LIMIT_TEXT, 8, 110, 254, 18
     EDITTEXT IDC_PLACE_LIMIT, 8, 130, 60, 14, ES_AUTOHSCROLL
     AUTOCHECKBOX "Encrypt every copy there (needs a passphrase)", IDC_PLACE_ENCRYPT, 8, 150, 254, 12
-    DEFPUSHBUTTON "Add it", IDOK, 148, 166, 60, 14
-    PUSHBUTTON "Cancel", IDCANCEL, 212, 166, 50, 14
+    AUTOCHECKBOX "Also hide the names of the files and folders there", IDC_PLACE_HIDE, 20, 164, 242, 12
+    DEFPUSHBUTTON "Add it", IDOK, 148, 180, 60, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 212, 180, 50, 14
 END
 
 1 VERSIONINFO
-FILEVERSION 0,8,0,0
-PRODUCTVERSION 0,8,0,0
+FILEVERSION 0,9,0,0
+PRODUCTVERSION 0,9,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -158,8 +164,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "BRODALF backup tracker"
             VALUE "ProductName", "BRODALF"
-            VALUE "FileVersion", "0.8.0"
-            VALUE "ProductVersion", "0.8.0"
+            VALUE "FileVersion", "0.9.0"
+            VALUE "ProductVersion", "0.9.0"
         END
     END
     BLOCK "VarFileInfo"

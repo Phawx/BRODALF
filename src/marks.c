@@ -297,7 +297,7 @@ bd_status bd_place_add(bd_catalog *cat, const char *folder, const char *label, i
                        "is and where it lives");
     if (limit_bytes < 0) return bd_fail(cat, BD_ERR_INVALID, "the limit cannot be negative");
     int64_t id = 0;
-    bd_status s = bd_media_init(cat, folder, label, (flags & BD_MEDIA_ENCRYPTED) | BD_MEDIA_SECONDARY, &id);
+    bd_status s = bd_media_init(cat, folder, label, (flags & (BD_MEDIA_ENCRYPTED | BD_MEDIA_HIDE_NAMES)) | BD_MEDIA_SECONDARY, &id);
     if (s != BD_OK) return s;
     if (limit_bytes > 0 && (s = set_limit(cat, id, limit_bytes)) != BD_OK) return s;
     if (out_media_id) *out_media_id = id;

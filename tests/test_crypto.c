@@ -1,6 +1,7 @@
 /* Encryption: passphrase, encrypted drives, encrypted catalog file. */
 #include "brodalf.h"
 #include "internal.h"
+#include "sqlite3.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -241,6 +242,148 @@ static void test_recovery_key(void)
     bd_catalog_close(cat);
 }
 
+/* ---- Hidden names on an encrypted drive -------------------------------- */
+
+typedef struct { int files, dirs, plain_named, odd; } hidden_walk;
+
+static int is_hidden_part(const char *p, size_t n)
+{
+    if (n != 24) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (!((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= '2' && p[i] <= '7'))) return 0;
+    return 1;
+}
+
+static int hidden_walk_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    hidden_walk *w = ctx;
+    if (strstr(rel, "Notes") || strstr(rel, "diary") || strstr(rel, "plan") || strstr(rel, "versions")) w->plain_named++;
+    const char *base = strrchr(rel, '/');
+    base = base ? base + 1 : rel;
+    if (strcmp(base, "BRODALF.media") == 0 || strncmp(base, "catalog-r", 9) == 0) return 0;
+    size_t n = strlen(base);
+    if (st->is_file) {
+        w->files++;
+        if (n != 24 + strlen(BD_SEALED_SUFFIX) || strcmp(base + 24, BD_SEALED_SUFFIX) != 0 || !is_hidden_part(base, 24)) w->odd++;
+    } else {
+        w->dirs++;
+        if (!is_hidden_part(base, n)) w->odd++;
+    }
+    return 0;
+}
+
+static int schema_of(bd_catalog *cat)
+{
+    sqlite3_stmt *q;
+    int v = -1;
+    if (sqlite3_prepare_v2(cat->db, "SELECT value FROM meta WHERE key='schema_version'", -1, &q, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_step(q) == SQLITE_ROW) v = atoi((const char *)sqlite3_column_text(q, 0));
+    sqlite3_finalize(q);
+    return v;
+}
+
+static int media_hidden_cb(void *ctx, const bd_media_info *m)
+{
+    if (strcmp(m->label, "Hidden") == 0) *(int *)ctx = m->hide_names ? 1 : 0;
+    return 0;
+}
+
+static void test_hidden_names(void)
+{
+    /* The mapping: 24 characters a part, the same every time, .bdenc kept. */
+    uint8_t master[32], k1[32], k2[32];
+    for (int i = 0; i < 32; i++) master[i] = (uint8_t)(i * 7 + 1);
+    bd_names_key(master, "11111111-1111-4111-8111-111111111111", k1);
+    bd_names_key(master, "22222222-2222-4222-8222-222222222222", k2);
+    CHECK(memcmp(k1, k2, 32) != 0);
+    char *a = bd_hide_rel(k1, "Notes/sub/plan.doc.bdenc"), *b = bd_hide_rel(k1, "Notes/sub/plan.doc.bdenc");
+    char *c = bd_hide_rel(k1, "Notes/sub/plan2.doc.bdenc"), *d = bd_hide_rel(k2, "Notes/sub/plan.doc.bdenc");
+    char *e = bd_hide_rel(k1, "Other/sub/plan.doc.bdenc");
+    CHECK(a && b && c && d && e);
+    CHECK(strcmp(a, b) == 0 && strcmp(a, c) != 0 && strcmp(a, d) != 0);
+    CHECK(strlen(a) == 24 * 3 + 2 + strlen(BD_SEALED_SUFFIX) && a[24] == '/' && a[49] == '/');
+    CHECK(strncmp(a, c, 50) == 0);             /* the same folders */
+    CHECK(strncmp(a + 25, e + 25, 24) != 0);   /* a folder's name depends on the folder above it */
+    CHECK(strcmp(a + strlen(a) - strlen(BD_SEALED_SUFFIX), BD_SEALED_SUFFIX) == 0);
+    free(a); free(b); free(c); free(d); free(e);
+
+    write_file(at("hn/Notes/diary.txt"), "dear diary");
+    write_file(at("hn/Notes/sub/plan.doc"), "the plan");
+    bd_mkdirs(at("hn/drive"));
+    bd_mkdirs(at("hn/plain"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("hn/c.brodalf"), &cat), NULL);
+    CHECK(schema_of(cat) == 8); /* 0.8.0 still opens it */
+    int64_t src, drv, plain;
+    REQUIRE_OK(bd_source_add(cat, at("hn/Notes"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, PASS), cat);
+    /* Only an encrypted drive can hide names. */
+    CHECK(bd_media_init(cat, at("hn/plain"), "Plain", BD_MEDIA_HIDE_NAMES, &plain) == BD_ERR_INVALID);
+    REQUIRE_OK(bd_media_init(cat, at("hn/plain"), "Plain", 0, &plain), cat);
+    CHECK(schema_of(cat) == 8);
+    REQUIRE_OK(bd_media_init(cat, at("hn/drive"), "Hidden", BD_MEDIA_ENCRYPTED | BD_MEDIA_HIDE_NAMES, &drv), cat);
+    CHECK(schema_of(cat) == 9); /* from now on 0.8.0 refuses it */
+    int listed = -1;
+    REQUIRE_OK(bd_list_media(cat, media_hidden_cb, &listed), cat);
+    CHECK(listed == 1);
+
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drv, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2 && bs.files_failed == 0);
+    REQUIRE_OK(bd_catalog_copy_to_media(cat, drv), cat);
+    char dir[1200];
+    snprintf(dir, sizeof(dir), "hn/drive/BRODALF/%s", bd_catalog_uuid(cat));
+    hidden_walk w = {0, 0, 0, 0};
+    bd_walk(at(dir), hidden_walk_cb, NULL, &w);
+    CHECK(w.files == 2 && w.dirs == 2 && w.plain_named == 0 && w.odd == 0);
+    char mf[1400], text[512];
+    snprintf(mf, sizeof(mf), "%s/BRODALF.media", dir);
+    long n = read_all(at(mf), text, sizeof(text) - 1);
+    CHECK(n > 0);
+    text[n > 0 ? n : 0] = '\0';
+    CHECK(strstr(text, "hide_names=1") != NULL);
+
+    /* Nothing new to copy; a check finds both. */
+    REQUIRE_OK(bd_backup(cat, drv, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_failed == 0);
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, drv, &cs, quiet, NULL), cat);
+    CHECK(cs.ok == 2 && cs.bad == 0 && cs.missing == 0);
+
+    /* A new version goes alongside, its name hidden too. */
+    write_file(at("hn/Notes/diary.txt"), "dear diary, again");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drv, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
+    memset(&w, 0, sizeof(w));
+    bd_walk(at(dir), hidden_walk_cb, NULL, &w);
+    CHECK(w.files == 3 && w.plain_named == 0 && w.odd == 0);
+
+    /* A plain drive in the same catalog keeps plain names. */
+    REQUIRE_OK(bd_backup(cat, plain, 0, &bs, quiet, NULL), cat);
+    char pp[1400];
+    snprintf(pp, sizeof(pp), "hn/plain/BRODALF/%s/Notes/diary.txt", bd_catalog_uuid(cat));
+    CHECK(exists(at(pp)));
+
+    /* Restore from the hidden drive alone gives the real names back. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("hn/c.brodalf"), &cat), NULL);
+    CHECK(schema_of(cat) == 9);
+    REQUIRE_OK(bd_catalog_unlock(cat, PASS), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("hn/drive"), &drv, quiet, NULL), cat);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("hn/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2 && rs.files_failed == 0);
+    CHECK(file_equals(at("hn/out/diary.txt"), "dear diary, again", 17));
+    CHECK(file_equals(at("hn/out/sub/plan.doc"), "the plan", 8));
+    REQUIRE_OK(bd_media_check(cat, drv, &cs, quiet, NULL), cat);
+    CHECK(cs.ok == 3 && cs.bad == 0 && cs.missing == 0);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -385,6 +528,7 @@ int main(void)
     CHECK(!bd_catalog_file_needs_passphrase(at("c.brodalf")));
     bd_catalog_close(cat);
     test_recovery_key();
+    test_hidden_names();
 
     /* No random numbers for a new key: nothing is made or stored. */
     REQUIRE_OK(bd_catalog_create(at("r.brodalf"), &cat), NULL);

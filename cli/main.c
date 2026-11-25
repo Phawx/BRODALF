@@ -46,8 +46,10 @@ static void usage(void)
          "                                             or one root's own list)\n"
          "\n"
          "Drives\n"
-         "  drive    <catalog> <root> <label> [--encrypt] [--location TEXT]\n"
-         "                                             set up a drive or folder as a backup drive\n"
+         "  drive    <catalog> <root> <label> [--encrypt [--hide-names]] [--location TEXT]\n"
+         "                                             set up a drive or folder as a backup drive; --hide-names\n"
+         "                                             also hides file and folder names on an encrypted drive\n"
+         "                                             (a catalog with such a drive needs BRODALF 0.9.0 or newer)\n"
          "  drives   <catalog>                         every drive: make, model, serial, health, where it is kept\n"
          "  status   <catalog> [label]                 where each drive stands: what it holds, its last backup and check\n"
          "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
@@ -77,7 +79,7 @@ static void usage(void)
          "  star     <catalog> <root> [path]           star a file or folder (no path: the whole root)\n"
          "  unstar   <catalog> <root> [path]\n"
          "  stars    <catalog>                         the starred files and folders\n"
-         "  place    <catalog> <folder> <description> [--limit SIZE] [--encrypt]\n"
+         "  place    <catalog> <folder> <description> [--limit SIZE] [--encrypt [--hide-names]]\n"
          "                                             a folder (a Dropbox or OneDrive folder, a network share)\n"
          "                                             that also gets the starred files; say what and where it is.\n"
          "                                             Its copies never count toward the copies you want\n"
@@ -728,6 +730,7 @@ static int print_drive(void *ctx, const bd_media_info *m)
         j_int("last_seen_ms", m->last_seen_ms);
         j_bool("connected", m->connected);
         j_bool("encrypted", m->encrypted);
+        j_bool("hide_names", m->hide_names);
         j_bool("extra_place", m->secondary);
         j_int("limit_bytes", m->limit_bytes);
         j_int("total_bytes", m->total_bytes);
@@ -744,7 +747,8 @@ static int print_drive(void *ctx, const bd_media_info *m)
         J_END();
         return 0;
     }
-    printf("%s%s%s", m->label, m->connected ? "  (connected)" : "", m->encrypted ? "  [encrypted]" : "");
+    printf("%s%s%s", m->label, m->connected ? "  (connected)" : "",
+           m->hide_names ? "  [encrypted, names hidden]" : m->encrypted ? "  [encrypted]" : "");
     if (m->secondary) printf("  [extra place: starred files only; its copies do not count]");
     if (m->lost_ms) printf("  [marked %s: its copies do not count]", m->lost_why);
     printf("\n");
@@ -1710,7 +1714,8 @@ static int run(int argc, char **argv)
     } else if (strcmp(cmd, "drive") == 0) {
         if (npos < 2) { usage(); bd_catalog_close(cat); return 1; }
         int64_t id;
-        int encrypt = has_flag(argc, argv, "--encrypt");
+        int hide = has_flag(argc, argv, "--hide-names");
+        int encrypt = has_flag(argc, argv, "--encrypt") || hide;
         if (encrypt && !bd_catalog_has_passphrase(cat)) {
             char pass[512];
             if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
@@ -1721,12 +1726,12 @@ static int run(int argc, char **argv)
             bd_catalog_close(cat);
             return 1;
         }
-        if (bd_media_init(cat, pos[0], pos[1], encrypt ? BD_MEDIA_ENCRYPTED : 0, &id) != BD_OK)
+        if (bd_media_init(cat, pos[0], pos[1], (encrypt ? BD_MEDIA_ENCRYPTED : 0) | (hide ? BD_MEDIA_HIDE_NAMES : 0), &id) != BD_OK)
             return die(cat, "cannot set up drive");
         const char *location = opt(argc, argv, "--location");
         if (location && bd_media_set_location(cat, id, location) != BD_OK) return die(cat, "cannot set location");
-        if (g_json) { J_OBJ(NULL); j_int("id", id); j_str("label", pos[1]); j_bool("encrypted", encrypt); J_END(); }
-        else printf("set up %s as \"%s\"%s\n", pos[0], pos[1], encrypt ? ", encrypted" : "");
+        if (g_json) { J_OBJ(NULL); j_int("id", id); j_str("label", pos[1]); j_bool("encrypted", encrypt); j_bool("hide_names", hide); J_END(); }
+        else printf("set up %s as \"%s\"%s\n", pos[0], pos[1], hide ? ", encrypted, with file and folder names hidden" : encrypt ? ", encrypted" : "");
         save = 1;
     } else if (strcmp(cmd, "option") == 0) {
         if (npos >= 2) {
@@ -2064,7 +2069,8 @@ static int run(int argc, char **argv)
         const char *lim = opt(argc, argv, "--limit");
         int64_t limit = lim ? parse_size(lim) : 0, id;
         if (limit < 0) return refuse(cat, "--limit takes a size like 2GB or 500MB");
-        int encrypt = has_flag(argc, argv, "--encrypt");
+        int hide = has_flag(argc, argv, "--hide-names");
+        int encrypt = has_flag(argc, argv, "--encrypt") || hide;
         if (encrypt && !bd_catalog_has_passphrase(cat)) {
             char pass[512];
             if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
@@ -2075,7 +2081,7 @@ static int run(int argc, char **argv)
             bd_catalog_close(cat);
             return 1;
         }
-        bd_status s = bd_place_add(cat, pos[0], pos[1], limit, encrypt ? BD_MEDIA_ENCRYPTED : 0, &id);
+        bd_status s = bd_place_add(cat, pos[0], pos[1], limit, (encrypt ? BD_MEDIA_ENCRYPTED : 0) | (hide ? BD_MEDIA_HIDE_NAMES : 0), &id);
         if (s == BD_ERR_INVALID) return refuse(cat, bd_catalog_error(cat));
         if (s != BD_OK) return die(cat, "cannot set up the place");
         if (g_json) { J_OBJ(NULL); j_int("id", id); j_str("label", pos[1]); j_int("limit_bytes", limit); J_END(); }

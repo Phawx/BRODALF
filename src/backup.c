@@ -97,18 +97,28 @@ static int path_claimed(bd_catalog *cat, int64_t media_id, const char *rel)
     return taken;
 }
 
+/* The path a copy has on the drive: as it is, or with the names hidden
+ * (names.c) on a drive set up that way. NULL when out of memory. */
+static char *on_drive(const bd_store *store, const char *plain)
+{
+    return store->hide_names ? bd_hide_rel(store->names_key, plain) : bd_strdup(plain);
+}
+
 /* Where a copy goes when its usual place on the drive holds something
  * else (an older version, or a file BRODALF does not know): next to it
  * under .versions, as <dir>/<stem>.v<N><ext>, or .v<N>-2 and so on when
  * that name is taken too. Nothing on a drive is ever overwritten, moved or
- * deleted. NULL when the drive cannot be read. */
+ * deleted. dest_rel is the plain path; what comes back is as on the
+ * drive. NULL when the drive cannot be read. */
 static char *alongside_path(bd_catalog *cat, bd_store *store, const char *dest_rel, int64_t version_no)
 {
     for (int k = 1; k < 1000; k++) {
         char tag[48];
         if (k == 1) snprintf(tag, sizeof(tag), "v%lld", (long long)version_no);
         else snprintf(tag, sizeof(tag), "v%lld-%d", (long long)version_no, k);
-        char *rel = versions_rel_path(dest_rel, tag);
+        char *plain = versions_rel_path(dest_rel, tag);
+        char *rel = plain ? on_drive(store, plain) : NULL;
+        free(plain);
         if (!rel) return NULL;
         bd_remote_stat st;
         int r = store->ops->stat(store, rel, &st);
@@ -359,22 +369,24 @@ static int dest_prepare(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
     p->sealed = key != NULL;
     const char *src = it->orig;
     char *main_rel = bd_sprintf("%s/%s%s", it->source_name, it->rel, key ? BD_SEALED_SUFFIX : "");
-    if (!main_rel) { stats->files_failed++; goto drop; }
+    char *main_disk = main_rel ? on_drive(store, main_rel) : NULL; /* the same, as on the drive */
+    if (!main_disk) { free(main_rel); stats->files_failed++; goto drop; }
 
     /* What is at the usual place now, and what the catalog says is there. */
     bd_remote_stat dst_st;
-    int found = store->ops->stat(store, main_rel, &dst_st);
+    int found = store->ops->stat(store, main_disk, &dst_st);
     if (found < 0) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "cannot look at %s: %s", main_rel, store->err);
         free(main_rel);
+        free(main_disk);
         goto drop;
     }
     int64_t row_copy = 0, row_version = 0;
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db, "SELECT id, version_id FROM copies WHERE media_id=? AND path_on_media=?", -1, &q, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(q, 1, media_id);
-        sqlite3_bind_text(q, 2, main_rel, -1, SQLITE_STATIC);
+        sqlite3_bind_text(q, 2, main_disk, -1, SQLITE_STATIC);
         if (sqlite3_step(q) == SQLITE_ROW) {
             row_copy = sqlite3_column_int64(q, 0);
             row_version = sqlite3_column_int64(q, 1);
@@ -398,30 +410,33 @@ static int dest_prepare(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
         } else {
             use_main = 1;
         }
-    } else if (!row_copy && !tracked_by_case(cat, media_id, it, main_rel)) {
+    } else if (!row_copy && !tracked_by_case(cat, media_id, it, main_disk)) {
         /* A file the catalog does not know, probably written by a backup
          * whose catalog was never saved. If it is exactly this version,
          * adopt it instead of copying. */
         char hash[BD_HASH_HEX_LEN + 1];
         char *local = NULL;
         int is_temp = 0;
-        int same = bd_store_fetch(store, main_rel, &local, &is_temp) == 0 &&
+        int same = bd_store_fetch(store, main_disk, &local, &is_temp) == 0 &&
                    bd_hash_copy(local, key, NULL, NULL, hash, NULL) == 0 && strcmp(hash, it->hash) == 0;
         bd_store_release(local, is_temp);
         if (same) {
-            if (record_copy(cat, it->version_id, media_id, main_rel, &dst_st, key != NULL) == 0) stats->files_already_there++;
+            if (record_copy(cat, it->version_id, media_id, main_disk, &dst_st, key != NULL) == 0) stats->files_already_there++;
             else stats->files_failed++;
             free(main_rel);
+            free(main_disk);
             goto drop;
         }
         bd_logf(log, log_ctx, "a file BRODALF did not write is at %s; it is left alone", main_rel);
     }
     if (use_main) {
-        p->dest_rel = main_rel;
+        p->dest_rel = main_disk;
+        free(main_rel);
     } else {
         p->dest_rel = alongside_path(cat, store, main_rel, it->version_no);
         p->alongside = 1;
         free(main_rel);
+        free(main_disk);
         if (!p->dest_rel) {
             stats->files_failed++;
             bd_logf(log, log_ctx, "cannot find a free name on the drive for %s: %s", src, store->err);
@@ -496,6 +511,7 @@ static void backup_finish(bd_catalog *cat, bd_store *store, pending_copy *p, bd_
 {
     const backup_item *it = p->it;
     const char *dest_rel = p->dest_rel, *tmp_rel = p->tmp_rel;
+    const char *shown = store->hide_names ? p->orig : dest_rel; /* hidden names mean nothing to the user */
     bd_remote_stat new_st;
     if (p->failed) {
         stats->files_failed++;
@@ -514,15 +530,15 @@ static void backup_finish(bd_catalog *cat, bd_store *store, pending_copy *p, bd_
     int mv = store->ops->move(store, tmp_rel, dest_rel, 0);
     if (mv != 0) {
         stats->files_failed++;
-        if (mv == 1) bd_logf(log, log_ctx, "a file appeared at %s while copying; left alone, back up again", dest_rel);
-        else bd_logf(log, log_ctx, "cannot finish writing %s: %s", dest_rel, store->err);
+        if (mv == 1) bd_logf(log, log_ctx, "a file appeared at %s while copying; left alone, back up again", shown);
+        else bd_logf(log, log_ctx, "cannot finish writing %s: %s", shown, store->err);
         store->ops->remove(store, tmp_rel);
         return;
     }
     if (store->ops->stat(store, dest_rel, &new_st) != 0 ||
         record_copy(cat, it->version_id, store->media_id, dest_rel, &new_st, p->sealed) != 0) {
         stats->files_failed++;
-        bd_logf(log, log_ctx, "copied %s but could not record it: %s", dest_rel, sqlite3_errmsg(cat->db));
+        bd_logf(log, log_ctx, "copied %s but could not record it: %s", shown, sqlite3_errmsg(cat->db));
         return;
     }
     stats->files_copied++;
@@ -720,6 +736,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             free(dests);
             return BD_ERR_NOT_FOUND;
         }
+        d->store->hide_names = bd_media_hides_names(cat, d->media_id, d->store->names_key);
         /* How much fits, leaving the reserve free for the catalog's copies.
          * Unknown space means no limit. */
         int64_t space_total = 0;
@@ -1241,7 +1258,8 @@ static int restore_file(bd_catalog *cat, bd_store **store, sqlite3_stmt *find, s
     int src_temp = 0;
     if (!rel || !*store || bd_store_fetch(*store, rel, &src, &src_temp) != 0) {
         stats->files_failed++;
-        bd_logf(log, log_ctx, "cannot read %s%s%s", rel ? rel : it->rel, *store && (*store)->err[0] ? ": " : "",
+        bd_logf(log, log_ctx, "cannot read %s%s%s", rel && !bd_media_hides_names(cat, media_id, NULL) ? rel : it->rel,
+                *store && (*store)->err[0] ? ": " : "",
                 *store ? (*store)->err : "");
         free(rel);
         return 0;

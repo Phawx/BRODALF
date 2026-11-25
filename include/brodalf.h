@@ -280,6 +280,13 @@ bd_status bd_list_in_use(bd_catalog *cat, bd_in_use_fn fn, void *ctx);
 /* An extra place for starred files rather than one of the N copies (see
  * bd_place_add, which sets this). */
 #define BD_MEDIA_SECONDARY 2u
+/* With BD_MEDIA_ENCRYPTED only: hide file and folder names on the drive
+ * too. Each name there becomes 24 letters and digits made from the real
+ * one with the key; the real names are only in the catalog, whose copy on
+ * the drive is encrypted. How many files and folders there are, and their
+ * sizes, still show. Cannot be changed later. A catalog with such a drive
+ * is saved as schema 9, which BRODALF 0.8.0 and older will not open. */
+#define BD_MEDIA_HIDE_NAMES 4u
 bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, unsigned flags, int64_t *out_media_id);
 
 /* Tell BRODALF a known drive is connected at root. Identifies it by its
@@ -636,6 +643,7 @@ typedef struct {
     int64_t reserve_bytes;   /* kept free on it for the catalog's copies (reserve_mb) */
     int secondary;           /* an extra place for starred files (bd_place_add) */
     int64_t limit_bytes;     /* an extra place: most it takes of starred files; 0 no limit */
+    int hide_names;          /* file and folder names on it are hidden (BD_MEDIA_HIDE_NAMES) */
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on

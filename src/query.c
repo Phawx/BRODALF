@@ -242,7 +242,7 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " m.retired_ms, COALESCE(m.lost_why,''),"
                            " (SELECT COALESCE(SUM(v.size),0) FROM copies c JOIN versions v ON v.id=c.version_id"
                            "   WHERE c.media_id=m.id AND c.state='ok'),"
-                           " m.secondary, COALESCE(m.limit_bytes,0)"
+                           " m.secondary, COALESCE(m.limit_bytes,0), m.hide_names"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -275,6 +275,7 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.reserve_bytes = reserve;
         info.secondary = sqlite3_column_int(q, 37);
         info.limit_bytes = sqlite3_column_int64(q, 38);
+        info.hide_names = sqlite3_column_int(q, 39);
         info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
                          now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;
         bd_drive_hw hw;

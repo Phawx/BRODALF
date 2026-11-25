@@ -26,6 +26,7 @@ int bd_media_file_read(const char *path, bd_media_file *mf)
         else if (strcmp(line, "label") == 0) snprintf(mf->label, sizeof(mf->label), "%s", v);
         else if (strcmp(line, "encrypted") == 0) mf->encrypted = strcmp(v, "1") == 0;
         else if (strcmp(line, "secondary") == 0) mf->secondary = strcmp(v, "1") == 0;
+        else if (strcmp(line, "hide_names") == 0) mf->hide_names = strcmp(v, "1") == 0;
     }
     fclose(f);
     return (magic && strlen(mf->media_uuid) == 36) ? 0 : -1;
@@ -43,11 +44,11 @@ static int media_file_put(const char *path, const bd_media_file *mf, int replace
             "catalog_uuid=%s\n"
             "label=%s\n"
             "encrypted=%d\n"
-            "%s"
+            "%s%s"
             "created_ms=%lld\n"
             "# This drive holds BRODALF backups. Do not delete this file.\n",
             mf->media_uuid, mf->catalog_uuid, mf->label, mf->encrypted, mf->secondary ? "secondary=1\n" : "",
-            (long long)bd_now_ms());
+            mf->hide_names ? "hide_names=1\n" : "", (long long)bd_now_ms());
     int rc = bd_fsync(f);
     if (fclose(f) != 0) rc = -1;
     if (rc == 0) rc = replace ? bd_rename_replace(tmp, path) : bd_rename_noreplace(tmp, path);
@@ -146,6 +147,31 @@ int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, con
     int64_t id = sqlite3_step(ins) == SQLITE_DONE ? sqlite3_last_insert_rowid(cat->db) : 0;
     sqlite3_finalize(ins);
     return id;
+}
+
+static void media_set_hide_names(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *u;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET hide_names=1 WHERE id=?", -1, &u, NULL) != SQLITE_OK) return;
+    sqlite3_bind_int64(u, 1, media_id);
+    sqlite3_step(u);
+    sqlite3_finalize(u);
+    bd_catalog_note_schema(cat);
+}
+
+int bd_media_hides_names(bd_catalog *cat, int64_t media_id, uint8_t out[32])
+{
+    sqlite3_stmt *q;
+    int hide = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT uuid, hide_names FROM media WHERE id=?", -1, &q, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(q, 1, media_id);
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 1)) {
+        hide = 1;
+        if (out && cat->have_key) bd_names_key(cat->key, (const char *)sqlite3_column_text(q, 0), out);
+        else if (out) memset(out, 0, 32);
+    }
+    sqlite3_finalize(q);
+    return hide;
 }
 
 static void media_set_secondary(bd_catalog *cat, int64_t media_id)
@@ -249,6 +275,8 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label)
 bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, unsigned flags, int64_t *out_media_id)
 {
     int encrypted = (flags & BD_MEDIA_ENCRYPTED) != 0, secondary = (flags & BD_MEDIA_SECONDARY) != 0;
+    int hide_names = (flags & BD_MEDIA_HIDE_NAMES) != 0;
+    if (hide_names && !encrypted) return bd_fail(cat, BD_ERR_INVALID, "names can only be hidden on an encrypted drive");
     if (encrypted && !cat->have_key)
         return bd_fail(cat, BD_ERR_PASSPHRASE, bd_catalog_has_passphrase(cat) ? "enter the passphrase to set up an encrypted drive"
                                                                                : "set a passphrase to set up an encrypted drive");
@@ -279,10 +307,12 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     for (char *p = mf.label; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
     mf.encrypted = encrypted;
     mf.secondary = secondary;
+    mf.hide_names = hide_names;
 
     int64_t id = bd_media_insert(cat, mf.media_uuid, "drive", mf.label, encrypted);
     if (!id) { free(path); return bd_fail_db(cat, "add drive"); }
     if (secondary) media_set_secondary(cat, id);
+    if (hide_names) media_set_hide_names(cat, id);
     if (bd_media_file_write(path, &mf) != 0) {
         free(path);
         sqlite3_stmt *d;
@@ -362,6 +392,7 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
         id = bd_media_insert(cat, mf.media_uuid, "drive", mf.label[0] ? mf.label : "Recovered drive", mf.encrypted);
         if (!id) return bd_fail_db(cat, "re-register drive");
         if (mf.secondary) media_set_secondary(cat, id);
+        if (mf.hide_names) media_set_hide_names(cat, id);
         bd_logf(log, log_ctx, "re-registered drive \"%s\"", mf.label);
     }
     bd_status s = bd_media_record_connected(cat, id, root);
@@ -424,12 +455,15 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to check an encrypted drive");
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) return BD_ERR_NOT_FOUND;
+    int hide = bd_media_hides_names(cat, media_id, NULL);
 
     sqlite3_stmt *q = NULL, *u = NULL;
     bd_status s = BD_OK;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, c.state, c.encrypted"
-                           " FROM copies c JOIN versions v ON v.id=c.version_id WHERE c.media_id=?1"
+                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, c.state, c.encrypted,"
+                           " COALESCE(s.name || '/' || n.rel_path, c.path_on_media)"
+                           " FROM copies c JOIN versions v ON v.id=c.version_id"
+                           " LEFT JOIN nodes n ON n.id=v.node_id LEFT JOIN sources s ON s.id=n.source_id WHERE c.media_id=?1"
                            " AND (?2=0 OR (c.state<>'missing' AND COALESCE(c.last_full_check_ms,0)<?2)) ORDER BY c.path_on_media",
                            -1, &q, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
@@ -469,6 +503,9 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
         int64_t stored_size = sqlite3_column_int64(q, 2);
         int64_t stored_mtime = sqlite3_column_int64(q, 3);
         const char *expected = (const char *)sqlite3_column_text(q, 4);
+        /* What the user knows the file as: on a drive that hides names the
+         * path there means nothing to them. */
+        const char *shown = hide ? (const char *)sqlite3_column_text(q, 7) : rel;
         /* On a plain drive, copies of folders set to be encrypted are
          * sealed one by one. Without the passphrase they are left as they
          * were and counted as skipped. */
@@ -481,13 +518,13 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
             continue;
         }
         stats->copies++;
-        bd_report_file(cat, stats->copies, rel, stored_size);
+        bd_report_file(cat, stats->copies, shown, stored_size);
 
         bd_remote_stat st;
         int found = store->ops->stat(store, rel, &st);
         if (found < 0) {
             /* Could not look: leave the copy as it was. */
-            bd_logf(log, log_ctx, "cannot check %s: %s", rel, store->err);
+            bd_logf(log, log_ctx, "cannot check %s: %s", shown, store->err);
             stats->skipped++;
             continue;
         }
@@ -506,7 +543,7 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
             stats->rehashed++;
             int got = bd_store_fetch(store, rel, &path, &is_temp);
             if (got < 0) {
-                bd_logf(log, log_ctx, "cannot read %s: %s", rel, store->err);
+                bd_logf(log, log_ctx, "cannot read %s: %s", shown, store->err);
                 stats->skipped++;
                 continue;
             }
@@ -523,8 +560,8 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
             else mtime = st.mtime_ns;
         }
         if (strcmp(state, "ok") == 0) stats->ok++;
-        else if (strcmp(state, "missing") == 0) { stats->missing++; bd_logf(log, log_ctx, "missing on drive: %s", rel); }
-        else { stats->bad++; bd_logf(log, log_ctx, "damaged on drive: %s", rel); }
+        else if (strcmp(state, "missing") == 0) { stats->missing++; bd_logf(log, log_ctx, "missing on drive: %s", shown); }
+        else { stats->bad++; bd_logf(log, log_ctx, "damaged on drive: %s", shown); }
 
         sqlite3_reset(u);
         sqlite3_bind_text(u, 1, state, -1, SQLITE_STATIC);

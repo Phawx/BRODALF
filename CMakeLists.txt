@@ -89,6 +89,7 @@ add_library(brodalf_core STATIC
     src/store_local.c
     src/marks.c
     src/media.c
+    src/names.c
     src/platform_posix.c
     src/platform_win32.c
     src/query.c

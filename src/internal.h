@@ -161,12 +161,16 @@ typedef struct {
     char label[256];
     int encrypted;
     int secondary; /* an extra place for starred files */
+    int hide_names; /* file and folder names are hidden (names.c) */
 } bd_media_file;
 int bd_media_file_read(const char *path, bd_media_file *mf);
 int bd_media_file_write(const char *path, const bd_media_file *mf);
 bd_status bd_media_record_connected(bd_catalog *cat, int64_t media_id, const char *root);
 int64_t bd_media_id_for_uuid(bd_catalog *cat, const char *uuid);
 int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, const char *label, int encrypted);
+
+/* Set meta schema_version to what the catalog needs (catalog.c). 0 or -1. */
+int bd_catalog_note_schema(bd_catalog *cat);
 
 /* Save a copy of the catalog to dest, encrypted or not. */
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);
@@ -175,6 +179,13 @@ bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);
 #define BD_SEALED_SUFFIX ".bdenc"
 
 void bd_uuid_v4(char out[37]);
+
+/* Hidden names (names.c): the key for one drive, and a path on it as it
+ * is written there. NULL when out of memory. */
+void bd_names_key(const uint8_t master[32], const char *media_uuid, uint8_t out[32]);
+char *bd_hide_rel(const uint8_t names_key[32], const char *plain_rel);
+/* 1 if the drive hides names; the key for it in out when so. */
+int bd_media_hides_names(bd_catalog *cat, int64_t media_id, uint8_t out[32]);
 
 /* Media root directory for this catalog: <root>/BRODALF/<uuid>. */
 char *bd_media_catalog_dir(const bd_catalog *cat, const char *root);

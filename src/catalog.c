@@ -24,7 +24,11 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 8
+/* The newest schema this build reads. A catalog is written as 8, which
+ * 0.8.0 still opens, until a drive in it hides names: then 9, so an older
+ * BRODALF cannot back up to that drive with the names showing. */
+#define BD_SCHEMA_VERSION 9
+#define BD_SCHEMA_PLAIN 8
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -81,7 +85,8 @@ static const char *SCHEMA_SQL =
     "  replaced_by INTEGER,"             /* 0.5.0 and 0.6.0 only (Replace drive); unused */
     "  lost_why TEXT,"                   /* "lost" or "broken" */
     "  secondary INTEGER NOT NULL DEFAULT 0," /* an extra place for starred files (Dropbox folder, share): not one of the N copies */
-    "  limit_bytes INTEGER);"            /* an extra place: at most this much of starred files; NULL no limit */
+    "  limit_bytes INTEGER,"             /* an extra place: at most this much of starred files; NULL no limit */
+    "  hide_names INTEGER NOT NULL DEFAULT 0);" /* encrypted drive whose file and folder names are hidden (names.c) */
     "CREATE TABLE IF NOT EXISTS media_hardware("  /* last reading when plugged in */
     "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
     "  read_ms INTEGER NOT NULL,"
@@ -306,6 +311,8 @@ static bd_status open_db(bd_catalog *cat)
         /* Schema 7 (0.7.0) lacks these. */
         {"SELECT secondary FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN secondary INTEGER NOT NULL DEFAULT 0"},
         {"SELECT limit_bytes FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN limit_bytes INTEGER"},
+        /* Schema 8 (0.8.0) lacks this. */
+        {"SELECT hide_names FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN hide_names INTEGER NOT NULL DEFAULT 0"},
     };
     for (size_t i = 0; i < sizeof(ADD) / sizeof(ADD[0]); i++) {
         if (sqlite3_prepare_v2(cat->db, ADD[i].probe, -1, &probe, NULL) == SQLITE_OK) sqlite3_finalize(probe);
@@ -541,7 +548,7 @@ bd_status bd_catalog_create(const char *path, bd_catalog **out)
     if (s == BD_OK) {
         char buf[32];
         bd_uuid_v4(cat->uuid);
-        snprintf(buf, sizeof(buf), "%d", BD_SCHEMA_VERSION);
+        snprintf(buf, sizeof(buf), "%d", BD_SCHEMA_PLAIN);
         char created[32];
         snprintf(created, sizeof(created), "%lld", (long long)bd_now_ms());
         if (meta_set(cat, "catalog_uuid", cat->uuid) != 0 || meta_set(cat, "schema_version", buf) != 0 ||
@@ -585,6 +592,18 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out)
 }
 
 /* secret is the passphrase, or the recovery key when recovery is set. */
+/* Record the schema this catalog needs: 9 once a drive hides names,
+ * else 8, so 0.8.0 can still open it. */
+int bd_catalog_note_schema(bd_catalog *cat)
+{
+    sqlite3_stmt *q;
+    int hidden = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM media WHERE hide_names<>0 LIMIT 1", -1, &q, NULL) != SQLITE_OK) return -1;
+    hidden = sqlite3_step(q) == SQLITE_ROW;
+    sqlite3_finalize(q);
+    return meta_set(cat, "schema_version", hidden ? BD_STR(BD_SCHEMA_VERSION) : BD_STR(BD_SCHEMA_PLAIN));
+}
+
 static bd_status open_with_secret(const char *path, const char *secret, int recovery, bd_catalog **out)
 {
     *out = NULL;
@@ -650,7 +669,7 @@ static bd_status open_with_secret(const char *path, const char *secret, int reco
         char v[32];
         if (meta_get(cat, "schema_version", v, sizeof(v)) && atoi(v) > BD_SCHEMA_VERSION)
             s = bd_fail(cat, BD_ERR_FORMAT, "%s was made by a newer BRODALF", path);
-        else if (meta_set(cat, "schema_version", BD_STR(BD_SCHEMA_VERSION)) != 0)
+        else if (bd_catalog_note_schema(cat) != 0)
             s = bd_fail_db(cat, "cannot upgrade catalog");
     }
     if (s != BD_OK) return fail_open(cat, s, 1);

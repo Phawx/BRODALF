@@ -39,6 +39,8 @@ struct bd_store {
     const bd_store_ops *ops;
     bd_catalog *cat;
     int64_t media_id;
+    int hide_names;          /* paths given to ops are already hidden */
+    uint8_t names_key[32];
     char err[512];
     void *impl;
 };

@@ -13,6 +13,7 @@
 
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -262,6 +263,94 @@ static void test_walk_error(void)
 }
 #endif
 
+#ifndef _WIN32
+static int count_files(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    (*(int *)ctx)++;
+    return st->is_dir ? BD_WALK_SKIP : 0;
+}
+
+/* Item 4: working copies left by a BRODALF that is gone are removed when a
+ * catalog is opened; those of a running one, those without a marker (made
+ * by 0.9.0) and anything not named like a working copy stay. */
+static void test_stale_work_files(void)
+{
+    begin("stale");
+    bd_mkdirs(at("tmp"));
+    const char *was = getenv("TMPDIR");
+    char *saved = was ? bd_strdup(was) : NULL;
+    setenv("TMPDIR", at("tmp"), 1);
+
+    pid_t child = fork();
+    if (child == 0) _exit(0);
+    waitpid(child, NULL, 0);
+    char dead[32], live[32];
+    snprintf(dead, sizeof(dead), "%ld\n", (long)child);
+    snprintf(live, sizeof(live), "%ld\n", (long)getpid());
+
+    const char *gone = "tmp/brodalf-11111111-1111-4111-8111-111111111111.db";
+    const char *running = "tmp/brodalf-22222222-2222-4222-8222-222222222222.db";
+    const char *unknown = "tmp/brodalf-33333333-3333-4333-8333-333333333333.db";
+    const char *lone = "tmp/brodalf-44444444-4444-4444-8444-444444444444.db";
+    char p[256];
+    const char *parts[] = {"", "-wal", "-shm", ".snapshot"};
+    for (int i = 0; i < 4; i++) {
+        snprintf(p, sizeof(p), "%s%s", gone, parts[i]);
+        write_file(at(p), "x");
+        snprintf(p, sizeof(p), "%s%s", running, parts[i]);
+        write_file(at(p), "x");
+        snprintf(p, sizeof(p), "%s%s", unknown, parts[i]);
+        write_file(at(p), "x");
+    }
+    snprintf(p, sizeof(p), "%s.owner", gone);
+    write_file(at(p), dead);
+    snprintf(p, sizeof(p), "%s.owner", running);
+    write_file(at(p), live);
+    snprintf(p, sizeof(p), "%s.owner", lone);
+    write_file(at(p), dead);
+    /* Not BRODALF's names, whatever is beside them. */
+    const char *others[] = {"tmp/brodalf-11111111-1111-4111-8111-111111111111.dbx",
+                            "tmp/brodalf-11111111-1111-4111-8111-111111111111.db.old",
+                            "tmp/brodalf-1111111-1111-4111-8111-1111111111111.db",
+                            "tmp/brodalf-AAAAAAAA-1111-4111-8111-111111111111.db",
+                            "tmp/brodalf-test.db", "tmp/other.db"};
+    for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) write_file(at(others[i]), "x");
+    bd_mkdirs(at("tmp/brodalf-55555555-5555-4555-8555-555555555555.db-wal"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("test.brodalf"), &cat), NULL);
+    for (int i = 0; i < 4; i++) {
+        snprintf(p, sizeof(p), "%s%s", gone, parts[i]);
+        CHECK(!exists(at(p)));
+        snprintf(p, sizeof(p), "%s%s", running, parts[i]);
+        CHECK(exists(at(p)));
+        snprintf(p, sizeof(p), "%s%s", unknown, parts[i]);
+        CHECK(exists(at(p)));
+    }
+    snprintf(p, sizeof(p), "%s.owner", gone);
+    CHECK(!exists(at(p)));
+    snprintf(p, sizeof(p), "%s.owner", running);
+    CHECK(exists(at(p)));
+    snprintf(p, sizeof(p), "%s.owner", lone);
+    CHECK(!exists(at(p)));
+    for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) CHECK(exists(at(others[i])));
+    CHECK(exists(at("tmp/brodalf-55555555-5555-4555-8555-555555555555.db-wal")));
+
+    /* This catalog's own working copy and marker are there while it is
+     * open, and gone once it is closed. */
+    int open_n = 0, closed_n = 0;
+    bd_walk(at("tmp"), count_files, NULL, &open_n);
+    bd_catalog_close(cat);
+    bd_walk(at("tmp"), count_files, NULL, &closed_n);
+    CHECK(open_n >= closed_n + 2);
+    CHECK(closed_n == 5 + 4 + (int)(sizeof(others) / sizeof(others[0])) + 1);
+
+    if (saved) setenv("TMPDIR", saved, 1);
+    else unsetenv("TMPDIR");
+    free(saved);
+}
+#endif
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -276,6 +365,7 @@ int main(void)
     test_mass_change();
 #ifndef _WIN32
     test_walk_error();
+    test_stale_work_files();
 #endif
 
     remove_tree(top);

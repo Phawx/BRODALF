@@ -69,6 +69,27 @@ int bd_fsync_dir(const char *path);
  * 0 on success, 1 if it already exists, -1 on other errors. */
 int bd_create_exclusive(const char *path);
 
+/* A catalog's working copy in the temp folder belongs to the process that
+ * made it. bd_work_owner_begin writes a small marker file naming this
+ * process (its ID), before the working copy is made; on Windows the marker
+ * is also held open, without sharing, until bd_work_owner_end, which only
+ * closes it (the caller removes the file). 0 on success; *handle may be
+ * NULL either way.
+ * bd_work_in_use: 1 if the working copy made of paths[0..n) (files that
+ * are not there are ignored), with its marker at marker_path (which may not
+ * be there either), may still be in use, 0 if its owner is gone and the
+ * files may be removed. It errs toward 1. On Windows: in use if the marker
+ * or any of the files cannot be opened with no sharing (an open handle
+ * anywhere, the owner's SQLite connection included, stops that), and, for
+ * a working copy with no marker (made by BRODALF 0.9.0 or before), if any
+ * of its files was written in the last 10 minutes, which covers the moments
+ * between unpacking the catalog and opening it, or between writing a
+ * snapshot and reading it, when no handle is open. Elsewhere: in use unless
+ * the marker names a process that no longer runs. */
+int bd_work_owner_begin(const char *marker_path, void **handle);
+void bd_work_owner_end(void *handle);
+int bd_work_in_use(const char *marker_path, char **paths, size_t n);
+
 /* Keep a second BRODALF from opening the same catalog. On Windows a named
  * mutex (Local\BRODALF-catalog-<hash of the full path>) plus the lock file
  * held open without sharing; both go away when the process ends, crash or

@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -189,6 +190,49 @@ int bd_create_exclusive(const char *path)
     if (fd < 0) return errno == EEXIST ? 1 : -1;
     close(fd);
     return 0;
+}
+
+int bd_work_owner_begin(const char *marker_path, void **handle)
+{
+    *handle = NULL;
+    char *p = dup_native(marker_path);
+    if (!p) return -1;
+    int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    free(p);
+    if (fd < 0) return -1;
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%ld\n", (long)getpid());
+    int ok = write(fd, buf, (size_t)len) == (ssize_t)len;
+    if (close(fd) != 0) ok = 0;
+    return ok ? 0 : -1;
+}
+
+void bd_work_owner_end(void *handle)
+{
+    (void)handle;
+}
+
+int bd_work_in_use(const char *marker_path, char **paths, size_t n)
+{
+    (void)paths;
+    (void)n;
+    char *p = dup_native(marker_path);
+    if (!p) return 1;
+    int fd = open(p, O_RDONLY | O_CLOEXEC);
+    free(p);
+    if (fd < 0) return 1; /* no marker: the owner is not known */
+    char buf[32];
+    ssize_t got = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (got <= 0) return 1;
+    buf[got] = '\0';
+    char *end;
+    errno = 0;
+    long pid = strtol(buf, &end, 10);
+    if (errno != 0 || end == buf || (*end != '\n' && *end != '\0') || pid <= 0 || (pid_t)pid != pid) return 1;
+    if ((pid_t)pid == getpid()) return 1;
+    if (kill((pid_t)pid, 0) == 0) return 1;
+    return errno == ESRCH ? 0 : 1; /* EPERM: it runs, as another user */
 }
 
 typedef struct {

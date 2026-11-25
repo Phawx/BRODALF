@@ -373,6 +373,63 @@ int bd_create_exclusive(const char *path)
     return 0;
 }
 
+int bd_work_owner_begin(const char *marker_path, void **handle)
+{
+    *handle = NULL;
+    wchar_t *w = to_wide(marker_path);
+    if (!w) return -1;
+    /* Held open for the catalog's life; others may read it, nobody may
+     * open it without sharing while this handle is open. */
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%lu\n", (unsigned long)GetCurrentProcessId());
+    DWORD put = 0;
+    if (!WriteFile(h, buf, (DWORD)len, &put, NULL) || put != (DWORD)len) {
+        CloseHandle(h);
+        return -1;
+    }
+    *handle = h;
+    return 0;
+}
+
+void bd_work_owner_end(void *handle)
+{
+    if (handle && handle != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)handle);
+}
+
+/* Open with no sharing and close again: 0 it opened (*write_ms its last
+ * write), 2 it is not there, 1 anything else (in use, no access). */
+static int open_alone(const char *path, int64_t *write_ms)
+{
+    wchar_t *w = to_wide(path);
+    if (!w) return 1;
+    HANDLE h = CreateFileW(w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 2 : 1;
+    FILETIME ft;
+    int ok = GetFileTime(h, NULL, NULL, &ft) != 0;
+    CloseHandle(h);
+    if (!ok) return 1;
+    *write_ms = filetime_to_ns(ft) / 1000000;
+    return 0;
+}
+
+int bd_work_in_use(const char *marker_path, char **paths, size_t n)
+{
+    int64_t when = 0, now = bd_now_ms();
+    int marker = open_alone(marker_path, &when);
+    if (marker == 1) return 1;
+    for (size_t i = 0; i < n; i++) {
+        int r = open_alone(paths[i], &when);
+        if (r == 1) return 1;
+        if (r == 0 && marker == 2 && now - when < 10 * 60 * 1000) return 1;
+    }
+    return 0;
+}
+
 typedef struct {
     char **items;
     size_t len, cap;

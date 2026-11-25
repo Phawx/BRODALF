@@ -20,6 +20,8 @@ struct bd_catalog {
     char *lock_path;
     void *lock;       /* bd_catalog_lock_take's handle while this catalog holds the lock */
     char *work_path;  /* unpacked SQLite working copy */
+    char *owner_path; /* work_path + ".owner": names the process the working copy belongs to */
+    void *owner;      /* bd_work_owner_begin's handle */
     char uuid[37];
     char err[1024];
     bd_progress_fn progress;

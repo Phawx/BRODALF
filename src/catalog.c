@@ -155,6 +155,93 @@ static uint32_t get_u32(const unsigned char *p)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* The working copy is <temp>/brodalf-<uuid>.db, with SQLite's files and
+ * the save's snapshot beside it (these suffixes), and the marker naming the
+ * process it belongs to (OWNER_SUFFIX). */
+static const char *const WORK_SUFFIXES[] = {"", "-wal", "-shm", "-journal", ".snapshot"};
+#define N_WORK_SUFFIXES (sizeof(WORK_SUFFIXES) / sizeof(WORK_SUFFIXES[0]))
+#define OWNER_SUFFIX ".owner"
+
+/* 36 characters as bd_uuid_v4 writes them: lower-case hex, dashes at 8,
+ * 13, 18 and 23. */
+static int is_uuid(const char *s)
+{
+    for (int i = 0; i < 36; i++) {
+        char ch = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (ch != '-') return 0;
+        } else if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+typedef struct {
+    char (*ids)[37];
+    size_t n, cap;
+    const char *own; /* this catalog's own working copy, never touched */
+} work_ids;
+
+static int note_work_file(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    work_ids *w = ctx;
+    if (st->is_dir) return BD_WALK_SKIP; /* only the temp folder itself */
+    if (st->is_link || !st->is_file) return 0;
+    if (strncmp(rel, "brodalf-", 8) != 0 || strlen(rel) < 8 + 36 + 3) return 0;
+    const char *id = rel + 8, *rest = rel + 8 + 36;
+    if (!is_uuid(id) || strncmp(rest, ".db", 3) != 0) return 0;
+    rest += 3;
+    int known = strcmp(rest, OWNER_SUFFIX) == 0;
+    for (size_t i = 0; i < N_WORK_SUFFIXES && !known; i++) known = strcmp(rest, WORK_SUFFIXES[i]) == 0;
+    if (!known || strncmp(id, w->own, 36) == 0) return 0;
+    for (size_t i = 0; i < w->n; i++)
+        if (strncmp(w->ids[i], id, 36) == 0) return 0;
+    if (w->n == w->cap) {
+        size_t cap = w->cap ? w->cap * 2 : 16;
+        char (*nd)[37] = realloc(w->ids, cap * sizeof(*nd));
+        if (!nd) return 1;
+        w->ids = nd;
+        w->cap = cap;
+    }
+    memcpy(w->ids[w->n], id, 36);
+    w->ids[w->n][36] = '\0';
+    w->n++;
+    return 0;
+}
+
+/* Working copies a BRODALF left in the temp folder when it ended without
+ * closing its catalog (a crash, a power cut, a killed process). Each can be
+ * as big as the catalog unpacked, and nothing else would ever remove them.
+ * Only files named exactly as catalog_alloc names them are looked at, and
+ * a working copy goes only when bd_work_in_use says its owner is gone. */
+static void remove_stale_work_files(const char *tmp, const char *own_id)
+{
+    work_ids w = {0};
+    w.own = own_id;
+    bd_walk(tmp, note_work_file, NULL, &w);
+    for (size_t i = 0; i < w.n; i++) {
+        char *paths[N_WORK_SUFFIXES];
+        char *marker = bd_sprintf("%s%cbrodalf-%s.db" OWNER_SUFFIX, tmp, BD_SEP, w.ids[i]);
+        int ok = marker != NULL;
+        for (size_t k = 0; k < N_WORK_SUFFIXES; k++) {
+            paths[k] = bd_sprintf("%s%cbrodalf-%s.db%s", tmp, BD_SEP, w.ids[i], WORK_SUFFIXES[k]);
+            if (!paths[k]) ok = 0;
+        }
+        if (ok && !bd_work_in_use(marker, paths, N_WORK_SUFFIXES)) {
+            int left = 0;
+            bd_stat_t st;
+            for (size_t k = 0; k < N_WORK_SUFFIXES; k++)
+                if (bd_remove(paths[k]) != 0 && bd_stat(paths[k], &st) == 0) left = 1;
+            /* The marker goes last, and only once the rest has. */
+            if (!left) bd_remove(marker);
+        }
+        for (size_t k = 0; k < N_WORK_SUFFIXES; k++) free(paths[k]);
+        free(marker);
+    }
+    free(w.ids);
+}
+
 static bd_catalog *catalog_alloc(const char *path)
 {
     bd_catalog *cat = calloc(1, sizeof(*cat));
@@ -163,24 +250,36 @@ static bd_catalog *catalog_alloc(const char *path)
     cat->lock_path = bd_sprintf("%s.lock", path);
     char tmp[1024], id[37];
     bd_uuid_v4(id);
-    if (bd_temp_dir(tmp, sizeof(tmp)) == 0) cat->work_path = bd_sprintf("%s%cbrodalf-%s.db", tmp, BD_SEP, id);
-    if (!cat->path || !cat->lock_path || !cat->work_path) {
+    if (bd_temp_dir(tmp, sizeof(tmp)) == 0) {
+        cat->work_path = bd_sprintf("%s%cbrodalf-%s.db", tmp, BD_SEP, id);
+        cat->owner_path = bd_sprintf("%s%cbrodalf-%s.db" OWNER_SUFFIX, tmp, BD_SEP, id);
+    }
+    if (!cat->path || !cat->lock_path || !cat->work_path || !cat->owner_path) {
         free(cat->path);
         free(cat->lock_path);
         free(cat->work_path);
+        free(cat->owner_path);
         free(cat);
         return NULL;
     }
+    /* The marker before the working copy, so there is never a moment when
+     * the working copy is there without it. Without a marker (the temp
+     * folder refused it) the working copy is simply never taken for
+     * stale. */
+    bd_work_owner_begin(cat->owner_path, &cat->owner);
+    remove_stale_work_files(tmp, id);
     return cat;
 }
 
 static void remove_work_files(bd_catalog *cat)
 {
-    const char *suffixes[] = {"", "-wal", "-shm", "-journal", ".snapshot"};
-    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
-        char *p = bd_sprintf("%s%s", cat->work_path, suffixes[i]);
+    for (size_t i = 0; i < N_WORK_SUFFIXES; i++) {
+        char *p = bd_sprintf("%s%s", cat->work_path, WORK_SUFFIXES[i]);
         if (p) { bd_remove(p); free(p); }
     }
+    bd_work_owner_end(cat->owner);
+    cat->owner = NULL;
+    bd_remove(cat->owner_path);
 }
 
 static void catalog_free(bd_catalog *cat, int owns_lock)
@@ -195,6 +294,7 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
     free(cat->path);
     free(cat->lock_path);
     free(cat->work_path);
+    free(cat->owner_path);
     free(cat);
 }
 

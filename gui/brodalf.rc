@@ -33,25 +33,25 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 238, 230, 54, 14
 END
 
-IDD_RISK DIALOGEX 0, 0, 420, 304
+IDD_RISK DIALOGEX 0, 0, 420, 314
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Files at risk"
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
-    LTEXT "", IDC_RISK_SUMMARY, 8, 8, 404, 20
-    LTEXT "Keep", -1, 8, 34, 20, 10
-    EDITTEXT IDC_RISK_COPIES, 30, 32, 22, 13, ES_NUMBER
-    LTEXT "copies of every file, in", -1, 56, 34, 78, 10
-    EDITTEXT IDC_RISK_PLACES, 136, 32, 22, 13, ES_NUMBER
-    LTEXT "different places.", -1, 162, 34, 60, 10
-    PUSHBUTTON "Apply", IDC_RISK_APPLY, 226, 31, 44, 14
-    LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Drives with no place set count as one place together.", -1, 8, 50, 404, 18
-    LTEXT "Back up to these next (double-click a plugged-in one to start):", -1, 8, 72, 330, 10
-    PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 352, 68, 60, 14
-    CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 84, 404, 56
-    LTEXT "Files short of the target, fewest copies first:", IDC_RISK_FILES_TEXT, 8, 146, 404, 10
-    CONTROL "", IDC_RISK_FILES, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 158, 404, 120
-    DEFPUSHBUTTON "Close", IDCANCEL, 362, 284, 50, 14
+    LTEXT "", IDC_RISK_SUMMARY, 8, 8, 404, 30
+    LTEXT "Keep", -1, 8, 44, 20, 10
+    EDITTEXT IDC_RISK_COPIES, 30, 42, 22, 13, ES_NUMBER
+    LTEXT "copies of every file, in", -1, 56, 44, 78, 10
+    EDITTEXT IDC_RISK_PLACES, 136, 42, 22, 13, ES_NUMBER
+    LTEXT "different places.", -1, 162, 44, 60, 10
+    PUSHBUTTON "Apply", IDC_RISK_APPLY, 226, 41, 44, 14
+    LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Drives with no place set count as one place together.", -1, 8, 60, 404, 18
+    LTEXT "Back up to these next (double-click a plugged-in one to start):", -1, 8, 82, 330, 10
+    PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 352, 78, 60, 14
+    CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 94, 404, 56
+    LTEXT "Files short of the target, fewest copies first:", IDC_RISK_FILES_TEXT, 8, 156, 404, 10
+    CONTROL "", IDC_RISK_FILES, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 168, 404, 120
+    DEFPUSHBUTTON "Close", IDCANCEL, 362, 294, 50, 14
 END
 
 IDD_SKIP DIALOGEX 0, 0, 300, 250
@@ -66,15 +66,15 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 244, 230, 48, 14
 END
 
-IDD_GUARD DIALOGEX 0, 0, 340, 150
+IDD_TABLE DIALOGEX 0, 0, 460, 262
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Backups are paused"
+CAPTION ""
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
-    EDITTEXT IDC_GUARD_TEXT, 8, 8, 324, 110, ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL | NOT WS_BORDER | NOT WS_TABSTOP
-    PUSHBUTTON "Restore them as they were...", IDC_GUARD_RESTORE, 8, 128, 116, 14
-    PUSHBUTTON "The changes are mine", IDC_GUARD_MINE, 130, 128, 96, 14
-    DEFPUSHBUTTON "Decide later", IDCANCEL, 272, 128, 60, 14
+    LTEXT "", IDC_TABLE_TEXT, 8, 8, 444, 26
+    CONTROL "", IDC_TABLE_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 38, 444, 196
+    PUSHBUTTON "Details...", IDC_TABLE_OPEN, 8, 242, 60, 14
+    DEFPUSHBUTTON "Close", IDCANCEL, 402, 242, 50, 14
 END
 
 IDD_ASOF DIALOGEX 0, 0, 260, 84
@@ -128,8 +128,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION 0,4,0,0
-PRODUCTVERSION 0,4,0,0
+FILEVERSION 0,6,0,0
+PRODUCTVERSION 0,6,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -139,8 +139,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "BRODALF backup catalog"
             VALUE "ProductName", "BRODALF"
-            VALUE "FileVersion", "0.4.0"
-            VALUE "ProductVersion", "0.4.0"
+            VALUE "FileVersion", "0.6.0"
+            VALUE "ProductVersion", "0.6.0"
         END
     END
     BLOCK "VarFileInfo"

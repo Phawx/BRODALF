@@ -1733,22 +1733,6 @@ static void collect_conflicts(job *j)
     bd_list_restore_conflicts(g_cat, conflict_cb, j);
 }
 
-/* bd_media_verify reads back the copies not read back in max_age_days,
- * and always the ones never read back since they were written. A max age
- * that reaches back to the second day of 1970 leaves only those: what the
- * last backups wrote.
- * ENGINE: a way to ask for just those (say max_age_days -1) would say it
- * plainly. */
-static int days_back_to_1970(void)
-{
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    /* 100 ns steps since 1601 to whole days since 1970, less one */
-    uint64_t steps = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-    int64_t days = ((int64_t)(steps / 10000000) - 11644473600LL) / 86400 - 1;
-    return days < 1 ? 1 : (int)days;
-}
-
 /* Back up to several drives and extra places: all at once (each file read
  * once and written to every one) with the parallel_copies option, else
  * one after another. */
@@ -1893,14 +1877,24 @@ static DWORD WINAPI worker(LPVOID arg)
             if (bs.files_rehashed) say(j, T(L" %lld changed since the scan and were read again first."), (long long)bs.files_rehashed);
             if (bs.files_in_use) say(j, T(L" %lld in use by another program."), (long long)bs.files_in_use);
             if (bs.files_online_only) say(j, T(L" %lld online-only cloud files not copied."), (long long)bs.files_online_only);
-            if (bs.files_no_room) {
-                format_bytes(bs.bytes_no_room, size, 64);
-                say(j, TN(bs.files_no_room, L" The drive is full: %lld file (%ls) did not fit and waits for another drive.",
+            if (bs.files_no_room > bs.files_too_big) {
+                format_bytes(bs.bytes_no_room - bs.bytes_too_big, size, 64);
+                say(j, TN(bs.files_no_room - bs.files_too_big, L" The drive is full: %lld file (%ls) did not fit and waits for another drive.",
                           L" The drive is full: %lld files (%ls) did not fit and wait for another drive."),
-                    (long long)bs.files_no_room, size);
+                    (long long)(bs.files_no_room - bs.files_too_big), size);
             }
-            j->no_room = bs.files_no_room;
-            j->bytes_no_room = bs.bytes_no_room;
+            if (bs.files_too_big) {
+                format_bytes(bs.bytes_too_big, size, 64);
+                say(j, TN(bs.files_too_big, L" %lld file (%ls) is 4 GB or more and cannot go on this drive, because it is FAT32. "
+                                            L"Reformat the drive as exFAT or NTFS, or back it up to another drive.",
+                          L" %lld files (%ls) are 4 GB or more and cannot go on this drive, because it is FAT32. "
+                          L"Reformat the drive as exFAT or NTFS, or back them up to another drive."),
+                    (long long)bs.files_too_big, size);
+            }
+            /* "The drive is full" is asked about only for what did not fit
+             * for want of room; files too big for FAT32 are said above. */
+            j->no_room = bs.files_no_room - bs.files_too_big;
+            j->bytes_no_room = bs.bytes_no_room - bs.bytes_too_big;
             j->in_use = bs.files_in_use;
             /* What did not fit gets its own question after the backup. */
             j->n_problems = bs.files_failed + bs.files_no_room;
@@ -1911,8 +1905,10 @@ static DWORD WINAPI worker(LPVOID arg)
     case JOB_VERIFY: {
         bd_check_stats cs;
         memset(&cs, 0, sizeof(cs));
-        int days = j->just_written ? days_back_to_1970() : bd_option_get(g_cat, "verify_days");
-        s = bd_media_verify(g_cat, j->media_id, days, &cs, job_log, j);
+        int days = bd_option_get(g_cat, "verify_days");
+        /* After a backup: only the copies never read back since they were written. */
+        if (j->just_written) s = bd_media_verify_unread(g_cat, j->media_id, &cs, job_log, j);
+        else s = bd_media_verify(g_cat, j->media_id, days, &cs, job_log, j);
         if (j->just_written) {
             /* After a backup: what it wrote (read_back_new). */
             wchar_t name[600];
@@ -1994,6 +1990,7 @@ static DWORD WINAPI worker(LPVOID arg)
             rs.bytes_restored += one.bytes_restored;
             rs.files_already_there += one.files_already_there;
             rs.files_conflict += one.files_conflict;
+            rs.files_older_version += one.files_older_version;
         }
         format_bytes(rs.bytes_restored, size, 64);
         swprintf(j->summary, SUMMARY_LEN, T(L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed."),
@@ -2001,6 +1998,11 @@ static DWORD WINAPI worker(LPVOID arg)
                  (long long)rs.files_no_copy, (long long)rs.files_failed);
         if (rs.files_conflict)
             say(j, T(L" %lld left alone because another file was already there: nothing was overwritten."), (long long)rs.files_conflict);
+        if (rs.files_older_version)
+            say(j, TN(rs.files_older_version,
+                      L" %lld file came back as an older version, because its newest contents were never backed up (the log names it).",
+                      L" %lld files came back as an older version, because their newest contents were never backed up (the log names them)."),
+                (long long)rs.files_older_version);
         j->offline = rs.files_offline;
         if (rs.files_need_passphrase) say(j, T(L" %lld need the passphrase."), (long long)rs.files_need_passphrase);
         /* Files on drives that are not plugged in wait for them: not a problem. */
@@ -2291,6 +2293,15 @@ static void log_append(const wchar_t *text)
     if (u) { bd_applog("%s", u); free(u); }
 }
 
+/* The engine's log lines for work done on the window's own thread. */
+static void ui_log(void *ctx, const char *message)
+{
+    (void)ctx;
+    wchar_t *w = widen(message);
+    if (w) log_append(w);
+    free(w);
+}
+
 /* ---- Errors ------------------------------------------------------------- */
 
 /* Show an error, save a report file, and say how to post it as a GitHub
@@ -2338,12 +2349,13 @@ static void report_status(HWND owner, bd_status s, int drive_gone, const wchar_t
 {
     const wchar_t *title = NULL, *advice = NULL;
     PCWSTR icon = TD_WARNING_ICON;
-    /* ENGINE: BD_ERR_DRIVE_GONE (a drive unplugged or no longer answering
-     * during a job) is being added to brodalf.h. When it is there, add
-     *     case BD_ERR_DRIVE_GONE: drive_gone = 1; break;
-     * to this switch. Until then the window guesses it: an IO or
-     * NOT_FOUND error while the drive's folder is gone (job_drive_gone). */
+    /* The engine says BD_ERR_DRIVE_GONE when a drive is unplugged or stops
+     * answering during a job; job_drive_gone also catches an IO or
+     * NOT_FOUND error while the drive's folder is gone. */
     switch (s) {
+    case BD_ERR_DRIVE_GONE:
+        drive_gone = 1;
+        break;
     case BD_ERR_IO:
         title = T(L"BRODALF could not read or write a file or a drive.");
         advice = T(L"A drive may be full, unplugged or failing, or another program may have the file open. What was done until then "
@@ -2383,7 +2395,7 @@ static void report_status(HWND owner, bd_status s, int drive_gone, const wchar_t
     default:
         break; /* BD_ERR_DB, BD_ERR_NOMEM and codes this window does not know: a fault */
     }
-    if (drive_gone && (s == BD_ERR_IO || s == BD_ERR_NOT_FOUND)) {
+    if (drive_gone && (s == BD_ERR_IO || s == BD_ERR_NOT_FOUND || s == BD_ERR_DRIVE_GONE)) {
         title = T(L"A drive was unplugged or stopped answering during the job.");
         advice = T(L"What was done until then is kept. Plug the drive back in and start the job again: a backup copies only what "
                    L"the drive is still missing.");
@@ -2804,17 +2816,8 @@ static int add_copy_row(void *ctx, const bd_copy_info *c)
     if (!c->media_id) swprintf(buf, 512, L"");
     else if (strcmp(c->copy_state, "ok") != 0) swprintf(buf, 512, strcmp(c->copy_state, "missing") == 0 ? T(L"Missing from drive") : T(L"Damaged"));
     else if (c->media_lost) swprintf(buf, 512, T(L"Drive marked lost or broken: does not count"));
-#ifdef BD_COPY_READ_BACK_MS
-    /* ENGINE: whether the copy was read back since it was written is kept
-     * (copies.last_full_check_ms) but bd_copy_info has no field for it:
-     * last_check_ms is the later of a read-back and a quick look, and a
-     * backup sets the quick look to when it wrote the copy, so Last checked
-     * shows that time for a copy no one has read back. Give bd_copy_info
-     * an int64_t read_back_ms (0: not read back since it was written) and
-     * define BD_COPY_READ_BACK_MS in brodalf.h, and this says so. */
-    else if (!c->read_back_ms)
+    else if (!c->read_back)
         swprintf(buf, 512, c->connected ? T(L"Good, plugged in; not read back yet") : T(L"Good, drive not plugged in; not read back yet"));
-#endif
     else swprintf(buf, 512, c->connected ? T(L"Good, plugged in") : T(L"Good, drive not plugged in"));
     it.iSubItem = 2;
     it.pszText = buf;
@@ -3561,6 +3564,10 @@ static void update_drives_label(void)
                 wadd(&warn, T(L"%ls%ls: about %ls will not fit on it; that waits for another drive."), warn.len ? L"\r\n" : L"",
                      l ? l : L"", shortb);
             }
+            if (pv->files_too_big)
+                wadd(&warn, TN(pv->files_too_big, L"%ls%ls is FAT32, so %lld file of 4 GB or more cannot go on it. Reformat it as exFAT or NTFS.",
+                               L"%ls%ls is FAT32, so %lld files of 4 GB or more cannot go on it. Reformat it as exFAT or NTFS."),
+                     warn.len ? L"\r\n" : L"", l ? l : L"", (long long)pv->files_too_big);
         }
         if (!d->lost_ms) {
             const wchar_t *advice = replace_advice(d);
@@ -7983,7 +7990,7 @@ static int next_row_cb(void *ctx, const bd_pending_info *p)
     int n = 0;
     cells[n++] = file;
     cells[n++] = size;
-    if (f->drive) cells[n++] = p->is_new ? T(L"Not there yet") : T(L"An older version");
+    if (f->drive) cells[n++] = p->too_big ? T(L"Too big for this drive (FAT32)") : p->is_new ? T(L"Not there yet") : T(L"An older version");
     cells[n++] = p->backed_up ? T(L"Yes") : T(L"No");
     cells[n++] = copies;
     cells[n++] = places;
@@ -8123,6 +8130,12 @@ static void fill_next(void)
                 format_bytes(pv.bytes_short, b, 64);
                 wadd(&t, T(L" About %ls will not fit and waits for another drive."), b);
             }
+            if (pv.files_too_big)
+                wadd(&t, TN(pv.files_too_big, L" %lld file is 4 GB or more and cannot go on this drive, because it is FAT32; reformat it as "
+                                              L"exFAT or NTFS to back it up here.",
+                            L" %lld files are 4 GB or more and cannot go on this drive, because it is FAT32; reformat it as "
+                            L"exFAT or NTFS to back them up here."),
+                     (long long)pv.files_too_big);
             if (pv.last_scan_ms) {
                 format_time_ms(pv.last_scan_ms, when, 64);
                 wadd(&t, T(L"\r\nIt copies what the scans found; the oldest scan of your backup roots was %ls."), when);
@@ -10816,6 +10829,18 @@ static int recover_database_ui(void)
             g_cat = nc;
             database_opened(dest, 0, 1);
             ok = 1;
+            /* A database from a drive may hold anything: say if some stored
+             * paths would lead outside the folder a restore writes to. */
+            int64_t unsafe = 0;
+            if (bd_check_stored_paths(g_cat, ui_log, NULL, &unsafe) == BD_OK && unsafe) {
+                wchar_t msg[600];
+                swprintf(msg, 600, TN(unsafe, L"%lld file in this database has a stored path that would lead outside the folder you restore to. "
+                                              L"A restore leaves it out and lists it as failed; the log names it.",
+                                      L"%lld files in this database have stored paths that would lead outside the folder you restore to. "
+                                      L"A restore leaves them out and lists them as failed; the log names the first 20."),
+                         (long long)unsafe);
+                MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
+            }
         } else if (s != BD_ERR_PASSPHRASE) {
             show_open_error(s, T(L"The database could not be recovered."));
         }

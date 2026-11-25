@@ -12,6 +12,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#ifdef __linux__
+#include <sys/vfs.h>
+#endif
 #include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
@@ -391,6 +394,28 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 }
 
 /* File compression is Windows' own (NTFS): nothing to do elsewhere. */
+int bd_fs_name(const char *path, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+#ifdef __linux__
+    char *p = dup_native(path);
+    if (!p) return -1;
+    struct statfs sf;
+    int rc = statfs(p, &sf);
+    free(p);
+    if (rc != 0) return -1;
+    const char *name = "other";
+    if ((unsigned long)sf.f_type == 0x4d44ul) name = "FAT";              /* MSDOS_SUPER_MAGIC: FAT12, 16 or 32 */
+    else if ((unsigned long)sf.f_type == 0x2011bab0ul) name = "exFAT";   /* EXFAT_SUPER_MAGIC */
+    if (strlen(name) >= cap) return -1;
+    strcpy(out, name);
+    return 0;
+#else
+    (void)path;
+    return -1;
+#endif
+}
+
 int bd_fs_can_compress(const char *path)
 {
     (void)path;

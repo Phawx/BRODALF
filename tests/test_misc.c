@@ -620,6 +620,69 @@ static void test_nested_roots(void)
     bd_catalog_close(cat);
 }
 
+static int note_too_big(void *ctx, const bd_pending_info *p)
+{
+    int *n = ctx;
+    n[0]++;
+    if (p->too_big) n[1]++;
+    return 0;
+}
+
+/* Item 7: on a FAT32 drive, files of 4 GiB or more are planned out of the
+ * preview and the backup up front, with the reason. The limit is made
+ * small for the test. */
+static void test_fat32(void)
+{
+    begin("fat32");
+    char big[2001];
+    memset(big, 'x', 2000);
+    big[2000] = '\0';
+    write_file(at("src/small.txt"), "small");
+    write_file(at("src/big.bin"), big);
+    setup u = make_setup();
+    scan(u.cat);
+    bd_test_fs_name = "FAT32";
+    bd_test_fat_limit = 1000;
+
+    bd_backup_preview_info pv;
+    REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+    CHECK(pv.files_to_copy == 2 && pv.files_too_big == 1 && pv.bytes_too_big == 2000);
+    CHECK(pv.too_big_why && strcmp(pv.too_big_why, BD_WHY_FAT32) == 0);
+    CHECK(pv.bytes_short >= 2000);
+    int n[2] = {0, 0};
+    REQUIRE_OK(bd_list_pending(u.cat, u.drive, 0, note_too_big, n, NULL), u.cat);
+    CHECK(n[0] == 2 && n[1] == 1);
+
+    bd_backup_stats bs = backup(u.cat, u.drive);
+    CHECK(bs.files_copied == 1 && bs.files_failed == 0);
+    CHECK(bs.files_no_room == 1 && bs.bytes_no_room == 2000);
+    CHECK(bs.files_too_big == 1 && bs.bytes_too_big == 2000);
+    CHECK(bs.too_big_why && strcmp(bs.too_big_why, BD_WHY_FAT32) == 0);
+    REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+    CHECK(pv.files_to_copy == 1 && pv.files_too_big == 1);
+
+    /* Unplugged: the file system as last seen. */
+    bd_test_fs_name = NULL;
+    char sql[160];
+    snprintf(sql, sizeof(sql), "INSERT OR REPLACE INTO media_hardware(media_id, read_ms, filesystem) VALUES(%lld, 1, 'FAT32')",
+             (long long)u.drive);
+    CHECK(bd_exec(u.cat, sql) == 0);
+    bd_media_disconnect(u.cat, u.drive);
+    REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+    CHECK(pv.files_to_copy == 1 && pv.files_too_big == 1 && pv.too_big_why != NULL);
+
+    /* exFAT holds it. */
+    REQUIRE_OK(bd_media_connect(u.cat, at("drive"), &u.drive, quiet, NULL), u.cat);
+    bd_test_fs_name = "exFAT";
+    REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+    CHECK(pv.files_to_copy == 1 && pv.files_too_big == 0 && pv.too_big_why == NULL && pv.bytes_short == 0);
+    bs = backup(u.cat, u.drive);
+    CHECK(bs.files_copied == 1 && bs.files_no_room == 0 && bs.files_too_big == 0 && bs.too_big_why == NULL);
+    bd_test_fs_name = NULL;
+    bd_test_fat_limit = 0;
+    bd_catalog_close(u.cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -636,6 +699,7 @@ int main(void)
     test_adopt_alongside();
     test_periodic_save();
     test_nested_roots();
+    test_fat32();
 #ifndef _WIN32
     test_walk_error();
     test_stale_work_files();

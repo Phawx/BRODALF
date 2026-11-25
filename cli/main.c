@@ -942,6 +942,9 @@ static void print_preview(const bd_backup_preview_info *p)
         j_int("files_held", p->files_held);
         j_int("held_changed", p->held_changed);
         j_bool("mass_change", p->mass_change);
+        j_int("files_too_big", p->files_too_big);
+        j_int("bytes_too_big", p->bytes_too_big);
+        if (p->too_big_why) j_str("too_big_why", p->too_big_why);
         J_END();
         return;
     }
@@ -966,6 +969,11 @@ static void print_preview(const bd_backup_preview_info *p)
     if (p->bytes_short > 0) {
         human_bytes(p->bytes_short, size, sizeof(size));
         printf("about %s will not fit: those files wait for another drive\n", size);
+    }
+    if (p->files_too_big) {
+        human_bytes(p->bytes_too_big, size, sizeof(size));
+        printf("of those, %lld file%s (%s) will not fit because %s\n", (long long)p->files_too_big,
+               p->files_too_big == 1 ? "" : "s", size, p->too_big_why);
     }
     if (p->mass_change)
         printf("WARNING: %lld of the %lld files this drive holds have different contents now or are gone\n"
@@ -1548,6 +1556,9 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         j_int("copies_alongside", bs->copies_alongside);
         j_int("files_rehashed", bs->files_rehashed);
         j_int("files_online_only", bs->files_online_only);
+        j_int("files_too_big", bs->files_too_big);
+        j_int("bytes_too_big", bs->bytes_too_big);
+        if (bs->too_big_why) j_str("too_big_why", bs->too_big_why);
         report_in_use(cat, bs->files_in_use);
         J_END();
         return;
@@ -1573,6 +1584,11 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         human_bytes(bs->bytes_no_room, size, sizeof(size));
         printf("%lld file%s (%s) did not fit (the drive is full or a place reached its limit) and wait\n",
                (long long)bs->files_no_room, bs->files_no_room == 1 ? "" : "s", size);
+    }
+    if (bs->files_too_big) {
+        human_bytes(bs->bytes_too_big, size, sizeof(size));
+        printf("of those, %lld file%s (%s) did not fit because %s\n", (long long)bs->files_too_big,
+               bs->files_too_big == 1 ? "" : "s", size, bs->too_big_why);
     }
 }
 
@@ -2050,6 +2066,9 @@ static int run(int argc, char **argv)
                     bs.files_failed += first.files_failed - first.files_in_use;
                     bs.files_no_room = first.files_no_room;
                     bs.bytes_no_room = first.bytes_no_room;
+                    bs.files_too_big = first.files_too_big;
+                    bs.bytes_too_big = first.bytes_too_big;
+                    bs.too_big_why = first.too_big_why;
                     bs.copies_alongside += first.copies_alongside;
                     bs.files_rehashed += first.files_rehashed;
                     bs.files_online_only = first.files_online_only;

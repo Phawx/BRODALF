@@ -26,6 +26,43 @@ int64_t bd_test_save_every_ms = 0;
 /* How often a long backup saves the catalog between batches. */
 #define SAVE_EVERY_MS (5 * 60 * 1000)
 
+const char *bd_test_fs_name = NULL;
+int64_t bd_test_fat_limit = 0;
+
+/* FAT32 holds files up to 4 GiB less one byte, as does the FAT before it
+ * (Windows calls FAT12 and FAT16 "FAT"); exFAT has no such limit. */
+#define FAT_MAX_FILE 4294967295LL
+
+static int fs_is_fat(const char *fs)
+{
+    char up[8];
+    size_t i = 0;
+    for (; fs[i] && i < sizeof(up) - 1; i++) up[i] = (char)(fs[i] >= 'a' && fs[i] <= 'z' ? fs[i] - 'a' + 'A' : fs[i]);
+    up[i] = '\0';
+    return strncmp(up, "FAT", 3) == 0 || strcmp(up, "VFAT") == 0 || strcmp(up, "MSDOS") == 0;
+}
+
+/* The file system is read now when the drive is plugged in, else taken as
+ * last seen (media_hardware, which Windows fills when it is plugged in). */
+int64_t bd_drive_file_limit(bd_catalog *cat, int64_t media_id, const char *root)
+{
+    char fs[64] = "";
+    if (bd_test_fs_name) {
+        snprintf(fs, sizeof(fs), "%s", bd_test_fs_name);
+    } else if (!root || bd_fs_name(root, fs, sizeof(fs)) != 0) {
+        fs[0] = '\0';
+        sqlite3_stmt *q;
+        if (sqlite3_prepare_v2(cat->db, "SELECT filesystem FROM media_hardware WHERE media_id=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, media_id);
+            if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0))
+                snprintf(fs, sizeof(fs), "%s", (const char *)sqlite3_column_text(q, 0));
+            sqlite3_finalize(q);
+        }
+    }
+    if (!fs_is_fat(fs)) return -1;
+    return bd_test_fat_limit > 0 ? bd_test_fat_limit : FAT_MAX_FILE;
+}
+
 typedef struct {
     int64_t node_id, node_size, node_mtime;
     int64_t version_id, version_no, version_size;
@@ -696,6 +733,8 @@ typedef struct {
     size_t ng;
     int64_t group_bytes;
     int64_t job;
+    int64_t max_file;            /* the biggest copy its file system holds; -1: no limit */
+    int too_big_said;
 } backup_dest;
 
 static void dest_flush(bd_catalog *cat, backup_dest *d, bd_log_fn log, void *log_ctx)
@@ -820,6 +859,9 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             return BD_ERR_NOT_FOUND;
         }
         d->store->hide_names = bd_media_hides_names(cat, d->media_id, d->store->names_key);
+        char *root = bd_connected_root(cat, d->media_id);
+        d->max_file = bd_drive_file_limit(cat, d->media_id, root);
+        free(root);
         /* How much fits, leaving the reserve free for the catalog's copies.
          * Unknown space means no limit. */
         int64_t space_total = 0;
@@ -958,6 +1000,19 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 if (adopt_alongside(cat, d->store, key, it, &stats[k])) continue;
                 /* Sealed copies are a little bigger than the file. */
                 int64_t need = it->version_size + (key ? it->version_size / 1024 + 4096 : 0);
+                if (d->max_file >= 0 && need > d->max_file) {
+                    /* Planned out: never read, never half written. */
+                    if (!d->too_big_said++) {
+                        if (n > 1) bd_logf(log, log_ctx, "\"%s\": " BD_WHY_FAT32 ". Such files wait for another drive", d->label);
+                        else bd_logf(log, log_ctx, BD_WHY_FAT32 ". Such files wait for another drive");
+                    }
+                    stats[k].files_no_room++;
+                    stats[k].bytes_no_room += it->version_size;
+                    stats[k].files_too_big++;
+                    stats[k].bytes_too_big += it->version_size;
+                    stats[k].too_big_why = BD_WHY_FAT32;
+                    continue;
+                }
                 if (d->space_free >= 0 && need > d->space_free - d->reserve) {
                     if (!full_said[k]++) {
                         if (n > 1) bd_logf(log, log_ctx, "\"%s\" is full; files that do not fit wait for another drive", d->label);
@@ -1081,22 +1136,36 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     memset(out, 0, sizeof(*out));
     out->free_bytes = -1;
     sqlite3_stmt *q;
+    char *root = bd_connected_root(cat, media_id);
+    int64_t max_file = bd_drive_file_limit(cat, media_id, root);
+    int drive_sealed = bd_media_encrypted(cat, media_id);
 
     /* What it copies, and of that what is changed: an older version of the
-     * file is on the drive, so the new one goes alongside it. */
+     * file is on the drive, so the new one goes alongside it. And what is
+     * too big for the drive's file system (?4, -1 no limit), sealed copies
+     * (?5: every copy on this drive) with their few extra bytes, as the
+     * backup counts them. */
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT COUNT(*), COALESCE(SUM(t.size),0), COALESCE(SUM(t.older),0),"
-                           " COALESCE(SUM(t.enc),0), COALESCE(SUM(t.enc*t.size),0) FROM (SELECT v.size AS size,"
+                           " COALESCE(SUM(t.enc),0), COALESCE(SUM(t.enc*t.size),0),"
+                           " COALESCE(SUM(t.big),0), COALESCE(SUM(t.big*t.size),0),"
+                           " COALESCE(SUM(t.big*t.enc),0), COALESCE(SUM(t.big*t.enc*t.size),0) FROM (SELECT size, older, enc,"
+                           "  ?4>=0 AND size + CASE WHEN ?5<>0 OR enc THEN size/1024 + 4096 ELSE 0 END > ?4 AS big FROM ("
+                           " SELECT v.size AS size,"
                            " EXISTS(SELECT 1 FROM copies oc JOIN versions ov ON ov.id=oc.version_id"
                            "   WHERE ov.node_id=n.id AND oc.media_id=?1) AS older,"
                            " " BD_SQL_MARKED("encrypt_paths", "n") " AS enc"
-                           " FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE" TODO_WHERE ") t",
-                           -1, &q, NULL) != SQLITE_OK)
+                           " FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE" TODO_WHERE ")) t",
+                           -1, &q, NULL) != SQLITE_OK) {
+        free(root);
         return bd_fail_db(cat, "work out what the backup would copy");
+    }
     sqlite3_bind_int64(q, 1, media_id);
     sqlite3_bind_int64(q, 2, source_id);
     sqlite3_bind_int64(q, 3, 0);
-    int64_t sealed_files = 0, sealed_bytes = 0;
+    sqlite3_bind_int64(q, 4, max_file);
+    sqlite3_bind_int(q, 5, drive_sealed);
+    int64_t sealed_files = 0, sealed_bytes = 0, big_sealed_files = 0, big_sealed_bytes = 0;
     if (sqlite3_step(q) == SQLITE_ROW) {
         out->files_to_copy = sqlite3_column_int64(q, 0);
         out->bytes_to_copy = sqlite3_column_int64(q, 1);
@@ -1104,8 +1173,13 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
         out->files_new = out->files_to_copy - out->files_changed;
         sealed_files = sqlite3_column_int64(q, 3);
         sealed_bytes = sqlite3_column_int64(q, 4);
+        out->files_too_big = sqlite3_column_int64(q, 5);
+        out->bytes_too_big = sqlite3_column_int64(q, 6);
+        big_sealed_files = sqlite3_column_int64(q, 7);
+        big_sealed_bytes = sqlite3_column_int64(q, 8);
     }
     sqlite3_finalize(q);
+    if (out->files_too_big) out->too_big_why = BD_WHY_FAT32;
 
     /* How much of the drive held, and how much of that changed since. A
      * large share at once is what ransomware encrypting the folders looks
@@ -1134,7 +1208,6 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
 
     /* Room: read now when plugged in, else what was last seen. */
     int64_t total = 0, free_bytes = -1;
-    char *root = bd_connected_root(cat, media_id);
     bd_store *store = root ? bd_store_open(cat, media_id) : NULL;
     if (bd_test_free_bytes >= 0 && store) {
         free_bytes = bd_test_free_bytes;
@@ -1156,13 +1229,16 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     free(root);
     out->free_bytes = free_bytes;
     out->reserve_bytes = bd_test_free_bytes >= 0 ? 0 : bd_reserve_bytes(cat);
+    /* Files too big for the file system never fit, whatever the room; the
+     * rest is weighed against the room. */
+    out->bytes_short = out->bytes_too_big;
     if (free_bytes >= 0) {
-        int64_t need = out->bytes_to_copy;
+        int64_t need = out->bytes_to_copy - out->bytes_too_big;
         /* Sealed copies are a little bigger than the file. */
-        if (bd_media_encrypted(cat, media_id)) need += need / 1024 + out->files_to_copy * 4096;
-        else need += sealed_bytes / 1024 + sealed_files * 4096;
+        if (drive_sealed) need += need / 1024 + (out->files_to_copy - out->files_too_big) * 4096;
+        else need += (sealed_bytes - big_sealed_bytes) / 1024 + (sealed_files - big_sealed_files) * 4096;
         int64_t room = free_bytes - out->reserve_bytes;
-        out->bytes_short = need > room ? need - room : 0;
+        out->bytes_short += need > room ? need - room : 0;
     }
     return BD_OK;
 }
@@ -1217,6 +1293,14 @@ bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pendi
     if (limit <= 0) limit = 5000;
     bd_target target;
     if (bd_target_get(cat, &target) != BD_OK) return BD_ERR_DB;
+    int64_t max_file = -1;
+    int drive_sealed = 0;
+    if (media_id > 0) {
+        char *root = bd_connected_root(cat, media_id);
+        max_file = bd_drive_file_limit(cat, media_id, root);
+        free(root);
+        drive_sealed = bd_media_encrypted(cat, media_id);
+    }
     const char *inner = media_id > 0 ? PENDING_SELECT " WHERE" TODO_WHERE
                                      : PENDING_SELECT " WHERE n.is_dir=0 AND n.deleted=0 AND " BD_SQL_ACTIVE("n");
     const char *outer_where = " WHERE (?1<>0 OR cp<?4 OR pl<?5)";
@@ -1255,6 +1339,7 @@ bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pendi
             p.starred = sqlite3_column_int(q, 9);
             p.encrypt = sqlite3_column_int(q, 10);
             p.backed_up = p.copies >= target.copies && p.places >= target.places;
+            p.too_big = max_file >= 0 && p.size + (drive_sealed || p.encrypt ? p.size / 1024 + 4096 : 0) > max_file;
             if (fn(ctx, &p)) break;
         }
         sqlite3_finalize(q);

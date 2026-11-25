@@ -444,7 +444,18 @@ typedef struct {
     int64_t files_rehashed;   /* changed since the scan: read again, recorded as a new version and copied */
     int64_t files_in_use;     /* another program had them open (counted in files_failed too) */
     int64_t files_online_only; /* cloud files not on this PC: not copied, so as not to download them */
+    /* Of files_no_room, those too big for the drive's file system: never
+     * read or written, planned out up front. too_big_why says why, in a
+     * sentence the window can show (BD_WHY_FAT32); NULL when none was. */
+    int64_t files_too_big;
+    int64_t bytes_too_big;
+    const char *too_big_why;
 } bd_backup_stats;
+
+/* Why files of 4 GiB or more do not fit on a FAT32 drive (the file system
+ * holds files up to 4 GiB less one byte; Windows' "FAT" for FAT12 and FAT16
+ * too). Sealed copies count with their few extra bytes. */
+#define BD_WHY_FAT32 "this drive is FAT32 and can't hold files of 4 GB or more; reformat it as exFAT or NTFS"
 
 /* Copy the current version of every file that has no good copy on this
  * drive. The drive must be connected and not marked lost or broken.
@@ -459,7 +470,9 @@ typedef struct {
  * since the last scan is read again and backed up as it is now, as a new
  * version. Files that would eat into the reserve (the reserve_mb option,
  * kept for the catalog's copies) wait for another drive and are counted in
- * files_no_room; smaller files after them are still copied. At the end the
+ * files_no_room; smaller files after them are still copied. So are files
+ * too big for the drive's file system (FAT32: 4 GiB or more), which are
+ * not read at all and are counted in files_too_big as well. At the end the
  * catalog is saved and its newest revision added to the drive (see
  * bd_catalog_copy_to_media). */
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
@@ -489,7 +502,7 @@ typedef struct {
     int64_t free_bytes;        /* now when plugged in, else as last seen; -1 unknown */
     int free_is_current;       /* read just now */
     int64_t reserve_bytes;     /* kept free on every drive for the catalog's copies */
-    int64_t bytes_short;       /* about how much would not fit; 0: it all fits (or the space is unknown) */
+    int64_t bytes_short;       /* about how much would not fit, too big files included; 0: it all fits (or the space is unknown and none is too big) */
     int64_t last_scan_ms;      /* the oldest of the roots' last scans: a backup copies what that found */
     /* Files whose good copy is on this drive, and of those how many have
      * changed contents (checksum) since or are gone from their folder.
@@ -501,6 +514,14 @@ typedef struct {
     int64_t files_held;
     int64_t held_changed;
     int mass_change;           /* held_changed is a quarter or more of files_held (at least 50 files) */
+    /* Of files_to_copy, those too big for the drive's file system (FAT32:
+     * 4 GiB or more): they will not fit and are in bytes_short. The file
+     * system is read now when the drive is plugged in, else as last seen.
+     * too_big_why says why, in a sentence the window can show
+     * (BD_WHY_FAT32); NULL when none is too big. */
+    int64_t files_too_big;
+    int64_t bytes_too_big;
+    const char *too_big_why;
 } bd_backup_preview_info;
 
 bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out);
@@ -524,6 +545,7 @@ typedef struct {
     int is_new;              /* no version of it is on that drive yet (media_id > 0) */
     int starred;
     int encrypt;             /* in a folder set to be encrypted */
+    int too_big;             /* media_id > 0: too big for that drive's file system, so it will not fit (BD_WHY_FAT32) */
 } bd_pending_info;
 typedef int (*bd_pending_fn)(void *ctx, const bd_pending_info *info);
 bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pending_fn fn, void *ctx, int64_t *total);

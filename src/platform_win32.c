@@ -590,6 +590,22 @@ int bd_fs_can_compress(const char *path)
     return (flags & FILE_FILE_COMPRESSION) != 0;
 }
 
+int bd_fs_name(const char *path, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+    wchar_t *w = to_wide(path), vol[MAX_PATH + 8], fs[MAX_PATH + 1];
+    if (!w) return -1;
+    BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
+    free(w);
+    if (!ok || !GetVolumeInformationW(vol, NULL, 0, NULL, NULL, NULL, fs, MAX_PATH + 1)) return -1;
+    char *u = to_utf8(fs);
+    if (!u) return -1;
+    int rc = strlen(u) < cap ? 0 : -1;
+    if (rc == 0) strcpy(out, u);
+    free(u);
+    return rc;
+}
+
 int bd_fs_compressed(const char *path)
 {
     wchar_t *w = to_wide(path);

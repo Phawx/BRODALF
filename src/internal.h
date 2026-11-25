@@ -98,6 +98,14 @@ extern int64_t bd_test_free_bytes;
 /* Tests only: a backup saves the catalog between batches this often (ms;
  * 0: every 5 minutes). */
 extern int64_t bd_test_save_every_ms;
+/* Tests only: every drive's file system has this name, and with
+ * bd_test_fat_limit > 0 a FAT drive holds files up to that many bytes
+ * (instead of 4 GiB less one). */
+extern const char *bd_test_fs_name;
+extern int64_t bd_test_fat_limit;
+/* The biggest file (as stored, sealing included) the drive can hold, or -1
+ * for no known limit; root is where it is plugged in, or NULL. */
+int64_t bd_drive_file_limit(bd_catalog *cat, int64_t media_id, const char *root);
 
 /* SQL: where a drive is kept, its "kept in" text (all drives with none set
  * share ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place

@@ -140,6 +140,11 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes);
  * files already in it stay as they are until set one by one.
  * bd_fs_size_on_disk: the room a file takes, or -1. */
 int bd_fs_can_compress(const char *path);
+/* The name of the file system holding path, as the system gives it
+ * ("NTFS", "exFAT", "FAT32", "FAT" ...), into out. 0 on success, -1 if it
+ * cannot be told. Elsewhere than Windows only Linux tells, and only "FAT"
+ * (which may be FAT32 or older), "exFAT" or "other". */
+int bd_fs_name(const char *path, char *out, size_t cap);
 int bd_fs_compressed(const char *path);
 int bd_fs_set_compressed(const char *path, int on);
 int64_t bd_fs_size_on_disk(const char *path);

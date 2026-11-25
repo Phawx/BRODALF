@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -692,6 +693,25 @@ static int pool_submit(scan_ctx *c, const hash_job *in)
     return 0;
 }
 
+/* BRODALF's own folder for this database inside a backup root: an extra
+ * place (a Dropbox folder in the backed-up home folder, say) or a drive
+ * folder there. Its copies are never scanned as files to back up again. */
+static int is_own_store(const scan_ctx *c, const char *rel)
+{
+    const char *base = bd_rel_basename(rel);
+    const char *want = "BRODALF";
+    for (; *base && *want; base++, want++)
+        if (tolower((unsigned char)*base) != tolower((unsigned char)*want)) return 0;
+    if (*base || *want) return 0;
+    char *in = bd_sprintf("%s/%s/BRODALF.media", rel, bd_catalog_uuid(c->cat));
+    char *full = in ? bd_path_join(c->root, in) : NULL;
+    bd_stat_t st;
+    int own = full && bd_stat(full, &st) == 0 && st.is_file;
+    free(in);
+    free(full);
+    return own;
+}
+
 static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 {
     scan_ctx *c = ctx;
@@ -707,6 +727,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         c->stats->skipped++;
         return st->is_dir ? BD_WALK_SKIP : 0;
     }
+    if (st->is_dir && is_own_store(c, rel)) return BD_WALK_SKIP;
 
     sqlite3_reset(c->find_node);
     sqlite3_bind_int64(c->find_node, 1, c->source_id);

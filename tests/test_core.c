@@ -2294,6 +2294,25 @@ static void test_stars_and_places(void)
     bd_list_media(cat, snap_place, &ps);
     CHECK(ps.secondary == 1);
     bd_catalog_close(cat);
+
+    /* An extra place inside a backup root: its copies are not scanned as
+     * new files of that root. */
+    bd_mkdirs(at("st2/home/Dropbox"));
+    write_file(at("st2/home/mine.txt"), "my own file");
+    REQUIRE_OK(bd_catalog_create(at("st2/c.brodalf"), &cat), NULL);
+    REQUIRE_OK(bd_source_add(cat, at("st2/home"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_place_add(cat, at("st2/home/Dropbox"), "Dropbox folder in my home folder", 0, 0, &place), cat);
+    REQUIRE_OK(bd_star_set(cat, src, "mine.txt", 1), cat);
+    REQUIRE_OK(bd_backup(cat, place, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 0 && ss.files_seen == 1);
+    /* Another folder named BRODALF is the user's own and is scanned. */
+    write_file(at("st2/home/BRODALF/readme.txt"), "not ours");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 1);
+    bd_catalog_close(cat);
 }
 
 static void test_encrypt_folders(void)

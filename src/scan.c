@@ -68,6 +68,119 @@ static int name_taken(bd_catalog *cat, const char *name)
     return taken;
 }
 
+/* A backup root's path as the file system compares paths: '/' between
+ * names, no empty, "." or ".." names (".." taken off with the name before
+ * it), no '/' at the end, and on Windows letter case folded as Windows
+ * folds it (bd_fold_case; in tests too with bd_test_fold_case). "\\?\"
+ * and "\\?\UNC\" prefixes are taken off; a UNC path keeps its leading
+ * "//". NULL when out of memory. */
+static char *root_key(const char *path)
+{
+    size_t len = strlen(path);
+    char *s = malloc(len + 3);
+    if (!s) return NULL;
+    for (size_t i = 0; i <= len; i++) s[i] = path[i] == '\\' ? '/' : path[i];
+    const char *p = s;
+    char prefix[4] = "";
+    if (strncmp(p, "//?/UNC/", 8) == 0) { p += 8; strcpy(prefix, "//"); }
+    else if (strncmp(p, "//?/", 4) == 0) p += 4;
+    if (!prefix[0]) {
+        if (p[0] == '/' && p[1] == '/') { strcpy(prefix, "//"); p += 2; }
+        else if (p[0] && p[1] == ':' && (p[2] == '/' || p[2] == '\0')) {
+            prefix[0] = p[0];
+            prefix[1] = ':';
+            prefix[2] = '/';
+            p += 2;
+        } else if (p[0] == '/') { strcpy(prefix, "/"); }
+    }
+    char *out = malloc(len + 4);
+    size_t *starts = malloc(sizeof(size_t) * (len / 2 + 2)); /* where each name kept begins */
+    if (!out || !starts) { free(s); free(out); free(starts); return NULL; }
+    size_t plen = strlen(prefix), n = plen, depth = 0, up = 0; /* up: ".." kept at the front (relative path) */
+    memcpy(out, prefix, plen);
+    while (*p) {
+        while (*p == '/') p++;
+        const char *e = p;
+        while (*e && *e != '/') e++;
+        size_t seg = (size_t)(e - p);
+        if (seg == 0 || (seg == 1 && p[0] == '.')) {
+            /* nothing */
+        } else if (seg == 2 && p[0] == '.' && p[1] == '.' && depth > up) {
+            n = starts[--depth];
+            if (n > plen) n--; /* the '/' before it */
+        } else if (seg == 2 && p[0] == '.' && p[1] == '.' && plen > 0) {
+            /* above the top of an absolute path: stays at the top */
+        } else {
+            if (n > plen) out[n++] = '/';
+            starts[depth++] = n;
+            if (seg == 2 && p[0] == '.' && p[1] == '.') up++;
+            memcpy(out + n, p, seg);
+            n += seg;
+        }
+        p = e;
+    }
+    free(starts);
+    out[n] = '\0';
+    free(s);
+#ifdef _WIN32
+    int fold = 1;
+#else
+    int fold = bd_test_fold_case;
+#endif
+    if (!fold) return out;
+    char *folded = bd_fold_case(out);
+    free(out);
+    return folded;
+}
+
+/* 1 if the folder whose key is inner is inside the one whose key is outer. */
+static int key_inside(const char *inner, const char *outer)
+{
+    size_t lo = strlen(outer);
+    if (strncmp(inner, outer, lo) != 0 || inner[lo] == '\0') return 0;
+    return inner[lo] == '/' || (lo > 0 && outer[lo - 1] == '/'); /* outer is "/" or "c:/" */
+}
+
+/* Two backup roots never overlap: a folder inside a root, or holding one,
+ * would have its files scanned and backed up twice, under two names. Roots
+ * that are stopped (active 0) are not scanned and do not count. *same gets
+ * the id of a root that is this very folder, spelled another way (any
+ * root, stopped or not), or 0. BD_OK, or BD_ERR_EXISTS with a message
+ * naming the root in the way. */
+static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except_id, int64_t *same)
+{
+    *same = 0;
+    char *key = root_key(path);
+    if (!key) return BD_ERR_NOMEM;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id, path, active FROM sources WHERE id<>? ORDER BY id", -1, &q, NULL) != SQLITE_OK) {
+        free(key);
+        return bd_fail_db(cat, "source lookup");
+    }
+    sqlite3_bind_int64(q, 1, except_id);
+    bd_status s = BD_OK;
+    while (s == BD_OK && sqlite3_step(q) == SQLITE_ROW) {
+        const char *other = (const char *)sqlite3_column_text(q, 1);
+        char *okey = other ? root_key(other) : NULL;
+        if (!okey) { s = BD_ERR_NOMEM; break; }
+        if (strcmp(key, okey) == 0) {
+            if (!*same) *same = sqlite3_column_int64(q, 0);
+        } else if (sqlite3_column_int(q, 2) && key_inside(key, okey)) {
+            s = bd_fail(cat, BD_ERR_EXISTS, "%s is inside %s, which is already a backup root: its files are backed up with it",
+                        path, other);
+        } else if (sqlite3_column_int(q, 2) && key_inside(okey, key)) {
+            s = bd_fail(cat, BD_ERR_EXISTS,
+                        "%s holds %s, which is already a backup root: a folder can be in only one backup root."
+                        " Stop backing up %s first, or choose another folder",
+                        path, other, other);
+        }
+        free(okey);
+    }
+    sqlite3_finalize(q);
+    free(key);
+    return s;
+}
+
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
 {
     bd_stat_t st;
@@ -88,6 +201,15 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
         return BD_OK;
     }
     sqlite3_finalize(q);
+
+    int64_t same = 0;
+    bd_status overlap = check_overlap(cat, path, 0, &same);
+    if (overlap == BD_OK && same) {
+        if (out_id) *out_id = same;
+        free(path);
+        return BD_OK;
+    }
+    if (overlap != BD_OK) { free(path); return overlap; }
 
     char *base = sanitize_name(path);
     if (base && name_reserved(base)) {
@@ -235,6 +357,21 @@ bd_status bd_source_skip_set(bd_catalog *cat, int64_t source_id, const char *pat
 bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active)
 {
     sqlite3_stmt *u;
+    if (active) {
+        /* Started again, it must not overlap a root added while it was stopped. */
+        char *path = NULL;
+        if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE id=?", -1, &u, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "change the backup root");
+        sqlite3_bind_int64(u, 1, source_id);
+        if (sqlite3_step(u) == SQLITE_ROW) path = bd_strdup((const char *)sqlite3_column_text(u, 0));
+        sqlite3_finalize(u);
+        if (path) {
+            int64_t same = 0;
+            bd_status s = check_overlap(cat, path, source_id, &same);
+            free(path);
+            if (s != BD_OK) return s;
+        }
+    }
     if (sqlite3_prepare_v2(cat->db, "UPDATE sources SET active=? WHERE id=?", -1, &u, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "change the backup root");
     sqlite3_bind_int(u, 1, active ? 1 : 0);

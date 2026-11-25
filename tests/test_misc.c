@@ -559,6 +559,67 @@ static void test_periodic_save(void)
     bd_catalog_close(u.cat);
 }
 
+/* Item 6: a backup root inside another, or holding one, is refused with a
+ * message naming the root in the way. */
+static void test_nested_roots(void)
+{
+    begin("nested");
+    bd_mkdirs(at("src/A/B/C"));
+    bd_mkdirs(at("src/AB"));
+    bd_mkdirs(at("src/Case/sub"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("test.brodalf"), &cat), NULL);
+    int64_t a = 0, id = 0;
+    REQUIRE_OK(bd_source_add(cat, at("src/A"), &a), cat);
+
+    CHECK(bd_source_add(cat, at("src/A/B"), &id) == BD_ERR_EXISTS);
+    CHECK(strstr(bd_catalog_error(cat), at("src/A")) != NULL);
+    CHECK(strstr(bd_catalog_error(cat), "inside") != NULL);
+    CHECK(bd_source_add(cat, at("src/A/B/C/"), &id) == BD_ERR_EXISTS);
+    CHECK(bd_source_add(cat, at("src"), &id) == BD_ERR_EXISTS);
+    CHECK(strstr(bd_catalog_error(cat), at("src/A")) != NULL);
+    CHECK(strstr(bd_catalog_error(cat), "holds") != NULL);
+    CHECK(bd_source_add(cat, at("src/A/B/../../A/B"), &id) == BD_ERR_EXISTS);
+
+    /* The same folder spelled another way is the same root. */
+    id = 0;
+    REQUIRE_OK(bd_source_add(cat, at("src/A/"), &id), cat);
+    CHECK(id == a);
+    id = 0;
+    REQUIRE_OK(bd_source_add(cat, at("src//A/./B/.."), &id), cat);
+    CHECK(id == a);
+
+    /* A name that only starts the same is another folder. */
+    int64_t ab = 0;
+    REQUIRE_OK(bd_source_add(cat, at("src/AB"), &ab), cat);
+    CHECK(ab != 0 && ab != a);
+
+    /* Where names ignore case (Windows), so does the comparison. */
+    int64_t c = 0;
+    REQUIRE_OK(bd_source_add(cat, at("src/Case"), &c), cat);
+    bd_test_fold_case = 1;
+    CHECK(bd_source_add(cat, at("src/Case/sub"), &id) == BD_ERR_EXISTS);
+    char upper[1200];
+    snprintf(upper, sizeof(upper), "%s/src/CASE", base);
+    bd_mkdirs(upper);
+    id = 0;
+    REQUIRE_OK(bd_source_add(cat, upper, &id), cat);
+    CHECK(id == c);
+    bd_test_fold_case = 0;
+
+    /* A stopped root does not count, but cannot start again while a root
+     * inside it is backed up. */
+    REQUIRE_OK(bd_source_set_active(cat, a, 0), cat);
+    int64_t b = 0;
+    REQUIRE_OK(bd_source_add(cat, at("src/A/B"), &b), cat);
+    CHECK(b != a);
+    CHECK(bd_source_set_active(cat, a, 1) == BD_ERR_EXISTS);
+    CHECK(strstr(bd_catalog_error(cat), at("src/A/B")) != NULL);
+    REQUIRE_OK(bd_source_set_active(cat, b, 0), cat);
+    REQUIRE_OK(bd_source_set_active(cat, a, 1), cat);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -574,6 +635,7 @@ int main(void)
     test_save_only_changes();
     test_adopt_alongside();
     test_periodic_save();
+    test_nested_roots();
 #ifndef _WIN32
     test_walk_error();
     test_stale_work_files();

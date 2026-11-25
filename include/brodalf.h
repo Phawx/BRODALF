@@ -178,6 +178,11 @@ void bd_catalog_cancel(bd_catalog *cat);
  * the code), everything inside them, kept as the folder structure they
  * have. Together they are the primary dataset. */
 
+/* Add a backup root, or give the id of the one that is that folder already
+ * (the same path, compared as the file system compares paths). A folder
+ * inside a backup root, or holding one, is refused (BD_ERR_EXISTS, with a
+ * message naming that root): its files would be backed up twice. Stopped
+ * roots (bd_source_set_active 0) do not count. */
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
 
 /* Point a backup root at where it is now, e.g. on a new PC with another
@@ -189,7 +194,9 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
 
 /* Stop backing up a root (active 0), or start again (1). A stopped root is
  * not scanned or backed up and does not count toward the copies you want;
- * its files, versions and copies stay in the catalog and still restore. */
+ * its files, versions and copies stay in the catalog and still restore.
+ * Starting a root again that is inside another root, or holds one, is
+ * refused as bd_source_add refuses it (BD_ERR_EXISTS). */
 bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active);
 
 typedef struct {

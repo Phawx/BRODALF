@@ -804,6 +804,44 @@ static void test_bitrot_kept(void)
     bd_catalog_close(u.cat);
 }
 
+static char *read_all(const char *path)
+{
+    FILE *f = bd_fopen(path, "rb");
+    if (!f) return NULL;
+    static char buf[16384];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return buf;
+}
+
+/* Item 11: the CSV export writes Windows' separators in its path columns
+ * only; a drive's label and location keep their slashes. */
+static void test_csv_paths(void)
+{
+    begin("csv");
+    write_file(at("src/sub/x.txt"), "x");
+    setup u = make_setup();
+    scan(u.cat);
+    backup(u.cat, u.drive);
+    REQUIRE_OK(bd_media_rename(u.cat, u.drive, "Disk 1/2"), u.cat);
+    REQUIRE_OK(bd_media_set_location(u.cat, u.drive, "shelf 2/3"), u.cat);
+    int64_t rows = 0;
+    REQUIRE_OK(bd_export_csv(u.cat, at("files.csv"), &rows), u.cat);
+    CHECK(rows == 1);
+    const char *csv = read_all(at("files.csv"));
+    CHECK(csv != NULL);
+    if (csv) {
+        CHECK(strstr(csv, "\"Disk 1/2 (shelf 2/3)\"") != NULL);
+#ifdef _WIN32
+        CHECK(strstr(csv, "\"sub\\x.txt\"") != NULL);
+#else
+        CHECK(strstr(csv, "\"sub/x.txt\"") != NULL);
+#endif
+    }
+    bd_catalog_close(u.cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -822,6 +860,7 @@ int main(void)
     test_nested_roots();
     test_fat32();
     test_bitrot_kept();
+    test_csv_paths();
 #ifndef _WIN32
     test_walk_error();
     test_stale_work_files();

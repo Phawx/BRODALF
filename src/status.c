@@ -136,8 +136,10 @@ void bd_format_utc(int64_t ms, char *out, size_t cap)
 }
 
 /* One quoted field. A text that a spreadsheet would read as a formula
- * gets a leading ' so it shows as text. */
-static int put_field(FILE *f, const char *s, int last)
+ * gets a leading ' so it shows as text. A path (is_path) is written with
+ * Windows' separators on Windows; any other text, like a drive's label or
+ * where it is kept ("shelf 2/3"), is written as it is. */
+static int put_field(FILE *f, const char *s, int is_path, int last)
 {
     if (!s) s = "";
     if (fputc('"', f) == EOF) return -1;
@@ -145,8 +147,9 @@ static int put_field(FILE *f, const char *s, int last)
         fputc('\'', f);
     for (const char *p = s; *p; p++) {
 #ifdef _WIN32
-        char c = *p == '/' ? '\\' : *p;
+        char c = is_path && *p == '/' ? '\\' : *p;
 #else
+        (void)is_path;
         char c = *p;
 #endif
         if (c == '"') fputc('"', f);
@@ -195,13 +198,13 @@ bd_status bd_export_csv(bd_catalog *cat, const char *path, int64_t *out_rows)
         int64_t mtime_ns = sqlite3_column_int64(q, 3);
         bd_format_utc(mtime_ns > 0 ? mtime_ns / 1000000 : 0, when, sizeof(when));
         int deleted = sqlite3_column_int(q, 4);
-        rc = put_field(f, (const char *)sqlite3_column_text(q, 0), 0);
-        if (rc == 0) rc = put_field(f, (const char *)sqlite3_column_text(q, 1), 0);
+        rc = put_field(f, (const char *)sqlite3_column_text(q, 0), 1, 0);
+        if (rc == 0) rc = put_field(f, (const char *)sqlite3_column_text(q, 1), 1, 0);
         if (rc == 0) rc = put_number(f, sqlite3_column_int64(q, 2), 0);
-        if (rc == 0) rc = put_field(f, when, 0);
-        if (rc == 0) rc = put_field(f, deleted ? "yes" : "no", 0);
+        if (rc == 0) rc = put_field(f, when, 0, 0);
+        if (rc == 0) rc = put_field(f, deleted ? "yes" : "no", 0, 0);
         if (rc == 0) rc = put_number(f, sqlite3_column_int64(q, 5), 0);
-        if (rc == 0) rc = put_field(f, (const char *)sqlite3_column_text(q, 7), 0);
+        if (rc == 0) rc = put_field(f, (const char *)sqlite3_column_text(q, 7), 0, 0);
         if (rc == 0) rc = put_number(f, sqlite3_column_int64(q, 6), 1);
         rows++;
     }

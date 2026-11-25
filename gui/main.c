@@ -666,6 +666,31 @@ static HWND g_focus, g_focus_job;
 
 static int S(int px) { return MulDiv(px, g_dpi, 96); }
 
+/* The window follows the DPI of the monitor it is on (the manifest asks
+ * for per-monitor v2). Both are in Windows 10 1607 and later; before
+ * that the window is at the system DPI, which g_dpi starts at. */
+typedef UINT(WINAPI *dpi_for_window_fn)(HWND);
+typedef BOOL(WINAPI *spi_for_dpi_fn)(UINT, UINT, PVOID, UINT, UINT);
+static dpi_for_window_fn p_dpi_for_window;
+static spi_for_dpi_fn p_spi_for_dpi;
+static int g_sys_dpi = 96; /* the DPI SystemParametersInfo's sizes are for */
+
+static void dpi_load(void)
+{
+    HMODULE u = GetModuleHandleW(L"user32.dll");
+    if (!u) return;
+    p_dpi_for_window = (dpi_for_window_fn)(void (*)(void))GetProcAddress(u, "GetDpiForWindow");
+    p_spi_for_dpi = (spi_for_dpi_fn)(void (*)(void))GetProcAddress(u, "SystemParametersInfoForDpi");
+}
+
+static int window_dpi(HWND h)
+{
+    UINT d = p_dpi_for_window && h ? p_dpi_for_window(h) : 0;
+    return d ? (int)d : g_dpi;
+}
+
+static void make_fonts(void);
+
 static void page_buttons_state(void);
 static void refresh_pages(void);
 static void show_tab(int i);
@@ -9305,6 +9330,7 @@ static void create_children(HWND hwnd)
     g_tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
                             CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL, g_inst, NULL);
     if (g_tip) {
+        SendMessageW(g_tip, WM_SETFONT, (WPARAM)g_font, FALSE);
         SendMessageW(g_tip, TTM_SETMAXTIPWIDTH, 0, S(560));
         SendMessageW(g_tip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000);
         add_tip(g_drives);
@@ -9360,6 +9386,68 @@ static BOOL CALLBACK syscolor_child(HWND h, LPARAM lp)
     return TRUE;
 }
 
+/* ---- Moving to a monitor with another DPI --------------------------------- */
+
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
+typedef struct { HFONT from[4], to[4]; int old_dpi; } refont;
+
+/* Each control onto the new fonts, and a table's columns to the new size. */
+static BOOL CALLBACK refont_child(HWND h, LPARAM lp)
+{
+    const refont *r = (const refont *)lp;
+    HFONT f = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    for (int i = 0; f && i < 4; i++) {
+        if (f == r->from[i]) {
+            SendMessageW(h, WM_SETFONT, (WPARAM)r->to[i], FALSE);
+            break;
+        }
+    }
+    wchar_t cls[64];
+    if (GetClassNameW(h, cls, 64) && _wcsicmp(cls, WC_LISTVIEWW) == 0 && r->old_dpi > 0) {
+        HWND header = ListView_GetHeader(h);
+        int n = header ? Header_GetItemCount(header) : 0;
+        for (int i = 0; i < n; i++) ListView_SetColumnWidth(h, i, MulDiv(ListView_GetColumnWidth(h, i), g_dpi, r->old_dpi));
+    }
+    return TRUE;
+}
+
+/* WM_DPICHANGED: new fonts for every control, the warning icon at the new
+ * size, the window at the size Windows suggests, and everything laid out
+ * again. */
+static void dpi_changed(HWND hwnd, int dpi, const RECT *want)
+{
+    if (dpi <= 0) dpi = 96;
+    if (dpi != g_dpi) {
+        refont r;
+        r.old_dpi = g_dpi;
+        r.from[0] = g_font;
+        r.from[1] = g_font_italic;
+        r.from[2] = g_font_strike;
+        r.from[3] = g_font_bold;
+        g_dpi = dpi;
+        make_fonts();
+        r.to[0] = g_font;
+        r.to[1] = g_font_italic;
+        r.to[2] = g_font_strike;
+        r.to[3] = g_font_bold;
+        EnumChildWindows(hwnd, refont_child, (LPARAM)&r);
+        if (g_tip) {
+            SendMessageW(g_tip, WM_SETFONT, (WPARAM)g_font, FALSE);
+            SendMessageW(g_tip, TTM_SETMAXTIPWIDTH, 0, S(560));
+        }
+        for (int i = 0; i < 4; i++)
+            if (r.from[i]) DeleteObject(r.from[i]);
+        load_warn_icon();
+    }
+    if (want)
+        SetWindowPos(hwnd, NULL, want->left, want->top, want->right - want->left, want->bottom - want->top, SWP_NOZORDER | SWP_NOACTIVATE);
+    layout();
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
 static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     LRESULT themed;
@@ -9396,11 +9484,25 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (usable(f)) SetFocus(f);
         return 0;
     }
-    case WM_CREATE:
+    case WM_CREATE: {
+        /* The monitor the window opens on may be at another DPI than the
+         * fonts were made for. */
+        int d = window_dpi(hwnd);
+        if (d != g_dpi) {
+            HFONT old[4] = {g_font, g_font_italic, g_font_strike, g_font_bold};
+            g_dpi = d;
+            make_fonts();
+            for (int i = 0; i < 4; i++)
+                if (old[i]) DeleteObject(old[i]);
+        }
         create_children(hwnd);
         create_menu_bar(hwnd);
         show_tab(last_tab());
         set_busy(0);
+        return 0;
+    }
+    case WM_DPICHANGED:
+        dpi_changed(hwnd, (int)HIWORD(wp), (const RECT *)lp);
         return 0;
     case WM_INITMENUPOPUP:
         if ((HMENU)wp == g_menu_local && !g_busy) fill_storage_menus();
@@ -10296,13 +10398,20 @@ static void open_database_ui(int choice)
     }
 }
 
+/* Windows' message font at g_dpi. */
 static void make_fonts(void)
 {
     NONCLIENTMETRICSW ncm;
     memset(&ncm, 0, sizeof(ncm));
     ncm.cbSize = sizeof(ncm);
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-    LOGFONTW lf = ncm.lfMessageFont;
+    LOGFONTW lf;
+    if (p_spi_for_dpi && p_spi_for_dpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, (UINT)g_dpi)) {
+        lf = ncm.lfMessageFont;
+    } else {
+        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+        lf = ncm.lfMessageFont;
+        if (g_sys_dpi > 0 && g_sys_dpi != g_dpi) lf.lfHeight = MulDiv(lf.lfHeight, g_dpi, g_sys_dpi);
+    }
     g_font = CreateFontIndirectW(&lf);
     lf.lfItalic = TRUE;
     g_font_italic = CreateFontIndirectW(&lf);
@@ -10369,8 +10478,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     g_hc = high_contrast();
     g_dark = theme_want_dark();
     theme_app_mode();
+    dpi_load();
     HDC screen = GetDC(NULL);
-    g_dpi = GetDeviceCaps(screen, LOGPIXELSY);
+    g_dpi = g_sys_dpi = GetDeviceCaps(screen, LOGPIXELSY);
     ReleaseDC(NULL, screen);
     make_fonts();
     bd_applog("BRODALF %s started", bd_version());
@@ -10387,9 +10497,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     RegisterClassExW(&wc);
     register_page_class();
 
+    int made_at = g_dpi;
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_NAME, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, S(1240), S(820),
                                 NULL, NULL, inst, NULL);
     if (!hwnd) { LocalFree(argv); return 1; }
+    /* It opened on a monitor at another DPI (WM_CREATE took that on). */
+    if (g_dpi != made_at) SetWindowPos(hwnd, NULL, 0, 0, S(1240), S(820), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     theme_window(hwnd);
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);

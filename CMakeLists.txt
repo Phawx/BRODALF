@@ -142,6 +142,9 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_misc PRIVATE brodalf_core)
     target_include_directories(test_misc PRIVATE src)
     add_test(NAME misc COMMAND test_misc)
+    add_test(NAME cli_exit_codes
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:brodalf-cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli-exit-codes
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_exit_codes.cmake)
     add_executable(bench_many tests/bench_many.c)
     target_link_libraries(bench_many PRIVATE brodalf_core)
     target_include_directories(bench_many PRIVATE src)

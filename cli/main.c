@@ -127,6 +127,16 @@ static void usage(void)
          "BRODALF starts nothing by itself: every command runs once, when you run it.\n"
          "Ctrl+C stops a long command between files; what it finished is kept.\n"
          "\n"
+         "Exit codes, for scripts and the Task Scheduler:\n"
+         "  0  done, and nothing was left undone\n"
+         "  1  an error: the message says what failed (or the command was mistyped)\n"
+         "  2  done, but with problems to look at: files that could not be read or\n"
+         "     copied, or did not fit on the drive (backup); copies missing or damaged\n"
+         "     (check, verify); files that could not be read, files damaged on this PC\n"
+         "     or backup roots not found (scan); files not restored (restore);\n"
+         "     files whose compression could not be changed (compress)\n"
+         "  3  stopped with Ctrl+C; what it finished is kept\n"
+         "\n"
          "--drive connects a drive for this command. Files are shown as available\n"
          "only when a correct copy is on a connected drive. A root is named as\n"
          "`roots` lists it. --json prints the result as JSON (messages go to stderr).\n"
@@ -1602,6 +1612,12 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
 
 /* ---- Commands ------------------------------------------------------------ */
 
+/* Files that could not be read or copied, or did not fit: exit 2. */
+static int backup_problems(const bd_backup_stats *bs)
+{
+    return bs->files_failed > 0 || bs->files_no_room > 0;
+}
+
 static int run(int argc, char **argv)
 {
     g_json = has_flag(argc, argv, "--json");
@@ -1641,6 +1657,7 @@ static int run(int argc, char **argv)
         return die(NULL, "cannot open catalog");
     }
     int save = 0;
+    int problems = 0; /* done, but with something to look at: exit 2 */
     g_cat = cat;
     signal(SIGINT, on_interrupt);
     progress_state ps = {0, 0, NULL};
@@ -1745,6 +1762,7 @@ static int run(int argc, char **argv)
                 puts("no damaged files found");
             }
         }
+        if (st.errors || st.files_in_use || st.roots_missing || dc.shown) problems = 1;
         save = 1;
     } else if (strcmp(cmd, "deleted") == 0) {
         int64_t source_id = root_opt(cat, argc, argv);
@@ -2011,6 +2029,7 @@ static int run(int argc, char **argv)
                        want ? "on" : "off", (long long)cs.files, (long long)cs.changed, (long long)cs.failed, before, after);
                 if (want) puts("copies made from now on are compressed too");
             }
+            if (cs.failed) problems = 1;
         }
     } else if (strcmp(cmd, "changed") == 0) {
         if (npos < 1) { usage(); bd_catalog_close(cat); return 1; }
@@ -2052,6 +2071,7 @@ static int run(int argc, char **argv)
                        (long long)cs.rehashed, (long long)cs.copies, (long long)cs.ok, (long long)cs.missing, (long long)cs.bad);
                 if (cs.missing || cs.bad) puts("those copies no longer count; the next backup to this drive writes them again");
             }
+            if (cs.missing || cs.bad) problems = 1;
         } else if (strcmp(cmd, "preview") == 0) {
             bd_backup_preview_info pv;
             if (bd_backup_preview(cat, media_id, 0, &pv) != BD_OK) return die(cat, "cannot preview the backup");
@@ -2093,6 +2113,7 @@ static int run(int argc, char **argv)
             }
             if (s != BD_OK) return die(cat, "backup failed");
             print_backup_result(cat, NULL, &bs);
+            if (backup_problems(&bs)) problems = 1;
         } else {
             /* Several drives: all at once, or one after another. */
             int64_t ids[16];
@@ -2111,7 +2132,10 @@ static int run(int argc, char **argv)
                 }
                 if (s != BD_OK) return die(cat, "backup failed");
                 if (g_json) J_ARR(NULL);
-                for (int i = 0; i < npos; i++) print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
+                for (int i = 0; i < npos; i++) {
+                    print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
+                    if (backup_problems(&bs[i])) problems = 1;
+                }
                 if (g_json) J_END_ARR();
             } else {
                 if (g_json) J_ARR(NULL);
@@ -2125,6 +2149,7 @@ static int run(int argc, char **argv)
                     }
                     if (s != BD_OK) return die(cat, "backup failed");
                     print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
+                    if (backup_problems(&bs[i])) problems = 1;
                 }
                 if (g_json) J_END_ARR();
             }
@@ -2313,6 +2338,8 @@ static int run(int argc, char **argv)
         if (s == BD_ERR_CANCELLED) return stopped(cat, "restore (run the same restore again to carry on)");
         if (s != BD_OK) return die(cat, "restore failed");
         print_restore_stats(cat, &rs);
+        if (rs.files_failed || rs.files_no_copy || rs.files_offline || rs.files_need_passphrase || rs.files_conflict)
+            problems = 1;
         save = 1;
     } else if (strcmp(cmd, "restore-plan") == 0) {
         if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
@@ -2416,7 +2443,7 @@ static int run(int argc, char **argv)
     if (save && bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
     g_cat = NULL;
     bd_catalog_close(cat);
-    return 0;
+    return problems ? 2 : 0;
 }
 
 #ifdef _WIN32

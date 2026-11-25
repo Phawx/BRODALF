@@ -30,7 +30,10 @@ typedef enum {
     BD_ERR_INVALID,
     BD_ERR_NOMEM,
     BD_ERR_PASSPHRASE, /* a passphrase is needed, or the one given is wrong */
-    BD_ERR_CANCELLED   /* stopped by bd_catalog_cancel; what was done until then is kept */
+    BD_ERR_CANCELLED,  /* stopped by bd_catalog_cancel; what was done until then is kept */
+    BD_ERR_DRIVE_GONE  /* a drive the job was using was unplugged, stopped answering or was
+                          swapped for another: the job stopped, what it finished is kept,
+                          and nothing on that drive was marked missing or damaged */
 } bd_status;
 
 typedef void (*bd_log_fn)(void *ctx, const char *message);
@@ -375,15 +378,25 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
 
 /* Check every copy on a connected drive: that it is there, with the right
  * size, and that its checksum is right (every copy is read back). A copy
- * found missing or damaged stops counting until a backup writes it again.
- * An encrypted drive needs the passphrase. */
+ * found missing or damaged stops counting until a backup writes it again,
+ * or a later check finds it there again as it was. An encrypted drive
+ * needs the passphrase. A drive that stops answering or is unplugged
+ * during the check is not taken for missing copies: the check stops with
+ * BD_ERR_DRIVE_GONE, keeps the copies it found good, and marks nothing
+ * missing or damaged. */
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* Read back and hash every copy on a connected drive that has not been
  * read back in max_age_days (0: every copy). Copies never read back since
- * they were written always count. */
+ * they were written always count, and so do copies marked missing, in
+ * case they are there again. As bd_media_check for a drive that goes. */
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
                           bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* Read back only the copies on a connected drive never read back since
+ * they were written (bd_copy_info.read_back 0), such as everything the
+ * last backup wrote. As bd_media_check for a drive that goes. */
+bd_status bd_media_verify_unread(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* ---- Compressing a backup drive ----------------------------------------- */
 

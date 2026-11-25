@@ -577,6 +577,21 @@ static int stopped(bd_catalog *cat, const char *what)
     return 3;
 }
 
+/* A drive was unplugged or stopped answering during a job: what the job
+ * finished is kept and nothing on the drive was taken for missing. Not a
+ * fault in BRODALF, so no error report. */
+static int drive_gone(bd_catalog *cat)
+{
+    clear_progress();
+    fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+    bd_applog("%s", bd_catalog_error(cat));
+    if (g_json) { J_OBJ(NULL); j_bool("drive_gone", 1); J_END(); }
+    g_cat = NULL;
+    if (bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
+    bd_catalog_close(cat);
+    return 1;
+}
+
 /* ---- Printing ------------------------------------------------------------ */
 
 static int print_source(void *ctx, const bd_source_info *s)
@@ -2003,6 +2018,7 @@ static int run(int argc, char **argv)
                 s = verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
                            : bd_media_check(cat, media_id, &cs, log_line, NULL);
             if (s == BD_ERR_CANCELLED) return stopped(cat, verify ? "read-back" : "check");
+            if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
             if (s != BD_OK) return die(cat, "check failed");
             if (g_json) {
                 J_OBJ(NULL);
@@ -2053,6 +2069,7 @@ static int run(int argc, char **argv)
                 bd_catalog_copy_to_media(cat, media_id);
                 return stopped(cat, "backup");
             }
+            if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
             if (s != BD_OK) return die(cat, "backup failed");
             print_backup_result(cat, NULL, &bs);
         } else {
@@ -2071,6 +2088,7 @@ static int run(int argc, char **argv)
                     for (int i = 0; i < npos; i++) bd_catalog_copy_to_media(cat, ids[i]);
                     return stopped(cat, "backup");
                 }
+                if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
                 if (s != BD_OK) return die(cat, "backup failed");
                 if (g_json) J_ARR(NULL);
                 for (int i = 0; i < npos; i++) print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
@@ -2084,6 +2102,10 @@ static int run(int argc, char **argv)
                         bd_catalog_copy_to_media(cat, ids[i]);
                         if (g_json) J_END_ARR();
                         return stopped(cat, "backup");
+                    }
+                    if (s == BD_ERR_DRIVE_GONE) {
+                        if (g_json) J_END_ARR();
+                        return drive_gone(cat);
                     }
                     if (s != BD_OK) return die(cat, "backup failed");
                     print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);

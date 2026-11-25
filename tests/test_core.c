@@ -2591,6 +2591,141 @@ static void test_shadow_list(void)
     CHECK(!exists(at("shadow/out")));
 }
 
+/* Takes the drive away (renames its folder) from the progress callback,
+ * as if it were unplugged halfway through a job. */
+typedef struct {
+    bd_catalog *cat;
+    const char *phase, *from, *to;
+    int64_t after_files;
+    int fired, moved;
+} vanish_at;
+
+static void vanish_progress(void *ctx, const bd_progress *p)
+{
+    vanish_at *v = ctx;
+    v->cat->progress_last_ms = 0; /* report every file */
+    if (v->fired || p->done || strcmp(p->phase, v->phase) != 0 || p->files_done < v->after_files) return;
+    v->fired = 1;
+    v->moved = bd_rename_noreplace(v->from, v->to) == 0;
+}
+
+/* A drive that drops out is not a drive full of missing copies, and a
+ * copy marked missing that is there again counts again. */
+static void test_drive_gone(void)
+{
+    char name[64], text[64];
+    for (int i = 0; i < 12; i++) {
+        snprintf(name, sizeof(name), "dg/Src/f%02d.txt", i);
+        snprintf(text, sizeof(text), "file %d", i);
+        write_file(at(name), text);
+    }
+    bd_mkdirs(at("dg/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("dg/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("dg/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("dg/drive"), "Goes away", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 12);
+    char dir[1200], path[1300];
+    snprintf(dir, sizeof(dir), "dg/drive/BRODALF/%s", bd_catalog_uuid(cat));
+
+    /* Unplugged halfway through a check, then a read-back: the check
+     * stops, keeps what it found good, and marks nothing missing. */
+    vanish_at va;
+    bd_check_stats cs;
+    for (int pass = 0; pass < 2; pass++) {
+        memset(&va, 0, sizeof(va));
+        va.cat = cat;
+        va.phase = pass ? "verify" : "check";
+        va.from = at("dg/drive");
+        va.to = at("dg/drive-away");
+        va.after_files = 5;
+        bd_catalog_set_progress(cat, vanish_progress, &va);
+        bd_status st = pass ? bd_media_verify(cat, drive, 0, &cs, quiet, NULL) : bd_media_check(cat, drive, &cs, quiet, NULL);
+        bd_catalog_set_progress(cat, NULL, NULL);
+        CHECK(va.fired && va.moved);
+        CHECK(st == BD_ERR_DRIVE_GONE);
+        CHECK(cs.missing == 0 && cs.bad == 0 && cs.ok > 0 && cs.ok < 12);
+        CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+        CHECK(count_rows(cat, pass ? "SELECT COUNT(*) FROM jobs WHERE kind='read back' AND status='failed'"
+                                   : "SELECT COUNT(*) FROM jobs WHERE kind='check' AND status='failed'") == 1);
+        CHECK(bd_rename_noreplace(at("dg/drive-away"), at("dg/drive")) == 0);
+    }
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 12 && cs.ok == 12);
+
+    /* Gone before a backup starts: it does not start, and nothing is
+     * written where the drive was. */
+    CHECK(bd_rename_noreplace(at("dg/drive"), at("dg/drive-away")) == 0);
+    CHECK(bd_backup(cat, drive, 0, &bs, quiet, NULL) == BD_ERR_DRIVE_GONE);
+    CHECK(!exists(at("dg/drive")));
+    CHECK(bd_rename_noreplace(at("dg/drive-away"), at("dg/drive")) == 0);
+
+    /* Every file changes, and the drive goes halfway through the backup:
+     * the older copies it can no longer see are not marked missing, and
+     * no folder is made where the drive was. */
+    for (int i = 0; i < 12; i++) {
+        snprintf(name, sizeof(name), "dg/Src/f%02d.txt", i);
+        snprintf(text, sizeof(text), "file %d, version two", i);
+        write_file(at(name), text);
+    }
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 12);
+    memset(&va, 0, sizeof(va));
+    va.cat = cat;
+    va.phase = "backup";
+    va.from = at("dg/drive");
+    va.to = at("dg/drive-away");
+    va.after_files = 5;
+    bd_catalog_set_progress(cat, vanish_progress, &va);
+    bd_status st = bd_backup(cat, drive, 0, &bs, quiet, NULL);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(va.fired && va.moved);
+    CHECK(st == BD_ERR_DRIVE_GONE);
+    CHECK(bs.files_copied < 12);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == 12 + bs.files_copied);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM jobs WHERE kind='backup' AND status='failed'") == 1);
+    CHECK(!exists(at("dg/drive")));
+    CHECK(bd_rename_noreplace(at("dg/drive-away"), at("dg/drive")) == 0);
+    int64_t first = bs.files_copied;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(first + bs.files_copied == 12 && bs.files_failed == 0);
+    check_drive_consistent(cat, drive, "dg/drive");
+
+    /* A copy goes missing and comes back: a read-back of what is due
+     * looks at it again, finds it as it was, and it counts again. */
+    snprintf(path, sizeof(path), "%s/Src/f00.txt", dir);
+    CHECK(bd_rename_noreplace(at(path), at("dg/f00.keep")) == 0);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.missing == 1);
+    CHECK(bd_rename_noreplace(at("dg/f00.keep"), at(path)) == 0);
+    REQUIRE_OK(bd_media_verify(cat, drive, 30, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 1 && cs.ok == 1);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+
+    /* The same for the newest version's copy, found by the next backup:
+     * it counts again and no second copy is written next to it. */
+    snprintf(path, sizeof(path), "%s/.versions/Src/f01.v2.txt", dir);
+    CHECK(file_equals(at(path), "file 1, version two"));
+    CHECK(bd_rename_noreplace(at(path), at("dg/f01.keep")) == 0);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.missing == 1);
+    CHECK(bd_rename_noreplace(at("dg/f01.keep"), at(path)) == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_already_there == 1 && bs.files_failed == 0);
+    snprintf(path, sizeof(path), "%s/.versions/Src/f01.v2-2.txt", dir);
+    CHECK(!exists(at(path)));
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == 24);
+    check_drive_consistent(cat, drive, "dg/drive");
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -2926,6 +3061,7 @@ int main(void)
     test_stars_and_places();
     test_encrypt_folders();
     test_shadow_list();
+    test_drive_gone();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

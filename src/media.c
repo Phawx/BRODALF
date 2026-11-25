@@ -423,16 +423,97 @@ void bd_media_disconnect(bd_catalog *cat, int64_t media_id)
     sqlite3_finalize(d);
 }
 
-/* Every copy is checked for being there with the right size, and read
- * back to compare its checksum. due_before > 0: only copies not read back
- * since then (or never). */
-static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_before,
+int bd_media_present(bd_catalog *cat, int64_t media_id)
+{
+    char *root = bd_connected_root(cat, media_id);
+    char *path = NULL;
+    int same = 0;
+    bd_media_file mf;
+    if (root && bd_media_file_path(cat, root, &path) == BD_OK && bd_media_file_read(path, &mf) == 0 &&
+        strcmp(mf.catalog_uuid, cat->uuid) == 0) {
+        sqlite3_stmt *q;
+        if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM media WHERE id=? AND uuid=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, media_id);
+            sqlite3_bind_text(q, 2, mf.media_uuid, -1, SQLITE_STATIC);
+            same = sqlite3_step(q) == SQLITE_ROW;
+            sqlite3_finalize(q);
+        }
+    }
+    free(path);
+    free(root);
+    return same;
+}
+
+int bd_copy_marks_add(bd_copy_marks *m, int64_t copy_id, int64_t media_id, int bad, int read_back)
+{
+    if (m->n == m->cap) {
+        size_t cap = m->cap ? m->cap * 2 : 64;
+        bd_copy_mark *v = realloc(m->v, cap * sizeof(*v));
+        if (!v) return -1;
+        m->v = v;
+        m->cap = cap;
+    }
+    bd_copy_mark *k = &m->v[m->n++];
+    k->copy_id = copy_id;
+    k->media_id = media_id;
+    k->bad = bad;
+    k->read_back = read_back;
+    return 0;
+}
+
+int64_t bd_copy_marks_apply(bd_catalog *cat, bd_copy_marks *m)
+{
+    int64_t dropped = 0, now = bd_now_ms();
+    int64_t seen[16];
+    int there[16], nseen = 0;
+    sqlite3_stmt *u = NULL;
+    if (m->n && sqlite3_prepare_v2(cat->db,
+                                   "UPDATE copies SET state=CASE WHEN ?1 THEN 'bad' ELSE 'missing' END, last_quick_check_ms=?2,"
+                                   " last_full_check_ms=CASE WHEN ?3 THEN ?2 ELSE last_full_check_ms END WHERE id=?4",
+                                   -1, &u, NULL) != SQLITE_OK)
+        dropped = -1;
+    for (size_t i = 0; dropped >= 0 && i < m->n; i++) {
+        const bd_copy_mark *k = &m->v[i];
+        /* Each drive is looked at once, now that the job is over. */
+        int j = 0;
+        while (j < nseen && seen[j] != k->media_id) j++;
+        int ok;
+        if (j < nseen) ok = there[j];
+        else {
+            ok = bd_media_present(cat, k->media_id);
+            if (nseen < 16) { seen[nseen] = k->media_id; there[nseen++] = ok; }
+        }
+        if (!ok) { dropped++; continue; }
+        sqlite3_reset(u);
+        sqlite3_bind_int(u, 1, k->bad);
+        sqlite3_bind_int64(u, 2, now);
+        sqlite3_bind_int(u, 3, k->read_back);
+        sqlite3_bind_int64(u, 4, k->copy_id);
+        if (sqlite3_step(u) != SQLITE_DONE) dropped = -1;
+    }
+    sqlite3_finalize(u);
+    bd_copy_marks_free(m);
+    return dropped;
+}
+
+void bd_copy_marks_free(bd_copy_marks *m)
+{
+    free(m->v);
+    memset(m, 0, sizeof(*m));
+}
+
+/* What a check reads back: every copy, the copies due (not read back since
+ * due_before, or never, and every copy marked missing, in case it is
+ * back), or only the copies never read back. */
+enum { CHECK_EVERY, CHECK_DUE, CHECK_UNREAD };
+
+static bd_status check_copies(bd_catalog *cat, int64_t media_id, int mode, int64_t due_before,
                               bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_cancel_reset(cat);
-    return check_copies(cat, media_id, 0, stats, log, log_ctx);
+    return check_copies(cat, media_id, CHECK_EVERY, 0, stats, log, log_ctx);
 }
 
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
@@ -440,10 +521,21 @@ bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
 {
     int64_t due = max_age_days > 0 ? bd_now_ms() - (int64_t)max_age_days * 24 * 3600 * 1000 : INT64_MAX;
     bd_cancel_reset(cat);
-    return check_copies(cat, media_id, due, stats, log, log_ctx);
+    return check_copies(cat, media_id, CHECK_DUE, due, stats, log, log_ctx);
 }
 
-static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_before,
+bd_status bd_media_verify_unread(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx)
+{
+    bd_cancel_reset(cat);
+    return check_copies(cat, media_id, CHECK_UNREAD, 0, stats, log, log_ctx);
+}
+
+/* The copies a check reads (?1 drive, ?2 mode, ?3 due before). */
+#define CHECK_WHERE                                                                                     \
+    " c.media_id=?1 AND (?2=0 OR (?2=1 AND (c.state='missing' OR COALESCE(c.last_full_check_ms,0)<?3))" \
+    " OR (?2=2 AND c.last_full_check_ms IS NULL))"
+
+static bd_status check_copies(bd_catalog *cat, int64_t media_id, int mode, int64_t due_before,
                               bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_check_stats local;
@@ -463,12 +555,11 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
                            "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, c.state, c.encrypted,"
                            " COALESCE(s.name || '/' || n.rel_path, c.path_on_media)"
                            " FROM copies c JOIN versions v ON v.id=c.version_id"
-                           " LEFT JOIN nodes n ON n.id=v.node_id LEFT JOIN sources s ON s.id=n.source_id WHERE c.media_id=?1"
-                           " AND (?2=0 OR (c.state<>'missing' AND COALESCE(c.last_full_check_ms,0)<?2)) ORDER BY c.path_on_media",
+                           " LEFT JOIN nodes n ON n.id=v.node_id LEFT JOIN sources s ON s.id=n.source_id WHERE" CHECK_WHERE
+                           " ORDER BY c.path_on_media",
                            -1, &q, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
-                           "UPDATE copies SET state=?, stored_mtime_ns=?, last_quick_check_ms=?,"
-                           " last_full_check_ms=CASE WHEN ? THEN ? ELSE last_full_check_ms END WHERE id=?",
+                           "UPDATE copies SET state='ok', stored_mtime_ns=?, last_quick_check_ms=?, last_full_check_ms=? WHERE id=?",
                            -1, &u, NULL) != SQLITE_OK) {
         s = bd_fail_db(cat, "prepare drive check");
         goto done;
@@ -476,32 +567,36 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
     /* Totals for the progress bar. */
     sqlite3_stmt *t;
     int64_t total_files = 0, total_bytes = 0;
-    if (sqlite3_prepare_v2(cat->db,
-                           "SELECT COUNT(*), COALESCE(SUM(c.stored_size),0) FROM copies c WHERE c.media_id=?1"
-                           " AND (?2=0 OR (c.state<>'missing' AND COALESCE(c.last_full_check_ms,0)<?2))",
-                           -1, &t, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(cat->db, "SELECT COUNT(*), COALESCE(SUM(c.stored_size),0) FROM copies c WHERE" CHECK_WHERE, -1, &t,
+                           NULL) == SQLITE_OK) {
         sqlite3_bind_int64(t, 1, media_id);
-        sqlite3_bind_int64(t, 2, due_before);
+        sqlite3_bind_int(t, 2, mode);
+        sqlite3_bind_int64(t, 3, due_before);
         if (sqlite3_step(t) == SQLITE_ROW) {
             total_files = sqlite3_column_int64(t, 0);
             total_bytes = sqlite3_column_int64(t, 1);
         }
         sqlite3_finalize(t);
     }
-    bd_progress_begin(cat, due_before ? "verify" : "check", total_files, total_bytes);
-    int64_t job = bd_job_start(cat, due_before ? "read back" : "check", media_id);
+    const char *what = mode == CHECK_EVERY ? "check" : "read-back";
+    bd_progress_begin(cat, mode == CHECK_EVERY ? "check" : "verify", total_files, total_bytes);
+    int64_t job = bd_job_start(cat, mode == CHECK_EVERY ? "check" : "read back", media_id);
 
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin drive check"); goto done; }
     sqlite3_bind_int64(q, 1, media_id);
-    sqlite3_bind_int64(q, 2, due_before);
+    sqlite3_bind_int(q, 2, mode);
+    sqlite3_bind_int64(q, 3, due_before);
     int64_t now = bd_now_ms();
-    int cancelled = 0;
+    int cancelled = 0, gone = 0;
+    /* Copies found missing or damaged are recorded at the end, and only if
+     * the drive is still there then: a drive that drops out halfway leaves
+     * every copy as it was. */
+    bd_copy_marks marks = {NULL, 0, 0};
     while (sqlite3_step(q) == SQLITE_ROW) {
         if (bd_cancelled(cat)) { cancelled = 1; break; }
         int64_t copy_id = sqlite3_column_int64(q, 0);
         const char *rel = (const char *)sqlite3_column_text(q, 1);
         int64_t stored_size = sqlite3_column_int64(q, 2);
-        int64_t stored_mtime = sqlite3_column_int64(q, 3);
         const char *expected = (const char *)sqlite3_column_text(q, 4);
         /* What the user knows the file as: on a drive that hides names the
          * path there means nothing to them. */
@@ -522,32 +617,15 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
 
         bd_remote_stat st;
         int found = store->ops->stat(store, rel, &st);
-        if (found < 0) {
-            /* Could not look: leave the copy as it was. */
-            bd_logf(log, log_ctx, "cannot check %s: %s", shown, store->err);
-            stats->skipped++;
-            continue;
-        }
-        const char *state = "ok";
-        int hashed = 0;
-        int64_t mtime = stored_mtime;
-        if (found == 1) {
-            state = "missing";
-        } else if (st.size != stored_size) {
-            state = "bad";
-        } else {
-            char hash[BD_HASH_HEX_LEN + 1];
+        int got = 0, hrc = 0, hashed = 0;
+        char hash[BD_HASH_HEX_LEN + 1] = "";
+        if (found == 0 && st.size == stored_size) {
             char *path = NULL;
             int is_temp = 0;
             hashed = 1;
             stats->rehashed++;
-            int got = bd_store_fetch(store, rel, &path, &is_temp);
-            if (got < 0) {
-                bd_logf(log, log_ctx, "cannot read %s: %s", shown, store->err);
-                stats->skipped++;
-                continue;
-            }
-            int hrc = got != 0 ? 1 : bd_hash_copy(path, key, NULL, NULL, hash, NULL);
+            got = bd_store_fetch(store, rel, &path, &is_temp);
+            if (got == 0) hrc = bd_hash_copy(path, key, NULL, NULL, hash, NULL);
             bd_store_release(path, is_temp);
             if (hrc == -4) {
                 /* Stopped halfway through reading it: leave it as it was. */
@@ -556,25 +634,58 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
                 cancelled = 1;
                 break;
             }
-            if (hrc != 0 || strcmp(hash, expected) != 0) state = "bad";
-            else mtime = st.mtime_ns;
         }
-        if (strcmp(state, "ok") == 0) stats->ok++;
-        else if (strcmp(state, "missing") == 0) { stats->missing++; bd_logf(log, log_ctx, "missing on drive: %s", shown); }
+        int good = hashed && got == 0 && hrc == 0 && strcmp(hash, expected) == 0;
+        if (!good && !bd_media_present(cat, media_id)) {
+            /* Not there, or not readable, because the drive itself went
+             * (or another one is there now): not this copy's fault. */
+            stats->copies--;
+            if (hashed) stats->rehashed--;
+            gone = 1;
+            break;
+        }
+        if (found < 0 || got < 0) {
+            /* Could not look: leave the copy as it was. */
+            bd_logf(log, log_ctx, "cannot check %s: %s", shown, store->err);
+            stats->skipped++;
+            continue;
+        }
+        if (good) {
+            stats->ok++;
+            sqlite3_reset(u);
+            sqlite3_bind_int64(u, 1, st.mtime_ns);
+            sqlite3_bind_int64(u, 2, now);
+            sqlite3_bind_int64(u, 3, now);
+            sqlite3_bind_int64(u, 4, copy_id);
+            if (sqlite3_step(u) != SQLITE_DONE) { s = bd_fail_db(cat, "record drive check"); break; }
+            continue;
+        }
+        int missing = found == 1 || got == 1;
+        if (missing) { stats->missing++; bd_logf(log, log_ctx, "missing on drive: %s", shown); }
         else { stats->bad++; bd_logf(log, log_ctx, "damaged on drive: %s", shown); }
-
-        sqlite3_reset(u);
-        sqlite3_bind_text(u, 1, state, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(u, 2, mtime);
-        sqlite3_bind_int64(u, 3, now);
-        sqlite3_bind_int(u, 4, hashed);
-        sqlite3_bind_int64(u, 5, now);
-        sqlite3_bind_int64(u, 6, copy_id);
-        if (sqlite3_step(u) != SQLITE_DONE) { s = bd_fail_db(cat, "record drive check"); break; }
+        if (bd_copy_marks_add(&marks, copy_id, media_id, !missing, hashed && !missing) != 0) {
+            s = bd_fail(cat, BD_ERR_NOMEM, "out of memory");
+            break;
+        }
+    }
+    sqlite3_reset(q);
+    if (s == BD_OK && !gone) {
+        int64_t dropped = bd_copy_marks_apply(cat, &marks);
+        if (dropped < 0) s = bd_fail_db(cat, "record drive check");
+        else if (dropped > 0) gone = 1;
+    }
+    bd_copy_marks_free(&marks);
+    if (s == BD_OK && gone) {
+        stats->missing = stats->bad = 0;
+        bd_logf(log, log_ctx, "the drive stopped answering or was unplugged: nothing on it was marked missing or damaged");
+        s = bd_fail(cat, BD_ERR_DRIVE_GONE,
+                    "the drive stopped answering or was unplugged during the %s, so nothing on it was marked missing or"
+                    " damaged; plug it in again and run the %s again",
+                    what, what);
     }
     /* Copies checked before a stop keep what was found. */
-    if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit drive check");
-    if (s != BD_OK) bd_exec(cat, "ROLLBACK");
+    if ((s == BD_OK || s == BD_ERR_DRIVE_GONE) && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit drive check");
+    if (s != BD_OK && s != BD_ERR_DRIVE_GONE) bd_exec(cat, "ROLLBACK");
     if (s == BD_OK && cancelled) s = bd_fail_cancelled(cat);
     bd_report(cat, stats->copies, NULL, 1);
     bd_progress_end(cat);

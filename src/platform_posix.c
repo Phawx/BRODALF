@@ -43,16 +43,22 @@ static void fill_stat(const struct stat *sb, bd_stat_t *st)
 #endif
 }
 
-int bd_stat(const char *path, bd_stat_t *st)
+int bd_stat_ex(const char *path, bd_stat_t *st)
 {
     struct stat sb;
     char *p = dup_native(path);
     if (!p) return -1;
     int rc = lstat(p, &sb);
+    int err = errno;
     free(p);
-    if (rc != 0) return -1;
+    if (rc != 0) return err == ENOENT || err == ENOTDIR ? 1 : -1;
     fill_stat(&sb, st);
     return 0;
+}
+
+int bd_stat(const char *path, bd_stat_t *st)
+{
+    return bd_stat_ex(path, st) == 0 ? 0 : -1;
 }
 
 int bd_mkdirs(const char *path)

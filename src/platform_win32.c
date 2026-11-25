@@ -91,17 +91,27 @@ static DWORD reparse_tag_of(const wchar_t *w)
     return (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? fd.dwReserved0 : 0;
 }
 
-int bd_stat(const char *path, bd_stat_t *st)
+/* Only "no such file" and "no such folder" mean the path is not there.
+ * Everything else (ERROR_NOT_READY, ERROR_DEVICE_NOT_CONNECTED, an I/O
+ * error, access denied, a share that is down) means it could not be
+ * looked at. */
+int bd_stat_ex(const char *path, bd_stat_t *st)
 {
     wchar_t *w = to_wide(path);
     if (!w) return -1;
     WIN32_FILE_ATTRIBUTE_DATA fa;
     BOOL ok = GetFileAttributesExW(w, GetFileExInfoStandard, &fa);
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     DWORD tag = (ok && (fa.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) ? reparse_tag_of(w) : 0;
     free(w);
-    if (!ok) return -1;
+    if (!ok) return err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND ? 1 : -1;
     fill_from_attrs(fa.dwFileAttributes, tag, fa.nFileSizeHigh, fa.nFileSizeLow, fa.ftLastWriteTime, fa.ftCreationTime, st);
     return 0;
+}
+
+int bd_stat(const char *path, bd_stat_t *st)
+{
+    return bd_stat_ex(path, st) == 0 ? 0 : -1;
 }
 
 int bd_mkdirs(const char *path)

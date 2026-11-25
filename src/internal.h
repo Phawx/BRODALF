@@ -113,6 +113,31 @@ extern int64_t bd_test_free_bytes;
 /* 1 if the drive is marked lost or broken. */
 int bd_media_lost(bd_catalog *cat, int64_t media_id);
 
+/* 1 if the drive is still plugged in where it was connected and is the
+ * same drive: its BRODALF.media is there and names this catalog and this
+ * drive. 0 if it was unplugged, stopped answering or another drive took
+ * its place: then what cannot be found on it is not missing. */
+int bd_media_present(bd_catalog *cat, int64_t media_id);
+
+/* Copies a job found missing or damaged. They are recorded when the job
+ * ends, and only on drives still there then (bd_media_present), so a drive
+ * that drops out halfway gets nothing marked. */
+typedef struct {
+    int64_t copy_id, media_id;
+    int bad;       /* damaged; else missing */
+    int read_back; /* it was read to the end: its last read-back is now */
+} bd_copy_mark;
+typedef struct {
+    bd_copy_mark *v;
+    size_t n, cap;
+} bd_copy_marks;
+/* 0, or -1 when out of memory. */
+int bd_copy_marks_add(bd_copy_marks *m, int64_t copy_id, int64_t media_id, int bad, int read_back);
+/* Record them and empty the list. How many were left out because their
+ * drive is gone, or -1 on a database error. */
+int64_t bd_copy_marks_apply(bd_catalog *cat, bd_copy_marks *m);
+void bd_copy_marks_free(bd_copy_marks *m);
+
 /* Record that a file now has these contents, as a scan does: the version
  * with this hash (a new one if none has it) becomes the file's current
  * version. 0 with *version_id and *version_no set, -1 on a database error. */

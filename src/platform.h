@@ -20,6 +20,14 @@ typedef struct {
 /* 0 on success, -1 if the path does not exist or cannot be read. */
 int bd_stat(const char *path, bd_stat_t *st);
 
+/* The same, telling a path that is not there from one that could not be
+ * looked at: 0 found, 1 not there (POSIX ENOENT or ENOTDIR; Windows
+ * ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND), -1 could not look (a
+ * drive unplugged or not ready, an I/O error, no access, ...). A drive
+ * that is gone as a whole can still give 1, so before taking a copy for
+ * missing, check that its drive is there (bd_media_present). */
+int bd_stat_ex(const char *path, bd_stat_t *st);
+
 /* Create a directory and any missing parents. 0 on success. */
 int bd_mkdirs(const char *path);
 

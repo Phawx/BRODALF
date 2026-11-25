@@ -2130,10 +2130,32 @@ static bd_status ui_save(void)
 
 /* ---- Log pane ----------------------------------------------------------- */
 
+/* The log pane holds up to LOG_LIMIT characters (an edit control takes
+ * about 32,000 unless told otherwise, and then shows nothing new). Past
+ * LOG_TRIM the oldest lines, up to the end of the line at LOG_CUT, make
+ * room; the app log file keeps every line. */
+#define LOG_LIMIT 2000000
+#define LOG_TRIM 900000
+#define LOG_CUT 300000
+
 static void log_append(const wchar_t *text)
 {
     int len = GetWindowTextLengthW(g_log);
-    if (len > 60000) { SendMessageW(g_log, EM_SETSEL, 0, 20000); SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)L""); len = GetWindowTextLengthW(g_log); }
+    if (len > LOG_TRIM) {
+        int cut = LOG_CUT;
+        wchar_t *all = malloc(((size_t)len + 1) * sizeof(wchar_t));
+        if (all) {
+            int n = GetWindowTextW(g_log, all, len + 1);
+            const wchar_t *nl = n > LOG_CUT ? wcsstr(all + LOG_CUT, L"\r\n") : NULL;
+            if (nl) cut = (int)(nl - all) + 2;
+            free(all);
+        }
+        wchar_t note[400];
+        swprintf(note, 400, L"%ls\r\n", T(L"(Older lines were taken out of this pane to make room. The app log keeps them all: Help > Show the app log.)"));
+        SendMessageW(g_log, EM_SETSEL, 0, cut);
+        SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)note);
+        len = GetWindowTextLengthW(g_log);
+    }
     SendMessageW(g_log, EM_SETSEL, len, len);
     SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)text);
     SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)L"\r\n");
@@ -9221,6 +9243,7 @@ static void create_children(HWND hwnd)
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 0, 0, 10, 10,
                             hwnd, (HMENU)ID_LOG, g_inst, NULL);
     SendMessageW(g_log, WM_SETFONT, (WPARAM)g_font, TRUE);
+    SendMessageW(g_log, EM_SETLIMITTEXT, LOG_LIMIT, 0);
     read_only_keys(g_log);
 
     g_status = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, hwnd,

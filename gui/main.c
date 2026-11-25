@@ -20,6 +20,7 @@
 #define COBJMACROS
 #include <windows.h>
 #include <commctrl.h>
+#include <uxtheme.h>
 #include <commdlg.h>
 #include <dbt.h>
 #include <sddl.h>
@@ -174,6 +175,9 @@ enum {
     ID_M_ADD_PLACE,
     ID_M_STAR,
     ID_M_ENCRYPT,
+    ID_M_THEME_FOLLOW, /* View > Appearance */
+    ID_M_THEME_LIGHT,
+    ID_M_THEME_DARK,
     /* Right-click menus (TrackPopupMenu with TPM_RETURNCMD). */
     ID_CTX_OPEN = 800,
     ID_CTX_RESTORE,
@@ -326,6 +330,402 @@ static void toggle_encrypt_selected(void);
 static void load_marks(void);
 static int good_description(const wchar_t *s);
 static void media_name(int64_t id, wchar_t *out, size_t cap);
+
+/* ---- Light and dark ---------------------------------------------------------- */
+
+/* BRODALF follows Windows' "Choose your app mode" (Settings > Personalization
+ * > Colors) unless the person picks Light or Dark under View > Appearance;
+ * that choice is kept for this user in the registry. Dark covers the main
+ * window, its tabs, lists, menus and BRODALF's own dialogs. Message boxes
+ * and the question dialogs Windows draws itself stay light: Windows has no
+ * dark version of them. High contrast always uses the system's colours.
+ *
+ * Windows has no documented way to make a classic desktop program dark:
+ * the menus and scroll bars use what File Explorer uses (uxtheme.dll's
+ * unnamed functions, looked up by number and only on Windows 10 1809 or
+ * later), the rest is painted here. Where any of it is missing the window
+ * simply stays light. */
+enum { THEME_FOLLOW = 0, THEME_LIGHT = 1, THEME_DARK = 2 };
+static int g_theme_choice; /* THEME_* */
+static HMENU g_menu_look; /* View > Appearance */
+static int g_dark;         /* dark now */
+static HBRUSH g_br_bg, g_br_field, g_br_hot, g_br_border;
+#define DARK_BG RGB(32, 32, 32)
+#define DARK_FIELD RGB(25, 25, 25)
+#define DARK_HOT RGB(62, 62, 62)
+#define DARK_BORDER RGB(80, 80, 80)
+#define DARK_TEXT RGB(230, 230, 230)
+#define DARK_GRAY RGB(150, 150, 150)
+
+typedef BOOL(WINAPI *allow_dark_window_fn)(HWND, BOOL);
+typedef int(WINAPI *preferred_mode_fn)(int);
+typedef void(WINAPI *uxtheme_void_fn)(void);
+typedef HRESULT(WINAPI *dwm_set_fn)(HWND, DWORD, LPCVOID, DWORD);
+static allow_dark_window_fn p_allow_dark_window;
+static preferred_mode_fn p_preferred_mode; /* SetPreferredAppMode, or AllowDarkModeForApp on 1809 */
+static uxtheme_void_fn p_refresh_policy, p_flush_menus;
+static dwm_set_fn p_dwm_set;
+static DWORD g_win_build;
+
+/* Colours the tree uses for each state, readable on either background. */
+static COLORREF theme_older(void) { return g_dark ? RGB(225, 175, 70) : RGB(150, 100, 0); }
+static COLORREF theme_gray(void) { return g_dark ? DARK_GRAY : GetSysColor(COLOR_GRAYTEXT); }
+static COLORREF theme_bad(void) { return g_dark ? RGB(255, 115, 115) : RGB(180, 30, 30); }
+
+static int high_contrast(void)
+{
+    HIGHCONTRASTW hc = {sizeof(hc), 0, NULL};
+    return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, 0) && (hc.dwFlags & HCF_HIGHCONTRASTON);
+}
+
+static int windows_apps_dark(void)
+{
+    DWORD v = 1, n = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme",
+                     RRF_RT_REG_DWORD, NULL, &v, &n) != ERROR_SUCCESS)
+        return 0;
+    return v == 0;
+}
+
+/* What the choice comes to now. Dark needs Windows 10 1809 or later. */
+static int theme_want_dark(void)
+{
+    if (high_contrast() || g_win_build < 17763 || !p_allow_dark_window) return 0;
+    if (g_theme_choice == THEME_DARK) return 1;
+    if (g_theme_choice == THEME_LIGHT) return 0;
+    return windows_apps_dark();
+}
+
+static void theme_load(void)
+{
+    typedef void(WINAPI * nt_version_fn)(LPDWORD, LPDWORD, LPDWORD);
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    nt_version_fn ver = nt ? (nt_version_fn)(void (*)(void))GetProcAddress(nt, "RtlGetNtVersionNumbers") : NULL;
+    DWORD major = 0, minor = 0, build = 0;
+    if (ver) ver(&major, &minor, &build);
+    g_win_build = major >= 10 ? build & 0x0FFFFFFF : 0;
+    HMODULE ux = g_win_build >= 17763 ? LoadLibraryExW(L"uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32) : NULL;
+    if (ux) {
+        p_refresh_policy = (uxtheme_void_fn)(void (*)(void))GetProcAddress(ux, MAKEINTRESOURCEA(104));
+        p_allow_dark_window = (allow_dark_window_fn)(void (*)(void))GetProcAddress(ux, MAKEINTRESOURCEA(133));
+        p_preferred_mode = (preferred_mode_fn)(void (*)(void))GetProcAddress(ux, MAKEINTRESOURCEA(135));
+        p_flush_menus = (uxtheme_void_fn)(void (*)(void))GetProcAddress(ux, MAKEINTRESOURCEA(136));
+    }
+    HMODULE dwm = LoadLibraryExW(L"dwmapi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (dwm) p_dwm_set = (dwm_set_fn)(void (*)(void))GetProcAddress(dwm, "DwmSetWindowAttribute");
+    DWORD v = 0, n = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"Appearance", RRF_RT_REG_DWORD, NULL, &v, &n) == ERROR_SUCCESS && v <= THEME_DARK)
+        g_theme_choice = (int)v;
+    g_br_bg = CreateSolidBrush(DARK_BG);
+    g_br_field = CreateSolidBrush(DARK_FIELD);
+    g_br_hot = CreateSolidBrush(DARK_HOT);
+    g_br_border = CreateSolidBrush(DARK_BORDER);
+}
+
+/* Menus (the popups) follow the app's mode. */
+static void theme_app_mode(void)
+{
+    if (!p_preferred_mode) return;
+    /* 1809 has AllowDarkModeForApp(BOOL); later builds SetPreferredAppMode
+     * (2 force dark, 3 force light). */
+    if (g_win_build < 18362) p_preferred_mode(g_dark);
+    else p_preferred_mode(g_dark ? 2 : 3);
+    if (p_refresh_policy) p_refresh_policy();
+    if (p_flush_menus) p_flush_menus();
+}
+
+static void theme_title_bar(HWND h)
+{
+    if (!p_dwm_set) return;
+    BOOL on = g_dark;
+    /* DWMWA_USE_IMMERSIVE_DARK_MODE: 20 from Windows 10 20H1, 19 before. */
+    p_dwm_set(h, g_win_build >= 18985 ? 20 : 19, &on, sizeof(on));
+}
+
+static LRESULT CALLBACK dark_tab_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref);
+static LRESULT CALLBACK dark_status_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref);
+
+static void theme_control(HWND h)
+{
+    wchar_t cls[64];
+    if (!GetClassNameW(h, cls, 64)) return;
+    if (p_allow_dark_window) p_allow_dark_window(h, g_dark);
+    LONG style = GetWindowLongW(h, GWL_STYLE);
+    if (_wcsicmp(cls, WC_BUTTONW) == 0) {
+        LONG kind = style & BS_TYPEMASK;
+        if (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON) SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        /* A themed check box or group box draws its text black whatever
+         * colour it is given: unthemed it takes the colour. */
+        else SetWindowTheme(h, g_dark ? L"" : NULL, g_dark ? L"" : NULL);
+    } else if (_wcsicmp(cls, WC_EDITW) == 0) {
+        SetWindowTheme(h, g_dark ? (style & ES_MULTILINE ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
+    } else if (_wcsicmp(cls, WC_COMBOBOXW) == 0) {
+        SetWindowTheme(h, g_dark ? L"DarkMode_CFD" : NULL, NULL);
+    } else if (_wcsicmp(cls, WC_TREEVIEWW) == 0) {
+        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        TreeView_SetBkColor(h, g_dark ? DARK_FIELD : (COLORREF)-1);
+        TreeView_SetTextColor(h, g_dark ? DARK_TEXT : (COLORREF)-1);
+    } else if (_wcsicmp(cls, WC_LISTVIEWW) == 0) {
+        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        HWND header = ListView_GetHeader(h);
+        if (header) SetWindowTheme(header, g_dark ? L"DarkMode_ItemsView" : NULL, NULL);
+        COLORREF bg = g_dark ? DARK_FIELD : GetSysColor(COLOR_WINDOW);
+        ListView_SetBkColor(h, bg);
+        ListView_SetTextBkColor(h, bg);
+        ListView_SetTextColor(h, g_dark ? DARK_TEXT : GetSysColor(COLOR_WINDOWTEXT));
+    } else if (_wcsicmp(cls, WC_SCROLLBARW) == 0 || _wcsicmp(cls, WC_LISTBOXW) == 0) {
+        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+    } else if (_wcsicmp(cls, WC_TABCONTROLW) == 0) {
+        SetWindowSubclass(h, dark_tab_proc, 1, 0);
+    } else if (_wcsicmp(cls, STATUSCLASSNAMEW) == 0) {
+        SetWindowSubclass(h, dark_status_proc, 1, 0);
+    }
+    InvalidateRect(h, NULL, TRUE);
+}
+
+static BOOL CALLBACK theme_child(HWND h, LPARAM lp)
+{
+    (void)lp;
+    theme_control(h);
+    return TRUE;
+}
+
+/* A window and everything in it, in the current mode. */
+static void theme_window(HWND top)
+{
+    if (p_allow_dark_window) p_allow_dark_window(top, g_dark);
+    theme_title_bar(top);
+    EnumChildWindows(top, theme_child, 0);
+    RedrawWindow(top, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
+/* Colours for labels, text boxes and lists: 1 if handled (dark). */
+static int theme_ctlcolor(UINT msg, WPARAM wp, LPARAM lp, LRESULT *out)
+{
+    if (!g_dark) return 0;
+    HDC dc = (HDC)wp;
+    HWND ctl = (HWND)lp;
+    switch (msg) {
+    case WM_CTLCOLORDLG:
+        *out = (LRESULT)g_br_bg;
+        return 1;
+    case WM_CTLCOLORSTATIC: {
+        wchar_t cls[16];
+        int edit = GetClassNameW(ctl, cls, 16) && _wcsicmp(cls, WC_EDITW) == 0; /* a read-only text box */
+        SetTextColor(dc, IsWindowEnabled(ctl) ? DARK_TEXT : DARK_GRAY);
+        SetBkColor(dc, edit ? DARK_FIELD : DARK_BG);
+        *out = (LRESULT)(edit ? g_br_field : g_br_bg);
+        return 1;
+    }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        SetTextColor(dc, DARK_TEXT);
+        SetBkColor(dc, DARK_FIELD);
+        *out = (LRESULT)g_br_field;
+        return 1;
+    case WM_CTLCOLORBTN:
+        SetTextColor(dc, DARK_TEXT);
+        SetBkColor(dc, DARK_BG);
+        *out = (LRESULT)g_br_bg;
+        return 1;
+    }
+    return 0;
+}
+
+/* A dialog's own messages: theme it as it is first shown, and colour its
+ * controls. Each dialog procedure calls this first. */
+static int theme_dialog(HWND dlg, UINT msg, WPARAM wp, LPARAM lp, INT_PTR *out)
+{
+    if (msg == WM_SHOWWINDOW && wp && g_dark && !GetPropW(dlg, L"BrodalfDark")) {
+        SetPropW(dlg, L"BrodalfDark", (HANDLE)1);
+        theme_window(dlg);
+        return 0;
+    }
+    if (msg == WM_DESTROY) RemovePropW(dlg, L"BrodalfDark");
+    LRESULT r;
+    if (theme_ctlcolor(msg, wp, lp, &r)) {
+        *out = (INT_PTR)r;
+        return 1;
+    }
+    return 0;
+}
+
+/* The tabs, painted: the tab control has no dark look of its own. */
+static LRESULT CALLBACK dark_tab_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (g_dark && msg == WM_ERASEBKGND) return 1;
+    if (g_dark && msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        GetClientRect(h, &rc);
+        FillRect(dc, &rc, g_br_bg);
+        RECT disp = rc;
+        TabCtrl_AdjustRect(h, FALSE, &disp);
+        InflateRect(&disp, S(3), S(3));
+        FrameRect(dc, &disp, g_br_border);
+        HFONT font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+        HGDIOBJ old = font ? SelectObject(dc, font) : NULL;
+        SetBkMode(dc, TRANSPARENT);
+        int n = TabCtrl_GetItemCount(h), sel = TabCtrl_GetCurSel(h);
+        for (int i = 0; i < n; i++) {
+            RECT r;
+            if (!TabCtrl_GetItemRect(h, i, &r)) continue;
+            if (i == sel) InflateRect(&r, S(2), S(2));
+            FillRect(dc, &r, i == sel ? g_br_hot : g_br_bg);
+            FrameRect(dc, &r, g_br_border);
+            wchar_t text[128] = L"";
+            TCITEMW it;
+            memset(&it, 0, sizeof(it));
+            it.mask = TCIF_TEXT;
+            it.pszText = text;
+            it.cchTextMax = 128;
+            TabCtrl_GetItem(h, i, &it);
+            SetTextColor(dc, i == sel ? DARK_TEXT : DARK_GRAY);
+            DrawTextW(dc, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        if (old) SelectObject(dc, old);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+/* The status bar, painted: its text is always black otherwise. */
+static LRESULT CALLBACK dark_status_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (g_dark && msg == WM_ERASEBKGND) return 1;
+    if (g_dark && msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        GetClientRect(h, &rc);
+        FillRect(dc, &rc, g_br_bg);
+        RECT line = rc;
+        line.bottom = line.top + 1;
+        FillRect(dc, &line, g_br_border);
+        HFONT font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+        HGDIOBJ old = font ? SelectObject(dc, font) : NULL;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, DARK_TEXT);
+        int parts = (int)SendMessageW(h, SB_GETPARTS, 0, 0);
+        for (int i = 0; i < parts && i < 8; i++) {
+            RECT r;
+            if (!SendMessageW(h, SB_GETRECT, (WPARAM)i, (LPARAM)&r)) continue;
+            int len = LOWORD(SendMessageW(h, SB_GETTEXTLENGTHW, (WPARAM)i, 0));
+            wchar_t *text = calloc((size_t)len + 1, sizeof(wchar_t));
+            if (!text) continue;
+            SendMessageW(h, SB_GETTEXTW, (WPARAM)i, (LPARAM)text);
+            r.left += S(4);
+            DrawTextW(dc, text, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            free(text);
+        }
+        if (old) SelectObject(dc, old);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+/* The menu bar, painted (Windows draws it light whatever the mode). These
+ * are the messages and structures File Explorer's menu bar uses. */
+#define WM_UAHDRAWMENU 0x0091
+#define WM_UAHDRAWMENUITEM 0x0092
+typedef struct { HMENU hmenu; HDC hdc; DWORD dwFlags; } uah_menu;
+typedef struct { DWORD cx, cy; } uah_size;
+typedef struct { DWORD rgcx[4]; DWORD fUpdateMaxWidths : 2; } uah_popup_metrics;
+typedef struct { int iPosition; uah_size umim; uah_popup_metrics umpm; } uah_menu_item;
+typedef struct { DRAWITEMSTRUCT dis; uah_menu um; uah_menu_item umi; } uah_draw_menu_item;
+
+static int theme_menu_bar(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, LRESULT *out)
+{
+    if (!g_dark) return 0;
+    switch (msg) {
+    case WM_UAHDRAWMENU: {
+        uah_menu *um = (uah_menu *)lp;
+        MENUBARINFO mbi;
+        memset(&mbi, 0, sizeof(mbi));
+        mbi.cbSize = sizeof(mbi);
+        if (!GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi)) return 0;
+        RECT win;
+        GetWindowRect(hwnd, &win);
+        OffsetRect(&mbi.rcBar, -win.left, -win.top);
+        FillRect(um->hdc, &mbi.rcBar, g_br_bg);
+        *out = TRUE;
+        return 1;
+    }
+    case WM_UAHDRAWMENUITEM: {
+        uah_draw_menu_item *d = (uah_draw_menu_item *)lp;
+        wchar_t text[128] = L"";
+        MENUITEMINFOW mi;
+        memset(&mi, 0, sizeof(mi));
+        mi.cbSize = sizeof(mi);
+        mi.fMask = MIIM_STRING;
+        mi.dwTypeData = text;
+        mi.cch = 127;
+        GetMenuItemInfoW(d->um.hmenu, (UINT)d->umi.iPosition, TRUE, &mi);
+        UINT state = d->dis.itemState;
+        int lit = (state & (ODS_HOTLIGHT | ODS_SELECTED)) != 0;
+        FillRect(d->um.hdc, &d->dis.rcItem, lit ? g_br_hot : g_br_bg);
+        SetBkMode(d->um.hdc, TRANSPARENT);
+        SetTextColor(d->um.hdc, state & (ODS_GRAYED | ODS_DISABLED | ODS_INACTIVE) ? DARK_GRAY : DARK_TEXT);
+        DrawTextW(d->um.hdc, text, -1, &d->dis.rcItem,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | (state & ODS_NOACCEL ? DT_HIDEPREFIX : 0));
+        *out = TRUE;
+        return 1;
+    }
+    case WM_NCPAINT:
+    case WM_NCACTIVATE: {
+        /* Windows leaves a light line under the menu bar: paint over it. */
+        *out = DefWindowProcW(hwnd, msg, wp, lp);
+        MENUBARINFO mbi;
+        memset(&mbi, 0, sizeof(mbi));
+        mbi.cbSize = sizeof(mbi);
+        if (GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi)) {
+            RECT client, win;
+            GetClientRect(hwnd, &client);
+            MapWindowPoints(hwnd, NULL, (POINT *)&client, 2);
+            GetWindowRect(hwnd, &win);
+            OffsetRect(&client, -win.left, -win.top);
+            RECT line = client;
+            line.bottom = line.top;
+            line.top--;
+            HDC dc = GetWindowDC(hwnd);
+            FillRect(dc, &line, g_br_bg);
+            ReleaseDC(hwnd, dc);
+        }
+        return 1;
+    }
+    }
+    return 0;
+}
+
+/* Change to what the choice comes to now: the whole window, its menus
+ * and the tree's colours. */
+static void theme_apply(void)
+{
+    g_dark = theme_want_dark();
+    theme_app_mode();
+    if (!g_main) return;
+    theme_window(g_main);
+    DrawMenuBar(g_main);
+}
+
+static void theme_choose(int choice)
+{
+    g_theme_choice = choice;
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) == ERROR_SUCCESS) {
+        DWORD v = (DWORD)choice;
+        RegSetValueExW(k, L"Appearance", 0, REG_DWORD, (const BYTE *)&v, sizeof(v));
+        RegCloseKey(k);
+    }
+    theme_apply();
+}
 
 /* ---- Jobs --------------------------------------------------------------- */
 
@@ -1878,6 +2278,8 @@ static wchar_t g_edit_name[256], g_edit_location[256];
 
 static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG: {
@@ -2230,6 +2632,8 @@ static void risk_fill(HWND dlg)
 
 static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
         static const wchar_t *help_cols[] = {L"Drive", L"Kind", L"Kept in", L"Would help", L"Size", L"Free space"};
@@ -2505,6 +2909,8 @@ static void table_changed(HWND lv)
 
 static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
         static const wchar_t *titles[] = {L"Status of every drive", L"Largest files", L"Damaged files", L"Left alone by the last restore",
@@ -2654,6 +3060,8 @@ static wchar_t g_label_location[256];
 
 static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG:
@@ -2686,6 +3094,8 @@ static int g_pass_mode; /* IDD_PASSPHRASE: 0 passphrase, 1 also offer the recove
 
 static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG:
@@ -3370,6 +3780,8 @@ static wchar_t g_skip_root_name[300];
 
 static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG: {
@@ -4227,6 +4639,8 @@ static void deleted_fill(HWND dlg)
 
 static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
         static const wchar_t *cols[] = {L"", L"File", L"Last seen", L"Size", L"On drives"};
@@ -4803,6 +5217,13 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(g_menu_view, MF_STRING, ID_M_CONFLICTS, L"Files the last restore left alone...");
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
     AppendMenuW(g_menu_view, MF_STRING, ID_M_REFRESH, L"&Refresh");
+    AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
+    HMENU look = g_menu_look = CreatePopupMenu();
+    AppendMenuW(look, MF_STRING, ID_M_THEME_FOLLOW, L"Like Windows (its app mode, light or dark)");
+    AppendMenuW(look, MF_STRING, ID_M_THEME_LIGHT, L"Light");
+    AppendMenuW(look, MF_STRING, ID_M_THEME_DARK, L"Dark");
+    CheckMenuRadioItem(look, ID_M_THEME_FOLLOW, ID_M_THEME_DARK, ID_M_THEME_FOLLOW + (UINT)g_theme_choice, MF_BYCOMMAND);
+    AppendMenuW(g_menu_view, MF_POPUP, (UINT_PTR)look, L"&Appearance");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)g_menu_view, L"&View");
 
     HMENU tools = CreatePopupMenu();
@@ -5567,7 +5988,24 @@ static LRESULT CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_NOTIFY:
     case WM_CONTEXTMENU:
         return SendMessageW(g_main, msg, wp, lp);
+    case WM_ERASEBKGND:
+        if (g_dark) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            FillRect((HDC)wp, &rc, g_br_bg);
+            return 1;
+        }
+        break;
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+    case WM_CTLCOLORBTN: {
+        LRESULT r;
+        if (theme_ctlcolor(msg, wp, lp, &r)) return r;
+        break;
+    }
     case WM_CTLCOLORSTATIC: {
+        LRESULT r;
+        if (theme_ctlcolor(msg, wp, lp, &r)) return r;
         /* Labels, check boxes and read-only text on the page's own colour. */
         HDC dc = (HDC)wp;
         SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
@@ -6939,6 +7377,8 @@ static int parse_gb(const wchar_t *s, int64_t *out)
 
 static INT_PTR CALLBACK place_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG:
@@ -7430,19 +7870,19 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
         case BD_STATE_PARTIAL:
             break;
         case BD_STATE_AVAILABLE_OLDER:
-            cd->clrText = RGB(150, 100, 0);
+            cd->clrText = theme_older();
             break;
         case BD_STATE_OFFLINE:
         case BD_STATE_NO_COPY:
-            cd->clrText = GetSysColor(COLOR_GRAYTEXT);
+            cd->clrText = theme_gray();
             font = g_font_italic;
             break;
         case BD_STATE_BAD:
-            cd->clrText = RGB(180, 30, 30);
+            cd->clrText = theme_bad();
             font = g_font_bold;
             break;
         case BD_STATE_DELETED:
-            cd->clrText = GetSysColor(COLOR_GRAYTEXT);
+            cd->clrText = theme_gray();
             font = g_font_strike;
             break;
         }
@@ -7551,7 +7991,23 @@ static void create_children(HWND hwnd)
 
 static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    LRESULT themed;
+    if (theme_menu_bar(hwnd, msg, wp, lp, &themed) || theme_ctlcolor(msg, wp, lp, &themed)) return themed;
     switch (msg) {
+    case WM_ERASEBKGND:
+        if (g_dark) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            FillRect((HDC)wp, &rc, g_br_bg);
+            return 1;
+        }
+        break;
+    case WM_SETTINGCHANGE:
+        /* Windows' app mode or high contrast changed. */
+        if (g_theme_choice == THEME_FOLLOW || wp == SPI_SETHIGHCONTRAST) {
+            if (theme_want_dark() != g_dark) theme_apply();
+        }
+        break;
     case WM_CREATE:
         create_children(hwnd);
         create_menu_bar(hwnd);
@@ -7589,6 +8045,12 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (LOWORD(wp) == ID_BTN_STOP) {
             stop_job();
+            return 0;
+        }
+        /* View > Appearance: works with no database and while a job runs. */
+        if (!lp && LOWORD(wp) >= ID_M_THEME_FOLLOW && LOWORD(wp) <= ID_M_THEME_DARK) {
+            CheckMenuRadioItem(g_menu_look, ID_M_THEME_FOLLOW, ID_M_THEME_DARK, LOWORD(wp), MF_BYCOMMAND);
+            theme_choose(LOWORD(wp) - ID_M_THEME_FOLLOW);
             return 0;
         }
         /* View: a tab. Works while a job runs; the tab is filled when it ends. */
@@ -8045,6 +8507,8 @@ static struct { char **paths; int n; } g_newdb;
 
 static INT_PTR CALLBACK newdb_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG:
@@ -8372,6 +8836,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES |
                                                  ICC_PROGRESS_CLASS | ICC_DATE_CLASSES | ICC_TAB_CLASSES};
     InitCommonControlsEx(&icc);
+    theme_load();
+    g_dark = theme_want_dark();
+    theme_app_mode();
     HDC screen = GetDC(NULL);
     g_dpi = GetDeviceCaps(screen, LOGPIXELSY);
     ReleaseDC(NULL, screen);
@@ -8393,6 +8860,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_NAME, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, S(1240), S(820),
                                 NULL, NULL, inst, NULL);
     if (!hwnd) { LocalFree(argv); return 1; }
+    theme_window(hwnd);
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);
     update_drives_label();

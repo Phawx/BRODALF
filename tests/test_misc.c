@@ -437,6 +437,128 @@ static void test_save_only_changes(void)
     bd_catalog_close(cat);
 }
 
+static void copy_file(const char *from, const char *to)
+{
+    FILE *in = bd_fopen(from, "rb"), *out = bd_fopen(to, "wb");
+    if (!in || !out) { fprintf(stderr, "cannot copy %s\n", from); exit(1); }
+    char buf[8192];
+    for (size_t n; (n = fread(buf, 1, sizeof(buf), in)) > 0;) fwrite(buf, 1, n, out);
+    fclose(in);
+    fclose(out);
+}
+
+typedef struct { const char *part; int n; } part_count;
+
+static int count_part(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    part_count *c = ctx;
+    if (st->is_file && strstr(rel, c->part)) c->n++;
+    return 0;
+}
+
+static int files_under(const char *dir, const char *part)
+{
+    part_count c = {part, 0};
+    bd_walk(dir, count_part, NULL, &c);
+    return c.n;
+}
+
+/* Item 5: a copy put under .versions by a backup whose catalog was never
+ * saved is recorded by the next backup instead of copied again. */
+static void test_adopt_alongside(void)
+{
+    begin("adopt");
+    write_file(at("src/a.txt"), "one");
+    setup u = make_setup();
+    scan(u.cat);
+    CHECK(backup(u.cat, u.drive).files_copied == 1);
+    write_file(at("src/a.txt"), "two, a bit longer");
+    scan(u.cat);
+    REQUIRE_OK(bd_catalog_save(u.cat), u.cat);
+    copy_file(at("test.brodalf"), at("before.brodalf"));
+    CHECK(backup(u.cat, u.drive).files_copied == 1);
+    CHECK(files_under(at("drive"), "/.versions/") == 1);
+    bd_catalog_close(u.cat);
+
+    /* What that backup recorded is lost, as after a crash. */
+    copy_file(at("before.brodalf"), at("test.brodalf"));
+    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &u.cat), NULL);
+    REQUIRE_OK(bd_media_connect(u.cat, at("drive"), &u.drive, quiet, NULL), u.cat);
+    bd_backup_stats bs = backup(u.cat, u.drive);
+    CHECK(bs.files_copied == 0 && bs.files_already_there == 1 && bs.files_failed == 0);
+    CHECK(files_under(at("drive"), "/.versions/") == 1);
+    bd_media_status ms;
+    REQUIRE_OK(bd_media_status_get(u.cat, u.drive, &ms), u.cat);
+    CHECK(ms.files_current == 1 && ms.old_versions == 1);
+
+    /* A file there with other contents is left alone: the next version
+     * goes beside it. */
+    write_file(at("src/a.txt"), "three, longer again");
+    scan(u.cat);
+    REQUIRE_OK(bd_catalog_save(u.cat), u.cat);
+    bd_catalog_close(u.cat);
+    copy_file(at("test.brodalf"), at("before.brodalf"));
+    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &u.cat), NULL);
+    REQUIRE_OK(bd_media_connect(u.cat, at("drive"), &u.drive, quiet, NULL), u.cat);
+    CHECK(backup(u.cat, u.drive).files_copied == 1);
+    bd_catalog_close(u.cat);
+    copy_file(at("before.brodalf"), at("test.brodalf"));
+    /* Spoil the unrecorded copy: it no longer matches the version. */
+    char rel[1200];
+    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &u.cat), NULL);
+    snprintf(rel, sizeof(rel), "drive/BRODALF/%s/.versions/src/a.v3.txt", bd_catalog_uuid(u.cat));
+    if (exists(at(rel))) write_file(at(rel), "something else entirely");
+    else CHECK(!"the copy of version 3 is where it was expected");
+    REQUIRE_OK(bd_media_connect(u.cat, at("drive"), &u.drive, quiet, NULL), u.cat);
+    bs = backup(u.cat, u.drive);
+    CHECK(bs.files_copied == 1 && bs.files_already_there == 0);
+    CHECK(files_under(at("drive"), "/.versions/") == 3);
+    bd_catalog_close(u.cat);
+}
+
+typedef struct { bd_catalog *cat; int saves; } save_watch;
+
+static void stop_after_save(void *ctx, const char *msg)
+{
+    save_watch *w = ctx;
+    if (strncmp(msg, "catalog saved", 13) == 0 && ++w->saves == 1) bd_catalog_cancel(w->cat);
+}
+
+/* Item 5: a long backup saves the catalog between batches, so what it
+ * copied before it was cut short is in the file. */
+static void test_periodic_save(void)
+{
+    begin("periodic");
+    char rel[64];
+    for (int i = 0; i < 600; i++) {
+        snprintf(rel, sizeof(rel), "src/f%03d.txt", i);
+        write_file(at(rel), rel);
+    }
+    setup u = make_setup();
+    scan(u.cat);
+    REQUIRE_OK(bd_catalog_save(u.cat), u.cat);
+    bd_test_save_every_ms = 1;
+    save_watch w = {u.cat, 0};
+    bd_backup_stats bs;
+    CHECK(bd_backup(u.cat, u.drive, 0, &bs, stop_after_save, &w) == BD_ERR_CANCELLED);
+    bd_test_save_every_ms = 0;
+    CHECK(w.saves == 1);
+    CHECK(bs.files_copied == 256);
+    /* Closed without a save, as if BRODALF had ended there. */
+    bd_catalog_close(u.cat);
+    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &u.cat), NULL);
+    bd_media_status ms;
+    REQUIRE_OK(bd_media_status_get(u.cat, u.drive, &ms), u.cat);
+    CHECK(ms.files_current == 256 && ms.files_not_here == 600 - 256);
+    CHECK(strcmp(ms.last_backup_status, "stopped") == 0 && ms.last_backup_files == 256);
+    /* The rest is copied by the next backup, nothing twice. */
+    REQUIRE_OK(bd_media_connect(u.cat, at("drive"), &u.drive, quiet, NULL), u.cat);
+    bs = backup(u.cat, u.drive);
+    CHECK(bs.files_copied == 600 - 256 && bs.files_failed == 0);
+    CHECK(files_under(at("drive"), "/.versions/") == 0);
+    bd_catalog_close(u.cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -450,6 +572,8 @@ int main(void)
     test_drive_status();
     test_mass_change();
     test_save_only_changes();
+    test_adopt_alongside();
+    test_periodic_save();
 #ifndef _WIN32
     test_walk_error();
     test_stale_work_files();

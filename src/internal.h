@@ -95,6 +95,9 @@ long bd_source_read(bd_source *k, void *buf, size_t cap);
 
 /* Tests only: pretend every drive has this much free space (-1: ask it). */
 extern int64_t bd_test_free_bytes;
+/* Tests only: a backup saves the catalog between batches this often (ms;
+ * 0: every 5 minutes). */
+extern int64_t bd_test_save_every_ms;
 
 /* SQL: where a drive is kept, its "kept in" text (all drives with none set
  * share ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place

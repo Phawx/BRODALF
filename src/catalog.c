@@ -455,6 +455,12 @@ static bd_status open_db(bd_catalog *cat)
     if (bd_exec(cat, "UPDATE copies SET encrypted=1 WHERE encrypted=0 AND media_id IN (SELECT id FROM media WHERE encrypted<>0)") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
+    /* A job saved while it ran (a long backup saves every few minutes) and
+     * never finished was cut short: one BRODALF at a time has the catalog
+     * open, so nothing is running now. */
+    if (bd_exec(cat, "UPDATE jobs SET status='stopped' WHERE status='running' AND finished_ms IS NULL") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
     int now_cookie = schema_cookie(cat);
     if (cookie < 0 || now_cookie != cookie) cat->open_upgraded = 1;
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"

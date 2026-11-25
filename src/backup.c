@@ -21,6 +21,10 @@
 #define SYNC_BYTES (64 * 1024 * 1024)
 
 int64_t bd_test_free_bytes = -1;
+int64_t bd_test_save_every_ms = 0;
+
+/* How often a long backup saves the catalog between batches. */
+#define SAVE_EVERY_MS (5 * 60 * 1000)
 
 typedef struct {
     int64_t node_id, node_size, node_mtime;
@@ -185,6 +189,21 @@ static int copy_verified(const char *src, const uint8_t *src_key, const char *de
     return 0;
 }
 
+/* A running job's counts so far, for a catalog saved before it ends. */
+static void note_job_progress(bd_catalog *cat, int64_t job, const bd_backup_stats *st)
+{
+    sqlite3_stmt *u;
+    if (!job || sqlite3_prepare_v2(cat->db, "UPDATE jobs SET files_done=?, files_failed=?, bytes_done=? WHERE id=? AND finished_ms IS NULL",
+                                   -1, &u, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_int64(u, 1, st->files_copied);
+    sqlite3_bind_int64(u, 2, st->files_failed);
+    sqlite3_bind_int64(u, 3, st->bytes_copied);
+    sqlite3_bind_int64(u, 4, job);
+    sqlite3_step(u);
+    sqlite3_finalize(u);
+}
+
 int64_t bd_job_start(bd_catalog *cat, const char *kind, int64_t media_id)
 {
     sqlite3_stmt *ins;
@@ -346,6 +365,65 @@ static int item_prepare(bd_catalog *cat, backup_item *it, int *rehashed, bd_log_
         *rehashed = 1;
     }
     return PREP_OK;
+}
+
+/* A copy of this version that an earlier backup put alongside under
+ * .versions (alongside_path's names for it, in order) but never recorded,
+ * because the catalog was not saved after it (a crash, a power cut, the
+ * drive pulled). If one is there, not claimed by any copy the catalog
+ * knows and with exactly this version's checksum, it is recorded instead
+ * of copied again, as dest_prepare does for the usual place. Only looked
+ * for when the drive holds some version of the file, as only then does a
+ * copy go alongside. 1 if adopted (or adopting it failed: counted either
+ * way), 0 to copy as usual. Nothing on the drive is touched. */
+static int adopt_alongside(bd_catalog *cat, bd_store *store, const uint8_t *key, const backup_item *it,
+                           bd_backup_stats *stats)
+{
+    int64_t media_id = store->media_id;
+    sqlite3_stmt *q;
+    int held = 0;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT 1 FROM copies c JOIN versions v ON v.id=c.version_id"
+                           " WHERE v.node_id=? AND c.media_id=? AND c.version_id<>? LIMIT 1",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, it->node_id);
+        sqlite3_bind_int64(q, 2, media_id);
+        sqlite3_bind_int64(q, 3, it->version_id);
+        held = sqlite3_step(q) == SQLITE_ROW;
+        sqlite3_finalize(q);
+    }
+    if (!held) return 0;
+    char *main_rel = bd_sprintf("%s/%s%s", it->source_name, it->rel, key ? BD_SEALED_SUFFIX : "");
+    if (!main_rel) return 0;
+    int adopted = 0;
+    for (int k = 1; k < 1000 && !adopted; k++) {
+        char tag[48];
+        if (k == 1) snprintf(tag, sizeof(tag), "v%lld", (long long)it->version_no);
+        else snprintf(tag, sizeof(tag), "v%lld-%d", (long long)it->version_no, k);
+        char *plain = versions_rel_path(main_rel, tag);
+        char *rel = plain ? on_drive(store, plain) : NULL;
+        free(plain);
+        if (!rel) break;
+        bd_remote_stat st;
+        int r = store->ops->stat(store, rel, &st);
+        if (r != 0) { free(rel); break; } /* the first free name: nothing was put beyond it */
+        if (!path_claimed(cat, media_id, rel)) {
+            char hash[BD_HASH_HEX_LEN + 1];
+            char *local = NULL;
+            int is_temp = 0;
+            int same = bd_store_fetch(store, rel, &local, &is_temp) == 0 &&
+                       bd_hash_copy(local, key, NULL, NULL, hash, NULL) == 0 && strcmp(hash, it->hash) == 0;
+            bd_store_release(local, is_temp);
+            if (same) {
+                if (record_copy(cat, it->version_id, media_id, rel, &st, key != NULL) == 0) stats->files_already_there++;
+                else stats->files_failed++;
+                adopted = 1;
+            }
+        }
+        free(rel);
+    }
+    free(main_rel);
+    return adopted;
 }
 
 static int has_good_copy(bd_catalog *cat, int64_t version_id, int64_t media_id)
@@ -788,7 +866,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
     bd_progress_begin(cat, "backup", todo_files, todo_bytes);
 
     backup_item items[BATCH];
-    int64_t last_id = 0, items_done = 0, rehashed_total = 0;
+    int64_t last_id = 0, items_done = 0, rehashed_total = 0, last_save_ms = bd_now_ms();
     int cancelled = 0;
     int full_said[MAX_DESTS] = {0}, limit_said[MAX_DESTS] = {0};
     while (!cancelled) {
@@ -877,6 +955,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 if (!want[k]) continue;
                 backup_dest *d = &dests[k];
                 const uint8_t *key = (d->encrypted || it->encrypt) ? cat->key : NULL;
+                if (adopt_alongside(cat, d->store, key, it, &stats[k])) continue;
                 /* Sealed copies are a little bigger than the file. */
                 int64_t need = it->version_size + (key ? it->version_size / 1024 + 4096 : 0);
                 if (d->space_free >= 0 && need > d->space_free - d->reserve) {
@@ -933,6 +1012,25 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             bd_exec(cat, "ROLLBACK");
         }
         free_items(items, ni);
+        /* Every few minutes, between batches, when every copy made so far
+         * is synced, in its place and recorded: save the catalog, so a
+         * long backup that is cut short (a crash, a power cut) keeps what
+         * it copied. The catalog's copy on the drive is still made at the
+         * end only, so a drive does not fill with revisions. */
+        int64_t every = bd_test_save_every_ms > 0 ? bd_test_save_every_ms : SAVE_EVERY_MS;
+        if (!cancelled && bd_now_ms() - last_save_ms >= every) {
+            int64_t copied = 0;
+            for (int k = 0; k < n; k++) {
+                note_job_progress(cat, dests[k].job, &stats[k]);
+                copied += stats[k].files_copied;
+            }
+            if (bd_catalog_save(cat) == BD_OK)
+                bd_logf(log, log_ctx, "catalog saved; %lld files copied so far", (long long)copied);
+            else
+                bd_logf(log, log_ctx, "the catalog could not be saved during the backup (it is saved at the end): %s",
+                        bd_catalog_error(cat));
+            last_save_ms = bd_now_ms();
+        }
     }
     sqlite3_finalize(q);
     sqlite3_finalize(have);

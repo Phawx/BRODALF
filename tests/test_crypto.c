@@ -217,7 +217,6 @@ static void test_recovery_key(void)
     bd_catalog_close(cat);
     REQUIRE_OK(bd_catalog_recover(at(backup), at("rk/new.brodalf")), NULL);
     REQUIRE_OK(bd_catalog_open_with_recovery(at("rk/new.brodalf"), key, &cat), NULL);
-    bd_check_stats cs;
     REQUIRE_OK(bd_media_connect(cat, at("rk/vault"), &vault, quiet, NULL), cat);
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, NULL, at("rk/out"), &rs, quiet, NULL), cat);

@@ -326,7 +326,7 @@ static void media_name(int64_t id, wchar_t *out, size_t cap);
 
 /* ---- Jobs --------------------------------------------------------------- */
 
-typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY } job_kind;
+typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW } job_kind;
 #define SUMMARY_LEN 768
 
 /* A file a restore left alone because another file was already where it
@@ -371,6 +371,7 @@ typedef struct job {
     conflict_row *conf; /* restore: files left alone */
     int n_conf, cap_conf;
     int64_t in_use;     /* scan/backup: files another program had open */
+    int from_shadow;    /* scan/backup: reads files in use from a shadow copy; the copy is removed after the last one */
     int64_t damaged;    /* scan: files changed without their size or time changing */
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
@@ -383,6 +384,7 @@ typedef struct job {
 static job *g_queue;
 
 static void start_backup(job *b, int offer_scan);
+static bd_status run_shadow(job *j);
 static void free_conflicts(conflict_row *c, int n);
 
 static void job_free(job *j)
@@ -862,6 +864,9 @@ static DWORD WINAPI worker(LPVOID arg)
         if (cs.skipped) say(j, L" %lld encrypted copies need the passphrase to check.", (long long)cs.skipped);
         break;
     }
+    case JOB_SHADOW:
+        s = run_shadow(j);
+        break;
     case JOB_RESTORE: {
         bd_restore_stats rs;
         bd_restore_opts ro;
@@ -950,7 +955,7 @@ static void start_next_job(void)
     set_busy(1);
     static const wchar_t *starting[] = {L"Looking for BRODALF drives...", L"Scanning your backup roots...",
                                         L"Backing up...", L"Checking every copy on the drive...", L"Restoring...",
-                                        L"Reading back copies not read lately..."};
+                                        L"Reading back copies not read lately...", L"Reading files that are in use from a shadow copy..."};
     const wchar_t *what = j->kind == JOB_SCAN && j->bitrot ? L"Bit-rot scan: reading every file again..." : starting[j->kind];
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
     show_progress(-1, what);
@@ -995,6 +1000,7 @@ static void enqueue(job *j)
                 if (j->then_backup && !q->then_backup) q->then_backup = j->then_backup;
                 q->after_open |= j->after_open;
                 q->then_all |= j->then_all;
+                q->from_shadow |= j->from_shadow;
                 job_free(j);
                 return;
             }
@@ -4425,9 +4431,219 @@ static void in_use_free(in_use_list *l)
     free(l->paths);
 }
 
+/* ---- Reading files in use from a shadow copy ------------------------------- */
+
+/* Windows can take a shadow copy of a drive, a snapshot no program holds
+ * open. Only an administrator can, so BRODALF starts a second copy of
+ * itself as administrator (brodalf.exe --shadow-copy), which copies the
+ * files in use out of the snapshot into a folder only administrators and
+ * this user can read; the scan and backup then read those copies in place
+ * of the locked files. Nothing here starts by itself: it is offered after
+ * a scan or backup that met files in use, and the person says yes. */
+static wchar_t g_shadow_dir[MAX_PATH];
+
+/* Delete the files in dir (not in folders inside it) and dir itself. */
+static void remove_flat_dir(const wchar_t *dir)
+{
+    wchar_t pattern[MAX_PATH + 8];
+    swprintf(pattern, MAX_PATH + 8, L"%ls\\*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            wchar_t f[MAX_PATH * 2];
+            swprintf(f, MAX_PATH * 2, L"%ls\\%ls", dir, fd.cFileName);
+            DeleteFileW(f);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir);
+}
+
+/* g_shadow_dir holds list.txt (written here) and out\, which the helper
+ * makes itself so that only administrators can write to it. */
+static void shadow_out_dir(wchar_t *out, size_t cap)
+{
+    swprintf(out, cap, L"%ls\\out", g_shadow_dir);
+}
+
+/* Forget the copies and delete them. Only with no job running. */
+static void shadow_cleanup(void)
+{
+    if (g_cat) bd_substitutes_clear(g_cat);
+    if (!g_shadow_dir[0]) return;
+    wchar_t out[MAX_PATH + 8];
+    shadow_out_dir(out, MAX_PATH + 8);
+    remove_flat_dir(out);
+    remove_flat_dir(g_shadow_dir);
+    g_shadow_dir[0] = 0;
+}
+
+/* Some job still to run reads from the shadow copy. */
+static int shadow_still_needed(void)
+{
+    for (job *q = g_queue; q; q = q->next)
+        if (q->from_shadow) return 1;
+    return 0;
+}
+
+/* This user's SID as text, for the helper to let it read the copies. */
+static char *user_sid(void)
+{
+    HANDLE tok = NULL;
+    unsigned char buf[256];
+    DWORD n = 0;
+    char *out = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok) && GetTokenInformation(tok, TokenUser, buf, sizeof(buf), &n)) {
+        wchar_t *w = NULL;
+        if (ConvertSidToStringSidW(((TOKEN_USER *)buf)->User.Sid, &w)) {
+            out = narrow(w);
+            LocalFree(w);
+        }
+    }
+    if (tok) CloseHandle(tok);
+    return out;
+}
+
+typedef struct { char **paths; int n, cap; } path_list;
+
+static int source_path_cb(void *ctx, const bd_source_info *info)
+{
+    path_list *l = ctx;
+    if (l->n == l->cap) {
+        int cap = l->cap ? l->cap * 2 : 8;
+        char **grown = realloc(l->paths, sizeof(char *) * (size_t)cap);
+        if (!grown) return 1;
+        l->paths = grown;
+        l->cap = cap;
+    }
+    l->paths[l->n++] = xstrdup(info->path);
+    return 0;
+}
+
+/* Run an elevated copy of BRODALF that copies the files in use out of a
+ * shadow copy, then read from those copies. Worker thread. The helper gets
+ * the list's hash on its command line and checks every file against the
+ * backup roots, so nothing changed after the permission prompt is used. */
+static bd_status run_shadow(job *j)
+{
+    in_use_list l = {NULL, 0, 0, 0};
+    bd_list_in_use(g_cat, in_use_cb, &l);
+    if (!l.n) { swprintf(j->summary, SUMMARY_LEN, L"No files are in use any more."); return BD_OK; }
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    swprintf(g_shadow_dir, MAX_PATH, L"%lsbrodalf-shadow-%lu", tmp, (unsigned long)GetCurrentProcessId());
+    CreateDirectoryW(g_shadow_dir, NULL);
+    wchar_t list[MAX_PATH + 16], out[MAX_PATH + 8], params[MAX_PATH * 2 + 160], exe[MAX_PATH];
+    swprintf(list, MAX_PATH + 16, L"%ls\\list.txt", g_shadow_dir);
+    shadow_out_dir(out, MAX_PATH + 8);
+
+    path_list src = {NULL, 0, 0};
+    bd_list_sources(g_cat, source_path_cb, &src);
+    char *sid = user_sid(), hash[65];
+    char *text = sid ? bd_shadow_list_format(sid, (const char *const *)src.paths, src.n, (const char *const *)l.paths, l.n, hash) : NULL;
+    for (int i = 0; i < src.n; i++) free(src.paths[i]);
+    free(src.paths);
+    free(sid);
+    FILE *f = text ? _wfopen(list, L"wb") : NULL;
+    int written = f && fwrite(text, 1, strlen(text), f) == strlen(text);
+    if (f && fclose(f) != 0) written = 0;
+    free(text);
+    if (!written) {
+        in_use_free(&l);
+        swprintf(j->summary, SUMMARY_LEN, L"Could not write the list of files in use.");
+        return BD_ERR_IO;
+    }
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    wchar_t *whash = widen(hash);
+    swprintf(params, MAX_PATH * 2 + 160, L"--shadow-copy \"%ls\" \"%ls\" %ls", out, list, whash ? whash : L"");
+    free(whash);
+    post_text(WM_APP_LOG, L"Asking Windows for administrator permission to take a shadow copy...");
+    SHELLEXECUTEINFOW sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe;
+    sei.lpParameters = params;
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei)) {
+        DWORD err = GetLastError();
+        in_use_free(&l);
+        if (err == ERROR_CANCELLED) {
+            swprintf(j->summary, SUMMARY_LEN, L"Without administrator permission the files in use stay as they were last backed up.");
+            return BD_OK;
+        }
+        swprintf(j->summary, SUMMARY_LEN, L"Could not start the shadow copy helper (Windows error %lu).", (unsigned long)err);
+        return BD_ERR_IO;
+    }
+    WaitForSingleObject(sei.hProcess, INFINITE);
+    CloseHandle(sei.hProcess);
+
+    /* result.txt: one line per file, "ok", "failed" or "refused", then "error: ...". */
+    wchar_t result[MAX_PATH + 24];
+    swprintf(result, MAX_PATH + 24, L"%ls\\result.txt", out);
+    f = _wfopen(result, L"rb");
+    int got = 0, refused = 0;
+    char line[2048], err[1024] = "";
+    char *dir = narrow(out);
+    for (int i = 0; f && fgets(line, sizeof(line), f);) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (strncmp(line, "error: ", 7) == 0) { snprintf(err, sizeof(err), "%s", line + 7); continue; }
+        if (i < l.n && strcmp(line, "refused") == 0) refused++;
+        if (i < l.n && strcmp(line, "ok") == 0) {
+            char staged[MAX_PATH * 3];
+            snprintf(staged, sizeof(staged), "%s\\%d.bin", dir ? dir : "", i + 1);
+            if (bd_substitute_add(g_cat, l.paths[i], staged) == BD_OK) got++;
+        }
+        i++;
+    }
+    free(dir);
+    if (f) fclose(f);
+    int total = l.n;
+    in_use_free(&l);
+    if (refused) {
+        wchar_t line_w[200];
+        swprintf(line_w, 200, L"%d file%ls outside your backup roots %ls left alone.", refused, refused == 1 ? L"" : L"s",
+                 refused == 1 ? L"was" : L"were");
+        post_text(WM_APP_LOG, line_w);
+    }
+    if (!got) {
+        wchar_t *e = widen(err);
+        swprintf(j->summary, SUMMARY_LEN, L"The shadow copy did not work: %ls", e && *e ? e : L"no reason was given (see the app log)");
+        free(e);
+        return BD_OK;
+    }
+    j->in_use = got;
+    swprintf(j->summary, SUMMARY_LEN, L"Read %d of %d files in use from a shadow copy. Scanning them now.", got, total);
+    return BD_OK;
+}
+
+/* The copies are ready: scan, then back up where the files were going.
+ * The last of the two removes the copies when it is done. */
+static void after_shadow(job *j)
+{
+    if (!g_shadow_dir[0] || !j->in_use) return;
+    job *scan = new_job(JOB_SCAN);
+    job *back = j->media_id || j->n_many ? new_job(JOB_BACKUP) : NULL;
+    if (scan) scan->from_shadow = 1;
+    if (back) {
+        back->media_id = j->media_id;
+        memcpy(back->many, j->many, sizeof(j->many));
+        back->n_many = j->n_many;
+        back->many_places = j->many_places;
+        back->from_shadow = 1;
+    }
+    if (scan) enqueue(scan);
+    if (back) enqueue(back);
+}
+
 /* The files another program had open at the last scan or backup, and what
- * to do about them. say_none: also say when there are none. */
-static void show_in_use(int say_none)
+ * to do about them. say_none: also say when there are none. after: the
+ * scan or backup that met them (NULL from the menu); its drives are where
+ * a backup from the shadow copy goes. */
+static void show_in_use(int say_none, const job *after)
 {
     in_use_list l = {NULL, 0, 0, 0};
     bd_list_in_use(g_cat, in_use_cb, &l);
@@ -4446,11 +4662,29 @@ static void show_in_use(int say_none)
         free(w);
     }
     if (l.n > 10) wadd(&msg, L"    ... and %d more\n", l.n - 10);
-    wadd(&msg, L"\nClose the program that has %ls open (an email program often keeps its mail files open), then press "
-               L"Scan folders, and Back up if you were backing up.", l.n == 1 ? L"it" : L"them");
-    MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION);
+    int offer = !(after && after->from_shadow); /* a shadow copy just tried and could not read them */
+    if (offer) {
+        wadd(&msg, L"\nYou can close the program that has %ls open (an email program often keeps its mail files open) and scan "
+                   L"again. Or Windows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read "
+                   L"%ls from that. Windows will ask for administrator permission.\n\nRead %ls from a shadow copy now?",
+             l.n == 1 ? L"it" : L"them", l.n == 1 ? L"it" : L"them", l.n == 1 ? L"it" : L"them");
+    } else {
+        wadd(&msg, L"\nThe shadow copy could not read %ls either. Close the program that has %ls open, then press Scan folders, "
+                   L"and Back up if you were backing up.", l.n == 1 ? L"it" : L"them", l.n == 1 ? L"it" : L"them");
+    }
+    int yes = MessageBoxW(g_main, msg.p, APP_NAME, offer ? MB_ICONQUESTION | MB_YESNO : MB_ICONINFORMATION) == IDYES;
     free(msg.p);
     in_use_free(&l);
+    if (!offer || !yes) return;
+    job *s = new_job(JOB_SHADOW);
+    if (!s) return;
+    if (after && after->kind == JOB_BACKUP) {
+        s->media_id = after->media_id;
+        memcpy(s->many, after->many, sizeof(after->many));
+        s->n_many = after->n_many;
+        s->many_places = after->many_places;
+    }
+    enqueue(s);
 }
 
 /* ---- The menu bar ----------------------------------------------------------- */
@@ -4834,7 +5068,7 @@ static void menu_command(int cmd)
     case ID_M_RISK: cmd_risk(); break;
     case ID_M_ADD_DISK: add_disk(); break;
     case ID_M_DRIVES: cmd_drives(); break;
-    case ID_M_IN_USE: show_in_use(1); break;
+    case ID_M_IN_USE: show_in_use(1, NULL); break;
     case ID_M_STATUS_ALL: cmd_table(TABLE_DRIVES); break;
     case ID_M_EXPORT: cmd_export(); break;
     case ID_M_SETTINGS: cmd_security(); break;
@@ -6878,7 +7112,7 @@ static void page_command(int id, int code)
     case ID_DB_SKIP: cmd_skip(0, NULL); break;
     case ID_DB_DELETED: cmd_deleted(); break;
     case ID_DB_DAMAGED: cmd_table(TABLE_DAMAGED); break;
-    case ID_DB_IN_USE: show_in_use(1); break;
+    case ID_DB_IN_USE: show_in_use(1, NULL); break;
     case ID_DB_LARGEST: cmd_table(TABLE_LARGEST); break;
     case ID_DB_EXPORT: cmd_export(); break;
 
@@ -7406,9 +7640,15 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             else if (j->kind == JOB_SCAN && j->status == BD_OK) after_scan(j);
             else if (j->kind == JOB_BACKUP && j->status == BD_OK) after_backup(j);
             else if (j->kind == JOB_RESTORE && j->status == BD_OK) after_restore(j);
-            if ((j->kind == JOB_SCAN || j->kind == JOB_BACKUP) && j->in_use && j->status == BD_OK) show_in_use(0);
+            else if (j->kind == JOB_SHADOW && j->status == BD_OK) after_shadow(j);
+            /* A scan that leads to a backup from the shadow copy waits for the backup to ask. */
+            if ((j->kind == JOB_SCAN || j->kind == JOB_BACKUP) && j->in_use && j->status == BD_OK &&
+                !(j->from_shadow && shadow_still_needed()))
+                show_in_use(0, j);
         }
         job_free(j);
+        /* No job is running now: remove the shadow copy once nothing more reads it. */
+        if (g_shadow_dir[0] && !shadow_still_needed()) shadow_cleanup();
         g_ui_depth--;
         if (g_close_after) { /* Close was answered while the questions above were up */
             DestroyWindow(hwnd);
@@ -7437,7 +7677,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_busy) {
             static const wchar_t *ask[] = {L"Stop looking for drives and close?", L"Stop the scan and close?",
                                            L"Stop the backup and close?", L"Stop the check and close?",
-                                           L"Stop the restore and close?", L"Stop reading back the copies and close?"};
+                                           L"Stop the restore and close?", L"Stop reading back the copies and close?",
+                                           L"Stop reading the files in use and close?"};
             if (g_close_after) return 0; /* already stopping; closes when the job returns */
             wchar_t text[256];
             swprintf(text, 256, L"%ls\n\nWhat was done until then is kept. BRODALF closes as soon as the job has stopped.",
@@ -7457,6 +7698,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        if (g_shadow_dir[0]) shadow_cleanup(); /* no job runs any more */
         PostQuitMessage(0);
         return 0;
     }
@@ -7974,6 +8216,21 @@ static void make_fonts(void)
 
 /* ---- Helper modes ------------------------------------------------------- */
 
+/* brodalf.exe --shadow-copy <out dir> <list> <hash>: started as
+ * administrator by the main window. The checks (the list's hash, the
+ * backup roots, a private folder for the copies) are in bd_shadow_helper. */
+static int shadow_helper(const wchar_t *out, const wchar_t *list, const wchar_t *hash)
+{
+    char *o = narrow(out), *l = narrow(list), *h = narrow(hash);
+    char err[512] = "";
+    int got = o && l && h ? bd_shadow_helper(o, l, h, err, sizeof(err)) : -1;
+    bd_applog("shadow copy helper: %d copied%s%s", got < 0 ? 0 : got, err[0] ? ": " : "", err);
+    free(o);
+    free(l);
+    free(h);
+    return got < 0 ? 1 : 0;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
 {
     (void)prev;
@@ -7987,8 +8244,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     free(log_path);
     SetUnhandledExceptionFilter(on_crash);
 
-    /* The only argument is a catalog to open. Anything that starts with
-     * -- is not one, so BRODALF exits without opening a window. */
+    /* --shadow-copy is BRODALF asking itself, as administrator, to copy
+     * files in use from a shadow copy, after the person said yes. It runs
+     * before CoInitializeEx: VSS needs the multithreaded COM apartment and
+     * hangs in a single-threaded one. */
+    if (argc >= 2 && wcscmp(argv[1], L"--shadow-copy") == 0) {
+        int rc = argc >= 5 ? shadow_helper(argv[2], argv[3], argv[4]) : 1;
+        LocalFree(argv);
+        return rc;
+    }
+    /* Otherwise the only argument is a catalog to open. Anything else that
+     * starts with -- is not one, so BRODALF exits without opening a window. */
     if (argc >= 2 && wcsncmp(argv[1], L"--", 2) == 0) {
         bd_applog("unknown option on the command line; nothing done");
         LocalFree(argv);

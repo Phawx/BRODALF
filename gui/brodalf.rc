@@ -59,7 +59,7 @@ STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSM
 CAPTION "What to leave out"
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
-    LTEXT "Scans of every backup root leave out files and folders that match these, one per line. * matches anything, ? one character. End a line with / for folders only (and everything in them). A line with / in the middle, like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes.", IDC_SKIP_TEXT, 8, 8, 284, 42
+    LTEXT "", IDC_SKIP_TEXT, 8, 8, 284, 42
     EDITTEXT IDC_SKIP_EDIT, 8, 54, 284, 168, ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | WS_VSCROLL
     PUSHBUTTON "Default list", IDC_SKIP_DEFAULT, 8, 230, 60, 14
     DEFPUSHBUTTON "Save and scan", IDOK, 176, 230, 64, 14

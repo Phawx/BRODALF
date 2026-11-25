@@ -1,90 +1,111 @@
 # BRODALF design
 
-Agreed with the project owner on 2026-09-28.
+Agreed with the project owner on 2026-09-28, and brought in line with the
+owner's answers of 2026-11-25 in 0.7.0.
 
 ## What it is
 
-BRODALF is a catalog of where your bits live. The `.brodalf` file holds no file
-data. It records every file and folder you protect, every version BRODALF has
-seen, and every place a copy of each version was written. The targets are
-hard drives that are usually offline. (OneDrive and Dropbox storage existed
-in 0.3.0 and was taken out in 0.4.0; see the README.) Windows is the main
-platform and the GUI is the main way to use it. Encryption is optional, per
-drive (see below).
+BRODALF keeps track of what has been backed up, and to where, from the
+original folders. The `.brodalf` file (the database, also called the
+catalog) holds no file data. It records every file and folder in the
+backup roots (the folders the user chose to back up), every version BRODALF
+has seen, and every place a copy of each version was written. The targets
+are external and removable disks that are usually offline. (OneDrive and
+Dropbox storage existed in 0.3.0 and was taken out in 0.4.0; see the
+README.) Windows is the main platform and the GUI is the main way to use
+it. Encryption is optional, per drive (see below).
+
+The owner's answers of 2026-11-25 to 178 yes/no questions (kept with the
+project as `brodalf-answers.md`) set what 0.7.0 does. Three rules from them
+shape everything below: nothing on a drive is ever overwritten, moved or
+deleted; nothing is dropped from the database without the user's say; and
+nothing starts by itself except the scan when a database opens.
 
 ## Flow
 
-1. Open BRODALF. It asks for a `.brodalf` file, or creates a new one.
-2. Choose the folders to protect.
-3. Scan them: path, size, modified time and a BLAKE3 checksum for every file.
+1. Open BRODALF. Until a database is open, only New, Open and Recover are
+   available.
+2. A new database asks for its backup roots first (any number), then where
+   to save the `.brodalf` file.
+3. Opening a database scans the backup roots: path, size, modified time and
+   a BLAKE3 checksum for every file. This scan is the one thing BRODALF
+   starts by itself. A root whose folder is not there is left as it was and
+   the user is asked where it is now; one that cannot be found is offered a
+   restore from the drives instead.
 4. Show the ghost tree. Everything starts greyed out.
 5. Plug in a drive and back up. Files light up once a correct copy is on a
    connected drive.
-6. Later sessions notice drives. Plugging a known drive in reads its
-   `BRODALF.media`, free space and health data and lights up the matching files;
-   unplugging greys them out. Nothing else happens until the user presses a
-   button: scanning, backing up, checking and restoring are each the user's
-   choice, and the user sees where each one and each drive stands.
-7. BRODALF is not resident and starts nothing by itself (since 0.6.0): no
-   backup or check on plug-in, no reminders, no rescan on open. It does not care what else runs on the PC.
+6. Plugging a known drive in reads its `BRODALF.media`, free space and
+   health data and lights up the matching files; unplugging greys them out.
+   A drive whose oldest read-back is older than "check_days" offers a check.
+   Otherwise nothing happens until the user presses a button.
+7. BRODALF is not resident, schedules nothing and does not care what else
+   runs on the PC.
 
 ## Nothing automatic
 
-`brodalf.exe` takes one argument, a catalog to open; an argument that
+`brodalf.exe` takes one argument, a database to open; an argument that
 starts with `--` makes it exit with 1 without a window. The options
-"auto_backup" and "guard_percent" of earlier versions are gone;
-`bd_option_get` returns -1 for them.
+"auto_backup", "guard_percent", "keep_versions" and "keep_days" of earlier
+versions are gone; `bd_option_get` returns -1 for them. The options left are
+"check_days" (180), "verify_days" (30), "reserve_mb" (512) and
+"low_priority" (1), plus the skip lists and the copies wanted.
 
-Before a backup the GUI shows `bd_backup_preview`: what `bd_backup_ex`
-would copy, move, keep under `.versions` and prune, the free space (read
-now when plugged in), how much would not fit, and the oldest last scan of
-the folders. It reads only the catalog and the drive's free space. It also
-counts the files whose copy at its own path on the drive is good and how
-many of them changed or were deleted since (moves aside); a quarter or more
-of at least 50 is `mass_change`, which the GUI shows as a ransomware
-warning with "keep every old version this time" ticked
-(`bd_backup_opts.keep_old_versions`, no pruning).
+There is no preview window before a backup (answer 92). The GUI keeps one
+line beside its buttons up to date with `bd_backup_preview` for every
+plugged-in drive: what `bd_backup` would copy, how much, and whether it
+fits. It reads only the catalog and the drive's free space. The preview also
+counts the files whose copy on the drive is good and how many of them
+changed or were deleted since (moves aside); a quarter or more of at least
+50 is `mass_change`, and the GUI then asks before backing up, with a list
+of the changed files (`bd_list_changed`). The GUI also asks before a backup
+when nothing has been scanned yet, and says after a stopped scan that a
+backup works from what the scans so far found.
 
 `bd_media_status_get` says where a drive stands from the catalog alone:
 live files whose current version, an older version or no version is on it
 (with sizes), deleted files whose last version is on it, old versions in
 `.versions`, bad and never-read-back copies, the last backup job and the
-last check job. `bd_list_jobs` lists the `jobs` table (scan, backup,
-restore, quick check, full check, read back; the newest 2000 are kept).
-`bd_export_csv` writes every file with its drives as UTF-8 CSV with a BOM;
-every text field is quoted and a leading `= + - @`, tab or CR gets a `'`
-so a spreadsheet does not run it as a formula.
+last check job. The `jobs` table keeps those (there is no job history to
+browse any more). `bd_export_csv` writes every file with its drives as
+UTF-8 CSV with a BOM; every text field is quoted and a leading
+`= + - @`, tab or CR gets a `'` so a spreadsheet does not run it as a
+formula.
 
 Free space is tracked in `space_log(media_id, at_ms, total_bytes,
 free_bytes, event)`, written when a drive is plugged in and before and
-after every backup to it; `media` carries the latest reading. The GUI,
-`drives` and `at-risk` show it.
+after every backup to it; `media` carries the latest reading.
+
+With "low_priority" (the default) a job's threads run in Windows'
+background mode (`THREAD_MODE_BACKGROUND_BEGIN`: low CPU, I/O and memory
+priority), so the PC stays usable. Every job keeps the PC awake while it
+runs.
 
 ## Moves and renames
 
 Versions belong to paths, so a renamed folder looks like deleted files plus
-new files with the same checksums. A backup checks, for every new file it
-would copy, whether a deleted node has the same hash and size with a good
-copy on this drive (not under `.versions`) whose stored size and time still
-match; if so the copy is renamed on the drive and the copy row re-pointed.
-Folders the move empties are removed up to the catalog's folder. The
-backup preview's mass-change count leaves moves out the same way.
+new files with the same checksums. After every backup root is scanned, a
+file new to the catalog whose hash and size match exactly one file that went
+missing, and no other new file, is that file moved or renamed: the new node
+takes the old one's versions, and with them its copies wherever they are on
+the drives, `nodes.moved_from` records the old path, and the old node goes.
+Nothing on a drive is moved (answer 74): the copy keeps its old path on the
+drive and the catalog records it, so nothing is copied again. Pairs that are
+not unique are left as a delete plus a new file.
 
 On Windows names ignore letter case, so a path that only differs in case
 from one the catalog knows (Photo.JPG that is now photo.jpg) is that same
 file, renamed: the scan looks it up by `nodes.rel_fold` (the path folded
 with Windows' own case mapping, indexed, and only looked at for paths the
 catalog does not know exactly) and renames the node, keeping its versions
-and copies. Its copy on the drive keeps the old spelling until the file
-changes; the backup then finds that copy among the file's own copy rows
-by the folded name. Elsewhere paths stay case sensitive and the key is
-not stored.
+and copies. Elsewhere paths stay case sensitive and the key is not stored.
 
-A source's folder on a drive sits next to `.versions`, `BRODALF.media` and
-`catalog-backup.brodalf`, so a source folder with one of those names (in
-any case) gets a name with `_` in front (`_versions`). A catalog that
-already has such a name is fixed at the next backup, which says so in the
-log; copies made before keep their rows and stay good.
+A backup root's folder on a drive sits next to `.versions`, `BRODALF.media`
+and the catalog copies, so a root with one of those names (in any case)
+gets a name with `_` in front (`_versions`).
+
+A root that moved as a whole (a new PC, another drive letter) is pointed at
+its new place with `bd_source_relocate`, which changes only `sources.path`.
 
 ## Links and reparse points
 
@@ -100,20 +121,27 @@ skipped, which would have left a synced folder unprotected.)
 ## Read-back (verify) pass
 
 Every copy row remembers when it was last fully read back (a copy written
-again starts as never read back). When the user asks, `bd_media_verify`
-rehashes the copies not read back in "verify_days" days (default 30; 0
-every copy) and marks the bad ones damaged. A full check reads every copy;
-a quick check only compares size and time. `bd_media_connect` checks
-no copies; it only identifies the drive and records its free space and
-health data.
+again starts as never read back). A check (`bd_media_check`) reads every
+copy and compares its size, time and checksum; there is no quick check any
+more. A read back (`bd_media_verify`) does the same for the copies not read
+back in "verify_days" days (default 30; 0 every copy), so a full check can
+be spread over time. A copy found missing or damaged stays so until a
+re-read matches its hash. `bd_media_connect` checks no copies; it only
+identifies the drive and records its free space and health data.
 
-## Restoring as of a time
+## Restoring
 
-`bd_restore_ex` with `as_of_ms` restores the newest version first seen at or
-before that time, for every file known then, including ones deleted since.
-(The ransomware guard of 0.3.0 to 0.5.0, which paused backups on its own
-after a mass change, was taken out in 0.6.0; the backup preview warns
-instead.)
+`bd_restore` writes files as they are now, or with `deleted_only` the
+deleted ones as last seen. Restoring one backup root puts its files straight
+into the destination; restoring everything when there is more than one root
+gives each root its own folder (`<dest>/<root>/<path>`). Nothing in the
+destination is ever overwritten: a file there with the right size and hash
+counts as already there, and any other file is left alone and recorded in
+`temp.restore_conflicts`, which `bd_list_restore_conflicts` lists until the
+next restore. `bd_restore_version` restores one version of one file. A
+restore plan orders the drives a restore needs, plugged-in ones first, then
+by how many files each covers. Restoring as of a date was taken out in
+0.7.0.
 
 ## Files in use
 
@@ -135,25 +163,25 @@ PC. A backup does not copy them either.
 Long jobs report through `bd_catalog_set_progress`: phase (scan, backup,
 verify, check, restore), files done and expected, bytes done and expected,
 and the current path, about ten times a second; the hash loop adds bytes
-as it reads. The GUI shows a bar with a percentage (bytes when the total is
-known, else files, else a marquee), the counts, a data rate over the last
-few seconds and the current file.
+as it reads. The GUI shows a job bar with a percentage (bytes when the total
+is known, else files, else a marquee), the counts, a data rate over the
+last few seconds, and a second bar for the file being copied or read.
 
 ## Stopping a job
 
 `bd_catalog_cancel` sets a flag on the catalog that any thread may set; each
 job clears it when it starts and returns `BD_ERR_CANCELLED` when it saw it.
-Scan, backup (moves included), prune, check, read-back and restore look at
-it between files, and a copy or hash looks at it between 1 MiB blocks (the
-scan's hashing threads too). Stopping keeps everything already done: a scan
-drops only what it found in the source folder it was in, which reads as it
-did before; a backup still syncs, renames and records the copies already
-written, and a copy cut off halfway is removed, never renamed into place; a check keeps the
-results so far and leaves the copy it was reading as it was; a restore
-removes the file it was writing. The job is recorded as `stopped`. The GUI's
-Stop button and Close (which asks first) set the flag, drop the queued jobs,
-and the GUI asks again from the progress callback, so a request made between
-two steps of a job is not lost when the next step clears the flag.
+Scan, backup, check, read-back and restore look at it between files, and a
+copy or hash looks at it between 1 MiB blocks (the scan's hashing threads
+too). Stopping keeps everything already done: a scan drops only what it
+found in the backup root it was in, which reads as it did before; a backup
+still syncs, renames and records the copies already written, and a copy cut
+off halfway is removed, never renamed into place; a check keeps the results
+so far and leaves the copy it was reading as it was; a restore removes the
+file it was writing. The job is recorded as `stopped`. The GUI's Stop button
+and Close (which asks first) set the flag and drop the queued jobs, and the
+GUI asks again from the progress callback, so a request made between two
+steps of a job is not lost when the next step clears the flag.
 
 ## Speed
 
@@ -192,60 +220,74 @@ A version number is shown only when a file has more than one version.
 Each drive gets `BRODALF/<catalog id>/BRODALF.media`, holding a random drive
 ID. Drives are recognised by that ID, not by drive letter.
 
-Checking a copy:
-
-- **Quick** (on every connect): the file exists with the recorded size and
-  modified time. If only the time differs, it is rehashed. A copy that was
-  found missing or damaged before is rehashed too, and only a matching
-  hash makes it good again (0.4.0; before that an unchanged size and time
-  were enough, so bit rot found by a full check was forgotten).
-- **Full** (on demand): every copy is rehashed.
-
 Copies carry the original file's modified time, and so do restored files
 (the catalog's time for that version). The time recorded for a copy is
-always the one read back from the drive after it was renamed into place,
-so the quick check compares the drive with itself: it works the same for
-copies made before this (which have the time they were written) and on
-drives that round times (FAT keeps 2 seconds).
+always the one read back from the drive after it was renamed into place, so
+a check compares the drive with itself: it works the same on drives that
+round times (FAT keeps 2 seconds).
+
+A drive can be marked lost or broken (`bd_media_mark_lost`, `media.lost_why`
+and `media.retired_ms`; a drive retired by 0.5.0's Replace drive opens as
+broken). Its copies stop counting (`BD_SQL_COUNTS`), so the full copies
+drop and the files it held are backed up again to other drives; nothing is
+backed up to it, and its copies still restore if it is plugged in.
+`bd_media_found` undoes it. Replace drive was taken out in 0.7.0.
+
+The GUI offers to set up a disk it does not know when one is plugged in
+(not the system disk); "Never ask about this disk" keeps the volume serial
+under `HKCU\Software\BRODALF\IgnoredDisks`.
 
 ## Layout on a drive
 
 ```
 X:\BRODALF\<catalog id>\BRODALF.media
-X:\BRODALF\<catalog id>\<source name>\<path>              newest version on this drive
-X:\BRODALF\<catalog id>\.versions\<source name>\<dir>\<name>.v<N><ext>   older versions
-X:\BRODALF\<catalog id>\catalog-backup.brodalf           copy of the catalog
+X:\BRODALF\<catalog id>\<root name>\<path>              first copy of a file on this drive
+X:\BRODALF\<catalog id>\.versions\<root name>\<dir>\<stem>.v<N><ext>   later versions
+X:\BRODALF\<catalog id>\catalog-r<revision>.brodalf     copies of the database
 ```
 
-Files stay browsable without BRODALF. A new version is written to a temp file
-and checked against its hash first; only then is the previous copy moved into
-`.versions` and the new one renamed into place, so a failed write can never
-destroy a good copy. Copies are synced to the drive in groups (up to the 256
-files of a batch or about 64 MB of data): every temp file of the group is
-written and checked, then the group is synced (`bd_fsync_paths`: on Windows
-each file is written out without a drive cache flush and one full flush ends
-the group; elsewhere one fsync each), then each copy is renamed into place
-and recorded, then on POSIX the folders that got new names are synced. A
-batch's catalog rows are committed in one transaction after its last group,
-so no copy is recorded before its data is on the drive. A file already at the destination that the catalog does
-not know about is adopted if its hash matches (for example after a crash
-before the catalog was saved), otherwise it is moved aside, never overwritten.
+Files stay browsable without BRODALF. Nothing on a drive is ever
+overwritten, moved or deleted (answers 95 and 97). A version goes to the
+file's usual path when nothing is there; otherwise (an older version's copy,
+a damaged copy, or a file BRODALF did not write) it goes alongside, under
+`.versions` as `<stem>.v<N><ext>`, or `<stem>.v<N>-2<ext>` and so on if
+that is taken. A copy
+row whose file has gone from the drive is kept and marked missing. A file
+already at the path that the catalog does not know about is adopted if its
+hash matches (for example after a crash before the catalog was saved);
+otherwise it is left alone. A file whose size or time changed since the scan
+is read again, and its new version is recorded and copied.
 
-Before copying, a backup removes old versions the keep rule no longer needs
-(settings `keep_versions`, default 5, and `keep_days`, default 365: an old
-version goes only when at least that many newer versions exist and it was
-replaced longer ago than that; 0 keeps everything). It never writes into the
-last max(16 MB, 0.5%) of the drive: a file that doesn't fit is counted as
-"no room" and skipped. A follow-up backup to another drive can be limited to
-files missing from up to 8 full drives (`only_missing_from`), so a large
-folder spans drives. A restore plan orders the drives a restore needs,
-plugged-in ones first, then by how many files each covers; restores skip
-destination files that already have the right size and hash.
+Every copy is written to `<path>.brodalf-tmp` while it is hashed, checked
+against the hash, synced, and only then renamed into place, so a failed
+write never leaves a file that looks good (kept against answer 102, which
+suggested writing directly: a cut-off direct write looks like a real file).
+Copies are synced in groups (up to the 256 files of a batch or about 64 MB):
+every temp file of the group is written and checked, then the group is
+synced (`bd_fsync_paths`: on Windows each file is written out without a
+drive cache flush and one full flush ends the group; elsewhere one fsync
+each), then each copy is renamed into place and recorded, then on POSIX the
+folders that got new names are synced. A batch's catalog rows are committed
+in one transaction after its last group, so no copy is recorded before its
+data is on the drive.
 
-Scans apply a skip list (setting `skip_list`, default: temp files, system
-files and rebuildable caches such as `node_modules/`). Patterns are
-case-insensitive globs matched against each name, or against the path from
-the protected folder when they contain a `/`; a trailing `/` means folders.
+A backup never writes into the last "reserve_mb" of a drive (default
+512 MB), which keeps room for the database's own copies; a file that
+doesn't fit is counted as "no room" and skipped, and waits for another
+drive. Every drive gets whatever it is missing, so a large set of folders
+spreads across drives with no follow-up mode.
+
+At the end of every backup the database is saved and copied to the drive as
+`catalog-r<revision>.brodalf` (`bd_catalog_revision`: how many times the
+database has been saved), never over an existing copy. An encrypted drive
+always gets an encrypted copy.
+
+Scans apply two skip lists: the catalog's ("skip_list", default: temp
+files, system files and rebuildable caches such as `node_modules/`) and
+each root's own (`bd_source_skip_set`). Patterns are case-insensitive globs
+matched against each name, or against the path from the backup root when
+they contain a `/`; a trailing `/` means folders. A file that a list newly
+leaves out is marked deleted, for the user to keep tracking or forget.
 
 ## The .brodalf file
 
@@ -263,72 +305,78 @@ writes a new file and swaps it in atomically.
 
 Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
 `space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
-written by 0.3.0). Schema version 6: version 6 added `nodes.rel_fold`, the
-case-folded path used on Windows, filled in when an older catalog is opened.
+written by 0.3.0). Schema version 7. Version 6 added `nodes.rel_fold`, the
+case-folded path used on Windows. Version 7 (0.7.0) added
+`sources.active`, `nodes.deleted_ack`, `nodes.moved_from`,
+`nodes.btime_ns` (the file's creation time, given to copies and restored
+files on Windows) and `media.lost_why`,
+and the `revision` in `meta`. An older catalog is upgraded in place when
+it is opened; 0.6.0 then refuses it as newer.
+
+The database is kept small: no file data, only paths, sizes, times,
+checksums and where each copy is, compressed with zstd, so a search works
+with the database on its own.
 
 ## Recovery on a new PC
 
-Every backup leaves `catalog-backup.brodalf` in the catalog's folder on the
-drive. "Recover from a backup drive..." on the start screen finds it on the
-drive picked (the drive, its `BRODALF` folder or the catalog's folder), takes
-the newest copy of that catalog on any plugged-in drive by file time, and
-`bd_catalog_recover` copies it to a new file the user names (never over an
-existing one; written as `<name>.recovering` and renamed at the end). It is
-then opened as usual (passphrase asked if the copy is encrypted), and the
-startup drive search quick-checks every connected drive. Protected folders
-whose path is not on this PC are offered a new place first (with a guess
-under `%USERPROFILE%` when the old path was under `X:\Users\<name>`);
-`bd_source_relocate` changes only `sources.path`, so the folder keeps its
-name on the drives and its files keep their versions and copies. A scan
-skips an unreachable folder rather than marking its files deleted, so a
-folder left for later is safe. Catalog > "Change where a folder is..." does
-the same at any time.
+`bd_find_catalog_copies` lists, for each catalog folder on a drive, its
+newest copy: the highest `catalog-r<revision>.brodalf`, or
+`catalog-backup.brodalf` (revision 0) on a drive written by 0.6.0 or older.
+Revisions of one catalog compare across drives. The GUI's "Recover the
+database from a backup drive" looks on every drive letter (C: to Z:, not
+CD drives), offers the newest copy of each catalog, or a folder the user
+picks, and `bd_catalog_recover` copies it to a new file the user names
+(never over an existing one; written as `<name>.recovering` and renamed at
+the end). It is then opened as usual (passphrase asked if the copy is
+encrypted), which scans the backup roots.
 
-## Protection target
+A backup root whose folder is not on this PC is left as it was by the scan
+(its files are not marked deleted) and recorded in `temp.missing_sources`,
+which `bd_source_info.missing` reports. The
+GUI asks where it is now (with a guess under `%USERPROFILE%` when the old
+path was under `X:\Users\<name>`); `bd_source_relocate` changes only
+`sources.path`, so the root keeps its name on the drives and its files keep
+their versions and copies. "I cannot find it" offers a restore of that root
+from the drives, with the drives it needs in order. Database > "Change where
+a backup root is" does the same at any time.
+
+## Copies wanted and full copies
 
 The catalog's settings hold a target of N copies in M places (default 2 and
-2). For every live file, the current version's good copies are counted by
-distinct medium, and places by distinct place key: a drive's location
-(trimmed, ignoring case; empty for all drives with none set; a cloud account
-left by 0.3.0 keeps a key of its own). A file is at risk when copies < N or
-places < M. A file is "changed since its last backup" when its current
-version has no good copy anywhere but an older version has. For "which
-drive next", a medium helps a file at risk when it has no good copy of the
-current version and either the file needs copies or the medium's place is
-not yet among the file's places. Offline copies count: the target is about
-what exists, not what is plugged in.
+2). For every live file in a root still backed up, the current version's
+good copies are counted by distinct drive (drives marked lost or broken do
+not count), and places by distinct place key: a drive's location (trimmed,
+ignoring case; empty for all drives with none set; a cloud account left by
+0.3.0 keeps a key of its own). A file is at risk when copies < N or
+places < M. Offline copies count: the target is about what exists, not what
+is plugged in.
 
-## Replacing a drive
-
-`media.retired_ms` and `media.replaced_by` (added in place to schema 5
-catalogs; earlier versions ignore them) mark a drive being replaced and the
-drive taking its place. A retired drive gets nothing new: `bd_backup`
-refuses it, "which drive next" never names it, and the GUI leaves it out of
-plug-in backups. Its copies still restore. A copy on it counts toward the
-protection target (`BD_SQL_COUNTS`) until the replacement holds a good copy
-of the same version, so the target is met without it once the replacement
-has caught up. `bd_media_replace(old, new)` retires old, lists in
-`temp.replace_need` every current version with a good copy on old that has
-fewer than N copies or M places on the other drives, and runs a backup to
-new limited to that list (read from the source folders and checked by hash,
-like any backup). Deleted files and older versions whose only copy is on
-old are not copied; they are counted so the GUI can say to keep the drive.
-The drive details show a plain suggestion to replace a drive whose health
-data says failing, warning, 90% worn, or pending or unreadable sectors.
+`bd_backup_sets` gives the progress toward each full copy: copy k is done
+when every live file, as the last scan found it, has at least k good copies
+that count. A new or changed file lowers every one until it is backed up
+again. The GUI shows one bar per full copy, up to N.
 
 ## Deleted files
 
-A file removed from its protected folder keeps its node (`deleted<>0`,
+A file removed from its backup root keeps its node (`deleted<>0`,
 `last_seen_ms` the last scan that found it) and its versions and copies.
-`bd_list_deleted` lists the ones whose current version has a good copy,
-most recently seen first, with the drives that hold it. Restoring with
-`bd_restore_opts.deleted_only` (bound as `?5` in `RESTORE_VERSION` and
-`RESTORE_WHERE`) brings back only deleted files under the given file or
-folder, each as it was last seen. The GUI's Show deleted files lists up to
-5000 of them; it restores the selected files, or everything deleted from
-the folders they were in, in one restore job. Files on drives that are not
-plugged in are reported, not resumed when the drive arrives: the user
-restores them again from the list.
+Nothing is dropped from the database without the user's say (answer 17).
+After a scan the GUI says how many files went since the user last looked
+(`nodes.deleted_ack=0`) and offers the deleted-files list, where the user
+can keep tracking them (`bd_deleted_ack`) or forget them
+(`bd_deleted_forget`, which removes them from the database only; their
+copies stay on the drives). A file that comes back clears its mark.
+`bd_list_deleted` lists them with the drives that hold them. Restoring with
+`deleted_only` brings back only deleted files, each as it was last seen.
+
+A bit-rot scan (`bd_scan_ex` with `bitrot`) also reads files whose size and
+time did not change. One whose hash changed anyway is not taken as a new
+version; it is listed in `temp.damaged` (`bd_list_damaged`) for the user to
+restore from a drive or accept as changed on purpose (`bd_damaged_accept`).
+
+A backup root can be stopped (`bd_source_set_active`, `sources.active`): it
+is not scanned or backed up and its files do not count toward the full
+copies, but they stay in the database and their copies restore.
 
 ## Drive hardware
 
@@ -381,13 +429,11 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
   show up as a damaged copy.
 - Hashes in the catalog are always of the plaintext, so a copy on an
   encrypted drive and one on a plain drive are the same version.
-- The key is needed to write, full-check or restore an encrypted copy, not to
-  see it in the tree. A quick check works without it (size and time), and a
-  copy that was touched since it was written is left as it was until a check
-  with the passphrase.
+- The key is needed to write, check or restore an encrypted copy, not to
+  see it in the tree.
 - The `.brodalf` file can be encrypted too (flag bit 0 in the header). The
   header is then followed by the key block, and the zstd stream is sealed with
-  the master key in the same chunk format. The catalog backup on an encrypted
+  the master key in the same chunk format. The database copy on an encrypted
   drive is always written encrypted.
 - The master key, salts and nonces come from the system's random source
   (BCryptGenRandom, getrandom). If it fails, nothing is made or written: no
@@ -403,7 +449,7 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
   the same master key the same way as the passphrase (Argon2id with its own
   salt, then XChaCha20-Poly1305); the block is kept as `recovery_block` in
   `settings`, and an encrypted `.brodalf` file also carries it in the header
-  after the key block, with flag bit 1 set, so it opens a catalog backup on a
+  after the key block, with flag bit 1 set, so it opens a database copy on a
   new PC. BRODALF before this change refuses such a file as a newer format.
   Typed keys ignore case, dashes and spaces. A new recovery key replaces the
   old one; changing the passphrase keeps it.
@@ -413,62 +459,65 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
 `bd_write_recovery_sheet` writes one self-contained HTML page (no scripts,
 images or links; every catalog string HTML-escaped): what to do on a new PC,
 each drive with where it is kept, size, free space as last seen, the
-protected folders it holds current versions of with file counts and sizes,
-and its last backup (from `jobs`), the protected folders, and the recovery
+backup roots it holds current versions of with file counts and sizes,
+and its last backup (from `jobs`), the backup roots, and the recovery
 key when one was just made. The passphrase is never written. The GUI saves
 it where the user chooses, opens it in the browser for printing and says to
-delete the file afterwards; making a key also refreshes the catalog backup
+delete the file afterwards; making a key also puts a new database copy
 on every plugged-in drive so they know the new key.
 
 ## GUI
 
 Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 
-- Menu bar: Catalog (folders, scan, files in use, restore, restore as of a
-  date, deleted files, recovery sheet, CSV export, exit), Local backups (each
-  known disk with its own submenu: back up, quick check, read back, full
-  check, where it stands; add a disk; what needs backing up; all disks;
-  status of every disk; history), Help (log, reports, about). The Local backups menu is filled on
-  `WM_INITMENUPOPUP`.
-- A progress bar and a text line sit above the log; see Progress above.
-- Startup: a task dialog offers the last catalog (kept in
-  `HKCU\Software\BRODALF\LastCatalog`), another one, or a new one. A path on
-  the command line opens directly. A catalog open in another BRODALF window
-  is refused with a message naming it.
+- Menus (answer 152 asked for standard menus and tabs; the tabs are left
+  for later): File (new, open, recover the database, recovery sheet, CSV
+  export, settings, exit), Database (add a backup root, scan, bit-rot
+  scan, change where a root is, deleted files, damaged files, files in
+  use), Local backups (each known drive with its own submenu: back up,
+  check every copy, read back, open in Explorer, details, mark lost or
+  broken / found it; set up a disk; all disks; status of every disk; what
+  needs backing up), Restore (what is selected, deleted files, what the
+  last restore left alone), View (status of every drive, files short of
+  your copies, largest files), Help (log, reports, about). Local backups is
+  filled on `WM_INITMENUPOPUP`. With no database open, everything but File
+  and Help is greyed out. Right-click menus on the tree (Explorer, restore;
+  for a root: stop or back up again, its skip list, where it is) and on the
+  versions list (restore this version, open its copy in Explorer).
+- Beside the buttons, one line per plugged-in drive says what a backup to
+  it would copy. Below the tree: one bar per full copy, the job bar with
+  Stop and its counts, the file bar, then the log.
+- Startup: the last database (kept in `HKCU\Software\BRODALF\LastCatalog`),
+  another one, a new one or recovery. A path on the command line opens
+  directly. A database open in another BRODALF window is refused with a
+  message naming it.
 - The tree loads folders lazily and draws each state with custom draw: grey
   italic for no reachable copy, amber for older version only, red bold for a
-  bad copy, strikethrough for deleted. Folder and source rows show "x of y
+  bad copy, strikethrough for deleted. Folder and root rows show "x of y
   available" and, when offline, the drive that holds the copies.
 - The detail panel lists every version and each copy: drive, state, last
   checked, size and path on the drive.
 - Scan, backup, check and restore run one at a time on a worker thread, which
-  reports progress to the status bar and log and saves the catalog after each
-  job. The tree is refreshed when a job ends and cannot be expanded while one
-  runs, since the catalog belongs to the worker then. The reverse holds too:
-  while the UI thread is in a command or in what follows a job (its
-  end-of-job prompts, which may wait in a message box), no job starts; a
-  drive plugged in meanwhile is queued and handled when the UI is done.
-  The search box says search is available when the current job finishes,
-  and searches again then.
+  reports progress and saves the catalog after each job. The tree is
+  refreshed when a job ends and cannot be expanded while one runs, since the
+  catalog belongs to the worker then. The reverse holds too: while the UI
+  thread is in a command or in what follows a job (its end-of-job prompts),
+  no job starts; a drive plugged in meanwhile is queued and handled when the
+  UI is done.
 - Drives: on startup and on `WM_DEVICECHANGE`, drives that disappeared are
-  disconnected, every drive letter with a `BRODALF.media` for this catalog is
-  connected (read only: its identity, free space and health data), and folders or shares
-  used as storage are retried where they were last seen. The log says which
-  drive was plugged in and, where it applies, that it is due for a full
-  check, holds files for a waiting restore, or can take what did not fit on
-  a full drive. Nothing is started.
-- Back up shows the preview first (Start, Scan first then back up, or
-  Cancel). Check drive offers a quick check, a full check or a read back. A
-  restore that waits for drives continues when the user presses Restore...
-  and picks Continue.
+  disconnected and every drive letter with a `BRODALF.media` for this
+  database is connected (read only: identity, free space, health data). A
+  drive due for a check offers one, once a session; a disk BRODALF does not
+  know offers to be set up. Nothing is started without the user.
 
 ## Installer
 
 `installer/brodalf.nsi` (NSIS 3, `makensis -DVERSION=x.y.z`) installs
 brodalf.exe, brodalf-cli.exe and THIRD-PARTY-NOTICES.txt for the current
 user into `%LOCALAPPDATA%\Programs\BRODALF` with no administrator rights
-(`RequestExecutionLevel user`), adds a Start menu shortcut and an uninstall
+(`RequestExecutionLevel user`), adds a Start menu shortcut, a desktop
+shortcut if the user ticks it on the components page, and an uninstall
 entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRODALF`.
-The uninstaller removes only those files, the shortcut and that key: catalogs,
+The uninstaller removes only those files, the shortcuts and that key: catalogs,
 the app log and `HKCU\Software\BRODALF` are left,
 since they belong to the user's catalogs. The installer is not signed.

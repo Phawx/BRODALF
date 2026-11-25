@@ -1,33 +1,48 @@
-Run the installer (`brodalf-v0.6.0-windows-x64-setup.exe`): it needs no administrator rights and adds BRODALF to the Start menu. Or unzip the zip anywhere and run `brodalf.exe`.
+Run the installer (`brodalf-v0.7.0-windows-x64-setup.exe`): it needs no administrator rights, adds BRODALF to the Start menu and, if you tick it, the desktop. Or unzip the zip anywhere and run `brodalf.exe`.
 
 **Windows SmartScreen** will warn that the app is from an unknown publisher, because it is not code-signed. Click **More info**, then **Run anyway**.
 
 **Nothing new in this build has been tried on a real Windows PC yet.** It was built and tested on Linux and built by Windows CI; please try it on a test folder first.
 
-**Nothing starts by itself any more.** BRODALF keeps track of what has been backed up and to which drive, and does a scan, backup, check or restore only when you press its button. Taken out:
-- The daily or weekly scheduled check. Opening a catalog deletes the Windows task that 0.5.0 or earlier created for it.
-- Backing up when a drive is plugged in.
-- Reading back copies when a drive is plugged in.
-- Continuing a waiting restore when the next drive is plugged in.
-- Reminders on opening that a drive is due for a check.
-- The ransomware guard that paused backups after a mass change (the backup preview warns instead).
-- Reading files in use from a shadow copy (BRODALF now lists them and asks you to close the program and scan again).
-- Rescanning the folders on opening, and the quick check on plug-in. Both are now buttons: **Scan folders**, and **Check drive…**, which offers a quick check, a full check or a read back.
+This build follows the answers to 178 yes/no questions about what BRODALF should do. BRODALF keeps track of what has been backed up, and to where, from your backup roots (the folders you back up).
 
-Plugging in a known drive still lights up the files on it, and the log says when it is due for a check, holds files for a waiting restore or can take what did not fit elsewhere.
+**Nothing on a backup drive is ever overwritten, moved or deleted.**
+- A changed file's new version goes alongside the old copy, under `.versions`, as `name.v2.ext` and so on. Old versions are never removed.
+- A moved or renamed file or folder is recorded in the database; the copy on the drive stays where it is.
+- Every backup leaves a copy of the database on the drive as `catalog-r<revision>.brodalf`, next to the older ones, and keeps 512 MB free for it (Settings).
+- Restores never overwrite either: a file already in the destination is skipped if it matches, and left alone and listed if it differs (**Restore > Files the last restore left alone**).
 
-New in this build:
-- **Before a backup**, BRODALF shows what it will do: files to copy and how much, files to move, old versions to keep or remove, the drive's free space and whether it fits, and when the folders were last scanned. Start, scan first, or cancel. If many backed-up files changed or vanished since, it warns and keeps every old version.
-- **Where each drive stands**: files whose newest version, an older version or no version is on it, deleted files and old versions kept there, bad or never-checked copies, and its last backup and check. In the drive's details, and for all drives in **Local backups > Status of every disk…**.
-- **History** of every scan, backup, restore and check, with when, how long and the result.
-- **Export the file list (CSV)…** with every file and the drives it is on.
-- **Files that were in use at the last scan…**.
-- A waiting restore continues when you press **Restore…** and choose to continue.
-- OneDrive files kept online only are left alone and not downloaded.
-- `brodalf-cli` gains `preview`, `status`, `history`, `export` and `backup --keep-old`, and Ctrl+C stops a job and keeps what finished.
+**Starting up**
+- Until a database is open, only **New database**, **Open database** and **Recover the database from a backup drive** are available.
+- A new database asks for its backup roots first, then where to save the file.
+- Recover looks on every drive for BRODALF's database copies and offers the newest.
+- Opening a database starts a scan straight away. This is the one thing BRODALF starts by itself. If a backup root is not where the database says, BRODALF asks where it is now, and offers to restore it from your drives if you cannot find it.
 
-Left out of this build: a read back right after each copy (Windows reads it from memory, so it proves nothing; Check drive's read back does the real check), adopting an existing drive, copying from one drive to another, and backing up creation times and file attributes. Each needs larger changes that could not be tested here.
+**Backing up**
+- One line beside the buttons says what a backup to each plugged-in drive would copy. **Back up** copies it without a preview window.
+- If many files changed at once, BRODALF asks first and can list them, since that is what ransomware looks like.
+- A file that changed since the scan is read again.
+- If a drive fills up, what did not fit waits for another drive, and each drive gets whatever it is missing.
+- Jobs let other programs come first by default (Settings).
 
-0.6.0 opens the same catalogs as 0.5.0.
+**New**
+- Progress bars for each full copy of your files, the running job and the file being copied.
+- Menus: File, Database, Local backups, Restore, View and Help, plus right-click menus on the tree and the versions.
+- Backup roots can be stopped and resumed, have their own list of what to leave out, and can be pointed at a new place.
+- When files are deleted, BRODALF says so and lets you keep tracking them or forget them. Their copies stay on the drives either way.
+- **Database > Bit-rot scan** finds files damaged on this PC; **Damaged files** lists them to restore or keep.
+- Mark a drive lost or broken (after seeing what that does to each full copy), and Found it if it turns up.
+- **View > Largest files**, **Restore > Restore deleted files**, and restoring one version from the versions list.
+- When a disk BRODALF does not know is plugged in, it offers to set it up as a backup drive, or not to ask about that disk again.
+- `brodalf-cli` gains `roots`, `root-stop`, `root-resume`, `root-move`, `deleted`, `deleted-ack`, `deleted-forget`, `drive-lost`, `drive-found`, `changed`, `sets`, `largest`, `restore-version`, `restore --deleted`, `scan --bitrot`, `recover`, `recovery-key`, `sheet` and `--json`. `--source` is now `--root` (the old name still works).
+
+**Taken out**
+- The job history (`history`), restoring as it was on a date (`--as-of`), and the old-versions rule (`prune`, `--keep-old`): nothing is removed from a drive any more.
+- Replace this drive, and `--continue-from`: every drive now gets whatever it is missing.
+- The quick check: Check drive always compares each copy's size, time and checksum.
+
+**Left for later:** tabs in place of some menus, dark mode, translations, a cross-platform app (after 1.0), encrypting only some folders, starred folders copied to extra places, copying to several drives at once, a compression helper and reading files in use from a shadow copy.
+
+0.7.0 opens and upgrades databases made by 0.6.0 and older, and recovers from their `catalog-backup.brodalf` copies on drives. After that, 0.6.0 cannot open the database.
 
 `brodalf-cli.exe` is the command-line version; run it with no arguments for help.

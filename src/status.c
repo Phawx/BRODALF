@@ -1,6 +1,6 @@
-/* What each drive holds and when it was last backed up to or checked, the
- * history of jobs the user ran, and a list of every file to open in a
- * spreadsheet. All of it only reads the catalog. */
+/* What each drive holds and when it was last backed up to or checked, and
+ * a list of every file to open in a spreadsheet. All of it only reads the
+ * catalog. */
 #include "internal.h"
 #include "platform.h"
 

@@ -3074,6 +3074,11 @@ static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                                 L"A file now left out shows among the deleted files, for you to keep or forget.", g_skip_root_name);
             SetDlgItemTextW(dlg, IDC_SKIP_TEXT, text);
             SetDlgItemTextW(dlg, IDC_SKIP_DEFAULT, L"Clear");
+        } else {
+            SetDlgItemTextW(dlg, IDC_SKIP_TEXT,
+                            L"Scans of every backup root leave out files and folders that match these, one per line. * matches anything, "
+                            L"? one character. End a line with / for folders only (and everything in them). A line with / in the middle, "
+                            L"like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes.");
         }
         SetFocus(GetDlgItem(dlg, IDC_SKIP_EDIT));
         SendDlgItemMessageW(dlg, IDC_SKIP_EDIT, EM_SETSEL, 0, 0);

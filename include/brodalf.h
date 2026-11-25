@@ -650,7 +650,7 @@ bd_status bd_deleted_forget(bd_catalog *cat, int64_t node_id, int64_t *forgotten
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);
 
-/* ---- Drive status and history ---------------------------------------- */
+/* ---- Drive status ---------------------------------------------------- */
 
 /* Where a drive stands, from the catalog alone (the drive need not be
  * plugged in). Sizes are of the file as it is now. */

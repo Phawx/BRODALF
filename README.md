@@ -19,12 +19,11 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.9.0**, built on the `six-features` branch and not released yet.
-It adds the six things 0.8.0 left for later: dark mode, German and Spanish,
-hiding file and folder names on an encrypted drive, an optional
-compression helper for backup drives, reading files in use from a shadow
-copy when you ask, and remembering the last database; see
-[History](#history). The released version is **0.8.0** (2026-11-25). Builds are
+Version **0.9.0**, released 2026-11-25. It adds the six things 0.8.0 left
+for later: dark mode, German and Spanish, hiding file and folder names on
+an encrypted drive, an optional compression helper for backup drives,
+reading files in use from a shadow copy when you ask, and remembering the
+last database; see [History](#history). Builds are
 on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
@@ -665,7 +664,7 @@ on a local machine needs to pick the work up without the chat history.
   `stars`, `place`, `place-limit`, `places`, `encrypt-folder`,
   `plain-folder`, `encrypted-folders`, `pending` and `backup` to several
   drives (`--parallel`).
-- v0.9.0 (not released yet, on the `six-features` branch): the six things
+- v0.9.0 (2026-11-25, built on the `six-features` branch first): the six things
   0.8.0 left for later, picked by the owner on 2026-11-25. Dark mode in the
   window (View > Appearance). The window in German and Spanish as well as
   English (View > Language), machine-translated, with every piece of text

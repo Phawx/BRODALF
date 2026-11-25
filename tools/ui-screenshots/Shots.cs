@@ -139,6 +139,7 @@ class Remote : IDisposable {
 
 static class Shots {
     const uint WM_COMMAND = 0x0111, WM_CLOSE = 0x0010, WM_SETTEXT = 0x000C, WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E;
+    const uint WM_CANCELMODE = 0x001F, BFFM_SETSELECTIONW = 0x0400 + 103;
     const uint WM_USER = 0x0400, TDM_CLICK_BUTTON = WM_USER + 102, MN_GETHMENU = 0x01E1;
     const uint TVM_EXPAND = 0x1102, TVM_GETNEXTITEM = 0x110A, TVM_SELECTITEM = 0x110B, TVM_GETITEMW = 0x113E, TVM_ENSUREVISIBLE = 0x1114;
     const uint LVM_GETITEMCOUNT = 0x1004, LVM_ENSUREVISIBLE = 0x1013, LVM_SETITEMSTATE = 0x102B, LVM_GETITEMTEXTW = 0x1073;
@@ -429,9 +430,12 @@ static class Shots {
 
     static void Keys(byte vk, int times) { for (int i = 0; i < times; i++) Key(vk); }
 
+    // Close the open menus, and leave the menu bar: while it is still
+    // selected, Windows opens no other menu (a button's menu stays shut).
     static void CloseMenus() {
         for (int i = 0; i < 4 && Windows("#32768").Count > 0; i++) Key(VK_ESCAPE);
         if (Windows("#32768").Count > 0) Log("a menu stayed open");
+        Send(main, WM_CANCELMODE, IntPtr.Zero, IntPtr.Zero);
         Thread.Sleep(300);
     }
 
@@ -704,7 +708,10 @@ static class Shots {
     }
 
     // A button that opens a menu under itself.
-    static void ButtonMenu(string name, string id, bool submenus) {
+    static void ButtonMenu(string name, string id, bool submenus) { ButtonMenu(name, id, submenus, null); }
+
+    // firstItem: also choose the menu's first item and capture the dialog it opens.
+    static void ButtonMenu(string name, string id, bool submenus, string firstItem) {
         try {
             WaitIdle(name, 30000);
             Foreground(main);
@@ -717,6 +724,14 @@ static class Shots {
                 return;
             }
             ShotWithMenus(name);
+            if (firstItem != null) {
+                Key(VK_DOWN);
+                Key(VK_RETURN);
+                IntPtr d = WaitDialog(8000, IntPtr.Zero);
+                if (d != IntPtr.Zero) { Shot(d, firstItem); Dismiss(d); } else Log("no dialog from the first item of " + name);
+                WaitIdle(name + "-after", 10000);
+                return;
+            }
             if (submenus) {
                 IntPtr m = Send(Windows("#32768")[0], MN_GETHMENU, IntPtr.Zero, IntPtr.Zero);
                 int at = -1;
@@ -819,7 +834,8 @@ static class Shots {
 
         MenuBar("", 0);
         ButtonMenu("button-settings", "ID_BTN_SECURITY", true);
-        ButtonMenu("button-drives", "ID_BTN_DRIVES", true);
+        ButtonMenu("button-drives", "ID_BTN_DRIVES", false);
+        ButtonMenu("button-drives-first", "ID_BTN_DRIVES", false, "button-drives-a-drive-s-details");
         ButtonMenu("button-back-up", "ID_BTN_BACKUP", false);
         ButtonMenu("button-check-drive", "ID_BTN_CHECK", false);
 
@@ -845,9 +861,12 @@ static class Shots {
         // The dialogs, from the buttons on the tabs.
         Tab(0);
         DialogStep("tab-1-what-to-leave-out", "ID_DB_SKIP", true);
+        DialogStep("tab-1-add-a-backup-root", "ID_DB_ADD", true);
+        DialogStep("tab-1-export", "ID_DB_EXPORT", true);
         Tab(1);
         ComboSelect("ID_NEXT_FOR", "Blue");
         DialogStep("tab-2-files-changed-on-it", "ID_NEXT_CHANGED", true);
+        DialogStep("tab-2-short-of-copies", "ID_NEXT_RISK", true);
         Tab(2);
         if (ListSelect("ID_LOCAL_LIST", "Blue")) {
             DialogStep("tab-3-name-and-where-it-is-kept", "ID_LOCAL_EDIT", true);
@@ -855,12 +874,20 @@ static class Shots {
             DialogStep("tab-3-mark-lost-or-broken", "ID_LOCAL_LOST", true);
             DialogStep("tab-3-files-changed-since", "ID_LOCAL_CHANGED", true);
         }
+        DialogStep("tab-3-status-of-every-drive", "ID_LOCAL_STATUS", true);
+        DialogStep("tab-3-set-up-a-drive", "ID_LOCAL_ADD", true);
         Tab(3);
         if (ListSelect("ID_PLACE_LIST", null)) {
             DialogStep("tab-4-change-its-size-limit", "ID_PLACE_LIMIT", true);
             DialogStep("tab-4-description-and-details", "ID_PLACE_EDIT", true);
+            DialogStep("tab-4-mark-lost", "ID_PLACE_LOST", true);
         }
+        DialogStep("tab-4-add-an-extra-place", "ID_PLACE_ADD", true);
         Tab(4);
+        DialogStep("tab-5-recovery-key", "ID_ENC_KEY", true);
+        DialogStep("tab-5-recovery-sheet", "ID_ENC_SHEET", true);
+        DialogStep("tab-5-encrypt-the-database-file", "ID_ENC_CATALOG", true);
+        DialogStep("tab-5-set-up-an-encrypted-drive", "ID_ENC_DRIVE", true);
         ChangePassphrase();
         Tab(0);
 
@@ -880,8 +907,27 @@ static class Shots {
             Tab(0);
         }
 
-        // Last, a backup to every plugged-in drive, to show the window while a job runs.
+        // With the red drive plugged in: the buttons' drive menus, and a check.
+        ButtonMenu("red-plugged-in-button-back-up", "ID_BTN_BACKUP", false);
+        ButtonMenu("red-plugged-in-button-check-drive", "ID_BTN_CHECK", false);
+        Tab(2);
+        if (ListSelect("ID_LOCAL_LIST", "Red")) {
+            DialogStep("tab-3-red-quick-check", "ID_LOCAL_VERIFY", true);
+            JobStep("check-the-red-drive", delegate { Click("ID_LOCAL_CHECK"); });
+            Tab(2);
+            Shot(main, "tab-3-after-checking-the-red-drive");
+        }
+
+        // Then a backup to every plugged-in drive, to show the window while a job runs.
         BackupAll();
+
+        // A restore into a folder that already holds a different IMG_0001.jpg.
+        Restore("restore-photos", @"C:\BrodalfRestore", "Photos");
+        DialogStep("after-restore-files-left-alone", "ID_M_CONFLICTS", false);
+        Restore("restore-photos-again", @"C:\BrodalfRestore", "Photos");
+
+        // A bit-rot scan, to show a scan running.
+        JobStep("bit-rot-scan", delegate { Command("ID_M_BITROT"); });
         Stop();
     }
 
@@ -950,6 +996,100 @@ static class Shots {
         } catch (Exception e) { Log("plug-in step failed: " + e.Message); }
     }
 
+    // After a question is answered: the next question, or none once the job runs.
+    static IntPtr NextDialogOrBusy(int ms) {
+        Stopwatch sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < ms) {
+            IntPtr d = TopDialog();
+            if (d != IntPtr.Zero) { Thread.Sleep(600); d = TopDialog(); if (d != IntPtr.Zero) return d; }
+            if (Busy()) return IntPtr.Zero;
+            Thread.Sleep(50);
+        }
+        return IntPtr.Zero;
+    }
+
+    static bool IsPassphrase(IntPtr d) {
+        return N.GetDlgItem(d, Id("IDC_PASS_EDIT")) != IntPtr.Zero && N.GetDlgItem(d, Id("IDC_PASS_EDIT2")) == IntPtr.Zero;
+    }
+
+    // Start a job and let it run: a passphrase question is answered, a
+    // yes/no question is answered yes (go ahead), anything else is
+    // captured and cancelled. Captures the window while the job runs.
+    static void JobStep(string name, Action start) {
+        try {
+            WaitIdle("before-" + name, 30000);
+            Foreground(main);
+            start();
+            IntPtr d = WaitDialog(4000, IntPtr.Zero);
+            for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
+                if (IsPassphrase(d)) {
+                    Shot(d, name + "-passphrase");
+                    SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass);
+                    Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                } else {
+                    Shot(d, name + "-question-" + i);
+                    if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
+                    else Dismiss(d);
+                }
+                WaitGone(d, 5000);
+                d = NextDialogOrBusy(3000);
+            }
+            Running(name);
+            WaitIdle(name + "-finished", 240000);
+            Shot(main, name + "-finished");
+        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+    }
+
+    static void Running(string name) {
+        Stopwatch sw = Stopwatch.StartNew();
+        int shots = 0;
+        long[] at = { 300, 1500, 4000 };
+        while (sw.ElapsedMilliseconds < 60000 && shots < at.Length) {
+            if (TopDialog() != IntPtr.Zero) break;
+            if (!Busy() && sw.ElapsedMilliseconds > 1500) break;
+            if (sw.ElapsedMilliseconds >= at[shots] && Busy()) Shot(main, name + "-running-" + (++shots));
+            Thread.Sleep(50);
+        }
+        if (shots == 0) Log(name + ": over before it could be captured running");
+    }
+
+    // A restore: the folder picker is pointed at dest (it has no box to type in).
+    static void Restore(string name, string dest, params string[] treePath) {
+        try {
+            Tab(0);
+            if (!TreeSelect(treePath)) return;
+            Tab(5);
+            Click("ID_REST_SEL");
+            IntPtr d = WaitDialog(8000, IntPtr.Zero);
+            for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
+                bool picker = false;
+                foreach (IntPtr c in Children(d)) if (ClassOf(c) == "SysTreeView32") picker = true;
+                if (IsPassphrase(d)) {
+                    Shot(d, name + "-passphrase");
+                    SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass);
+                    Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                } else if (picker) {
+                    using (Remote rm = new Remote(proc.Id)) {
+                        rm.Write(0, Encoding.Unicode.GetBytes(dest + "\0"));
+                        Send(d, BFFM_SETSELECTIONW, (IntPtr)1, rm.At(0));
+                    }
+                    Thread.Sleep(800);
+                    Shot(d, name + "-where-to");
+                    Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                } else {
+                    Shot(d, name + "-question-" + i);
+                    if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
+                    else Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                }
+                WaitGone(d, 5000);
+                d = NextDialogOrBusy(3000);
+            }
+            Running(name);
+            WaitIdle(name + "-finished", 240000);
+            Shot(main, name + "-finished-restore-tab");
+        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+    }
+
     static void BackupAll() {
         try {
             Tab(0);
@@ -970,7 +1110,7 @@ static class Shots {
                     else Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
                 }
                 WaitGone(d, 5000);
-                d = WaitDialog(2500, IntPtr.Zero);
+                d = NextDialogOrBusy(3000);
             }
             Stopwatch sw = Stopwatch.StartNew();
             int shots = 0;

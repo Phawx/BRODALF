@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $Ids,
     [Parameter(Mandatory = $true)] [string] $Out,
     [string] $Combos = "en-light,en-dark,de-light,de-dark,es-light,es-dark",
-    [int] $MinutesEach = 15
+    [int] $MinutesEach = 30
 )
 $ErrorActionPreference = "Stop"
 $Root = "C:\BrodalfDemo"
@@ -35,6 +35,10 @@ foreach ($combo in $Combos.Split(",")) {
     Copy-Item -Force "$VhdDir\red.pristine" "$VhdDir\red.vhdx"
     Copy-Item -Force "$VhdDir\spare.pristine" "$VhdDir\spare.vhdx"
     $global:LASTEXITCODE = 0
+    # Where the restore goes: it already holds a different IMG_0001.jpg, which the restore leaves alone.
+    if (Test-Path C:\BrodalfRestore) { Remove-Item -Recurse -Force C:\BrodalfRestore }
+    New-Item -ItemType Directory -Force -Path C:\BrodalfRestore\2023\Holiday | Out-Null
+    Set-Content -Path C:\BrodalfRestore\2023\Holiday\IMG_0001.jpg -Value "a different picture"
 
     $dir = Join-Path $Out $combo
     $list = @("--exe", $Exe, "--db", "$Root\My backups.brodalf", "--ids", $Ids, "--out", $dir,

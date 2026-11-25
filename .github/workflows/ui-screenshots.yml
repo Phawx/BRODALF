@@ -1,27 +1,26 @@
 name: UI screenshots
 
-# Takes screenshots of the window app on a Windows machine, for people to
+# Takes screenshots of the window app on Windows machines, for people to
 # look over: every tab, the menus and the dialogs, in each language, light
-# and dark. Runs on pushes to the ui-screenshots branch only, or by hand.
-# It builds the app the usual way and releases nothing.
+# and dark (one machine for each, side by side). Runs on pushes to the
+# ui-screenshots branch only, or by hand. It builds the app the usual way
+# and releases nothing.
 on:
   push:
     branches: [ui-screenshots]
   workflow_dispatch:
-    inputs:
-      combos:
-        description: "Languages and appearances, like en-light,de-dark"
-        default: "en-light,en-dark,de-light,de-dark,es-light,es-dark"
 
 permissions:
   contents: read
 
 jobs:
   screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        combo: [en-light, en-dark, de-light, de-dark, es-light, es-dark]
     runs-on: windows-latest
-    timeout-minutes: 120
-    env:
-      COMBOS: ${{ github.event.inputs.combos || 'en-light' }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Build
@@ -31,35 +30,55 @@ jobs:
       - name: Build the screenshot tool
         shell: pwsh
         run: |
-          $csc = Join-Path ([System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) "csc.exe"
-          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" }
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           & $csc /nologo /platform:x64 /r:System.Drawing.dll /out:shots.exe tools\ui-screenshots\Shots.cs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python tools\ui-screenshots\ids.py gui\main.c gui\resource.h | Out-File -Encoding ascii ids.txt
-          Get-Content ids.txt | Measure-Object -Line
       - name: Use a 1920 by 1080 screen
         shell: pwsh
-        run: |
-          .\shots.exe --resolution 1920 1080
-          Add-Type -AssemblyName System.Windows.Forms
-          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        run: .\shots.exe --resolution 1920 1080
       - name: Take the screenshots
         shell: pwsh
         run: >-
           tools\ui-screenshots\run-all.ps1
           -Exe "$PWD\build\Release\brodalf.exe" -Cli "$PWD\build\Release\brodalf-cli.exe"
-          -Shots "$PWD\shots.exe" -Ids "$PWD\ids.txt" -Out "$PWD\screenshots" -Combos $env:COMBOS
+          -Shots "$PWD\shots.exe" -Ids "$PWD\ids.txt" -Out "$PWD\screenshots" -Combos ${{ matrix.combo }}
       - name: Keep the app's log
         if: always()
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force screenshots | Out-Null
+          New-Item -ItemType Directory -Force screenshots\${{ matrix.combo }} | Out-Null
           $log = "$env:LOCALAPPDATA\BRODALF\brodalf.log"
-          if (Test-Path $log) { Copy-Item $log screenshots\brodalf.log }
+          if (Test-Path $log) { Copy-Item $log screenshots\${{ matrix.combo }}\brodalf.log }
       - name: Upload the screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-screenshots
+          name: ui-screenshots-${{ matrix.combo }}
           path: screenshots
           retention-days: 14
+
+  # The same screenshots on a branch of their own, ui-screenshots-images,
+  # replaced at each run, for tools that can fetch a branch but not an
+  # artifact. It holds nothing else; delete it whenever.
+  images-branch:
+    needs: screenshots
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ui-screenshots-*
+          merge-multiple: true
+          path: screenshots
+      - name: Push them to ui-screenshots-images
+        run: |
+          cd screenshots
+          git init -q -b ui-screenshots-images
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Screenshots from run ${{ github.run_id }} of ${{ github.sha }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/ui-screenshots-images

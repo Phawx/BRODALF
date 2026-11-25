@@ -103,6 +103,18 @@ int bd_temp_dir(char *out, size_t out_len);
 
 int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes);
 
+/* Windows' own file compression (NTFS). bd_fs_can_compress: 1 if the
+ * volume holding path can compress files, 0 if not (exFAT, FAT32, any
+ * other system). bd_fs_compressed: 1 if the file or folder is compressed,
+ * 0 if not, -1 if it cannot be read. bd_fs_set_compressed: 0 or -1. A
+ * folder set to compressed makes the files later made in it compressed;
+ * files already in it stay as they are until set one by one.
+ * bd_fs_size_on_disk: the room a file takes, or -1. */
+int bd_fs_can_compress(const char *path);
+int bd_fs_compressed(const char *path);
+int bd_fs_set_compressed(const char *path, int on);
+int64_t bd_fs_size_on_disk(const char *path);
+
 /* 1 if the last bd_fopen on this thread failed because another program has
  * the file open and does not let others read it (Windows sharing or lock
  * violation). Files are opened for reading with every sharing mode, so only

@@ -74,6 +74,8 @@ static void usage(void)
          "                                             short of the copies you want (first 50; --all for all)\n"
          "  check    <catalog> <root>                  read every copy on the drive back and check it\n"
          "  verify   <catalog> <root> [--days N]       read back only copies not read back in N days\n"
+         "  compress <catalog> <root> [on|off]        Windows' own file compression for BRODALF's folder on the drive:\n"
+         "                                             say whether it is on, or turn it on or off (NTFS drives only)\n"
          "  sets     <catalog>                         progress toward each full set of backups\n"
          "  at-risk  <catalog> [--root NAME] [--all]   files short of the copies you want, and which drive helps\n"
          "  need     <catalog>                         what needs backing up, and the drive to plug in\n"
@@ -1929,6 +1931,52 @@ static int run(int argc, char **argv)
         if (g_json) { J_OBJ(NULL); j_bool("encrypted", on); J_END(); }
         else printf("the catalog file is %s\n", on ? "encrypted from now on" : "no longer encrypted");
         save = 1;
+    } else if (strcmp(cmd, "compress") == 0) {
+        if (npos < 1 || (npos >= 2 && strcmp(pos[1], "on") != 0 && strcmp(pos[1], "off") != 0)) {
+            usage();
+            bd_catalog_close(cat);
+            return 1;
+        }
+        int64_t media_id;
+        if (connect_target(cat, pos[0], &media_id) != BD_OK) return die(cat, "cannot use the drive");
+        int can = 0, on = 0;
+        const char *why = NULL;
+        if (bd_media_compression(cat, media_id, &can, &on, &why) != BD_OK) return die(cat, "cannot look at the drive");
+        if (npos < 2) {
+            if (g_json) {
+                J_OBJ(NULL);
+                j_bool("can_compress", can);
+                j_bool("compressed", on);
+                if (why) j_str("why_not", why);
+                J_END();
+            } else {
+                printf("compression is %s for BRODALF's folder on this drive\n", on ? "on" : "off");
+                if (why) puts(why);
+            }
+        } else {
+            bd_compress_stats cs;
+            int want = strcmp(pos[1], "on") == 0;
+            bd_status s = bd_media_set_compression(cat, media_id, want, &cs, log_line, NULL);
+            if (s == BD_ERR_CANCELLED) return stopped(cat, "compression");
+            if (s != BD_OK) return die(cat, want ? "cannot compress the drive" : "cannot uncompress the drive");
+            char before[32], after[32];
+            human_bytes(cs.bytes, before, sizeof(before));
+            human_bytes(cs.bytes_on_disk, after, sizeof(after));
+            if (g_json) {
+                J_OBJ(NULL);
+                j_bool("compressed", want);
+                j_int("files", cs.files);
+                j_int("changed", cs.changed);
+                j_int("failed", cs.failed);
+                j_int("bytes", cs.bytes);
+                j_int("bytes_on_disk", cs.bytes_on_disk);
+                J_END();
+            } else {
+                printf("compression %s: %lld files, %lld changed, %lld could not be; %s of copies take %s on the drive\n",
+                       want ? "on" : "off", (long long)cs.files, (long long)cs.changed, (long long)cs.failed, before, after);
+                if (want) puts("copies made from now on are compressed too");
+            }
+        }
     } else if (strcmp(cmd, "changed") == 0) {
         if (npos < 1) { usage(); bd_catalog_close(cat); return 1; }
         int64_t id = media_id_by_label(cat, pos[0]);

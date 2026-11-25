@@ -88,6 +88,7 @@ enum {
     ID_LOCAL_CHECK,
     ID_LOCAL_VERIFY,
     ID_LOCAL_OPEN,
+    ID_LOCAL_COMPRESS,
     ID_LOCAL_CHANGED,
     ID_LOCAL_EDIT,
     ID_LOCAL_LOST,
@@ -326,7 +327,7 @@ static void media_name(int64_t id, wchar_t *out, size_t cap);
 
 /* ---- Jobs --------------------------------------------------------------- */
 
-typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW } job_kind;
+typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW, JOB_COMPRESS } job_kind;
 #define SUMMARY_LEN 768
 
 /* A file a restore left alone because another file was already where it
@@ -372,6 +373,7 @@ typedef struct job {
     int n_conf, cap_conf;
     int64_t in_use;     /* scan/backup: files another program had open */
     int from_shadow;    /* scan/backup: reads files in use from a shadow copy; the copy is removed after the last one */
+    int compress_on;    /* compress: turn compression on (else off) */
     int64_t damaged;    /* scan: files changed without their size or time changing */
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
@@ -867,6 +869,20 @@ static DWORD WINAPI worker(LPVOID arg)
     case JOB_SHADOW:
         s = run_shadow(j);
         break;
+    case JOB_COMPRESS: {
+        bd_compress_stats zs;
+        memset(&zs, 0, sizeof(zs));
+        s = bd_media_set_compression(g_cat, j->media_id, j->compress_on, &zs, job_log, j);
+        wchar_t room[64];
+        format_bytes(zs.bytes, size, 64);
+        format_bytes(zs.bytes_on_disk, room, 64);
+        swprintf(j->summary, SUMMARY_LEN, L"Compression %ls: %lld files; their %ls now take %ls on the drive.",
+                 j->compress_on ? L"turned on" : L"turned off", (long long)zs.files, size, room);
+        if (zs.failed)
+            say(j, L" %lld could not be changed (another program may have them open).", (long long)zs.failed);
+        if (j->compress_on) say(j, L" Copies made from now on are compressed too.");
+        break;
+    }
     case JOB_RESTORE: {
         bd_restore_stats rs;
         bd_restore_opts ro;
@@ -955,8 +971,11 @@ static void start_next_job(void)
     set_busy(1);
     static const wchar_t *starting[] = {L"Looking for BRODALF drives...", L"Scanning your backup roots...",
                                         L"Backing up...", L"Checking every copy on the drive...", L"Restoring...",
-                                        L"Reading back copies not read lately...", L"Reading files that are in use from a shadow copy..."};
-    const wchar_t *what = j->kind == JOB_SCAN && j->bitrot ? L"Bit-rot scan: reading every file again..." : starting[j->kind];
+                                        L"Reading back copies not read lately...", L"Reading files that are in use from a shadow copy...",
+                                        L"Compressing the copies on the drive..."};
+    const wchar_t *what = j->kind == JOB_SCAN && j->bitrot      ? L"Bit-rot scan: reading every file again..."
+                          : j->kind == JOB_COMPRESS && !j->compress_on ? L"Making the copies on the drive whole again..."
+                                                                  : starting[j->kind];
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
     show_progress(-1, what);
     show_file_progress(-1, L"");
@@ -4716,6 +4735,7 @@ static int fill_menu_cb(void *ctx, const bd_media_info *m)
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, L"Check every copy on it");
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, L"Read back copies not read lately");
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 6, L"Open in Explorer");
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 4, L"Compress the copies on it...");
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
     AppendMenuW(sub, MF_STRING, base + 3, L"Where it stands, name, where it is kept, hardware details...");
     AppendMenuW(sub, MF_STRING, base + 5, lost ? L"Found it: count its copies again" : L"Mark it lost or broken...");
@@ -4977,6 +4997,50 @@ static void show_in_explorer(const wchar_t *path)
     free(args);
 }
 
+/* Windows' own file compression for a backup drive, when the person asks:
+ * say what it does and costs, and turn it on or off. */
+static void compress_drive_ui(int64_t id)
+{
+    int can = 0, on = 0;
+    const char *why = NULL;
+    if (g_busy) return;
+    if (bd_media_compression(g_cat, id, &can, &on, &why) != BD_OK) {
+        MessageBoxW(g_main, L"Plug the drive in first.", APP_NAME, MB_ICONINFORMATION);
+        return;
+    }
+    wchar_t name[600];
+    media_name(id, name, 600);
+    wtext msg = {NULL, 0, 0};
+    int yes;
+    if (on) {
+        wadd(&msg, L"Compression is on for %ls: Windows keeps BRODALF's copies there smaller, and makes them whole again as "
+                   L"they are read.\n\nTurn it off? Every copy on the drive is made whole again, which needs room for them to "
+                   L"grow back to their full size, and takes about as long as reading and writing every copy there.", name);
+        yes = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) == IDYES;
+    } else if (!can) {
+        wchar_t *w = widen(why);
+        wadd(&msg, L"%ls cannot be compressed. %ls", name, w ? w : L"");
+        free(w);
+        MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONINFORMATION);
+        yes = 0;
+    } else {
+        wadd(&msg, L"Windows can compress the copies on %ls with its own file compression. They stay ordinary files that any "
+                   L"Windows PC reads without BRODALF; they just take less room on the drive.\n\n"
+                   L"Documents and similar files often shrink to half their size or less. Photos, videos, music and zipped "
+                   L"files are compressed already and barely shrink.\n\n"
+                   L"Compressing takes about as long as reading and writing every copy on the drive, and later backups to it "
+                   L"are a little slower. You can turn it off again here.\n\nCompress the copies on this drive now?", name);
+        yes = MessageBoxW(g_main, msg.p, APP_NAME, MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) == IDYES;
+    }
+    free(msg.p);
+    if (!yes) return;
+    job *j = new_job(JOB_COMPRESS);
+    if (!j) return;
+    j->media_id = id;
+    j->compress_on = !on;
+    enqueue(j);
+}
+
 static void drive_action(int64_t id, int action)
 {
     drive_list dl = load_drives();
@@ -5002,6 +5066,8 @@ static void drive_action(int64_t id, int action)
         update_drives_label();
         rebuild_tree();
         show_detail();
+    } else if (action == 4) {
+        compress_drive_ui(id);
     } else if (action == 6 && d->connected) {
         wchar_t *root = widen(d->root);
         if (root) open_in_explorer(root);
@@ -5447,7 +5513,7 @@ static const int g_db_btns[] = {ID_DB_ADD, ID_DB_STAR, ID_DB_ENCRYPT, ID_DB_BITR
                                 ID_DB_DELETED, ID_DB_DAMAGED, ID_DB_IN_USE, ID_DB_LARGEST, ID_DB_EXPORT};
 static const int g_next_btns[] = {ID_NEXT_BACKUP, ID_NEXT_ALL, ID_NEXT_CHANGED, ID_NEXT_RISK, ID_NEXT_REFRESH};
 static const int g_local_btns[] = {ID_LOCAL_ADD, ID_LOCAL_BACKUP, ID_LOCAL_ALL, ID_LOCAL_CHECK, ID_LOCAL_VERIFY, ID_LOCAL_OPEN,
-                                   ID_LOCAL_CHANGED, ID_LOCAL_EDIT, ID_LOCAL_LOST, ID_LOCAL_STATUS, ID_LOCAL_RISK, ID_LOCAL_PARALLEL};
+                                   ID_LOCAL_COMPRESS, ID_LOCAL_CHANGED, ID_LOCAL_EDIT, ID_LOCAL_LOST, ID_LOCAL_STATUS, ID_LOCAL_RISK, ID_LOCAL_PARALLEL};
 static const int g_star_btns[] = {ID_STAR_ADD, ID_STAR_REMOVE, ID_STAR_SHOW};
 static const int g_place_btns[] = {ID_PLACE_ADD, ID_PLACE_BACKUP, ID_PLACE_LIMIT, ID_PLACE_OPEN, ID_PLACE_EDIT, ID_PLACE_LOST};
 static const int g_enc_btns[] = {ID_ENC_PASS, ID_ENC_LOCK, ID_ENC_KEY, ID_ENC_SHEET, ID_ENC_DRIVE, ID_ENC_CATALOG};
@@ -5753,6 +5819,7 @@ static void create_pages(HWND hwnd)
     page_button(TAB_LOCAL, L"Check every copy", ID_LOCAL_CHECK);
     page_button(TAB_LOCAL, L"Read back copies not read lately", ID_LOCAL_VERIFY);
     page_button(TAB_LOCAL, L"Open in Explorer", ID_LOCAL_OPEN);
+    page_button(TAB_LOCAL, L"Compress copies...", ID_LOCAL_COMPRESS);
     page_button(TAB_LOCAL, L"Files changed since...", ID_LOCAL_CHANGED);
     page_button(TAB_LOCAL, L"Name and where it is kept...", ID_LOCAL_EDIT);
     page_button(TAB_LOCAL, L"Mark lost or broken...", ID_LOCAL_LOST);
@@ -6531,6 +6598,7 @@ static void page_buttons_state(void)
     EnableWindow(CTL(ID_LOCAL_CHECK), m && m->connected);
     EnableWindow(CTL(ID_LOCAL_VERIFY), m && m->connected);
     EnableWindow(CTL(ID_LOCAL_OPEN), m && m->connected);
+    EnableWindow(CTL(ID_LOCAL_COMPRESS), m && m->connected && !m->secondary);
     EnableWindow(CTL(ID_LOCAL_CHANGED), m != NULL);
     EnableWindow(CTL(ID_LOCAL_EDIT), m != NULL);
     EnableWindow(CTL(ID_LOCAL_LOST), m != NULL);
@@ -7140,6 +7208,7 @@ static void page_command(int id, int code)
     case ID_LOCAL_CHECK:
     case ID_LOCAL_VERIFY:
     case ID_LOCAL_OPEN:
+    case ID_LOCAL_COMPRESS:
     case ID_LOCAL_CHANGED:
     case ID_LOCAL_EDIT:
     case ID_LOCAL_LOST: {
@@ -7150,6 +7219,7 @@ static void page_command(int id, int code)
         else if (id == ID_LOCAL_CHECK) drive_action(mid, 2);
         else if (id == ID_LOCAL_VERIFY) drive_action(mid, 1);
         else if (id == ID_LOCAL_OPEN) drive_action(mid, 6);
+        else if (id == ID_LOCAL_COMPRESS) compress_drive_ui(mid);
         else if (id == ID_LOCAL_CHANGED) show_changed(mid);
         else if (id == ID_LOCAL_EDIT) edit_drive(mid);
         else drive_action(mid, 5);
@@ -7678,7 +7748,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             static const wchar_t *ask[] = {L"Stop looking for drives and close?", L"Stop the scan and close?",
                                            L"Stop the backup and close?", L"Stop the check and close?",
                                            L"Stop the restore and close?", L"Stop reading back the copies and close?",
-                                           L"Stop reading the files in use and close?"};
+                                           L"Stop reading the files in use and close?",
+                                           L"Stop compressing the drive and close?"};
             if (g_close_after) return 0; /* already stopping; closes when the job returns */
             wchar_t text[256];
             swprintf(text, 256, L"%ls\n\nWhat was done until then is kept. BRODALF closes as soon as the job has stopped.",

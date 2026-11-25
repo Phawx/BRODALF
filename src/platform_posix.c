@@ -328,6 +328,33 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
     return 0;
 }
 
+/* File compression is Windows' own (NTFS): nothing to do elsewhere. */
+int bd_fs_can_compress(const char *path)
+{
+    (void)path;
+    return 0;
+}
+
+int bd_fs_compressed(const char *path)
+{
+    bd_stat_t st;
+    return bd_stat(path, &st) == 0 ? 0 : -1;
+}
+
+int bd_fs_set_compressed(const char *path, int on)
+{
+    (void)path;
+    (void)on;
+    return -1;
+}
+
+int64_t bd_fs_size_on_disk(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int64_t)st.st_blocks * 512;
+}
+
 void bd_sleep_ms(int ms)
 {
     struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};

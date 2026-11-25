@@ -1357,6 +1357,84 @@ static void rename_log(void *ctx, const char *msg)
 
 /* Where names ignore case (Windows; here bd_test_fold_case stands in),
  * a change of letter case only is a rename, not a delete and a new file. */
+/* Compressing a backup drive: only when asked, only where Windows can,
+ * and the copies read back the same. */
+static void test_compression(void)
+{
+    /* Big enough for NTFS to save room: it compresses 64 KB at a time. */
+    size_t n = 256 * 1024;
+    char *big = malloc(n + 1);
+    if (!big) return;
+    for (size_t i = 0; i < n; i++) big[i] = "compress me "[i % 12];
+    big[n] = 0;
+    write_file(at("cz/Src/text.txt"), big);
+    write_file(at("cz/Src/sub/more.txt"), big);
+    bd_mkdirs(at("cz/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("cz/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("cz/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("cz/drive"), "Squeeze", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    char dir[1024], copy[1200];
+    snprintf(dir, sizeof(dir), "cz/drive/BRODALF/%s", bd_catalog_uuid(cat));
+    snprintf(copy, sizeof(copy), "%s/Src/text.txt", dir);
+
+    /* Nothing is compressed until asked. */
+    int can = -1, on = -1;
+    const char *why = NULL;
+    REQUIRE_OK(bd_media_compression(cat, drive, &can, &on, &why), cat);
+    CHECK(on == 0);
+    CHECK(can ? why == NULL : why != NULL);
+    bd_compress_stats cs;
+    if (!can) {
+        /* Outside Windows, or a drive that cannot: nothing changes. */
+        CHECK(bd_media_set_compression(cat, drive, 1, &cs, quiet, NULL) == BD_ERR_INVALID);
+        CHECK(bd_fs_compressed(at(copy)) == 0);
+    } else {
+        REQUIRE_OK(bd_media_set_compression(cat, drive, 1, &cs, quiet, NULL), cat);
+        CHECK(cs.files >= 3 && cs.failed == 0 && cs.changed == cs.files); /* two copies and the catalog's */
+        CHECK(cs.bytes_on_disk < cs.bytes);
+        CHECK(bd_fs_compressed(at(dir)) == 1 && bd_fs_compressed(at(copy)) == 1);
+        REQUIRE_OK(bd_media_compression(cat, drive, &can, &on, &why), cat);
+        CHECK(on == 1);
+        /* New copies land compressed, in old folders and new ones. */
+        write_file(at("cz/Src/sub/new.txt"), big);
+        write_file(at("cz/Src/other/new.txt"), big);
+        REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+        REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+        CHECK(bs.files_copied == 2);
+        snprintf(copy, sizeof(copy), "%s/Src/sub/new.txt", dir);
+        CHECK(bd_fs_compressed(at(copy)) == 1);
+        snprintf(copy, sizeof(copy), "%s/Src/other/new.txt", dir);
+        CHECK(bd_fs_compressed(at(copy)) == 1);
+        CHECK(file_equals(at(copy), big));
+        bd_check_stats ck;
+        REQUIRE_OK(bd_media_check(cat, drive, &ck, quiet, NULL), cat);
+        CHECK(ck.copies == 4 && ck.ok == 4);
+        /* And off again. */
+        REQUIRE_OK(bd_media_set_compression(cat, drive, 0, &cs, quiet, NULL), cat);
+        CHECK(cs.failed == 0 && bd_fs_compressed(at(copy)) == 0 && bd_fs_compressed(at(dir)) == 0);
+        CHECK(file_equals(at(copy), big));
+    }
+    /* An encrypted drive never can: its copies are random data. */
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, "squeeze it please"), cat);
+    int64_t vault;
+    bd_mkdirs(at("cz/vault"));
+    REQUIRE_OK(bd_media_init(cat, at("cz/vault"), "Vault", BD_MEDIA_ENCRYPTED, &vault), cat);
+    REQUIRE_OK(bd_media_compression(cat, vault, &can, &on, &why), cat);
+    CHECK(!can && why != NULL && on == 0);
+    CHECK(bd_media_set_compression(cat, vault, 1, &cs, quiet, NULL) == BD_ERR_INVALID);
+    /* A drive that is not plugged in. */
+    bd_media_disconnect(cat, drive);
+    CHECK(bd_media_compression(cat, drive, &can, &on, &why) == BD_ERR_NOT_FOUND);
+    bd_catalog_close(cat);
+    free(big);
+}
+
 static void test_case_rename(void)
 {
     write_file(at("cr/Src/Photo.JPG"), "picture");
@@ -2806,6 +2884,7 @@ int main(void)
     test_parallel_scan();
     test_cancel();
     test_case_rename();
+    test_compression();
     test_reserved_source_names();
 #ifndef _WIN32
     test_mtimes();

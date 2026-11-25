@@ -6,6 +6,7 @@
 #include "platform.h"
 
 #include <windows.h>
+#include <winioctl.h>
 #include <bcrypt.h>
 #include "blake3.h"
 #include <io.h>
@@ -490,6 +491,63 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
     *total_bytes = (int64_t)total.QuadPart;
     *free_bytes = (int64_t)avail.QuadPart;
     return 0;
+}
+
+/* ---- Compression -------------------------------------------------------- */
+
+int bd_fs_can_compress(const char *path)
+{
+    wchar_t *w = to_wide(path), vol[MAX_PATH + 8];
+    if (!w) return 0;
+    BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
+    free(w);
+    DWORD flags = 0;
+    if (!ok || !GetVolumeInformationW(vol, NULL, 0, NULL, NULL, &flags, NULL, 0)) return 0;
+    return (flags & FILE_FILE_COMPRESSION) != 0;
+}
+
+int bd_fs_compressed(const char *path)
+{
+    wchar_t *w = to_wide(path);
+    if (!w) return -1;
+    DWORD attrs = GetFileAttributesW(w);
+    free(w);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return -1;
+    return (attrs & FILE_ATTRIBUTE_COMPRESSED) != 0;
+}
+
+int bd_fs_set_compressed(const char *path, int on)
+{
+    wchar_t *w = to_wide(path);
+    if (!w) return -1;
+    /* A read-only file cannot be opened for writing: lift the flag while
+     * its compression changes, then put it back. */
+    DWORD attrs = GetFileAttributesW(w);
+    int ro = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY) && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+    if (ro) SetFileAttributesW(w, attrs & ~FILE_ATTRIBUTE_READONLY);
+    HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    int rc = -1;
+    if (h != INVALID_HANDLE_VALUE) {
+        USHORT format = on ? COMPRESSION_FORMAT_DEFAULT : COMPRESSION_FORMAT_NONE;
+        DWORD got = 0;
+        if (DeviceIoControl(h, FSCTL_SET_COMPRESSION, &format, sizeof(format), NULL, 0, &got, NULL)) rc = 0;
+        CloseHandle(h);
+    }
+    if (ro) SetFileAttributesW(w, attrs);
+    free(w);
+    return rc;
+}
+
+int64_t bd_fs_size_on_disk(const char *path)
+{
+    wchar_t *w = to_wide(path);
+    if (!w) return -1;
+    DWORD hi = 0, lo = GetCompressedFileSizeW(w, &hi);
+    DWORD err = lo == INVALID_FILE_SIZE ? GetLastError() : NO_ERROR;
+    free(w);
+    if (err != NO_ERROR) return -1;
+    return (int64_t)(((uint64_t)hi << 32) | lo);
 }
 
 void bd_sleep_ms(int ms)

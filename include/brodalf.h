@@ -385,6 +385,34 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stat
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
                           bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
+/* ---- Compressing a backup drive ----------------------------------------- */
+
+/* Windows' own file compression (NTFS) for BRODALF's folder on a backup
+ * drive: an option the person turns on or off, never something BRODALF
+ * does by itself. Copies stay ordinary files that any Windows PC reads;
+ * Windows makes them smaller on the drive and whole again when read. */
+typedef struct {
+    int64_t files;         /* files looked at */
+    int64_t changed;       /* files compressed (or made whole again) */
+    int64_t failed;        /* files that could not be changed (in use, read-only drive) */
+    int64_t bytes;         /* the size of every file looked at */
+    int64_t bytes_on_disk; /* the room they take on the drive afterwards */
+} bd_compress_stats;
+
+/* For a plugged-in drive. *on: BRODALF's folder there is compressed, so
+ * new copies are too. *why: when the drive cannot be compressed, a plain
+ * sentence saying why (NULL when it can); not to be freed. Not plugged in:
+ * BD_ERR_NOT_FOUND. */
+bd_status bd_media_compression(bd_catalog *cat, int64_t media_id, int *can, int *on, const char **why);
+
+/* Turn compression on or off for BRODALF's folder on a plugged-in drive
+ * and every file already there. Takes about as long as reading and
+ * writing every copy on the drive; can be stopped (bd_catalog_cancel), and
+ * what was done until then stays. Turning it off needs room for the files
+ * to grow back to their full size. */
+bd_status bd_media_set_compression(bd_catalog *cat, int64_t media_id, int on, bd_compress_stats *stats, bd_log_fn log,
+                                   void *log_ctx);
+
 /* ---- Backup and restore ---------------------------------------------- */
 
 typedef struct {

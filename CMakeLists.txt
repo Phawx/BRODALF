@@ -84,6 +84,7 @@ set(BRODALF_BUILD_ID "" CACHE STRING "Commit the build came from")
 add_library(brodalf_core STATIC
     src/backup.c
     src/catalog.c
+    src/compress.c
     src/crypto.c
     src/drive_hw.c
     src/store_local.c

@@ -280,7 +280,7 @@ const char *bd_status_name(bd_status s)
     case BD_ERR_NOMEM: return "out of memory";
     case BD_ERR_PASSPHRASE: return "passphrase needed or wrong";
     case BD_ERR_CANCELLED: return "stopped";
-    case BD_ERR_DRIVE_GONE: return "the drive stopped answering";
+    case BD_ERR_DRIVE_GONE: return "drive unplugged or not answering";
     }
     return "unknown error";
 }

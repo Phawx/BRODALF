@@ -113,6 +113,11 @@ extern int64_t bd_test_free_bytes;
 /* 1 if the drive is marked lost or broken. */
 int bd_media_lost(bd_catalog *cat, int64_t media_id);
 
+/* A drive holding a copy never read back since it was written is due for
+ * a check this many days after that copy was written (check_days, when
+ * smaller). */
+#define BD_UNREAD_CHECK_DAYS 7
+
 /* 1 if the drive is still plugged in where it was connected and is the
  * same drive: its BRODALF.media is there and names this catalog and this
  * drive. 0 if it was unplugged, stopped answering or another drive took

@@ -74,6 +74,7 @@ static void usage(void)
          "                                             short of the copies you want (first 50; --all for all)\n"
          "  check    <catalog> <root>                  read every copy on the drive back and check it\n"
          "  verify   <catalog> <root> [--days N]       read back only copies not read back in N days\n"
+         "  verify   <catalog> <root> --unread         read back only copies never read back since they were written\n"
          "  compress <catalog> <root> [on|off]        Windows' own file compression for BRODALF's folder on the drive:\n"
          "                                             say whether it is on, or turn it on or off (NTFS drives only)\n"
          "  sets     <catalog>                         progress toward each full set of backups\n"
@@ -106,7 +107,9 @@ static void usage(void)
          "                                             every version of a file and its copies\n"
          "  restore  <catalog> <dest> [--root NAME] [--path REL] [--deleted] --drive ROOT...\n"
          "                                             restore files as they are now (or, with --deleted, the\n"
-         "                                             deleted ones as last seen); nothing is overwritten\n"
+         "                                             deleted ones as last seen); a file whose newest contents\n"
+         "                                             were never backed up comes back as the newest version\n"
+         "                                             that was; nothing is overwritten\n"
          "  restore-version <catalog> <root> <path> <version> <dest folder> --drive ROOT...\n"
          "                                             restore one version of one file\n"
          "  restore-plan <catalog> [--root NAME] [--path REL] [--dest DIR] [--deleted] [--drive ROOT]...\n"
@@ -917,6 +920,7 @@ static int print_copy(void *ctx, const bd_copy_info *c)
             j_bool("connected", c->connected);
             j_bool("encrypted", c->encrypted);
             j_bool("drive_lost", c->media_lost);
+            j_bool("read_back", c->read_back);
             j_str("kept_in", c->media_location);
         }
         J_END();
@@ -924,9 +928,10 @@ static int print_copy(void *ctx, const bd_copy_info *c)
     }
     printf("v%-3d %s %12lld bytes  %.16s...", c->version_no, c->is_current ? "current" : "       ", (long long)c->size, c->hash);
     if (c->media_id)
-        printf("  on %s (%s%s%s%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
-               c->encrypted ? ", encrypted" : "", c->media_lost ? ", drive marked lost" : "",
-               c->media_location[0] ? ", kept in " : "", c->media_location, c->path_on_media);
+        printf("  on %s (%s%s%s%s%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
+               c->read_back || strcmp(c->copy_state, "ok") != 0 ? "" : ", not read back yet", c->encrypted ? ", encrypted" : "",
+               c->media_lost ? ", drive marked lost" : "", c->media_location[0] ? ", kept in " : "", c->media_location,
+               c->path_on_media);
     else printf("  no copy");
     printf("\n");
     return 0;
@@ -2024,14 +2029,18 @@ static int run(int argc, char **argv)
         if (connect_target(cat, pos[0], &media_id) != BD_OK) return die(cat, "cannot use the drive");
         if (strcmp(cmd, "check") == 0 || strcmp(cmd, "verify") == 0) {
             int verify = strcmp(cmd, "verify") == 0;
+            int unread = verify && has_flag(argc, argv, "--unread");
             const char *d = opt(argc, argv, "--days");
+            if (unread && d) return refuse(cat, "give --days or --unread, not both");
             int days = d ? atoi(d) : bd_option_get(cat, "verify_days");
             bd_check_stats cs;
-            bd_status s = verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
-                                 : bd_media_check(cat, media_id, &cs, log_line, NULL);
+            bd_status s = unread   ? bd_media_verify_unread(cat, media_id, &cs, log_line, NULL)
+                          : verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
+                                   : bd_media_check(cat, media_id, &cs, log_line, NULL);
             if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0)
-                s = verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
-                           : bd_media_check(cat, media_id, &cs, log_line, NULL);
+                s = unread   ? bd_media_verify_unread(cat, media_id, &cs, log_line, NULL)
+                    : verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
+                             : bd_media_check(cat, media_id, &cs, log_line, NULL);
             if (s == BD_ERR_CANCELLED) return stopped(cat, verify ? "read-back" : "check");
             if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
             if (s != BD_OK) return die(cat, "check failed");

@@ -2966,6 +2966,95 @@ static void test_unsafe_paths(void)
     bd_catalog_close(cat);
 }
 
+typedef struct { int64_t want; int check_due, found; } due_ctx;
+
+static int get_due(void *ctx, const bd_media_info *m)
+{
+    due_ctx *d = ctx;
+    if (m->media_id != d->want) return 0;
+    d->check_due = m->check_due;
+    d->found = 1;
+    return 1;
+}
+
+static int drive_due(bd_catalog *cat, int64_t media_id)
+{
+    due_ctx d = {media_id, 0, 0};
+    bd_list_media(cat, get_due, &d);
+    CHECK(d.found);
+    return d.check_due;
+}
+
+typedef struct { int copies, read_back; } read_back_count;
+
+static int count_read_back(void *ctx, const bd_copy_info *c)
+{
+    read_back_count *r = ctx;
+    if (!c->media_id) return 0;
+    r->copies++;
+    r->read_back += c->read_back;
+    return 0;
+}
+
+/* Copies never read back since they were written: listed as such, read
+ * back on their own on request, and due for a check after a week. */
+static void test_unread_copies(void)
+{
+    write_file(at("ur/Src/a.txt"), "alpha");
+    write_file(at("ur/Src/b.txt"), "beta");
+    bd_mkdirs(at("ur/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("ur/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("ur/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("ur/drive"), "Fresh", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    find_ctx a = lookup(cat, src, 0, "a.txt");
+    read_back_count rb = {0, 0};
+    REQUIRE_OK(bd_list_copies(cat, a.node_id, count_read_back, &rb), cat);
+    CHECK(rb.copies == 1 && rb.read_back == 0);
+    CHECK(!drive_due(cat, drive));
+
+    /* Written eight days ago and never read back: due, though the drive's
+     * usual interval (check_days, 180) is far off. */
+    CHECK(bd_exec(cat, "UPDATE copies SET written_ms=written_ms-8*24*3600*1000") == 0);
+    CHECK(drive_due(cat, drive));
+
+    /* Reading back only those copies. */
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_verify_unread(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 2 && cs.rehashed == 2 && cs.ok == 2);
+    rb.copies = rb.read_back = 0;
+    REQUIRE_OK(bd_list_copies(cat, a.node_id, count_read_back, &rb), cat);
+    CHECK(rb.copies == 1 && rb.read_back == 1);
+    CHECK(!drive_due(cat, drive));
+    REQUIRE_OK(bd_media_verify_unread(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 0);
+
+    /* A new copy is the only one read back next time. */
+    write_file(at("ur/Src/c.txt"), "gamma");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    REQUIRE_OK(bd_media_verify_unread(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 1 && cs.ok == 1);
+
+    /* check_days 0 means never due, unread copies or not. */
+    CHECK(bd_exec(cat, "UPDATE copies SET last_full_check_ms=NULL, written_ms=written_ms-30*24*3600*1000") == 0);
+    CHECK(drive_due(cat, drive));
+    REQUIRE_OK(bd_option_set(cat, "check_days", 0), cat);
+    CHECK(!drive_due(cat, drive));
+    /* A shorter interval than a week wins. */
+    REQUIRE_OK(bd_option_set(cat, "check_days", 3), cat);
+    CHECK(bd_exec(cat, "UPDATE copies SET written_ms=strftime('%s','now')*1000-4*24*3600*1000") == 0);
+    CHECK(drive_due(cat, drive));
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -3305,6 +3394,7 @@ int main(void)
     test_restore_fallback();
     test_restore_older_version();
     test_unsafe_paths();
+    test_unread_copies();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

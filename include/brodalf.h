@@ -699,6 +699,8 @@ typedef struct {
     int encrypted;           /* the copy is encrypted: its drive is, or its folder is set to be */
     const char *media_location; /* where that drive is kept; "" if not set */
     int media_lost;          /* that drive was marked lost or broken: the copy no longer counts */
+    int read_back;           /* the copy has been read back from the drive and its checksum found right
+                                since it was written; 0: not yet (bd_media_verify_unread reads those) */
 } bd_copy_info;
 
 /* What a drive says about itself, read whenever it is plugged in. Strings
@@ -748,7 +750,8 @@ typedef struct {
     /* The oldest good copy on it by when it was last fully checked (or
      * written, if never checked); 0 if it holds no copies. */
     int64_t oldest_check_ms;
-    int check_due;           /* older than the check_days option */
+    int check_due;           /* older than the check_days option, or it holds a good copy never
+                                read back that was written 7 days ago (check_days if less) */
     int64_t lost_ms;         /* when it was marked lost or broken; 0 if not (bd_media_mark_lost) */
     const char *lost_why;    /* "lost" or "broken"; "" if not */
     int64_t bytes_held;      /* size of the good copies on it */
@@ -939,7 +942,9 @@ void bd_format_utc(int64_t ms, char *out, size_t cap);
  * only shape what the user's own jobs do and what the app shows.
  *   "check_days"   a drive whose oldest copy was last read back this many
  *                  days ago shows as due for a check when it is plugged in
- *                  (default 180; 0: never). The app only offers a check
+ *                  (default 180; 0: never). A copy never read back since
+ *                  it was written makes it due 7 days after it was written
+ *                  (or check_days, if less). The app only offers a check
  *                  the user can dismiss.
  *   "verify_days"  "read back copies not checked lately" reads the copies
  *                  not read back in this many days (default 30; 0: all).

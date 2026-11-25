@@ -71,6 +71,20 @@ static int file_equals(const char *path, const char *text)
     return n == strlen(text) && memcmp(buf, text, n) == 0;
 }
 
+/* The whole file, however big, is exactly text. */
+static int file_equals_long(const char *path, const char *text)
+{
+    FILE *f = bd_fopen(path, "rb");
+    if (!f) return 0;
+    size_t want = strlen(text), got = 0;
+    char buf[8192];
+    int same = 1;
+    for (size_t n; (n = fread(buf, 1, sizeof(buf), f)) > 0; got += n)
+        if (got + n > want || memcmp(buf, text + got, n) != 0) { same = 0; break; }
+    fclose(f);
+    return same && got == want;
+}
+
 static int exists(const char *path)
 {
     bd_stat_t st;
@@ -1425,14 +1439,14 @@ static void test_compression(void)
         CHECK(bd_fs_compressed(at(copy)) == 1);
         snprintf(copy, sizeof(copy), "%s/Src/other/new.txt", dir);
         CHECK(bd_fs_compressed(at(copy)) == 1);
-        CHECK(file_equals(at(copy), big));
+        CHECK(file_equals_long(at(copy), big));
         bd_check_stats ck;
         REQUIRE_OK(bd_media_check(cat, drive, &ck, quiet, NULL), cat);
         CHECK(ck.copies == 4 && ck.ok == 4);
         /* And off again. */
         REQUIRE_OK(bd_media_set_compression(cat, drive, 0, &cs, quiet, NULL), cat);
         CHECK(cs.failed == 0 && bd_fs_compressed(at(copy)) == 0 && bd_fs_compressed(at(dir)) == 0);
-        CHECK(file_equals(at(copy), big));
+        CHECK(file_equals_long(at(copy), big));
     }
     /* An encrypted drive never can: its copies are random data. */
     REQUIRE_OK(bd_catalog_set_passphrase(cat, "squeeze it please"), cat);

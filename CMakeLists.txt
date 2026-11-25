@@ -139,7 +139,7 @@ endif()
 
 if(WIN32)
     add_executable(brodalf WIN32 gui/main.c gui/brodalf.rc)
-    target_link_libraries(brodalf PRIVATE brodalf_core comctl32 shell32 ole32 oleaut32 uuid)
+    target_link_libraries(brodalf PRIVATE brodalf_core comctl32 shell32 ole32 uuid)
     target_compile_definitions(brodalf PRIVATE UNICODE _UNICODE)
     if(MSVC)
         # The manifest is embedded through the .rc file.

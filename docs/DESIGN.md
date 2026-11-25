@@ -21,24 +21,19 @@ drive (see below).
 5. Plug in a drive and back up. Files light up once a correct copy is on a
    connected drive.
 6. Later sessions notice drives. Plugging a known drive in reads its
-   `BRODALF.media` and free space and lights up the matching files;
+   `BRODALF.media`, free space and health data and lights up the matching files;
    unplugging greys them out. Nothing else happens until the user presses a
    button: scanning, backing up, checking and restoring are each the user's
    choice, and the user sees where each one and each drive stands.
 7. BRODALF is not resident and starts nothing by itself (since 0.6.0): no
-   scheduled task, no backup or check on plug-in, no reminders, no
-   rescan on open. It does not care what else runs on the PC.
+   backup or check on plug-in, no reminders, no rescan on open. It does not care what else runs on the PC.
 
 ## Nothing automatic
 
-Up to 0.5.0 a Windows Task Scheduler task ("BRODALF - <catalog file
-name>") ran `brodalf.exe --check <catalog>` daily or weekly. 0.6.0 removes
-it: when the GUI opens a catalog it deletes that task through the Task
-Scheduler 2.0 COM API (`ITaskFolder::DeleteTask`, falling back to
-`schtasks /Delete`), and `brodalf.exe --check <catalog>` itself only deletes
-the task and exits, in case the task fires before the catalog is opened.
-`--shadow-copy` exits with 1. The options "schedule", "auto_backup" and
-"guard_percent" are gone; `bd_option_get` returns -1 for them.
+`brodalf.exe` takes one argument, a catalog to open; an argument that
+starts with `--` makes it exit with 1 without a window. The options
+"auto_backup" and "guard_percent" of earlier versions are gone;
+`bd_option_get` returns -1 for them.
 
 Before a backup the GUI shows `bd_backup_preview`: what `bd_backup_ex`
 would copy, move, keep under `.versions` and prune, the free space (read
@@ -109,7 +104,8 @@ again starts as never read back). When the user asks, `bd_media_verify`
 rehashes the copies not read back in "verify_days" days (default 30; 0
 every copy) and marks the bad ones damaged. A full check reads every copy;
 a quick check only compares size and time. `bd_media_connect` checks
-nothing; it only identifies the drive and records its free space.
+no copies; it only identifies the drive and records its free space and
+health data.
 
 ## Restoring as of a time
 
@@ -456,7 +452,7 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
   and searches again then.
 - Drives: on startup and on `WM_DEVICECHANGE`, drives that disappeared are
   disconnected, every drive letter with a `BRODALF.media` for this catalog is
-  connected (read only: its identity and free space), and folders or shares
+  connected (read only: its identity, free space and health data), and folders or shares
   used as storage are retried where they were last seen. The log says which
   drive was plugged in and, where it applies, that it is due for a full
   check, holds files for a waiting restore, or can take what did not fit on
@@ -474,6 +470,5 @@ user into `%LOCALAPPDATA%\Programs\BRODALF` with no administrator rights
 (`RequestExecutionLevel user`), adds a Start menu shortcut and an uninstall
 entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRODALF`.
 The uninstaller removes only those files, the shortcut and that key: catalogs,
-the app log, `HKCU\Software\BRODALF` and any scheduled check task left by
-0.5.0 or earlier are left,
+the app log and `HKCU\Software\BRODALF` are left,
 since they belong to the user's catalogs. The installer is not signed.

@@ -19,9 +19,9 @@ optional encryption. Builds are on the
 needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
 
-**0.6.0 takes out everything BRODALF used to start by itself**: it schedules
-nothing, backs up and checks only when you press the button, and shows what a
-backup will do before it starts (see [Nothing starts by itself](#nothing-starts-by-itself)).
+**0.6.0 takes out everything BRODALF used to start by itself**: it backs up
+and checks only when you press the button, and shows what a backup will do
+before it starts (see [Nothing starts by itself](#nothing-starts-by-itself)).
 
 **Everything new in 0.5.0 and 0.6.0 has only been built and tested off
 Windows** (Linux tests; the MSVC build in CI). See
@@ -170,17 +170,14 @@ same window.
 
 ### Nothing starts by itself
 
-BRODALF does what you press, and only then. It schedules nothing, does not
-back up or check a drive because it was plugged in, and does not care what
+BRODALF does what you press, and only then. It does not back up or check a
+drive because it was plugged in, and does not care what
 else runs on the PC. When it opens, or a drive is plugged in, it only reads
-which BRODALF drives are present (their `BRODALF.media` file and free space)
+which BRODALF drives are present (their `BRODALF.media` file, free space and
+health data)
 so the tree can show what is reachable. Scanning your folders, backing up,
 checking a drive and restoring each wait for their button, and the progress
 bar shows where a running job is. Close BRODALF and nothing of it runs.
-
-Earlier versions set up a daily check in Windows Task Scheduler. 0.6.0
-removes that task the first time it opens the catalog, or when the task next
-runs, whichever comes first.
 
 ### Before a backup: what it will do
 
@@ -461,12 +458,12 @@ on a local machine needs to pick the work up without the chat history.
 ### Design decisions (agreed 2026-09-28, still binding)
 
 - **Not resident, and nothing automatic** (since 0.6.0, owner's call
-  2026-11-24). BRODALF never runs in the background and schedules nothing.
+  2026-11-24). BRODALF never runs in the background.
   It does not care what else runs on the PC. Its point is keeping track of
   what has been backed up, and to where, from the original folders. The
   person chooses when to scan, back up, check and restore, and sees where
   each job and each drive stands. On open and on plug-in it only reads which
-  drives are present. Free space per drive is recorded on plug-in and
+  drives are present, with their free space and health data. Free space per drive is recorded on plug-in and
   before and after every backup. A tray icon or always-on mode was rejected.
 - **Checksums are the truth.** Whether data is safely held is decided by
   BLAKE3 checksums, everywhere: quick and full checks, read-back, move and
@@ -517,8 +514,7 @@ which describes the current implementation.
   `cmake/mingw-w64-x86_64.cmake` (`gcc-mingw-w64-x86-64`) and run under
   `wine64` with `LANG=C.UTF-8`; GUI screenshots were taken with Xvfb,
   xdotool and ImageMagick. Note that the released zip is the MSVC build
-  from CI, not the MinGW build that ran under Wine. Wine has no VSS, a stub
-  `schtasks`, no real disk model or SMART data and no real plug-in
+  from CI, not the MinGW build that ran under Wine. Wine has no VSS, no real disk model or SMART data and no real plug-in
   notifications.
 - Vendored in `third_party/`: SQLite 3.45.0, BLAKE3 1.5.4 (with its SSE2,
   SSE4.1, AVX2 and AVX-512 C files since 0.5.0), zstd 1.5.6
@@ -555,8 +551,7 @@ time and no error report was produced:
 - restoring the folder (identical to the source);
 - the **At risk** window; closing (catalog saved, lock released).
 
-Also seen: creating a catalog registers the Task Scheduler job straight
-away (`schtasks /Create ... -> 0` in the log), and the first launch had
+Also seen: the first launch had
 been left at the catalog chooser while a second was started, so two
 instances ran at once (the lock file kept them apart). The four bugs fixed
 in 0.4.0 came from the code review of the same day and this test:
@@ -580,25 +575,22 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. Upgrading from 0.5.0: the old daily task in Task Scheduler ("BRODALF -
-   <catalog file>") should be gone after the catalog is opened once, and a
-   task that fires before that should remove itself and show nothing.
-2. Plugging in a known disk while BRODALF is open: the device-change
+1. Plugging in a known disk while BRODALF is open: the device-change
    notification should only add a line to the log ("... is plugged in") and
    light up its files; nothing else should start. The test had the stick
    plugged in before launch, so this never fired.
-3. Everything new in 0.6.0: the backup window (its numbers against what the
+2. Everything new in 0.6.0: the backup window (its numbers against what the
    backup then does, Scan first, the mass-change warning and its tick box),
    Check drive's three choices, the drive's "Where it stands", Status of
    every disk, History, the CSV export opened in Excel (the accented names,
    the leading-quote guard against formulas), continuing a waiting restore
    from Restore..., and OneDrive online-only files left alone.
-4. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+3. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
    the temperature comes from property 52 and the ATA table is only read
    from ATA disks.
-5. Everything new in 0.5.0, none of which has run on Windows:
+4. Everything new in 0.5.0, none of which has run on Windows:
    - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
      thread, and how much the scan pool and batched fsyncs gain on real
      disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on
@@ -656,7 +648,7 @@ Ideas offered to the owner and not picked up. Pick by number.
    verified, and resumable chunked uploads.
 
 Rejected: a tray icon or always-on mode, and (since 0.6.0) anything that
-starts by itself: scheduled checks, backups or checks on plug-in, reminders.
+starts by itself, such as backups or checks on plug-in, or reminders.
 
 ### Working conventions
 

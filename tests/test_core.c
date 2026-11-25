@@ -394,7 +394,7 @@ static void test_search(void)
     CHECK(bd_option_get(cat, "check_days") == 180 && bd_option_get(cat, "verify_days") == 30);
     CHECK(bd_option_get(cat, "no_such_option") == -1);
     /* The options that started things by themselves are gone. */
-    CHECK(bd_option_get(cat, "auto_backup") == -1 && bd_option_get(cat, "schedule") == -1);
+    CHECK(bd_option_get(cat, "auto_backup") == -1);
     CHECK(bd_option_get(cat, "guard_percent") == -1);
     CHECK(bd_option_set(cat, "auto_backup", 1) == BD_ERR_INVALID);
     REQUIRE_OK(bd_option_set(cat, "check_days", 30), cat);

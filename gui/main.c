@@ -23,7 +23,6 @@
 #include <sddl.h>
 #include <shlobj.h>
 #include <shellapi.h>
-#include <taskschd.h>
 #include <stdarg.h>
 
 #include <stdio.h>
@@ -337,7 +336,7 @@ static void show_progress(int percent, const wchar_t *text)
 }
 
 /* Is root a drive for this catalog? Connects it: reads its BRODALF.media
- * file and free space, nothing else. */
+ * file, free space and health data, and checks no copies. */
 static int try_connect(job *j, const char *root, int64_t *media_id)
 {
     return bd_media_connect(g_cat, root, media_id, job_log, j) == BD_OK;
@@ -3551,84 +3550,6 @@ static void show_in_use(int say_none)
     in_use_free(&l);
 }
 
-/* ---- The daily task of earlier versions --------------------------------------- */
-
-/* Versions before 0.6.0 could ask Windows Task Scheduler to run BRODALF
- * every day or week. BRODALF now runs only when the user opens it, so the
- * task such a version made for this catalog is removed when it opens. */
-static void task_name(wchar_t *out, size_t cap)
-{
-    const wchar_t *base = wcsrchr(g_cat_path, L'\\');
-    swprintf(out, cap, L"BRODALF - %ls", base ? base + 1 : g_cat_path);
-}
-
-/* The Task Scheduler 2.0 class and interface, declared here so no import
- * library is needed (MinGW and MSVC name it differently). */
-static const GUID BD_CLSID_TaskScheduler = {0x0f87369f, 0xa4e5, 0x4cfc, {0xbd, 0x3e, 0x73, 0xe6, 0x15, 0x45, 0x72, 0xdd}};
-static const GUID BD_IID_ITaskService = {0x2faba4c7, 0x4da9, 0x4013, {0x96, 0x97, 0x20, 0xcc, 0x3f, 0xd4, 0x0f, 0x85}};
-
-#define RELEASE(p) do { if (p) { (p)->lpVtbl->Release(p); (p) = NULL; } } while (0)
-
-/* S_OK: removed; S_FALSE: there was none. Called on the UI thread, which
- * is in a single-threaded apartment. */
-static HRESULT delete_task_com(const wchar_t *name)
-{
-    ITaskService *svc = NULL;
-    ITaskFolder *root = NULL;
-    BSTR b_root = SysAllocString(L"\\"), b_name = SysAllocString(name);
-    VARIANT none;
-    VariantInit(&none);
-    HRESULT hr = E_OUTOFMEMORY;
-    if (!b_root || !b_name) goto done;
-    hr = CoCreateInstance(&BD_CLSID_TaskScheduler, NULL, CLSCTX_INPROC_SERVER, &BD_IID_ITaskService, (void **)&svc);
-    if (FAILED(hr)) goto done;
-    if (FAILED(hr = ITaskService_Connect(svc, none, none, none, none))) goto done;
-    if (FAILED(hr = ITaskService_GetFolder(svc, b_root, &root))) goto done;
-    hr = ITaskFolder_DeleteTask(root, b_name, 0);
-    if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)) hr = S_FALSE;
-done:
-    RELEASE(root);
-    RELEASE(svc);
-    SysFreeString(b_root);
-    SysFreeString(b_name);
-    return hr;
-}
-
-/* The old way, if the COM API is not available: schtasks.exe. */
-static DWORD delete_task_schtasks(const wchar_t *name)
-{
-    wchar_t args[MAX_PATH + 64];
-    swprintf(args, MAX_PATH + 64, L"/Delete /F /TN \"%ls\"", name);
-    SHELLEXECUTEINFOW sei;
-    memset(&sei, 0, sizeof(sei));
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
-    sei.lpFile = L"schtasks.exe";
-    sei.lpParameters = args;
-    sei.nShow = SW_HIDE;
-    DWORD code = 1;
-    if (ShellExecuteExW(&sei)) {
-        WaitForSingleObject(sei.hProcess, 30000);
-        GetExitCodeProcess(sei.hProcess, &code);
-        CloseHandle(sei.hProcess);
-    }
-    return code;
-}
-
-static void remove_old_task(int say)
-{
-    wchar_t name[MAX_PATH + 32];
-    task_name(name, MAX_PATH + 32);
-    HRESULT hr = delete_task_com(name);
-    char *u = narrow(name);
-    bd_applog("Task Scheduler: remove \"%s\" -> 0x%08lx", u ? u : "", (unsigned long)hr);
-    free(u);
-    int removed = hr == S_OK || (FAILED(hr) && delete_task_schtasks(name) == 0); /* exit code 0: it was there and is gone */
-    if (removed && say)
-        log_append(L"Removed the scheduled check an earlier version of BRODALF had set up in Windows. "
-                   L"BRODALF now runs only when you open it.");
-}
-
 /* ---- The menu bar ----------------------------------------------------------- */
 
 static void clear_menu(HMENU m)
@@ -4836,24 +4757,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     free(log_path);
     SetUnhandledExceptionFilter(on_crash);
 
-    /* Earlier versions ran themselves with these; this one does not. */
-    if (argc >= 2 && wcscmp(argv[1], L"--shadow-copy") == 0) {
+    /* The only argument is a catalog to open. Anything that starts with
+     * -- is not one, so BRODALF exits without opening a window. */
+    if (argc >= 2 && wcsncmp(argv[1], L"--", 2) == 0) {
+        bd_applog("unknown option on the command line; nothing done");
         LocalFree(argv);
         return 1;
     }
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    if (argc >= 2 && wcscmp(argv[1], L"--check") == 0) {
-        /* Task Scheduler starting the daily check of an earlier version:
-         * remove that task and do nothing else. */
-        if (argc >= 3) {
-            wcsncpy(g_cat_path, argv[2], MAX_PATH * 2 - 1);
-            remove_old_task(0);
-        }
-        bd_applog("started by an old scheduled task: removed it, nothing else done");
-        LocalFree(argv);
-        CoUninitialize();
-        return 0;
-    }
     INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES |
                                                  ICC_PROGRESS_CLASS | ICC_DATE_CLASSES};
     InitCommonControlsEx(&icc);
@@ -4901,7 +4812,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         log_append(L"Catalog opened. Looking for the backup drives that are plugged in. Nothing else starts until you "
                    L"press a button: Scan folders finds what changed, Back up copies it.");
     }
-    remove_old_task(1);
     g_ui_depth--;
     job *first = new_job(JOB_DRIVES);
     if (first) {

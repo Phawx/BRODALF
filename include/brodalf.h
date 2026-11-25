@@ -200,9 +200,9 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
 
 /* Tell BRODALF a known drive is connected at root. Identifies it by its
  * BRODALF.media file (not by drive letter) and records the mount and free
- * space. It reads nothing else: checking the copies is bd_media_check, run
- * when the user asks. Files with a good copy on connected storage stop
- * being greyed out. */
+ * space, and reads the disk's health data. It checks no copies: that is
+ * bd_media_check, run when the user asks. Files with a good copy on
+ * connected storage stop being greyed out. */
 typedef struct {
     int64_t copies;
     int64_t ok;

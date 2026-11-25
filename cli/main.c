@@ -1404,6 +1404,16 @@ static int cmd_recover(int argc, char **argv)
         if (g_json) J_END();
         return die(NULL, "the recovered catalog does not open");
     }
+    /* A catalog from a drive may hold anything: say which of its paths a
+     * restore will not write. */
+    int64_t unsafe = 0;
+    if (bd_check_stored_paths(cat, log_line, NULL, &unsafe) != BD_OK) {
+        if (g_json) J_END();
+        return die(cat, "cannot look through the recovered catalog");
+    }
+    if (unsafe && !g_json)
+        fprintf(msg_out(), "%lld paths in the recovered catalog could lead outside their folders; those files are never"
+                           " restored or backed up\n", (long long)unsafe);
     /* A scan finds which roots are where they were; a missing one is left
      * as it was, nothing in it marked deleted. */
     bd_scan_stats st;
@@ -1413,6 +1423,7 @@ static int cmd_recover(int argc, char **argv)
         j_str("catalog", dest);
         j_str("from", f.path);
         j_int("roots_missing", st.roots_missing);
+        j_int("unsafe_paths", unsafe);
         J_END();
     } else {
         printf("recovered the catalog to %s from %s\n", dest, f.path);

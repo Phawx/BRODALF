@@ -180,3 +180,72 @@ bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *c
     if (!r) r = report_subfolders(dir, fn, ctx);
     return r ? BD_OK : BD_ERR_NOT_FOUND;
 }
+
+/* ---- Paths a catalog stores ------------------------------------------- */
+
+int bd_stored_path_safe_as(const char *rel, int windows)
+{
+    if (!rel || !*rel || rel[0] == '/') return 0; /* empty, or absolute */
+    const char *part = rel;
+    for (const char *p = rel;; p++) {
+        if (*p == '/' || *p == '\0') {
+            size_t n = (size_t)(p - part);
+            if (n == 0) return 0; /* an empty part: "a//b", or a slash at the end */
+            if ((n == 1 && part[0] == '.') || (n == 2 && part[0] == '.' && part[1] == '.')) return 0;
+            if (windows) {
+                /* Windows reads a part of only dots and spaces as "." or "..". */
+                size_t k = 0;
+                while (k < n && (part[k] == '.' || part[k] == ' ')) k++;
+                if (k == n) return 0;
+            }
+            if (!*p) return 1;
+            part = p + 1;
+        } else if (windows && (*p == ':' || *p == '\\')) {
+            return 0; /* a drive ("C:"), a stream ("a:b"), or a second kind of separator */
+        }
+    }
+}
+
+int bd_stored_path_safe(const char *rel)
+{
+#ifdef _WIN32
+    return bd_stored_path_safe_as(rel, 1);
+#else
+    return bd_stored_path_safe_as(rel, 0);
+#endif
+}
+
+int bd_stored_name_safe(const char *name)
+{
+    return name && !strchr(name, '/') && bd_stored_path_safe(name);
+}
+
+bd_status bd_check_stored_paths(bd_catalog *cat, bd_log_fn log, void *log_ctx, int64_t *unsafe)
+{
+    if (unsafe) *unsafe = 0;
+    sqlite3_stmt *q;
+    /* 0: a backup root's name, 1: a file's or folder's path in its root,
+     * 2: where a copy is on its drive. */
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT 0, name, name FROM sources"
+                           " UNION ALL SELECT 1, n.rel_path, s.name || '/' || n.rel_path FROM nodes n JOIN sources s ON s.id=n.source_id"
+                           " UNION ALL SELECT 2, c.path_on_media, m.label FROM copies c JOIN media m ON m.id=c.media_id",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "look through the stored paths");
+    int64_t n = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        int kind = sqlite3_column_int(q, 0);
+        const char *path = (const char *)sqlite3_column_text(q, 1);
+        const char *shown = (const char *)sqlite3_column_text(q, 2);
+        if (kind == 0 ? bd_stored_name_safe(path) : bd_stored_path_safe(path)) continue;
+        if (++n <= 20) {
+            if (kind == 0) bd_logf(log, log_ctx, "the backup root name \"%s\" is not a safe folder name: its files will not be restored", path ? path : "");
+            else if (kind == 1) bd_logf(log, log_ctx, "the stored path \"%s\" could lead outside a restore folder: it will not be restored", shown ? shown : "");
+            else bd_logf(log, log_ctx, "a copy on \"%s\" is recorded at \"%s\", which could lead outside its folder: it will not be read", shown ? shown : "", path ? path : "");
+        }
+    }
+    sqlite3_finalize(q);
+    if (n > 20) bd_logf(log, log_ctx, "and %lld more paths like those", (long long)(n - 20));
+    if (unsafe) *unsafe = n;
+    return BD_OK;
+}

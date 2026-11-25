@@ -61,6 +61,14 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
  * BD_ERR_FORMAT if backup_path is not a catalog; bd_open_error says why. */
 bd_status bd_catalog_recover(const char *backup_path, const char *dest_path);
 
+/* After opening a recovered catalog: look for paths in it that a restore
+ * will not write (empty parts, ".", "..", absolute paths, and on Windows
+ * ':' or '\\'), as a catalog from a drive may hold anything. Each is
+ * logged (the first 20) and counted in *unsafe. Nothing is changed; a
+ * restore never writes such a file, logs it and counts it as failed, and a
+ * backup does not copy it. */
+bd_status bd_check_stored_paths(bd_catalog *cat, bd_log_fn log, void *log_ctx, int64_t *unsafe);
+
 /* The catalogs a drive holds copies of, to recover from. dir may be the
  * drive, its BRODALF folder, or one catalog's folder on it. For each
  * catalog (one folder per catalog id) fn gets its newest copy: the highest

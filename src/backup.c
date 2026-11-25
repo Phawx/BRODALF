@@ -937,6 +937,14 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 for (int k = 0; k < n; k++) stats[k].files_failed++;
                 continue;
             }
+            /* Paths from a recovered catalog may hold anything: nothing is
+             * read or written outside the root and its folder on the drive. */
+            if (!bd_stored_path_safe(it->rel) || !bd_stored_name_safe(it->source_name)) {
+                for (int k = 0; k < n; k++) stats[k].files_failed++;
+                bd_logf(log, log_ctx, "not backed up: the path stored for \"%s/%s\" could lead outside its folder", it->source_name,
+                        it->rel);
+                continue;
+            }
             /* Which drives still need it. */
             int want[MAX_DESTS], nw = 0;
             for (int k = 0; k < n; k++) {
@@ -1465,6 +1473,11 @@ static int restore_file(bd_catalog *cat, restore_run *r, const restore_file_item
         restore_copy *c = &copies[i];
         if (c->sealed && !cat->have_key) { locked++; continue; }
         tried++;
+        if (!bd_stored_path_safe(c->rel)) {
+            bd_logf(log, log_ctx, "the copy on \"%s\" is recorded at a path that could lead outside its folder, so it is not read: %s",
+                    c->label, it->rel);
+            continue;
+        }
         if (!r->store || r->store->media_id != c->media_id) {
             bd_store_close(r->store);
             r->store = bd_store_open(cat, c->media_id);
@@ -1674,6 +1687,17 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
         for (size_t i = 0; i < n && !cancelled && !gone; i++) {
             item *it = &items[i];
             if (bd_cancelled(cat)) { cancelled = 1; break; }
+            /* A catalog recovered from a drive may hold anything: nothing
+             * is written outside the folder chosen. */
+            if (it->rel && it->source_name && (!bd_stored_path_safe(it->rel) || (!flat && !bd_stored_name_safe(it->source_name)))) {
+                if (!it->is_dir) {
+                    stats->files_failed++;
+                    bd_report_file(cat, files_seen++, it->rel, it->size);
+                }
+                bd_logf(log, log_ctx, "not restored: the path stored for \"%s/%s\" could lead outside the folder you chose",
+                        it->source_name, it->rel);
+                continue;
+            }
             char *dest = it->rel ? restore_dest(dest_root, flat, it->source_name, it->rel) : NULL;
             if (!dest) { stats->files_failed++; continue; }
             if (it->is_dir) {
@@ -1750,6 +1774,12 @@ bd_status bd_restore_version(bd_catalog *cat, int64_t version_id, const char *de
     rf.rel = (const char *)sqlite3_column_text(q, 4);
     rf.source_name = (const char *)sqlite3_column_text(q, 5);
     rf.node_id = 0;
+    if (!rf.rel || !bd_stored_path_safe(rf.rel)) {
+        stats->files_failed++;
+        bd_logf(log, log_ctx, "not restored: the path stored for \"%s\" could lead outside the folder you chose",
+                rf.rel ? rf.rel : "");
+        goto done;
+    }
     char *dest = bd_path_join(dest_folder, bd_rel_basename(rf.rel));
     if (!dest) { s = BD_ERR_NOMEM; goto done; }
     bd_mkdirs(dest_folder);

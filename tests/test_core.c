@@ -2898,6 +2898,74 @@ static void test_restore_older_version(void)
     bd_catalog_close(cat);
 }
 
+/* A catalog recovered from a drive may hold any path: a restore never
+ * writes outside the folder chosen, nor reads outside a drive's folder. */
+static void test_unsafe_paths(void)
+{
+    const char *both_ok[] = {"a.txt", "sub/b.txt", ".versions/Src/a.v2.txt", "a b/c d", "x..y", ".hidden"};
+    const char *both_bad[] = {"", "/etc/passwd", "../x", "a/../b", "a/./b", "./a", "a//b", "a/", "..", ".", "a/.."};
+    const char *win_bad[] = {"a:b", "C:/x", "a\\b", "..\\x", "sub/.. /x", "...", "a/ . /b"};
+    for (size_t i = 0; i < sizeof(both_ok) / sizeof(both_ok[0]); i++)
+        CHECK(bd_stored_path_safe_as(both_ok[i], 0) && bd_stored_path_safe_as(both_ok[i], 1));
+    for (size_t i = 0; i < sizeof(both_bad) / sizeof(both_bad[0]); i++)
+        CHECK(!bd_stored_path_safe_as(both_bad[i], 0) && !bd_stored_path_safe_as(both_bad[i], 1));
+    for (size_t i = 0; i < sizeof(win_bad) / sizeof(win_bad[0]); i++)
+        CHECK(bd_stored_path_safe_as(win_bad[i], 0) && !bd_stored_path_safe_as(win_bad[i], 1));
+    CHECK(!bd_stored_path_safe_as(NULL, 0));
+    CHECK(bd_stored_name_safe("Docs") && !bd_stored_name_safe("a/b") && !bd_stored_name_safe(".."));
+
+    write_file(at("up/Src/a.txt"), "alpha");
+    write_file(at("up/Src/b.txt"), "beta");
+    write_file(at("up/Src/c.txt"), "gamma");
+    bd_mkdirs(at("up/d1"));
+    bd_mkdirs(at("up/d2"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("up/c.brodalf"), &cat), NULL);
+    int64_t src, d1, d2;
+    REQUIRE_OK(bd_source_add(cat, at("up/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("up/d1"), "One", 0, &d1), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    int64_t unsafe = -1;
+    REQUIRE_OK(bd_check_stored_paths(cat, quiet, NULL, &unsafe), cat);
+    CHECK(unsafe == 0);
+
+    /* What a doctored catalog could say: a file whose path climbs out of
+     * the restore folder, and a copy recorded outside its drive folder. */
+    CHECK(bd_exec(cat, "UPDATE nodes SET rel_path='../escape.txt' WHERE name='a.txt'") == 0);
+    CHECK(bd_exec(cat, "UPDATE copies SET path_on_media='../../../c.brodalf' WHERE path_on_media='Src/b.txt'") == 0);
+    log_keep lk;
+    memset(&lk, 0, sizeof(lk));
+    REQUIRE_OK(bd_check_stored_paths(cat, keep_log, &lk, &unsafe), cat);
+    CHECK(unsafe == 2);
+    CHECK(strstr(lk.text, "Src/../escape.txt") != NULL && strstr(lk.text, "../../../c.brodalf") != NULL);
+
+    bd_restore_stats rs;
+    memset(&lk, 0, sizeof(lk));
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("up/out/inner"), &rs, keep_log, &lk), cat);
+    CHECK(rs.files_restored == 1 && rs.files_failed == 2);
+    CHECK(file_equals(at("up/out/inner/c.txt"), "gamma"));
+    CHECK(!exists(at("up/out/escape.txt")) && !exists(at("up/out/inner/b.txt")));
+    CHECK(strstr(lk.text, "not restored: the path stored for \"Src/../escape.txt\"") != NULL);
+    /* The copy was not read, so it is not marked damaged either. */
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+    int64_t a_version = count_rows(cat, "SELECT current_version_id FROM nodes WHERE name='a.txt'");
+    REQUIRE_OK(bd_restore_version(cat, a_version, at("up/out/one"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 0 && rs.files_failed == 1);
+
+    /* Nor is such a file backed up to a new drive. */
+    REQUIRE_OK(bd_media_init(cat, at("up/d2"), "Two", 0, &d2), cat);
+    REQUIRE_OK(bd_backup(cat, d2, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2 && bs.files_failed == 1);
+    char p[1200];
+    snprintf(p, sizeof(p), "up/d2/BRODALF/%s/escape.txt", bd_catalog_uuid(cat));
+    CHECK(!exists(at(p)));
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -3236,6 +3304,7 @@ int main(void)
     test_drive_gone();
     test_restore_fallback();
     test_restore_older_version();
+    test_unsafe_paths();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

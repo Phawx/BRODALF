@@ -19,11 +19,12 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.9.0**, released 2026-11-25. It adds the six things 0.8.0 left
-for later: dark mode, German and Spanish, hiding file and folder names on
-an encrypted drive, an optional compression helper for backup drives,
-reading files in use from a shadow copy when you ask, and remembering the
-last database; see [History](#history). Builds are
+Version **0.10.0** (2026-11-25) fixes what two independent reviews of
+0.9.0 found: a drive that drops out is no longer taken for a drive of
+missing copies, restores try every good copy and fall back to the newest
+backed-up version, the window can be used from the keyboard, no longer
+freezes on large databases and says plainly when a job had problems; see
+[History](#history). Builds are
 on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
@@ -345,8 +346,12 @@ and checksum. It offers two choices:
 
 When a plugged-in drive's oldest read-back is older than **Settings > A
 plugged-in drive offers a check after** (6 months by default), BRODALF
-offers a check. A copy found damaged is written again by the next backup to
-that drive, alongside the damaged one.
+offers a check. A copy never read back since it was written comes due a
+week after it was written. After a backup, **Read back what was just
+written** reads just those copies; Windows may still hold some of them in
+memory, so unplug the drive and plug it in again first to read them from
+the drive itself. A copy found damaged is written again by the next backup
+to that drive, alongside the damaged one.
 
 ### Deleted, damaged and in-use files
 
@@ -413,6 +418,10 @@ existing file's size and modified time side by side, and which is newer.
 When the files live on several drives, BRODALF first shows which drives it
 needs, in order, with where each is kept, and restores what the plugged-in
 drives hold. Plug in the next drive and restore again for the rest.
+Each file is read back from the first good copy that checks out: a copy
+that does not is marked damaged and the next drive's copy is tried. When a
+file's newest contents were never backed up (after ransomware, say), the
+newest version that was is restored, and the summary counts those files.
 **Restore deleted files** brings back deleted files as they were
 last seen, and right-clicking a version restores just that one.
 
@@ -506,6 +515,7 @@ brodalf-cli tree  family.brodalf --drive E:\          # backed-up files light up
 brodalf-cli versions family.brodalf Pictures "2024/IMG_0412.jpg" --drive E:\
 brodalf-cli check family.brodalf E:\                  # read every copy back
 brodalf-cli verify family.brodalf E:\                 # only copies not read back in 30 days
+brodalf-cli verify family.brodalf E:\ --unread        # only copies never read back
 brodalf-cli restore family.brodalf D:\restored --drive E:\
 
 brodalf-cli drive family.brodalf F:\ "Red Vault" --encrypt --location "Label A"
@@ -677,6 +687,28 @@ on a local machine needs to pick the work up without the chat history.
   `%LOCALAPPDATA%\BRODALF`, with only Open and New working until a
   database is open. The command line gains `compress`, `drive --hide-names`,
   `place --hide-names` and `scan`/`backup --shadow-copy`.
+- v0.10.0 (2026-11-25, built on the `review-fixes` branch first): two
+  reviewers, each blind to the other and to the design answers, went
+  through 0.9.0, and what they found was fixed. Engine: a drive that
+  drops out mid-job stops that job (`BD_ERR_DRIVE_GONE`) instead of
+  marking its copies missing; restores try every good copy and fall back
+  to the newest version that has one; copies never read back are due for
+  a check after a week (`verify --unread`); the drive status query is no
+  longer quadratic; the catalog is saved every 5 minutes during a backup
+  and not when nothing changed; folder listings that fail part way are
+  reported and mark nothing deleted; the mass-change warning counts
+  renamed-and-deleted files; nested backup roots are refused; FAT32's
+  4 GiB limit is planned for; bit-rot results are kept (`damaged_files`,
+  no schema change); stale working copies are removed; stored paths are
+  checked; UNC paths get the long-path prefix and `.`/`..` are resolved
+  first; the shadow helper checks the caller's access; CLI exit codes 0,
+  1, 2, 3. Window: keyboard access and shortcuts, problems first in job
+  results, slow figures read off the window thread, room for the warnings
+  and for German and Spanish, states in words and high contrast,
+  per-monitor DPI, a save on shutdown, sortable tables, an icon, and a
+  read-back offer after a backup. Installer: asks to close a running
+  BRODALF. Not built, as they go against the design answers: restoring as
+  of a date, and reading back automatically after every backup.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -832,7 +864,19 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. Everything new in 0.9.0, none of which has run on Windows (it was built
+1. Everything new in 0.10.0, which was only compiled and tested by the
+   Windows CI build and never run on a PC: the keyboard (Tab order, the &
+   letters in German and Spanish, the shortcuts), job results with
+   problems and Show what went wrong, the window staying responsive on a
+   large database, the drives line and warning line, the wider dialogs,
+   high contrast and the legend, a second monitor at another scaling, a
+   shutdown during a job, sorting the tables, the icon, the read-back
+   offer; pulling a USB drive during a check and a backup (it should say
+   the drive went away and mark nothing missing); a restore with a
+   damaged copy on one of two drives; a FAT32 stick with a file of 4 GB
+   or more; a network-share backup root; the shadow helper's access
+   check; the installer's question with BRODALF open.
+2. Everything new in 0.9.0, none of which has run on Windows (it was built
    for Windows and the Windows CI build passes, but the window has not been
    looked at): dark mode in every tab and dialog, and switching while
    BRODALF is open; the German and Spanish window, above all whether longer
@@ -844,7 +888,7 @@ in 0.4.0 came from the code review of the same day and this test:
    and the refusal on exFAT; the start-up choice with the last
    database from `%LOCALAPPDATA%`, and the window greyed out until one is
    open.
-2. Everything new in 0.8.0, none of which has run on Windows, and the
+3. Everything new in 0.8.0, none of which has run on Windows, and the
    window has not been looked at since the tabs went in: the six tabs and
    their buttons and tables, the File, View, Tools and Help menus, the tab
    remembered between runs; starring and encrypting from the tree, ★ and
@@ -853,11 +897,11 @@ in 0.4.0 came from the code review of the same day and this test:
    to it; an encrypted folder on a plain drive, and the time it says
    encrypting takes against a real backup; backing up to two or more USB
    drives at once against one after another.
-3. Plugging in a known disk while BRODALF is open: the device-change
+4. Plugging in a known disk while BRODALF is open: the device-change
    notification should only add a line to the log ("... is plugged in") and
    light up its files; nothing else should start. The test had the stick
    plugged in before launch, so this never fired.
-4. Everything new in 0.7.0, none of which has run on Windows: the menus
+5. Everything new in 0.7.0, none of which has run on Windows: the menus
    and right-click menus; New database, Open and Recover from a drive; the
    scan on open and the question about a backup root that moved; the line
    beside the buttons and the three kinds of progress bar; backing up with
@@ -868,15 +912,15 @@ in 0.4.0 came from the code review of the same day and this test:
    the bit-rot scan and damaged files; restores that never overwrite, Files
    the last restore left alone, restoring one version and the deleted
    files; backups at low priority; the installer's desktop shortcut.
-5. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
+6. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
    accented names, the leading-quote guard against formulas), and OneDrive
    online-only files left alone.
-6. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+7. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
    the temperature comes from property 52 and the ATA table is only read
    from ATA disks.
-7. Everything new in 0.5.0, none of which has run on Windows:
+8. Everything new in 0.5.0, none of which has run on Windows:
    - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
      thread, and how much the scan pool and batched fsyncs gain on real
      disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on
@@ -905,7 +949,12 @@ limits of the new work:
   remove old `catalog-r*.brodalf` files by hand if a drive needs the room.
 - Reading each copy back straight after writing it is left out: Windows
   would usually serve the read from its cache, so it would not prove the
-  drive holds the data. Check drive's read back does.
+  drive holds the data. The read-back offer after a backup says to unplug
+  and replug the drive first; Check drive's read back on a later day does
+  prove it.
+- While an encrypted database is open, its working copy in the temp folder
+  is not encrypted. A crashed BRODALF's working copy is removed the next
+  time it starts.
 - `brodalf-cli` errors that end the program (`die()`) do not save the
   catalog; Ctrl+C does.
 - 0.4.0 and earlier refuse an encrypted catalog that has a recovery key, as

@@ -4765,6 +4765,14 @@ static void offer_read_back(const job *j)
                     L"Reads back the copies on %ls that were not read back since they were written, and compares each one with its "
                     L"checksum, to be sure they were written right. It changes nothing on the drives, and starts only when you press it."),
                  names.p ? names.p : L"");
+    /* A read straight after the backup may come from what Windows still
+     * holds in memory rather than from the drive itself. */
+    if (n) {
+        size_t used = wcslen(g_readback_tip);
+        swprintf(g_readback_tip + used, 2400 - used, L"%ls",
+                 T(L" Windows may still hold some of what was just written in memory. To read it from the drive itself, unplug "
+                   L"the drive, plug it in again, and then press this."));
+    }
     free(names.p);
     show_read_back(n > 0);
 }

@@ -19,14 +19,11 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.8.0**, on the `four-features` branch and not released yet;
-the latest release is 0.7.0 (2026-11-25), which reworked BRODALF to match
-the owner's answers to 178 yes/no questions about what it should do. 0.8.0
-adds four things the owner picked from what 0.7.0 left for later: tabs in
-the window, starred files copied to extra places, encrypting only the
-folders you choose, and backing up to several drives at once; see
-[History](#history). Builds are on the
-[Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
+Version **0.8.0**, released 2026-11-25. It adds four things the owner
+picked from what 0.7.0 left for later: tabs in the window, starred files
+copied to extra places, encrypting only the folders you choose, and
+backing up to several drives at once; see [History](#history). Builds are
+on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
 
@@ -599,7 +596,7 @@ on a local machine needs to pick the work up without the chat history.
   as of a date, `--continue-from`, the old-versions rule and quick checks
   (a check always compares size, time and checksum). Backups run at low
   priority by default. Releases are made only by hand.
-- v0.8.0 (on the `four-features` branch, not released yet): the four
+- v0.8.0 (2026-11-25, built on the `four-features` branch first): the four
   features the owner picked from what 0.7.0 left for later. Tabs in the
   window (Primary Database, Next backup, Local backups, Starred files and
   extra places, Encryption, Restore), with the menus now File, View, Tools

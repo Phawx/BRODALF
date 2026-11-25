@@ -140,7 +140,17 @@ static const char *SCHEMA_SQL =
     "  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,"
     "  rel_path TEXT NOT NULL,"
     "  added_ms INTEGER NOT NULL,"
-    "  PRIMARY KEY(source_id, rel_path));";
+    "  PRIMARY KEY(source_id, rel_path));"
+    /* Files a bit-rot scan found changed while their size and time were
+     * not, until the user accepts the change or a scan finds the file
+     * right again. version_id is the version on record when it was found:
+     * the entry stands only while that is still the file's version.
+     * Earlier versions of BRODALF do not know this table and leave it be. */
+    "CREATE TABLE IF NOT EXISTS damaged_files("
+    "  node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,"
+    "  version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,"
+    "  found_hash TEXT NOT NULL,"
+    "  found_ms INTEGER NOT NULL);";
 
 static void put_u32(unsigned char *p, uint32_t v)
 {
@@ -467,10 +477,9 @@ static bd_status open_db(bd_catalog *cat)
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
                      /* Copies of files in use taken from a shadow copy, read in their place. */
                      "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
-                     /* The last scan: backup roots it could not reach, and files whose
-                      * contents changed while their size and time did not. */
+                     /* The last scan: backup roots it could not reach. (Damaged
+                      * files are kept in the catalog: damaged_files.) */
                      "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY);"
-                     "CREATE TEMP TABLE IF NOT EXISTS damaged(node_id INTEGER PRIMARY KEY, found_hash TEXT NOT NULL);"
                      /* During a scan: files it added and files it marked deleted. */
                      "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"

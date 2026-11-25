@@ -557,7 +557,8 @@ typedef struct {
     void *log_ctx;
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
-    sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged;
+    sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged, *clear_damaged;
+    int have_damaged; /* damaged_files has rows: a file read again may clear one */
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
     int db_error;
@@ -657,6 +658,17 @@ done:
     return rc;
 }
 
+/* The file was read and found right, or recorded as it is now: it is no
+ * longer listed as damaged. 0, or -1 (db_error set) on a database error. */
+static int forget_damage(scan_ctx *c, int64_t node_id)
+{
+    if (!c->have_damaged) return 0;
+    sqlite3_reset(c->clear_damaged);
+    sqlite3_bind_int64(c->clear_damaged, 1, node_id);
+    if (sqlite3_step(c->clear_damaged) != SQLITE_DONE) { c->db_error = 1; return -1; }
+    return 0;
+}
+
 /* Record one hashed file, as the scan always did. Frees the job's strings. */
 static void apply_hash(scan_ctx *c, hash_job *j)
 {
@@ -683,10 +695,15 @@ static void apply_hash(scan_ctx *c, hash_job *j)
         if (strcmp(j->hash, j->expect) != 0) {
             sqlite3_reset(c->note_damaged);
             sqlite3_bind_int64(c->note_damaged, 1, j->node_id);
-            sqlite3_bind_text(c->note_damaged, 2, j->hash, -1, SQLITE_TRANSIENT);
-            sqlite3_step(c->note_damaged);
+            sqlite3_bind_int64(c->note_damaged, 2, j->old_version);
+            sqlite3_bind_text(c->note_damaged, 3, j->hash, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(c->note_damaged, 4, c->scan_ms);
+            if (sqlite3_step(c->note_damaged) != SQLITE_DONE) { c->db_error = 1; goto done; }
+            c->have_damaged = 1;
             c->stats->files_damaged++;
             bd_logf(c->log, c->log_ctx, "contents changed but size and time did not (damage?): %s", j->rel);
+        } else if (forget_damage(c, j->node_id) != 0) {
+            goto done; /* right again (restored, say): no longer damaged */
         }
         if (j->was_deleted) c->stats->files_new++;
         goto done;
@@ -702,6 +719,9 @@ static void apply_hash(scan_ctx *c, hash_job *j)
     sqlite3_bind_int64(c->update_file, 3, version_id);
     sqlite3_bind_int64(c->update_file, 4, j->node_id);
     if (sqlite3_step(c->update_file) != SQLITE_DONE) { c->db_error = 1; goto done; }
+    /* Read and recorded as it is now: right again, or a new version, and
+     * either way the damage once found no longer stands. */
+    if (forget_damage(c, j->node_id) != 0) goto done;
 
     if (j->is_new || j->was_deleted) c->stats->files_new++;
     else if (version_id != j->old_version) c->stats->files_changed++;
@@ -1124,7 +1144,13 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         {&c.next_version_no, SQL_NEXT_VERSION_NO},
         {&c.insert_version, SQL_INSERT_VERSION},
         {&c.note_new, "INSERT OR IGNORE INTO temp.scan_new(node_id) VALUES(?)"},
-        {&c.note_damaged, "INSERT OR REPLACE INTO temp.damaged(node_id, found_hash) VALUES(?,?)"},
+        /* Found again as it was: keep when it was first found. */
+        {&c.note_damaged, "INSERT INTO damaged_files(node_id, version_id, found_hash, found_ms) VALUES(?1,?2,?3,?4)"
+                          " ON CONFLICT(node_id) DO UPDATE SET"
+                          " found_ms=CASE WHEN found_hash=excluded.found_hash AND version_id=excluded.version_id"
+                          " THEN found_ms ELSE excluded.found_ms END,"
+                          " version_id=excluded.version_id, found_hash=excluded.found_hash"},
+        {&c.clear_damaged, "DELETE FROM damaged_files WHERE node_id=?"},
     };
     bd_status s = BD_OK;
     size_t n = sizeof(stmts) / sizeof(stmts[0]);
@@ -1132,6 +1158,14 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         if (sqlite3_prepare_v2(cat->db, stmts[i].sql, -1, stmts[i].st, NULL) != SQLITE_OK) { s = bd_fail_db(cat, "prepare scan"); goto done; }
 
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin scan"); goto done; }
+    sqlite3_stmt *any;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM damaged_files LIMIT 1", -1, &any, NULL) != SQLITE_OK) {
+        s = bd_fail_db(cat, "prepare scan");
+        bd_exec(cat, "ROLLBACK");
+        goto done;
+    }
+    c.have_damaged = sqlite3_step(any) == SQLITE_ROW;
+    sqlite3_finalize(any);
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
     /* The files still with the workers. */
     pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
@@ -1428,7 +1462,6 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
     }
     bd_progress_begin(cat, bitrot ? "bit-rot scan" : "scan", expect, bitrot ? expect_bytes : 0);
     bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.scan_new; DELETE FROM temp.scan_gone;");
-    if (bitrot) bd_exec(cat, "DELETE FROM temp.damaged");
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);
 
     bd_status s = BD_OK;
@@ -1493,14 +1526,20 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
 
 bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx)
 {
+    /* An entry stands while the version it was found against is still the
+     * file's and the file is still in its folder (another program, or an
+     * earlier BRODALF, may have recorded a new version since). */
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.source_id, s.name, n.rel_path, n.size, v.hash, d.found_hash FROM temp.damaged d"
-                           " JOIN nodes n ON n.id=d.node_id JOIN sources s ON s.id=n.source_id"
+                           "SELECT n.id, n.source_id, s.name, n.rel_path, n.size, v.hash, d.found_hash, d.found_ms"
+                           " FROM damaged_files d"
+                           " JOIN nodes n ON n.id=d.node_id AND n.current_version_id=d.version_id AND n.deleted=0"
+                           " JOIN sources s ON s.id=n.source_id"
                            " LEFT JOIN versions v ON v.id=n.current_version_id ORDER BY s.name, n.rel_path",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list damaged files");
-    while (sqlite3_step(q) == SQLITE_ROW) {
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
         bd_damaged_info d;
         memset(&d, 0, sizeof(d));
         d.node_id = sqlite3_column_int64(q, 0);
@@ -1510,9 +1549,11 @@ bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx)
         d.size = sqlite3_column_int64(q, 4);
         d.hash_on_record = sqlite3_column_text(q, 5) ? (const char *)sqlite3_column_text(q, 5) : "";
         d.hash_found = (const char *)sqlite3_column_text(q, 6);
-        if (fn(ctx, &d) != 0) break;
+        d.found_ms = sqlite3_column_int64(q, 7);
+        if (fn(ctx, &d) != 0) { rc = SQLITE_DONE; break; }
     }
     sqlite3_finalize(q);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "list damaged files");
     return BD_OK;
 }
 
@@ -1521,24 +1562,29 @@ bd_status bd_damaged_accept(bd_catalog *cat, int64_t node_id)
     /* The user says the file as it is now is right: record it as a new
      * version, to be backed up like any change. */
     sqlite3_stmt *q;
-    if (sqlite3_prepare_v2(cat->db, "SELECT d.found_hash, n.size, n.mtime_ns FROM temp.damaged d JOIN nodes n ON n.id=d.node_id"
+    if (sqlite3_prepare_v2(cat->db, "SELECT d.found_hash, n.size, n.mtime_ns FROM damaged_files d"
+                                    " JOIN nodes n ON n.id=d.node_id AND n.current_version_id=d.version_id AND n.deleted=0"
                                     " WHERE d.node_id=?", -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "accept a changed file");
     sqlite3_bind_int64(q, 1, node_id);
     if (sqlite3_step(q) != SQLITE_ROW) {
         sqlite3_finalize(q);
-        return bd_fail(cat, BD_ERR_NOT_FOUND, "the last bit-rot scan did not list that file");
+        return bd_fail(cat, BD_ERR_NOT_FOUND, "that file is not listed as damaged");
     }
     char hash[BD_HASH_HEX_LEN + 1];
     snprintf(hash, sizeof(hash), "%s", (const char *)sqlite3_column_text(q, 0));
     int64_t size = sqlite3_column_int64(q, 1), mtime = sqlite3_column_int64(q, 2);
     sqlite3_finalize(q);
-    if (bd_record_version(cat, node_id, hash, size, mtime, NULL, NULL) != 0) return bd_fail_db(cat, "accept a changed file");
-    sqlite3_stmt *d;
-    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.damaged WHERE node_id=?", -1, &d, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(d, 1, node_id);
-        sqlite3_step(d);
-        sqlite3_finalize(d);
+    if (bd_exec(cat, "BEGIN") != 0) return bd_fail_db(cat, "accept a changed file");
+    sqlite3_stmt *d = NULL;
+    int ok = bd_record_version(cat, node_id, hash, size, mtime, NULL, NULL) == 0 &&
+             sqlite3_prepare_v2(cat->db, "DELETE FROM damaged_files WHERE node_id=?", -1, &d, NULL) == SQLITE_OK &&
+             sqlite3_bind_int64(d, 1, node_id) == SQLITE_OK && sqlite3_step(d) == SQLITE_DONE;
+    sqlite3_finalize(d);
+    if (!ok || bd_exec(cat, "COMMIT") != 0) {
+        bd_status st = bd_fail_db(cat, "accept a changed file");
+        bd_exec(cat, "ROLLBACK");
+        return st;
     }
     return BD_OK;
 }

@@ -683,6 +683,127 @@ static void test_fat32(void)
     bd_catalog_close(u.cat);
 }
 
+typedef struct { int n; int64_t node_id, found_ms; char rel[256]; } damaged_seen;
+
+static int note_damaged(void *ctx, const bd_damaged_info *d)
+{
+    damaged_seen *l = ctx;
+    if (!l->n++) {
+        l->node_id = d->node_id;
+        l->found_ms = d->found_ms;
+        snprintf(l->rel, sizeof(l->rel), "%s", d->rel_path);
+    }
+    return 0;
+}
+
+static damaged_seen list_damaged(bd_catalog *cat)
+{
+    damaged_seen l;
+    memset(&l, 0, sizeof(l));
+    REQUIRE_OK(bd_list_damaged(cat, note_damaged, &l), cat);
+    return l;
+}
+
+/* Write a file again with the same size and modified time, as bit rot (or
+ * a restore that keeps the time) would. */
+static void rewrite_keeping_time(const char *path, const char *text)
+{
+    bd_stat_t st;
+    CHECK(bd_stat(path, &st) == 0);
+    FILE *f = bd_fopen(path, "r+b");
+    CHECK(f != NULL);
+    if (!f) return;
+    fputs(text, f);
+    fflush(f);
+    CHECK(bd_set_mtime(f, st.mtime_ns) == 0);
+    fclose(f);
+    bd_stat_t after;
+    CHECK(bd_stat(path, &after) == 0 && after.size == st.size && after.mtime_ns == st.mtime_ns);
+}
+
+static int bitrot_scan(bd_catalog *cat)
+{
+    bd_scan_opts so = {1};
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
+    return (int)ss.files_damaged;
+}
+
+static bd_catalog *reopen(bd_catalog *cat)
+{
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &cat), NULL);
+    return cat;
+}
+
+/* Item 10: what a bit-rot scan finds is kept in the catalog until the
+ * user accepts it or a scan finds the file right again. */
+static void test_bitrot_kept(void)
+{
+    begin("bitrot");
+    write_file(at("src/a.txt"), "alpha alpha");
+    write_file(at("src/b.txt"), "beta beta");
+    setup u = make_setup();
+    scan(u.cat);
+    backup(u.cat, u.drive);
+
+    rewrite_keeping_time(at("src/a.txt"), "alpha ALPHA");
+    CHECK(bitrot_scan(u.cat) == 1);
+    damaged_seen l = list_damaged(u.cat);
+    CHECK(l.n == 1 && strcmp(l.rel, "a.txt") == 0 && l.found_ms > 0);
+    int64_t first_found = l.found_ms;
+
+    /* Still listed after closing and opening again, and after a plain scan
+     * (which does not read files whose size and time are unchanged). */
+    u.cat = reopen(u.cat);
+    l = list_damaged(u.cat);
+    CHECK(l.n == 1 && strcmp(l.rel, "a.txt") == 0 && l.found_ms == first_found);
+    scan(u.cat);
+    CHECK(list_damaged(u.cat).n == 1);
+    /* Found again as it was: still the first time it was found. */
+    CHECK(bitrot_scan(u.cat) == 1);
+    l = list_damaged(u.cat);
+    CHECK(l.n == 1 && l.found_ms == first_found);
+
+    /* Put right (restored with its time): the next bit-rot scan clears it. */
+    rewrite_keeping_time(at("src/a.txt"), "alpha alpha");
+    CHECK(bitrot_scan(u.cat) == 0);
+    CHECK(list_damaged(u.cat).n == 0);
+    u.cat = reopen(u.cat);
+    CHECK(list_damaged(u.cat).n == 0);
+
+    /* Accepted as changed on purpose: a new version, and no longer listed,
+     * also after a reopen. */
+    rewrite_keeping_time(at("src/a.txt"), "alpha OMEGA");
+    CHECK(bitrot_scan(u.cat) == 1);
+    l = list_damaged(u.cat);
+    CHECK(l.n == 1);
+    REQUIRE_OK(bd_damaged_accept(u.cat, l.node_id), u.cat);
+    CHECK(list_damaged(u.cat).n == 0);
+    CHECK(bd_damaged_accept(u.cat, l.node_id) == BD_ERR_NOT_FOUND);
+    u.cat = reopen(u.cat);
+    CHECK(list_damaged(u.cat).n == 0);
+    CHECK(bitrot_scan(u.cat) == 0);
+
+    /* Changed again in the ordinary way (a new time): the scan records it
+     * as a new version, and the damage found before no longer stands. */
+    rewrite_keeping_time(at("src/b.txt"), "beta BETA");
+    CHECK(bitrot_scan(u.cat) == 1);
+    CHECK(list_damaged(u.cat).n == 1);
+    write_file(at("src/b.txt"), "beta, rewritten on purpose");
+    scan(u.cat);
+    CHECK(list_damaged(u.cat).n == 0);
+
+    /* Gone from its folder: not listed (the catalog keeps the file). */
+    rewrite_keeping_time(at("src/b.txt"), "BETA, rewritten on purpose");
+    CHECK(bitrot_scan(u.cat) == 1);
+    bd_remove(at("src/b.txt"));
+    scan(u.cat);
+    CHECK(list_damaged(u.cat).n == 0);
+    bd_catalog_close(u.cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -700,6 +821,7 @@ int main(void)
     test_periodic_save();
     test_nested_roots();
     test_fat32();
+    test_bitrot_kept();
 #ifndef _WIN32
     test_walk_error();
     test_stale_work_files();

@@ -260,8 +260,13 @@ typedef struct {
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 
-/* Files the last bit-rot scan found changed without their size or time
- * changing. */
+/* Files a bit-rot scan found changed without their size or time changing.
+ * They are kept in the catalog, so they are still listed after it is
+ * closed and opened again, until the user accepts the change
+ * (bd_damaged_accept) or a later scan reads the file and finds it right
+ * again (restored from a drive) or records it as a new version (it was
+ * changed again, with its time). A file gone from its folder is not
+ * listed. */
 typedef struct {
     int64_t node_id;
     int64_t source_id;
@@ -270,12 +275,14 @@ typedef struct {
     int64_t size;
     const char *hash_on_record;
     const char *hash_found;
+    int64_t found_ms;        /* when a bit-rot scan first found it like this */
 } bd_damaged_info;
 typedef int (*bd_damaged_fn)(void *ctx, const bd_damaged_info *info);
 bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx);
 /* The file as it is now is right after all (it was changed on purpose):
- * record it as a new version, to be backed up like any change. To get the
- * good contents back instead, restore the file. */
+ * record it as a new version, to be backed up like any change, and stop
+ * listing it. BD_ERR_NOT_FOUND if it is not listed. To get the good
+ * contents back instead, restore the file. */
 bd_status bd_damaged_accept(bd_catalog *cat, int64_t node_id);
 
 /* ---- Files in use ------------------------------------------------------ */

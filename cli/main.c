@@ -32,10 +32,11 @@ static void usage(void)
          "  root-stop   <catalog> <root>               stop backing up a root (its copies stay and still restore)\n"
          "  root-resume <catalog> <root>               back a stopped root up again\n"
          "  root-move   <catalog> <root> <folder>      the root is somewhere else now (a new PC, another drive letter)\n"
-         "  scan     <catalog> [--bitrot [--accept ROOT/PATH]...] [--shadow-copy]\n"
+         "  scan     <catalog> [--bitrot] [--accept ROOT/PATH]... [--shadow-copy]\n"
          "                                             record files, sizes and checksums; --bitrot also reads\n"
-         "                                             unchanged files to find ones damaged on this PC, and\n"
-         "                                             --accept records a listed one as changed on purpose.\n"
+         "                                             unchanged files to find ones damaged on this PC. Those\n"
+         "                                             stay listed after every scan until a scan finds them\n"
+         "                                             right again, or --accept records one as changed on purpose.\n"
          "                                             --shadow-copy (Windows, as administrator): files in use\n"
          "                                             by another program are read from a shadow copy of\n"
          "                                             their drive instead of being skipped\n"
@@ -1150,6 +1151,13 @@ static int print_in_use(void *ctx, const char *path, int64_t size)
 
 typedef struct { bd_catalog *cat; int argc; char **argv; int shown, accepted; } damaged_ctx;
 
+static int count_damaged(void *ctx, const bd_damaged_info *d)
+{
+    (void)d;
+    ++*(int64_t *)ctx;
+    return 0;
+}
+
 static int print_damaged(void *ctx, const bd_damaged_info *d)
 {
     damaged_ctx *dc = ctx;
@@ -1682,6 +1690,9 @@ static int run(int argc, char **argv)
         if (s == BD_ERR_CANCELLED) return stopped(cat, "scan");
         if (s != BD_OK) return die(cat, "scan failed");
         damaged_ctx dc = {cat, argc, argv, 0, 0};
+        /* Found by this bit-rot scan or an earlier one, and not right again yet. */
+        int64_t listed = 0;
+        bd_list_damaged(cat, count_damaged, &listed);
         if (g_json) {
             J_OBJ(NULL);
             j_int("files_seen", st.files_seen);
@@ -1699,7 +1710,7 @@ static int run(int argc, char **argv)
             j_int("files_damaged", st.files_damaged);
             j_int("roots_missing", st.roots_missing);
             j_int("roots_stopped", st.roots_stopped);
-            if (st.files_damaged) {
+            if (listed) {
                 J_ARR("damaged");
                 bd_list_damaged(cat, print_damaged, &dc);
                 J_END_ARR();
@@ -1722,12 +1733,13 @@ static int run(int argc, char **argv)
             if (st.files_online_only)
                 printf("%lld files are online-only (in the cloud, not on this PC) and were left alone\n",
                        (long long)st.files_online_only);
-            if (st.files_damaged) {
-                printf("%lld files changed without their size or modified time changing. That is what damage on this\n"
-                       "PC's disk looks like; their copies on the drives are the good ones:\n", (long long)st.files_damaged);
+            if (listed) {
+                printf("%lld files changed without their size or modified time changing (a bit-rot scan found them).\n"
+                       "That is what damage on this PC's disk looks like; their copies on the drives are the good ones:\n",
+                       (long long)listed);
                 bd_list_damaged(cat, print_damaged, &dc);
                 if (dc.shown)
-                    puts("restore them from a drive, or if you changed one on purpose, scan --bitrot again with\n"
+                    puts("restore them from a drive, or if you changed one on purpose, scan again with\n"
                          "--accept ROOT/PATH to record it as a new version");
             } else if (so.bitrot) {
                 puts("no damaged files found");

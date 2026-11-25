@@ -1,7 +1,9 @@
 # BRODALF design
 
-Agreed with the project owner on 2026-09-28, and brought in line with the
-owner's answers of 2026-11-25 in 0.7.0.
+Agreed with the project owner on 2026-09-28, brought in line with the
+owner's answers of 2026-11-25 in 0.7.0, and extended in 0.8.0 with the four
+features the owner picked from what 0.7.0 left for later (tabs, starred
+files and extra places, encrypted folders, several drives at once).
 
 ## What it is
 
@@ -13,10 +15,10 @@ has seen, and every place a copy of each version was written. The targets
 are external and removable disks that are usually offline. (OneDrive and
 Dropbox storage existed in 0.3.0 and was taken out in 0.4.0; see the
 README.) Windows is the main platform and the GUI is the main way to use
-it. Encryption is optional, per drive (see below).
+it. Encryption is optional, per drive or per folder (see below).
 
 The owner's answers of 2026-11-25 to 178 yes/no questions (kept with the
-project as `brodalf-answers.md`) set what 0.7.0 does. Three rules from them
+project as `brodalf-answers.md`) set what 0.7.0 and later do. Three rules from them
 shape everything below: nothing on a drive is ever overwritten, moved or
 deleted; nothing is dropped from the database without the user's say; and
 nothing starts by itself except the scan when a database opens.
@@ -48,8 +50,9 @@ nothing starts by itself except the scan when a database opens.
 starts with `--` makes it exit with 1 without a window. The options
 "auto_backup", "guard_percent", "keep_versions" and "keep_days" of earlier
 versions are gone; `bd_option_get` returns -1 for them. The options left are
-"check_days" (180), "verify_days" (30), "reserve_mb" (512) and
-"low_priority" (1), plus the skip lists and the copies wanted.
+"check_days" (180), "verify_days" (30), "reserve_mb" (512),
+"low_priority" (1) and "parallel_copies" (0, since 0.8.0), plus the skip
+lists and the copies wanted.
 
 There is no preview window before a backup (answer 92). The GUI keeps one
 line beside its buttons up to date with `bd_backup_preview` for every
@@ -282,6 +285,11 @@ At the end of every backup the database is saved and copied to the drive as
 database has been saved), never over an existing copy. An encrypted drive
 always gets an encrypted copy.
 
+A scan also leaves out BRODALF's own store inside a backup root: a folder
+named `BRODALF` that holds this catalog's `BRODALF.media` (an extra place
+inside a backed-up Dropbox folder, say). Any other folder of that name is
+scanned as usual.
+
 Scans apply two skip lists: the catalog's ("skip_list", default: temp
 files, system files and rebuildable caches such as `node_modules/`) and
 each root's own (`bd_source_skip_set`). Patterns are case-insensitive globs
@@ -305,13 +313,18 @@ writes a new file and swaps it in atomically.
 
 Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
 `space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
-written by 0.3.0). Schema version 7. Version 6 added `nodes.rel_fold`, the
+written by 0.3.0), `stars` and `encrypt_paths`. Schema version 8.
+Version 6 added `nodes.rel_fold`, the
 case-folded path used on Windows. Version 7 (0.7.0) added
 `sources.active`, `nodes.deleted_ack`, `nodes.moved_from`,
 `nodes.btime_ns` (the file's creation time, given to copies and restored
 files on Windows) and `media.lost_why`,
-and the `revision` in `meta`. An older catalog is upgraded in place when
-it is opened; 0.6.0 then refuses it as newer.
+and the `revision` in `meta`. Version 8 (0.8.0) added `media.secondary`
+and `media.limit_bytes` (extra places), `copies.encrypted` (whether that
+copy is sealed, since a plain drive can now hold encrypted copies), the
+`stars` and `encrypt_paths` tables and the "parallel_copies" option. An
+older catalog is upgraded in place when it is opened; the version before
+then refuses it as newer.
 
 The database is kept small: no file data, only paths, sizes, times,
 checksums and where each copy is, compressed with zstd, so a search works
@@ -355,6 +368,53 @@ is plugged in.
 when every live file, as the last scan found it, has at least k good copies
 that count. A new or changed file lowers every one until it is backed up
 again. The GUI shows one bar per full copy, up to N.
+
+`bd_list_pending` lists what the next backup would copy, for one drive (or
+extra place) or, with no drive, every file short of the target, with its
+copies and places, whether it is starred or in an encrypted folder. The
+GUI's Next backup tab shows it with one column per full copy.
+
+## Starred files and extra places
+
+The `stars` table holds starred files and folders by backup root and path
+(`''` is the whole root; a folder covers everything under it).
+`bd_starred` says whether a path is starred itself (1) or through a folder
+above it (2).
+
+An extra place is a `media` row with `secondary = 1`
+(`BD_MEDIA_SECONDARY`): a folder such as a Dropbox or OneDrive folder, a
+network share or a folder on another disk (answer 54). `bd_place_add` sets
+it up like a drive (`BRODALF/<catalog id>/BRODALF.media`, plain copies in
+their folders, the catalog's own copy at the end of a backup) and refuses
+a description that is too short to tell places apart: at least two words
+and 10 characters, 9 of them not spaces. `limit_bytes` caps the space
+starred files may use there (`bd_place_set_limit`); a file that would go
+past it is counted as over the limit and waits. A place can be encrypted
+like a drive. BRODALF talks to no cloud service (answer 13): the folder's
+own app syncs it.
+
+A backup to an extra place copies only starred files. Its copies restore
+like any other, but they never count toward the copies wanted or the full
+copies (`BD_SQL_COUNTS` leaves secondary media out), and no "which drive
+would help" suggestion points at one. `bd_place_status_get` says, from the
+catalog, how many starred files are there as they are now, what is
+waiting, what would go past the limit and the space used.
+
+## Several drives at once
+
+`bd_backup` backs up to one drive. `bd_backup_many` (up to 16 connected
+drives or extra places) reads each file once and writes it to every drive
+that needs it at the same time (`bd_hash_copy_multi`, with one writer
+thread per drive for a big file); each drive gets the
+same rules as `bd_backup` (space kept free, never overwriting, the
+catalog's copy at the end) and its own stats. A drive that fails to write
+a file does not stop the others. It loads the PC more while it runs (the
+USB bus, memory and processor are shared) and goes at the pace of the
+slowest drive, so the app uses it only when "parallel_copies" is on
+(answer 86); otherwise "Back up to every plugged-in drive" calls
+`bd_backup` for one drive after another, stopping on Stop or a passphrase
+error. The command line does the same with `backup <catalog> <drive>...`,
+and `--parallel` turns it on for one run.
 
 ## Deleted files
 
@@ -409,9 +469,13 @@ remove, space), which local drives implement with plain file operations.
 
 ## Encryption
 
-Optional, per drive, and it encrypts file contents only: names and folders
-stay readable so a drive can still be browsed (Phawx's call, 2026-09-28).
+Optional and off unless chosen (answer 78), and it encrypts file contents
+only: names and folders stay readable so a drive can still be browsed
+(Phawx's call, 2026-09-28; hiding names, answer 79, is left for later).
 Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
+There are four kinds, each on its own: an encrypted drive or extra place,
+encrypted folders (since 0.8.0), the `.brodalf` file, and the database
+copies on an encrypted drive.
 
 - A catalog can have one passphrase. It protects a random 32-byte master key:
   Argon2id (64 MiB, 3 passes) turns the passphrase into a key that wraps the
@@ -427,6 +491,26 @@ Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
   chunk is authenticated with the header and a "last chunk" flag, and the
   stream rekeys after each chunk, so tampering, reordering and truncation all
   show up as a damaged copy.
+- Encrypted folders (0.8.0): the `encrypt_paths` table holds files and
+  folders, by backup root and path, whose copies are sealed on every drive
+  and extra place, plain ones included (`bd_encrypt_path_set`,
+  `bd_encrypt_marked`). Each copy records whether it is sealed in
+  `copies.encrypted`; a sealed copy on a plain drive is `<name>.bdenc`
+  like one on an encrypted drive. Copies written before a folder was
+  chosen stay plain, since nothing on a drive is overwritten; new copies
+  and new versions are sealed. Taking a folder off the list makes the next
+  new copies plain. A backup that would seal a copy needs the passphrase.
+- What it costs (answer 77): `bd_crypto_speed` measures once, for about a
+  quarter of a second, how many bytes a second this PC seals, and
+  remembers it. `bd_encrypt_cost_text` turns that into a few sentences for
+  a given size: sealing overlaps the write, so against a typical USB hard
+  drive (taken as 120 MB/s) a backup takes about as long as before unless
+  the PC seals slower than that, in which case it says how much it adds;
+  checking and restoring decrypt at about the same speed; sealed copies
+  take about 0.1% more space. `bd_encrypt_stats_get` gives the files and
+  bytes chosen, sealed and plain copies of them, files with no sealed copy
+  yet and the encrypted drives in use. The GUI shows both on the
+  Encryption tab, for everything and per folder.
 - Hashes in the catalog are always of the plaintext, so a copy on an
   encrypted drive and one on a plain drive are the same version.
 - The key is needed to write, check or restore an encrypted copy, not to
@@ -470,23 +554,57 @@ on every plugged-in drive so they know the new key.
 
 Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 
-- Menus (answer 152 asked for standard menus and tabs; the tabs are left
-  for later): File (new, open, recover the database, recovery sheet, CSV
-  export, settings, exit), Database (add a backup root, scan, bit-rot
-  scan, change where a root is, deleted files, damaged files, files in
-  use), Local backups (each known drive with its own submenu: back up,
-  check every copy, read back, open in Explorer, details, mark lost or
-  broken / found it; set up a disk; all disks; status of every disk; what
-  needs backing up), Restore (what is selected, deleted files, what the
-  last restore left alone), View (status of every drive, files short of
-  your copies, largest files), Help (log, reports, about). Local backups is
-  filled on `WM_INITMENUPOPUP`. With no database open, everything but File
-  and Help is greyed out. Right-click menus on the tree (Explorer, restore;
-  for a root: stop or back up again, its skip list, where it is) and on the
+- Menus (answer 152: standard menus, and tabs for the rest): File (new,
+  open, recover the database, recovery sheet, CSV export, exit), View (the
+  six tabs as radio items, status of every drive, files short of your
+  copies, largest, deleted, damaged and in-use files, what the last
+  restore left alone, refresh), Tools (add a backup root, scan, bit-rot
+  scan, change where a root is, back up, back up to every plugged-in drive,
+  check a drive, restore, restore deleted files, set up a disk, add an
+  extra place, star, encrypt, a submenu of every drive and extra place with
+  its own submenu, settings) and Help (log, reports, about). The drives
+  submenu is filled on `WM_INITMENUPOPUP`. File is greyed out while a job
+  runs; Tools without a database or while a job runs; View and Help never,
+  though View's lists are greyed without a database or during a job.
+  Right-click menus on the tree (Explorer, restore, star, encrypt; for a
+  root: stop or back up again, its skip list, where it is) and on the
   versions list (restore this version, open its copy in Explorer).
+- Tabs (0.8.0): a tab control below the buttons and full-copy bars, with
+  one page window per tab (class `BrodalfPage`, `WS_EX_CONTROLPARENT`). A
+  page forwards `WM_COMMAND`,
+  `WM_NOTIFY` and `WM_CONTEXTMENU` to the main window. The last tab shown
+  is kept in `HKCU\Software\BRODALF\LastTab`. Pages are filled from the
+  catalog only when no job runs (the catalog belongs to the worker then)
+  and are marked stale when a job ends, a database opens or closes, or the
+  selection changes. Their buttons are greyed without a database and
+  during a job, like the main buttons.
+  - Primary Database: the tree, search, results and detail panel, with
+    buttons for the database's lists and tools. Starred and encrypted
+    entries show "★ starred" and "[encrypted]" after their names.
+  - Next backup: a drive, an extra place or any drive in a combo box, a
+    summary line, and `bd_list_pending` as a table with a column per full
+    copy (answer 93), plus starred and encrypted columns.
+  - Local backups: every drive with size, free, BRODALF's copies, other
+    files, kept free, health, temperature, hours on, wear, oldest
+    read-back, copies and problems (answer 66), and buttons for every
+    drive action, plus the "parallel_copies" tick box.
+  - Starred files and extra places: the stars, the extra places with
+    their status, and the "Extra place for starred files" dialog
+    (description, limit, encrypt), which refuses a description that is
+    too short.
+  - Encryption: passphrase, forgetting it, recovery key and sheet, an
+    encrypted drive, the database file, and the encrypted folders with
+    what each costs in time.
+  - Restore: restore what is selected, everything, deleted files, carry on
+    a restore that waits for drives, the plan, and the files the last
+    restore left alone beside the backed-up size and time (answer 116).
+- "Back up" offers every plugged-in drive and, with two or more, "All N of
+  them", which calls `bd_backup_many` with "parallel_copies" on and
+  `bd_backup` drive by drive otherwise, then one log line per drive.
 - Beside the buttons, one line per plugged-in drive says what a backup to
-  it would copy. Below the tree: one bar per full copy, the job bar with
-  Stop and its counts, the file bar, then the log.
+  it would copy and how the extra places stand. Under them, one bar per
+  full copy; under the tabs, the job bar with Stop and its counts, the file
+  bar, then the log.
 - Startup: the last database (kept in `HKCU\Software\BRODALF\LastCatalog`),
   another one, a new one or recovery. A path on the command line opens
   directly. A database open in another BRODALF window is refused with a

@@ -966,9 +966,14 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
 
 #define MASS_CHANGE_MIN_FILES 50
 
-/* Files this drive holds (a good copy of some version of it) that are still
- * in their folder, and whether the newest version it holds is still the
- * file's contents: the checksum is the test, not size or time. */
+/* Files this drive holds (a good copy of some version of it), and whether
+ * the newest version it holds is still the file's contents: the checksum is
+ * the test, not size or time. A held file that is gone from its folder
+ * counts as changed until the user has seen it in the deleted list
+ * (deleted_ack): encrypting files to new names and deleting the originals
+ * leaves the drive's files deleted, not changed. A moved file keeps its
+ * copies (the new node takes the old one's versions), so moves do not
+ * count. */
 #define HELD_CTE                                                                                        \
     "WITH h AS (SELECT v.node_id AS nid, MAX(v.version_no) AS vno FROM copies c"                        \
     " JOIN versions v ON v.id=c.version_id WHERE c.media_id=?1 AND c.state='ok' GROUP BY v.node_id)"
@@ -1008,9 +1013,10 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
      * large share at once is what ransomware encrypting the folders looks
      * like: the user should see the list before backing that up. */
     if (sqlite3_prepare_v2(cat->db,
-                           HELD_CTE " SELECT COUNT(*), COALESCE(SUM(hv.id IS NOT n.current_version_id),0)"
+                           HELD_CTE " SELECT COUNT(*), COALESCE(SUM(n.deleted<>0 OR hv.id IS NOT n.current_version_id),0)"
                            " FROM h JOIN nodes n ON n.id=h.nid JOIN versions hv ON hv.node_id=h.nid AND hv.version_no=h.vno"
-                           " WHERE n.is_dir=0 AND n.deleted=0 AND (?2=0 OR n.source_id=?2) AND " BD_SQL_ACTIVE("n"),
+                           " WHERE n.is_dir=0 AND (n.deleted=0 OR n.deleted_ack=0) AND (?2=0 OR n.source_id=?2)"
+                           " AND " BD_SQL_ACTIVE("n"),
                            -1, &q, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(q, 1, media_id);
         sqlite3_bind_int64(q, 2, source_id);
@@ -1067,11 +1073,13 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
 {
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
-                           HELD_CTE " SELECT n.id, s.name, n.rel_path, hv.version_no, cv.version_no, hv.size, cv.size, cv.first_seen_ms"
+                           HELD_CTE " SELECT n.id, s.name, n.rel_path, hv.version_no, COALESCE(cv.version_no, hv.version_no),"
+                           " hv.size, COALESCE(cv.size, hv.size), COALESCE(cv.first_seen_ms, 0), n.deleted<>0"
                            " FROM h JOIN nodes n ON n.id=h.nid JOIN sources s ON s.id=n.source_id"
                            " JOIN versions hv ON hv.node_id=h.nid AND hv.version_no=h.vno"
-                           " JOIN versions cv ON cv.id=n.current_version_id"
-                           " WHERE n.is_dir=0 AND n.deleted=0 AND hv.id<>cv.id AND " BD_SQL_ACTIVE("n")
+                           " LEFT JOIN versions cv ON cv.id=n.current_version_id"
+                           " WHERE n.is_dir=0 AND ((n.deleted=0 AND hv.id IS NOT cv.id) OR (n.deleted<>0 AND n.deleted_ack=0))"
+                           " AND " BD_SQL_ACTIVE("n")
                            " ORDER BY s.name, n.rel_path",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list changed files");
@@ -1087,6 +1095,7 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
         c.size_on_drive = sqlite3_column_int64(q, 5);
         c.size_now = sqlite3_column_int64(q, 6);
         c.changed_ms = sqlite3_column_int64(q, 7);
+        c.deleted = sqlite3_column_int(q, 8);
         if (fn(ctx, &c) != 0) break;
     }
     sqlite3_finalize(q);

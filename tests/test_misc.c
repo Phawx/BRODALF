@@ -171,6 +171,66 @@ static void test_drive_status(void)
     bd_catalog_close(u.cat);
 }
 
+static int count_changed(void *ctx, const bd_changed_info *c)
+{
+    int *n = ctx;
+    n[0]++;
+    if (c->deleted) n[1]++;
+    return 0;
+}
+
+/* Item 2: the mass-change warning, for files encrypted in place and for
+ * files encrypted to new names with the originals deleted. */
+static void test_mass_change(void)
+{
+    char rel[64], text[64];
+    for (int pass = 0; pass < 2; pass++) {
+        begin(pass == 0 ? "mass-in-place" : "mass-rename");
+        for (int i = 0; i < 60; i++) {
+            snprintf(rel, sizeof(rel), "src/f%02d.txt", i);
+            snprintf(text, sizeof(text), "file %d", i);
+            write_file(at(rel), text);
+        }
+        setup u = make_setup();
+        scan(u.cat);
+        backup(u.cat, u.drive);
+        bd_backup_preview_info pv;
+        REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+        CHECK(pv.files_held == 60 && pv.held_changed == 0 && !pv.mass_change);
+
+        /* 20 of the 60 files, a third. */
+        for (int i = 0; i < 20; i++) {
+            snprintf(text, sizeof(text), "encrypted %d", i);
+            if (pass == 0) {
+                snprintf(rel, sizeof(rel), "src/f%02d.txt", i);
+                write_file(at(rel), text);
+            } else {
+                snprintf(rel, sizeof(rel), "src/f%02d.txt.locked", i);
+                write_file(at(rel), text);
+                snprintf(rel, sizeof(rel), "src/f%02d.txt", i);
+                CHECK(bd_remove(at(rel)) == 0);
+            }
+        }
+        scan(u.cat);
+        REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+        CHECK(pv.files_held == 60);
+        CHECK(pv.held_changed == 20);
+        CHECK(pv.mass_change);
+        int n[2] = {0, 0};
+        REQUIRE_OK(bd_list_changed_on_media(u.cat, u.drive, count_changed, n), u.cat);
+        CHECK(n[0] == 20);
+        CHECK(n[1] == (pass == 0 ? 0 : 20));
+
+        if (pass == 1) {
+            /* Once the user has seen the deleted files they no longer count. */
+            REQUIRE_OK(bd_deleted_ack(u.cat, 0), u.cat);
+            REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
+            CHECK(pv.files_held == 40 && pv.held_changed == 0 && !pv.mass_change);
+        }
+        bd_catalog_close(u.cat);
+    }
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -182,6 +242,7 @@ int main(void)
     printf("working in %s\n", top);
 
     test_drive_status();
+    test_mass_change();
 
     remove_tree(top);
     CHECK(!exists(top));

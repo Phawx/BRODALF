@@ -968,8 +968,9 @@ static void print_preview(const bd_backup_preview_info *p)
         printf("about %s will not fit: those files wait for another drive\n", size);
     }
     if (p->mass_change)
-        printf("WARNING: %lld of the %lld files this drive holds have different contents now. That is what\n"
-               "ransomware encrypting your files looks like. If you did not expect it, look at the list first\n"
+        printf("WARNING: %lld of the %lld files this drive holds have different contents now or are gone\n"
+               "from their folder. That is what ransomware encrypting your files looks like. If you did not\n"
+               "expect it, look at the list first\n"
                "(changed <catalog> <label>) and restore from this drive instead of backing up.\n",
                (long long)p->held_changed, (long long)p->files_held);
 }
@@ -1083,7 +1084,13 @@ static int print_changed(void *ctx, const bd_changed_info *c)
         j_int("bytes_on_drive", c->size_on_drive);
         j_int("bytes_now", c->size_now);
         j_int("changed_ms", c->changed_ms);
+        j_int("deleted", c->deleted);
         J_END();
+        return 0;
+    }
+    if (c->deleted) {
+        printf("  %s/%s: v%lld on the drive, deleted from its folder\n", c->source_name, c->rel_path,
+               (long long)c->version_on_drive);
         return 0;
     }
     char when[32];

@@ -475,9 +475,12 @@ typedef struct {
     int64_t bytes_short;       /* about how much would not fit; 0: it all fits (or the space is unknown) */
     int64_t last_scan_ms;      /* the oldest of the roots' last scans: a backup copies what that found */
     /* Files whose good copy is on this drive, and of those how many have
-     * changed contents (checksum) since. A large share at once is what
-     * ransomware encrypting the folders looks like: show the list
-     * (bd_list_changed_on_media) before backing that up. */
+     * changed contents (checksum) since or are gone from their folder.
+     * A large share at once is what ransomware encrypting the folders
+     * looks like, in place or to new names with the originals deleted:
+     * show the list (bd_list_changed_on_media) before backing that up. A
+     * deleted file counts until the user acknowledges it in the deleted
+     * list (bd_deleted_ack); a moved file does not count. */
     int64_t files_held;
     int64_t held_changed;
     int mass_change;           /* held_changed is a quarter or more of files_held (at least 50 files) */
@@ -509,7 +512,9 @@ typedef int (*bd_pending_fn)(void *ctx, const bd_pending_info *info);
 bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pending_fn fn, void *ctx, int64_t *total);
 
 /* The files counted in held_changed: the drive holds an older version
- * than the file's contents now. */
+ * than the file's contents now, or the file is gone from its folder and
+ * not yet acknowledged (deleted set; version_now and size_now are then
+ * its last version, and changed_ms when that was first seen). */
 typedef struct {
     int64_t node_id;
     const char *source_name;
@@ -519,6 +524,7 @@ typedef struct {
     int64_t size_on_drive;
     int64_t size_now;
     int64_t changed_ms;        /* when the scan first saw the new contents */
+    int deleted;               /* gone from its folder (see above) */
 } bd_changed_info;
 typedef int (*bd_changed_fn)(void *ctx, const bd_changed_info *info);
 bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed_fn fn, void *ctx);

@@ -328,6 +328,8 @@ static bd_status open_db(bd_catalog *cat)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
+                     /* Copies of files in use taken from a shadow copy, read in their place. */
+                     "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
                      /* The last scan: backup roots it could not reach, and files whose
                       * contents changed while their size and time did not. */
                      "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY);"

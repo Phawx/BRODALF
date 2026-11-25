@@ -879,6 +879,22 @@ static void test_moves_guard_and_progress(void)
         if (strstr(line, "mail.pst\",12,") && strstr(line, "\"no\",1,\"One\",1")) found_mail = 1;
     CHECK(found_mail);
     if (csv) fclose(csv);
+
+    /* A file in use is read from the copy the user had taken out of a
+     * shadow copy, in scans and backups, until those copies are cleared. */
+    write_file(at("g/staged-mail.bin"), "mailbox as the snapshot saw it");
+    write_file(at("g/Work/mail.pst"), "live mailbox!");
+    REQUIRE_OK(bd_substitute_add(cat, mail, at("g/staged-mail.bin")), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 1 && ss.errors == 0);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.files_failed == 0);
+    bd_restore_stats shr;
+    REQUIRE_OK(bd_restore(cat, src, "mail.pst", at("g/shadow-out"), &shr, quiet, NULL), cat);
+    CHECK(shr.files_restored == 1 && file_equals(at("g/shadow-out/mail.pst"), "mailbox as the snapshot saw it"));
+    bd_substitutes_clear(cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 1); /* the file itself again */
 #ifdef _WIN32
     /* Locked against reading by another program: listed as in use. */
     wchar_t wmail[1024];
@@ -893,6 +909,14 @@ static void test_moves_guard_and_progress(void)
     memset(&iu, 0, sizeof(iu));
     bd_list_in_use(cat, collect_in_use, &iu);
     CHECK(iu.n == 1 && strcmp(iu.path, mail) == 0);
+    /* With a copy from a shadow copy it is read while still locked. */
+    write_file(at("g/staged-mail2.bin"), "live mailbox, changed");
+    REQUIRE_OK(bd_substitute_add(cat, mail, at("g/staged-mail2.bin")), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_in_use == 0 && ss.files_changed == 1 && ss.errors == 0);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.files_in_use == 0);
+    bd_substitutes_clear(cat);
     CloseHandle(h);
 #endif
     free(mail);
@@ -2408,6 +2432,59 @@ static void test_encrypt_folders(void)
     bd_catalog_close(cat);
 }
 
+/* What the elevated shadow-copy helper accepts: only a list whose hash
+ * matches, and only files inside the backup roots. */
+static void test_shadow_list(void)
+{
+    const char *folders[] = {"C:\\Users\\me\\Documents", "D:/Mail/", "E:\\"};
+    CHECK(bd_shadow_path_allowed("C:\\Users\\me\\Documents\\Outlook.pst", folders, 3));
+    CHECK(bd_shadow_path_allowed("c:/users/ME/documents/sub/a.db", folders, 3));
+    CHECK(bd_shadow_path_allowed("D:\\Mail\\x.pst", folders, 3));
+    CHECK(bd_shadow_path_allowed("E:\\anything.txt", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents", folders, 3));          /* the folder itself */
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents2\\a.pst", folders, 3));  /* only a prefix */
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\..\\..\\..\\Windows\\System32\\config\\SAM", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\.\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\. .\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\a.pst:secret", folders, 3));
+    CHECK(!bd_shadow_path_allowed("\\\\?\\C:\\Users\\me\\Documents\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("\\\\server\\share\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("Documents\\a.pst", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Windows\\System32\\config\\SAM", folders, 3));
+    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\a.pst", folders, 0));
+
+    const char *files[] = {"C:\\Users\\me\\Documents\\Outlook.pst", "C:\\Windows\\System32\\config\\SAM"};
+    char hash[65];
+    char *text = bd_shadow_list_format("S-1-5-21-1-2-3-1001", folders, 3, files, 2, hash);
+    CHECK(text != NULL && strlen(hash) == 64);
+    if (!text) return;
+    bd_shadow_list l;
+    CHECK(bd_shadow_list_parse(text, strlen(text), hash, &l) == 0);
+    CHECK(l.user_sid && strcmp(l.user_sid, "S-1-5-21-1-2-3-1001") == 0);
+    CHECK(l.n_folders == 3 && strcmp(l.folders[1], "D:/Mail/") == 0);
+    CHECK(l.n_files == 2 && strcmp(l.files[1], "C:\\Windows\\System32\\config\\SAM") == 0);
+    CHECK(bd_shadow_path_allowed(l.files[0], (const char *const *)l.folders, l.n_folders));
+    CHECK(!bd_shadow_path_allowed(l.files[1], (const char *const *)l.folders, l.n_folders));
+    bd_shadow_list_free(&l);
+    /* Changed after the hash was taken (as on the helper's command line). */
+    char *tampered = bd_strdup(text);
+    tampered[strlen(tampered) - 2] = 'X';
+    CHECK(bd_shadow_list_parse(tampered, strlen(tampered), hash, &l) == -2);
+    CHECK(bd_shadow_list_parse(text, strlen(text), "00", &l) == -2);
+    CHECK(bd_shadow_list_parse(text, strlen(text), NULL, &l) == -2);
+    free(tampered);
+    const char *bad[] = {"C:\\a\nfile\tC:\\Windows\\win.ini"};
+    CHECK(bd_shadow_list_format("S-1-5-21-1", folders, 3, bad, 1, hash) == NULL);
+    free(text);
+
+    /* The helper refuses a list whose hash does not match, before any copy. */
+    write_file(at("shadow/list.txt"), "BRODALF shadow-copy list 1\nuser\tS-1-5-21-1\nfile\tC:\\x\n");
+    char err[256];
+    CHECK(bd_shadow_helper(at("shadow/out"), at("shadow/list.txt"), hash, err, sizeof(err)) == -1);
+    CHECK(strstr(err, "changed") != NULL);
+    CHECK(!exists(at("shadow/out")));
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -2741,6 +2818,7 @@ int main(void)
     test_backup_many();
     test_stars_and_places();
     test_encrypt_folders();
+    test_shadow_list();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

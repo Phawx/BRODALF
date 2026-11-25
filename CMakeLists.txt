@@ -97,6 +97,7 @@ add_library(brodalf_core STATIC
     src/report.c
     src/risk.c
     src/scan.c
+    src/shadow.c
     src/sheet.c
     src/status.c
     src/util.c)

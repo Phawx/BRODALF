@@ -172,6 +172,9 @@ int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, con
 /* Set meta schema_version to what the catalog needs (catalog.c). 0 or -1. */
 int bd_catalog_note_schema(bd_catalog *cat);
 
+/* The copy from a shadow copy to read in place of path, or NULL (scan.c). */
+char *bd_substitute_for(bd_catalog *cat, const char *path);
+
 /* Save a copy of the catalog to dest, encrypted or not. */
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);
 

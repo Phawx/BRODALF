@@ -569,6 +569,7 @@ static void apply_hash(scan_ctx *c, hash_job *j)
     if (j->is_new || j->was_deleted) c->stats->files_new++;
     else if (version_id != j->old_version) c->stats->files_changed++;
 done:
+    if (j->path != j->full) free(j->path);
     free(j->full);
     free(j->rel);
     j->path = j->full = j->rel = NULL;
@@ -836,7 +837,9 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         bd_logf(c->log, c->log_ctx, "cannot read %s; keeping what the catalog already knows", rel);
         return 0;
     }
-    j.path = j.full;
+    /* A file in use is read from its shadow copy, when the user had one taken. */
+    j.path = bd_substitute_for(c->cat, j.full);
+    if (!j.path) j.path = j.full;
     j.is_new = is_new;
     j.was_deleted = was_deleted;
     j.node_id = node_id;
@@ -1206,6 +1209,35 @@ bd_status bd_list_in_use(bd_catalog *cat, bd_in_use_fn fn, void *ctx)
         if (fn(ctx, (const char *)sqlite3_column_text(q, 0), sqlite3_column_int64(q, 1)) != 0) break;
     sqlite3_finalize(q);
     return BD_OK;
+}
+
+bd_status bd_substitute_add(bd_catalog *cat, const char *path, const char *staged)
+{
+    sqlite3_stmt *u;
+    if (!path || !staged) return bd_fail(cat, BD_ERR_INVALID, "no file given");
+    if (sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.substitute(path, staged) VALUES(?,?)", -1, &u, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "use a shadow copy");
+    sqlite3_bind_text(u, 1, path, -1, SQLITE_STATIC);
+    sqlite3_bind_text(u, 2, staged, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(u);
+    sqlite3_finalize(u);
+    return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "use a shadow copy");
+}
+
+void bd_substitutes_clear(bd_catalog *cat)
+{
+    bd_exec(cat, "DELETE FROM temp.substitute");
+}
+
+char *bd_substitute_for(bd_catalog *cat, const char *path)
+{
+    sqlite3_stmt *q;
+    char *r = NULL;
+    if (!path || sqlite3_prepare_v2(cat->db, "SELECT staged FROM temp.substitute WHERE path=?", -1, &q, NULL) != SQLITE_OK) return NULL;
+    sqlite3_bind_text(q, 1, path, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) r = bd_strdup((const char *)sqlite3_column_text(q, 0));
+    sqlite3_finalize(q);
+    return r;
 }
 
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)

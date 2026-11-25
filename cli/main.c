@@ -32,10 +32,13 @@ static void usage(void)
          "  root-stop   <catalog> <root>               stop backing up a root (its copies stay and still restore)\n"
          "  root-resume <catalog> <root>               back a stopped root up again\n"
          "  root-move   <catalog> <root> <folder>      the root is somewhere else now (a new PC, another drive letter)\n"
-         "  scan     <catalog> [--bitrot [--accept ROOT/PATH]...]\n"
+         "  scan     <catalog> [--bitrot [--accept ROOT/PATH]...] [--shadow-copy]\n"
          "                                             record files, sizes and checksums; --bitrot also reads\n"
          "                                             unchanged files to find ones damaged on this PC, and\n"
-         "                                             --accept records a listed one as changed on purpose\n"
+         "                                             --accept records a listed one as changed on purpose.\n"
+         "                                             --shadow-copy (Windows, as administrator): files in use\n"
+         "                                             by another program are read from a shadow copy of\n"
+         "                                             their drive instead of being skipped\n"
          "  deleted  <catalog> [--new] [--root NAME]   files deleted from their folders, and the drives holding them\n"
          "  deleted-ack    <catalog> <root> <path> | --all\n"
          "                                             mark deleted files as seen; they stay in the catalog\n"
@@ -61,10 +64,12 @@ static void usage(void)
          "Backup\n"
          "  preview  <catalog> <root>                  what a backup to the drive would do, doing none of it\n"
          "  changed  <catalog> <label>                 files whose contents changed since their copy on the drive\n"
-         "  backup   <catalog> <root>... [--parallel]  copy everything the drive does not hold yet; nothing on the\n"
+         "  backup   <catalog> <root>... [--parallel] [--shadow-copy]\n"
+         "                                             copy everything the drive does not hold yet; nothing on the\n"
          "                                             drive is overwritten, moved or deleted. With several drives,\n"
          "                                             one after another, or all at once with --parallel or the\n"
-         "                                             parallel_copies option (each file is read once)\n"
+         "                                             parallel_copies option (each file is read once).\n"
+         "                                             --shadow-copy (one drive): as for scan\n"
          "  pending  <catalog> [label] [--all]         what the next backup copies: to that drive, or every file\n"
          "                                             short of the copies you want (first 50; --all for all)\n"
          "  check    <catalog> <root>                  read every copy on the drive back and check it\n"
@@ -1205,6 +1210,25 @@ static void print_risk_stats(bd_catalog *cat, int64_t source_id, int all)
     }
 }
 
+/* --shadow-copy: the files in use the step just met are copied out of a
+ * shadow copy (this needs administrator rights), so the step can run again
+ * and read those copies. 1 if any is ready (unstage afterwards), 0 if not. */
+static int shadow_stage(bd_catalog *cat, int64_t in_use, char **dir)
+{
+    *dir = NULL;
+    if (!in_use) return 0;
+    fprintf(msg_out(), "%lld files are in use by another program: reading them from a shadow copy of their drive\n",
+            (long long)in_use);
+    int ready = bd_shadow_stage(cat, dir);
+    if (ready < 0) {
+        fprintf(stderr, "brodalf: no shadow copy: %s\n", bd_catalog_error(cat));
+        return 0;
+    }
+    if (ready == 0) { bd_shadow_unstage(cat, *dir); free(*dir); *dir = NULL; return 0; }
+    fprintf(msg_out(), "%d of them were copied from the shadow copy; reading those copies now\n", ready);
+    return 1;
+}
+
 /* After a scan or a backup: files another program kept open. */
 static void report_in_use(bd_catalog *cat, int64_t count)
 {
@@ -1216,7 +1240,12 @@ static void report_in_use(bd_catalog *cat, int64_t count)
         J_END_ARR();
         return;
     }
+#ifdef _WIN32
+    printf("%lld files are in use by another program and were skipped; close it and run this again, or run this as\n"
+           "administrator with --shadow-copy to read them from a shadow copy of their drive:\n", (long long)count);
+#else
     printf("%lld files are in use by another program and were skipped; close it and run this again:\n", (long long)count);
+#endif
     bd_list_in_use(cat, print_in_use, &n);
 }
 
@@ -1619,6 +1648,12 @@ static int run(int argc, char **argv)
         bd_scan_stats st;
         bd_scan_opts so = {has_flag(argc, argv, "--bitrot")};
         bd_status s = bd_scan_ex(cat, &so, &st, log_line, NULL);
+        char *shadow_dir = NULL;
+        if (s == BD_OK && has_flag(argc, argv, "--shadow-copy") && shadow_stage(cat, st.files_in_use, &shadow_dir)) {
+            s = bd_scan_ex(cat, &so, &st, log_line, NULL);
+            bd_shadow_unstage(cat, shadow_dir);
+            free(shadow_dir);
+        }
         if (s == BD_ERR_CANCELLED) return stopped(cat, "scan");
         if (s != BD_OK) return die(cat, "scan failed");
         damaged_ctx dc = {cat, argc, argv, 0, 0};
@@ -1942,6 +1977,29 @@ static int run(int argc, char **argv)
             bd_backup_stats bs;
             bd_status s = bd_backup(cat, media_id, 0, &bs, log_line, NULL);
             if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup(cat, media_id, 0, &bs, log_line, NULL);
+            char *shadow_dir = NULL;
+            if (s == BD_OK && has_flag(argc, argv, "--shadow-copy") && shadow_stage(cat, bs.files_in_use, &shadow_dir)) {
+                /* A file never read has no version yet: the scan reads it first. */
+                bd_scan_stats sst;
+                bd_backup_stats first = bs;
+                s = bd_scan(cat, &sst, log_line, NULL);
+                if (s == BD_OK) s = bd_backup(cat, media_id, 0, &bs, log_line, NULL);
+                bd_shadow_unstage(cat, shadow_dir);
+                free(shadow_dir);
+                if (s == BD_OK) {
+                    /* One result for both runs: the second only retried the files in use. */
+                    bs.files_considered = first.files_considered;
+                    bs.files_copied += first.files_copied;
+                    bs.bytes_copied += first.bytes_copied;
+                    bs.files_already_there += first.files_already_there;
+                    bs.files_failed += first.files_failed - first.files_in_use;
+                    bs.files_no_room = first.files_no_room;
+                    bs.bytes_no_room = first.bytes_no_room;
+                    bs.copies_alongside += first.copies_alongside;
+                    bs.files_rehashed += first.files_rehashed;
+                    bs.files_online_only = first.files_online_only;
+                }
+            }
             if (s == BD_ERR_CANCELLED) {
                 /* What it copied is on the drive: so is the catalog that knows it. */
                 bd_catalog_copy_to_media(cat, media_id);

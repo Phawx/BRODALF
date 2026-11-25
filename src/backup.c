@@ -26,6 +26,7 @@ typedef struct {
     int64_t node_id, node_size, node_mtime;
     int64_t version_id, version_no, version_size;
     char *rel, *source_path, *source_name, *hash, *orig;
+    char *read_from; /* a copy from a shadow copy to read instead of orig, or NULL */
     int starred, encrypt;
 } backup_item;
 
@@ -33,6 +34,7 @@ static void free_items(backup_item *items, size_t n)
 {
     for (size_t i = 0; i < n; i++) {
         free(items[i].orig);
+        free(items[i].read_from);
         free(items[i].rel);
         free(items[i].source_path);
         free(items[i].source_name);
@@ -333,10 +335,13 @@ static int item_prepare(bd_catalog *cat, backup_item *it, int *rehashed, bd_log_
         bd_logf(log, log_ctx, "online-only (not on this PC), not copied: %s", it->orig);
         return PREP_ONLINE;
     }
+    /* A file in use is read from its shadow copy, when the user had one taken. */
+    free(it->read_from);
+    it->read_from = bd_substitute_for(cat, it->orig);
     if (sst.size != it->node_size || sst.mtime_ns != it->node_mtime) {
         bd_backup_stats scratch;
         memset(&scratch, 0, sizeof(scratch));
-        int r = rehash_changed(cat, 0, it, it->orig, &sst, &scratch, log, log_ctx);
+        int r = rehash_changed(cat, 0, it, it->read_from ? it->read_from : it->orig, &sst, &scratch, log, log_ctx);
         if (r < 0) return scratch.files_in_use ? PREP_IN_USE : PREP_FAILED;
         *rehashed = 1;
     }
@@ -903,7 +908,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             char hash[BD_HASH_HEX_LEN + 1] = "";
             int64_t sizes[MAX_DESTS];
             int failed[MAX_DESTS];
-            int rc = bd_hash_copy_multi(it->orig, outs, keys, nr, hash, sizes, failed);
+            int rc = bd_hash_copy_multi(it->read_from ? it->read_from : it->orig, outs, keys, nr, hash, sizes, failed);
             if (rc == -2) rc = 0; /* every copy failed: failed[] says so */
             int in_use_noted = 0;
             for (int j = 0; j < nr; j++) {

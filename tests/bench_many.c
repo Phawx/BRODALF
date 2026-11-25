@@ -5,6 +5,7 @@
  * the big numbers. */
 #include "brodalf.h"
 #include "internal.h"
+#include "test_tree.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,6 +157,9 @@ int main(int argc, char **argv)
     CHECK(rk.files_at_risk == n);
 
     bd_catalog_close(cat);
+    remove_tree(base);
+    bd_stat_t gone;
+    CHECK(bd_stat(base, &gone) != 0);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

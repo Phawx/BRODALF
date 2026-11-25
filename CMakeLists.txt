@@ -149,6 +149,18 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(bench_many PRIVATE brodalf_core)
     target_include_directories(bench_many PRIVATE src)
     add_test(NAME many_files COMMAND bench_many 5000)
+    # The tests make their folders and the catalogs' working copies in the
+    # temp folder: under ctest that is one inside the build folder, made
+    # before and removed after them, so a test that stops half way (or one
+    # that does not tidy up after itself) leaves nothing in the system's.
+    set(BRODALF_TEST_TMP ${CMAKE_CURRENT_BINARY_DIR}/test-tmp)
+    add_test(NAME test_tmp_make COMMAND ${CMAKE_COMMAND} -E make_directory ${BRODALF_TEST_TMP})
+    add_test(NAME test_tmp_remove COMMAND ${CMAKE_COMMAND} -E remove_directory ${BRODALF_TEST_TMP})
+    set_tests_properties(test_tmp_make PROPERTIES FIXTURES_SETUP brodalf_test_tmp)
+    set_tests_properties(test_tmp_remove PROPERTIES FIXTURES_CLEANUP brodalf_test_tmp)
+    set_tests_properties(core crypto blake3 misc many_files PROPERTIES
+                         FIXTURES_REQUIRED brodalf_test_tmp
+                         ENVIRONMENT "TMPDIR=${BRODALF_TEST_TMP};TMP=${BRODALF_TEST_TMP};TEMP=${BRODALF_TEST_TMP}")
 endif()
 
 if(WIN32)

@@ -6,6 +6,7 @@
  * folder under one temp folder, which is removed at the end. */
 #include "brodalf.h"
 #include "internal.h"
+#include "test_tree.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,45 +80,6 @@ static void quiet(void *ctx, const char *msg)
 {
     (void)ctx;
     (void)msg;
-}
-
-/* Remove a folder and everything in it: the walk lists parents before
- * what is inside them, so going through the list backwards empties each
- * folder before it is removed. */
-typedef struct { char **paths; int *dirs; size_t n, cap; const char *root; } tree_list;
-
-static int note_entry(void *ctx, const char *rel, const bd_stat_t *st)
-{
-    tree_list *t = ctx;
-    if (t->n == t->cap) {
-        t->cap = t->cap ? t->cap * 2 : 64;
-        t->paths = realloc(t->paths, t->cap * sizeof(*t->paths));
-        t->dirs = realloc(t->dirs, t->cap * sizeof(*t->dirs));
-        if (!t->paths || !t->dirs) exit(1);
-    }
-    t->paths[t->n] = bd_sprintf("%s/%s", t->root, rel);
-    t->dirs[t->n] = st->is_dir && !st->is_link;
-    t->n++;
-    return 0;
-}
-
-static void remove_tree(const char *root)
-{
-#ifndef _WIN32
-    /* A test may have left a folder unreadable. */
-    chmod(root, 0755);
-#endif
-    tree_list t = {0};
-    t.root = root;
-    bd_walk(root, note_entry, NULL, &t);
-    for (size_t i = t.n; i-- > 0;) {
-        if (t.dirs[i]) bd_rmdir_empty(t.paths[i]);
-        else bd_remove(t.paths[i]);
-        free(t.paths[i]);
-    }
-    free(t.paths);
-    free(t.dirs);
-    bd_rmdir_empty(root);
 }
 
 /* A source folder with a few files, a catalog and a drive, in the current

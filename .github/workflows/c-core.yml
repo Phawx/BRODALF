@@ -1,9 +1,17 @@
 name: C core
 
+# Every push builds and tests, on any branch. A release is made only when
+# someone starts it by hand (Actions > C core > Run workflow), never because
+# a push or a version number changed.
 on:
   push:
-    branches: [master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish the Windows app as release v<version> (the version in CMakeLists.txt)"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -31,11 +39,10 @@ jobs:
             build/Release/brodalf.exe
             build/Release/brodalf-cli.exe
 
-  # Each push to master whose version (project() in CMakeLists.txt) has no
-  # release yet publishes the Windows app as release v<version>. Bump the
-  # version to cut the next one.
+  # Only when started by hand with "release" ticked: publishes the Windows
+  # app as release v<version>, if that release does not exist yet.
   release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'workflow_dispatch' && inputs.release
     needs: build
     runs-on: ubuntu-latest
     permissions:

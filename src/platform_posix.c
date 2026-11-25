@@ -211,6 +211,8 @@ static int stack_push(str_stack *s, const char *v)
     return 0;
 }
 
+const char *bd_test_walk_fail = NULL;
+
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
 {
     char *base = dup_native(root);
@@ -236,8 +238,21 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             free(rel);
             continue;
         }
-        struct dirent *de;
-        while (!stop && (de = readdir(d)) != NULL) {
+        /* readdir gives NULL at the end and on an error, telling them apart
+         * only by errno, which everything in the loop may change: clear it
+         * just before each call. */
+        struct dirent *de = NULL;
+        int seen = 0, read_err = 0;
+        while (!stop) {
+            errno = 0;
+            if (bd_test_walk_fail && seen >= 1 && strcmp(rel, bd_test_walk_fail) == 0) {
+                de = NULL;
+                errno = EIO;
+            } else {
+                de = readdir(d);
+            }
+            if (!de) { read_err = errno; break; }
+            seen++;
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
             size_t nlen = strlen(de->d_name);
             char *child_rel = malloc(rlen + nlen + 2);
@@ -261,6 +276,9 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             free(child_path);
         }
         closedir(d);
+        /* What was read is kept; the folder is reported so the scan treats
+         * it as not read in full and marks nothing in it deleted. */
+        if (read_err && err_cb) err_cb(ctx, dir_path, strerror(read_err));
         free(dir_path);
         free(rel);
     }

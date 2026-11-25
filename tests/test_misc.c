@@ -231,6 +231,37 @@ static void test_mass_change(void)
     }
 }
 
+#ifndef _WIN32
+/* Item 3: a folder that cannot be read to the end is reported, and what it
+ * did not list is not marked deleted. */
+static void test_walk_error(void)
+{
+    begin("walk-error");
+    write_file(at("src/keep/a.txt"), "a");
+    write_file(at("src/keep/b.txt"), "b");
+    write_file(at("src/keep/c.txt"), "c");
+    write_file(at("src/other.txt"), "d");
+    setup u = make_setup();
+    scan(u.cat);
+    backup(u.cat, u.drive);
+
+    bd_test_walk_fail = "keep";
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(u.cat, &ss, quiet, NULL), u.cat);
+    bd_test_walk_fail = NULL;
+    CHECK(ss.errors >= 1);
+    CHECK(ss.files_deleted == 0);
+    int64_t deleted = -1;
+    REQUIRE_OK(bd_list_deleted(u.cat, 0, 0, NULL, NULL, &deleted), u.cat);
+    CHECK(deleted == 0);
+
+    /* Read in full again: still nothing deleted. */
+    REQUIRE_OK(bd_scan(u.cat, &ss, quiet, NULL), u.cat);
+    CHECK(ss.errors == 0 && ss.files_deleted == 0);
+    bd_catalog_close(u.cat);
+}
+#endif
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -243,6 +274,9 @@ int main(void)
 
     test_drive_status();
     test_mass_change();
+#ifndef _WIN32
+    test_walk_error();
+#endif
 
     remove_tree(top);
     CHECK(!exists(top));

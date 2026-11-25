@@ -82,11 +82,19 @@ void bd_catalog_lock_release(void *handle, const char *lock_path);
 /* Directory walk. The callback gets the path relative to the root, joined
  * with '/'. Return BD_WALK_SKIP for a folder to leave out what is inside it,
  * any other non-zero value to stop the walk. Entries that cannot be read
- * are reported through err_cb and skipped. */
+ * are reported through err_cb and skipped; so is a folder that cannot be
+ * opened or read to the end, or that holds a name that cannot be turned
+ * into UTF-8 (Windows), with the folder's path (on Windows its search
+ * pattern, the path with a backslash and a star added). */
 #define BD_WALK_SKIP 2
 typedef int (*bd_walk_cb)(void *ctx, const char *rel_path, const bd_stat_t *st);
 typedef void (*bd_walk_err_cb)(void *ctx, const char *path, const char *message);
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx);
+#ifndef _WIN32
+/* Tests only: reading the folder with this path relative to the root ("" the
+ * root itself) fails with EIO after its first entry. */
+extern const char *bd_test_walk_fail;
+#endif
 
 /* A copy of s with letter case folded the way the file system compares
  * names: Windows' own case mapping there; elsewhere (names are case

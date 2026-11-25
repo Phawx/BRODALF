@@ -41,12 +41,23 @@ static wchar_t *to_wide(const char *path)
     return w;
 }
 
+#ifndef WC_ERR_INVALID_CHARS
+#define WC_ERR_INVALID_CHARS 0x00000080 /* winnls.h, Windows Vista and later */
+#endif
+
+/* UTF-16 -> UTF-8. NULL when out of memory or when w is not valid UTF-16
+ * (an unpaired surrogate, which NTFS allows in names): such a name is not
+ * made up with U+FFFD in its place, since the made-up name would not open
+ * the file. Caller frees. */
 static char *to_utf8(const wchar_t *w)
 {
-    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w, -1, NULL, 0, NULL, NULL);
     if (n <= 0) return NULL;
     char *s = malloc((size_t)n);
-    if (s) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+    if (s && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w, -1, s, n, NULL, NULL) <= 0) {
+        free(s);
+        return NULL;
+    }
     return s;
 }
 
@@ -410,10 +421,21 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             free(rel);
             continue;
         }
+        /* The error FindNextFileW stopped with, read before any other call
+         * can change it: anything but ERROR_NO_MORE_FILES means the folder
+         * was not read to the end. */
+        DWORD werr = ERROR_NO_MORE_FILES;
+        int bad_name = 0;
         do {
             if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
             char *name = to_utf8(fd.cFileName);
-            if (!name) continue;
+            if (!name) {
+                /* Reported against the folder, so the scan treats it as not
+                 * read in full and marks nothing in it deleted. */
+                if (err_cb && !bad_name) err_cb(ctx, pattern, "a name in this folder is not valid Unicode and cannot be read");
+                bad_name = 1;
+                continue;
+            }
             char *child_rel = malloc(rlen + strlen(name) + 2);
             if (!child_rel) { free(name); rc = -1; stop = 1; break; }
             sprintf(child_rel, rlen ? "%s/%s" : "%s%s", rel, name);
@@ -425,8 +447,13 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             else if (st.is_dir && stack_push(&stack, child_rel) != 0) { rc = -1; stop = 1; }
             free(child_rel);
             free(name);
-        } while (!stop && FindNextFileW(h, &fd));
+        } while (!stop && (FindNextFileW(h, &fd) || ((werr = GetLastError()), 0)));
         FindClose(h);
+        if (!stop && werr != ERROR_NO_MORE_FILES && err_cb) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "the folder could not be read to the end (error %lu)", (unsigned long)werr);
+            err_cb(ctx, pattern, msg);
+        }
         free(pattern);
         free(rel);
     }

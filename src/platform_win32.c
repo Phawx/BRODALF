@@ -64,7 +64,8 @@ static int64_t filetime_to_ns(FILETIME ft)
  * behind it, above all OneDrive and Dropbox placeholders, which carry the
  * attribute even when the file is fully downloaded. Treating those as
  * links would leave a OneDrive folder entirely unprotected. */
-static void fill_from_attrs(DWORD attrs, DWORD reparse_tag, DWORD size_hi, DWORD size_lo, FILETIME mtime, bd_stat_t *st)
+static void fill_from_attrs(DWORD attrs, DWORD reparse_tag, DWORD size_hi, DWORD size_lo, FILETIME mtime,
+                            FILETIME btime, bd_stat_t *st)
 {
     memset(st, 0, sizeof(*st));
     st->is_link = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && IsReparseTagNameSurrogate(reparse_tag);
@@ -72,6 +73,7 @@ static void fill_from_attrs(DWORD attrs, DWORD reparse_tag, DWORD size_hi, DWORD
     st->is_file = !st->is_link && !st->is_dir;
     st->size = st->is_file ? (int64_t)(((uint64_t)size_hi << 32) | size_lo) : 0;
     st->mtime_ns = filetime_to_ns(mtime);
+    st->btime_ns = (btime.dwHighDateTime | btime.dwLowDateTime) ? filetime_to_ns(btime) : 0;
     /* Opening one of these makes OneDrive (or another cloud app) download it. */
     st->online_only = st->is_file && (attrs & (BD_RECALL_ON_DATA_ACCESS | BD_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)) != 0;
 }
@@ -97,7 +99,7 @@ int bd_stat(const char *path, bd_stat_t *st)
     DWORD tag = (ok && (fa.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) ? reparse_tag_of(w) : 0;
     free(w);
     if (!ok) return -1;
-    fill_from_attrs(fa.dwFileAttributes, tag, fa.nFileSizeHigh, fa.nFileSizeLow, fa.ftLastWriteTime, st);
+    fill_from_attrs(fa.dwFileAttributes, tag, fa.nFileSizeHigh, fa.nFileSizeLow, fa.ftLastWriteTime, fa.ftCreationTime, st);
     return 0;
 }
 
@@ -237,6 +239,53 @@ int bd_set_mtime(FILE *f, int64_t mtime_ns)
     return SetFileTime(h, NULL, NULL, &ft) ? 0 : -1;
 }
 
+static int ns_to_filetime(int64_t ns, FILETIME *ft)
+{
+    int64_t t = ns / 100 + BD_EPOCH_DIFF;
+    if (t < 0) return -1;
+    ft->dwLowDateTime = (DWORD)((uint64_t)t & 0xffffffffu);
+    ft->dwHighDateTime = (DWORD)((uint64_t)t >> 32);
+    return 0;
+}
+
+int bd_set_times(FILE *f, int64_t mtime_ns, int64_t btime_ns)
+{
+    if (fflush(f) != 0) return -1;
+    HANDLE h = (HANDLE)_get_osfhandle(_fileno(f));
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    FILETIME mt, bt;
+    if (ns_to_filetime(mtime_ns, &mt) != 0) return -1;
+    int have_b = btime_ns > 0 && ns_to_filetime(btime_ns, &bt) == 0;
+    return SetFileTime(h, have_b ? &bt : NULL, NULL, &mt) ? 0 : -1;
+}
+
+/* Jobs keep the PC awake and, with low_priority, step aside for other
+ * programs. Counted, since a scan's helper threads and nested jobs share
+ * the one process-wide setting. */
+static volatile LONG power_depth = 0;
+
+void bd_job_power_begin(int low)
+{
+    if (InterlockedIncrement(&power_depth) == 1)
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+    if (low) SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    else SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+}
+
+void bd_job_power_end(void)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+    if (InterlockedDecrement(&power_depth) <= 0) {
+        power_depth = 0;
+        SetThreadExecutionState(ES_CONTINUOUS);
+    }
+}
+
+void bd_thread_low_priority(void)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+}
+
 /* NtFlushBuffersFileEx (Windows 8 and later) can write a file's data and
  * metadata to the drive without making the drive flush its own cache. */
 typedef struct { void *status; ULONG_PTR information; } bd_io_status;
@@ -368,7 +417,7 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             if (!child_rel) { free(name); rc = -1; stop = 1; break; }
             sprintf(child_rel, rlen ? "%s/%s" : "%s%s", rel, name);
             bd_stat_t st;
-            fill_from_attrs(fd.dwFileAttributes, fd.dwReserved0, fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime, &st);
+            fill_from_attrs(fd.dwFileAttributes, fd.dwReserved0, fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime, fd.ftCreationTime, &st);
             int r = cb(ctx, child_rel, &st);
             if (r == BD_WALK_SKIP) { /* leave the folder out */ }
             else if (r != 0) stop = 1;

@@ -72,7 +72,7 @@ struct bd_sealer {
     crypto_aead_ctx ctx;
     uint8_t ad[SEAL_HEADER + 1];
     uint8_t *plain, *cipher;
-    size_t fill;
+    size_t fill, high; /* high: most plaintext the buffer has held */
     int err;
 };
 
@@ -117,6 +117,7 @@ int bd_seal_write(bd_sealer *s, const void *data, size_t n)
         if (take > n) take = n;
         memcpy(s->plain + s->fill, p, take);
         s->fill += take;
+        if (s->fill > s->high) s->high = s->fill;
         p += take;
         n -= take;
     }
@@ -133,7 +134,7 @@ int bd_seal_end(bd_sealer *s)
     }
     int err = s->err;
     crypto_wipe(&s->ctx, sizeof(s->ctx));
-    crypto_wipe(s->plain, SEAL_CHUNK);
+    crypto_wipe(s->plain, s->high); /* only what held plaintext: a small file is quick */
     free(s->plain);
     free(s->cipher);
     free(s);
@@ -145,7 +146,7 @@ struct bd_opener {
     crypto_aead_ctx ctx;
     uint8_t ad[SEAL_HEADER + 1];
     uint8_t *plain, *cipher;
-    size_t pos, len;
+    size_t pos, len, high;
     int done;
 };
 
@@ -181,6 +182,7 @@ long bd_open_read(bd_opener *o, void *buf, size_t cap)
             return -3;
         o->pos = 0;
         o->len = plain_len;
+        if (plain_len > o->high) o->high = plain_len;
         o->done = last;
         if (plain_len == 0) return 0;
     }
@@ -195,7 +197,7 @@ void bd_open_end(bd_opener *o)
 {
     if (!o) return;
     crypto_wipe(&o->ctx, sizeof(o->ctx));
-    crypto_wipe(o->plain, SEAL_CHUNK);
+    crypto_wipe(o->plain, o->high);
     free(o->plain);
     free(o->cipher);
     free(o);
@@ -334,6 +336,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
     blake3_hasher h;
     blake3_hasher_init(&h);
     int64_t total = 0;
+    size_t high = 0; /* most of buf that was used: wiping all 1 MiB per small file was most of a backup's time */
     int blocks = 0, piped = 0;
     copy_pipe pipe;
     while (!rc) {
@@ -343,6 +346,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
         long n = read_block(&src, b, COPY_BUF);
         if (n < 0) { rc = (int)n; break; }
         if (n == 0) break;
+        if (b == buf && (size_t)n > high) high = (size_t)n;
         blake3_hasher_update(&h, b, (size_t)n);
         total += n;
         bd_io_tick(n);
@@ -356,7 +360,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
     if (piped && pipe_finish(&pipe) != 0) rc = -2;
     if (dst.sealer && bd_seal_end(dst.sealer) != 0 && !rc) rc = -2;
     bd_open_end(src.opener);
-    if (buf) { crypto_wipe(buf, COPY_BUF); free(buf); }
+    if (buf) { crypto_wipe(buf, high); free(buf); }
     fclose(f);
     if (rc != 0) return rc;
 

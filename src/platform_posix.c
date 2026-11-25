@@ -37,6 +37,7 @@ static void fill_stat(const struct stat *sb, bd_stat_t *st)
     st->size = st->is_file ? (int64_t)sb->st_size : 0;
 #if defined(__APPLE__)
     st->mtime_ns = (int64_t)sb->st_mtimespec.tv_sec * 1000000000LL + sb->st_mtimespec.tv_nsec;
+    st->btime_ns = (int64_t)sb->st_birthtimespec.tv_sec * 1000000000LL + sb->st_birthtimespec.tv_nsec;
 #else
     st->mtime_ns = (int64_t)sb->st_mtim.tv_sec * 1000000000LL + sb->st_mtim.tv_nsec;
 #endif
@@ -142,6 +143,16 @@ int bd_set_mtime(FILE *f, int64_t mtime_ns)
     if (ts[1].tv_nsec < 0) { ts[1].tv_sec--; ts[1].tv_nsec += 1000000000L; }
     return futimens(fileno(f), ts) == 0 ? 0 : -1;
 }
+
+int bd_set_times(FILE *f, int64_t mtime_ns, int64_t btime_ns)
+{
+    (void)btime_ns; /* no portable way to set a created time here */
+    return bd_set_mtime(f, mtime_ns);
+}
+
+void bd_job_power_begin(int low) { (void)low; }
+void bd_job_power_end(void) {}
+void bd_thread_low_priority(void) {}
 
 int bd_fsync_paths(char **paths, size_t n, int *failed)
 {

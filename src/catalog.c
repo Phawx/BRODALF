@@ -24,7 +24,7 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 6
+#define BD_SCHEMA_VERSION 7
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -36,7 +36,8 @@ static const char *SCHEMA_SQL =
     "  path TEXT NOT NULL UNIQUE,"
     "  name TEXT NOT NULL UNIQUE,"      /* folder name used on media */
     "  added_ms INTEGER NOT NULL,"
-    "  last_scan_ms INTEGER);"
+    "  last_scan_ms INTEGER,"
+    "  active INTEGER NOT NULL DEFAULT 1);" /* 0: no longer backed up; its files stay in the catalog */
     "CREATE TABLE IF NOT EXISTS nodes("
     "  id INTEGER PRIMARY KEY,"
     "  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,"
@@ -50,6 +51,9 @@ static const char *SCHEMA_SQL =
     "  deleted INTEGER NOT NULL DEFAULT 0,"
     "  last_seen_ms INTEGER NOT NULL,"
     "  rel_fold TEXT,"                  /* bd_path_key(rel_path): set on Windows only */
+    "  deleted_ack INTEGER NOT NULL DEFAULT 0," /* the user has seen that it was deleted */
+    "  moved_from TEXT,"                /* "<source name>/<path>" it was moved or renamed from */
+    "  btime_ns INTEGER NOT NULL DEFAULT 0," /* created; 0 if not known */
     "  UNIQUE(source_id, rel_path));"
     "CREATE INDEX IF NOT EXISTS nodes_parent ON nodes(source_id, parent_id);"
     "CREATE TABLE IF NOT EXISTS versions("
@@ -73,8 +77,9 @@ static const char *SCHEMA_SQL =
     "  last_seen_ms INTEGER,"
     "  encrypted INTEGER NOT NULL DEFAULT 0,"
     "  location TEXT,"
-    "  retired_ms INTEGER,"              /* being replaced: nothing new is backed up to it */
-    "  replaced_by INTEGER);"            /* the drive taking its place; its copies stop counting there */
+    "  retired_ms INTEGER,"              /* marked lost or broken: its copies no longer count */
+    "  replaced_by INTEGER,"             /* 0.5.0 and 0.6.0 only (Replace drive); unused */
+    "  lost_why TEXT);"                  /* "lost" or "broken" */
     "CREATE TABLE IF NOT EXISTS media_hardware("  /* last reading when plugged in */
     "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
     "  read_ms INTEGER NOT NULL,"
@@ -275,9 +280,41 @@ static bd_status open_db(bd_catalog *cat)
         sqlite3_finalize(probe);
     else if (bd_exec(cat, "ALTER TABLE media ADD COLUMN retired_ms INTEGER; ALTER TABLE media ADD COLUMN replaced_by INTEGER") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Schema 6 catalogs (0.6.0 and before) lack these. */
+    static const struct { const char *probe, *add; } ADD[] = {
+        {"SELECT active FROM sources LIMIT 0", "ALTER TABLE sources ADD COLUMN active INTEGER NOT NULL DEFAULT 1"},
+        {"SELECT deleted_ack FROM nodes LIMIT 0", "ALTER TABLE nodes ADD COLUMN deleted_ack INTEGER NOT NULL DEFAULT 0"},
+        {"SELECT moved_from FROM nodes LIMIT 0", "ALTER TABLE nodes ADD COLUMN moved_from TEXT"},
+        {"SELECT btime_ns FROM nodes LIMIT 0", "ALTER TABLE nodes ADD COLUMN btime_ns INTEGER NOT NULL DEFAULT 0"},
+        {"SELECT lost_why FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN lost_why TEXT"},
+    };
+    for (size_t i = 0; i < sizeof(ADD) / sizeof(ADD[0]); i++) {
+        if (sqlite3_prepare_v2(cat->db, ADD[i].probe, -1, &probe, NULL) == SQLITE_OK) sqlite3_finalize(probe);
+        else if (bd_exec(cat, ADD[i].add) != 0) return bd_fail_db(cat, "cannot upgrade catalog");
+    }
+    /* A drive retired to be replaced (0.5.0, 0.6.0) was taken out of use
+     * for good: it is lost or broken now. */
+    if (bd_exec(cat, "UPDATE media SET lost_why='broken' WHERE retired_ms IS NOT NULL AND lost_why IS NULL") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
-                     "CREATE TEMP TABLE IF NOT EXISTS replace_need(version_id INTEGER PRIMARY KEY);") != 0)
+                     /* The last scan: backup roots it could not reach, and files whose
+                      * contents changed while their size and time did not. */
+                     "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY);"
+                     "CREATE TEMP TABLE IF NOT EXISTS damaged(node_id INTEGER PRIMARY KEY, found_hash TEXT NOT NULL);"
+                     /* During a scan: files it added and files it marked deleted. */
+                     "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
+                     "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"
+                     /* Working tables for finding moved files after a scan. */
+                     "CREATE TEMP TABLE IF NOT EXISTS mv_gone(node_id INTEGER PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);"
+                     "CREATE TEMP TABLE IF NOT EXISTS mv_new(node_id INTEGER PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);"
+                     "CREATE INDEX IF NOT EXISTS temp.mv_gone_h ON mv_gone(hash, size);"
+                     "CREATE INDEX IF NOT EXISTS temp.mv_new_h ON mv_new(hash, size);"
+                     "CREATE TEMP TABLE IF NOT EXISTS mv_dirs(node_id INTEGER PRIMARY KEY);"
+                     /* The last restore: files it left alone because something else was there. */
+                     "CREATE TEMP TABLE IF NOT EXISTS restore_conflicts(id INTEGER PRIMARY KEY, source_name TEXT NOT NULL,"
+                     " rel_path TEXT NOT NULL, dest TEXT NOT NULL, want_size INTEGER NOT NULL, want_mtime_ns INTEGER NOT NULL,"
+                     " have_size INTEGER NOT NULL, have_mtime_ns INTEGER NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
 }
@@ -444,9 +481,20 @@ done:
     return status;
 }
 
+int64_t bd_catalog_revision(bd_catalog *cat)
+{
+    char v[32];
+    return cat && cat->db && meta_get(cat, "revision", v, sizeof(v)) ? atoll(v) : 0;
+}
+
+/* Every save is a new revision, so copies of the catalog on the drives
+ * can be told apart and the newest found. */
 bd_status bd_catalog_save(bd_catalog *cat)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
+    char v[32];
+    snprintf(v, sizeof(v), "%lld", (long long)(bd_catalog_revision(cat) + 1));
+    if (meta_set(cat, "revision", v) != 0) return bd_fail_db(cat, "count the save");
     return bd_catalog_save_to(cat, cat->path, bd_catalog_file_encrypted(cat));
 }
 
@@ -614,9 +662,9 @@ const char *bd_catalog_uuid(const bd_catalog *cat)
 
 static const struct { const char *name; int def, min, max; } OPTIONS[] = {
     {"check_days", 180, 0, 3650},
-    {"keep_versions", 5, 0, 100000},
-    {"keep_days", 365, 0, 36500},
     {"verify_days", 30, 0, 3650},
+    {"reserve_mb", 512, 0, 1048576},
+    {"low_priority", 1, 0, 1},
 };
 
 static int option_index(const char *name)
@@ -670,6 +718,14 @@ bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)
         fclose(in);
         snprintf(g_open_error, sizeof(g_open_error), "%s is not a BRODALF catalog this version can read", backup_path);
         return BD_ERR_FORMAT;
+    }
+    /* The folder it goes in may not exist yet on a new PC. */
+    char *dir = bd_strdup(dest_path);
+    if (dir) {
+        char *slash = strrchr(dir, '/'), *back = strrchr(dir, '\\');
+        if (back && (!slash || back > slash)) slash = back;
+        if (slash && slash > dir) { *slash = '\0'; bd_mkdirs(dir); }
+        free(dir);
     }
     /* Copy under a temporary name and rename at the end, so a half-written
      * catalog never sits at dest_path. */

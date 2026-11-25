@@ -1,7 +1,7 @@
 /* The recovery sheet: one self-contained HTML page to print and keep away
  * from the PC. It lists the backup drives (name, where kept, size, free
- * space, which protected folders they hold and how many files, last backup),
- * the protected folders, what to do on a new PC, and for an encrypted
+ * space, which backup roots they hold and how many files, last backup),
+ * the backup roots, what to do on a new PC, and for an encrypted
  * catalog the recovery key it is given. Nothing is fetched: no scripts, no
  * images, no links. The passphrase is never written. */
 #include "internal.h"
@@ -73,7 +73,11 @@ static int drive_row(void *ctx, const bd_media_info *m)
     put_html(f, m->label);
     fputs("</b>", f);
     if (m->encrypted) fputs("<br><small>encrypted</small>", f);
-    if (m->retired_ms) fputs("<br><small>being replaced</small>", f);
+    if (m->lost_ms) {
+        fputs("<br><small>marked ", f);
+        put_html(f, m->lost_why);
+        fputs("</small>", f);
+    }
     fputs("</td><td>", f);
     if (m->location && *m->location) put_html(f, m->location);
     else fputs("<i>not set</i>", f);
@@ -212,7 +216,7 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
           f);
     c.rows = 0;
     if (s == BD_OK) s = bd_list_sources(cat, source_row, &c);
-    if (s == BD_OK && !c.rows) fputs("<tr><td colspan=\"4\"><i>No protected folders yet.</i></td></tr>\n", f);
+    if (s == BD_OK && !c.rows) fputs("<tr><td colspan=\"4\"><i>No backup roots yet.</i></td></tr>\n", f);
     fputs("</table>\n<p class=\"foot\">Made by BRODALF ", f);
     put_html(f, bd_version());
     fputs(".</p>\n</body></html>\n", f);

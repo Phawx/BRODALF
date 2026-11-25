@@ -14,6 +14,7 @@ typedef struct {
     int online_only; /* Windows: a cloud file (OneDrive "online-only") whose data is not on this PC; reading it downloads it */
     int64_t size;
     int64_t mtime_ns; /* nanoseconds since the Unix epoch */
+    int64_t btime_ns; /* created; 0 where the system does not say */
 } bd_stat_t;
 
 /* 0 on success, -1 if the path does not exist or cannot be read. */
@@ -41,6 +42,17 @@ int bd_fsync(FILE *f);
 /* Set an open file's modified time, after its last write (stdio buffers
  * are flushed first). 0 on success. */
 int bd_set_mtime(FILE *f, int64_t mtime_ns);
+/* The same, and the created time where the system keeps one (Windows);
+ * btime_ns 0 leaves it alone. */
+int bd_set_times(FILE *f, int64_t mtime_ns, int64_t btime_ns);
+
+/* While a job runs: keep the PC from sleeping, and with low set run the
+ * calling thread at background priority (lower disk and processor
+ * priority on Windows). Calls nest; each begin needs an end. */
+void bd_job_power_begin(int low);
+void bd_job_power_end(void);
+/* A helper thread of a job (scan hashing) at background priority. */
+void bd_thread_low_priority(void);
 
 /* Force closed files' data to stable storage (each is opened again for
  * that), all on one drive, with as few device cache flushes as the OS

@@ -52,10 +52,11 @@ bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT (SELECT COUNT(*) FROM nodes n WHERE n.is_dir=0 AND n.deleted=1 AND EXISTS("
                            "   SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.media_id=?1 AND c.state='ok')),"
-                           " (SELECT COUNT(*) FROM copies c WHERE c.media_id=?1 AND c.state='ok'"
-                           "   AND substr(c.path_on_media,1,length(?2)+1)=?2||'/'),"
-                           " (SELECT COALESCE(SUM(c.stored_size),0) FROM copies c WHERE c.media_id=?1 AND c.state='ok'"
-                           "   AND substr(c.path_on_media,1,length(?2)+1)=?2||'/'),"
+                           " (SELECT COUNT(*) FROM copies c JOIN versions v ON v.id=c.version_id JOIN nodes n ON n.id=v.node_id"
+                           "   WHERE c.media_id=?1 AND c.state='ok' AND v.id IS NOT n.current_version_id AND ?2=?2),"
+                           " (SELECT COALESCE(SUM(c.stored_size),0) FROM copies c JOIN versions v ON v.id=c.version_id"
+                           "   JOIN nodes n ON n.id=v.node_id"
+                           "   WHERE c.media_id=?1 AND c.state='ok' AND v.id IS NOT n.current_version_id),"
                            " (SELECT COUNT(*) FROM copies WHERE media_id=?1 AND state<>'ok'),"
                            " (SELECT COUNT(*) FROM copies WHERE media_id=?1 AND state='ok' AND last_full_check_ms IS NULL)",
                            -1, &q, NULL) != SQLITE_OK)
@@ -88,7 +89,7 @@ bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status
 
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT finished_ms, kind, status FROM jobs WHERE media_id=? AND finished_ms IS NOT NULL"
-                           " AND kind IN ('quick check','full check','read back') ORDER BY finished_ms DESC, id DESC LIMIT 1",
+                           " AND kind IN ('check','quick check','full check','read back') ORDER BY finished_ms DESC, id DESC LIMIT 1",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "read the drive's last check");
     sqlite3_bind_int64(q, 1, media_id);
@@ -96,38 +97,6 @@ bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status
         out->last_check_ms = sqlite3_column_int64(q, 0);
         copy_text(out->last_check_kind, sizeof(out->last_check_kind), sqlite3_column_text(q, 1));
         copy_text(out->last_check_status, sizeof(out->last_check_status), sqlite3_column_text(q, 2));
-    }
-    sqlite3_finalize(q);
-    return BD_OK;
-}
-
-bd_status bd_list_jobs(bd_catalog *cat, int64_t media_id, int limit, bd_job_fn fn, void *ctx)
-{
-    sqlite3_stmt *q;
-    if (limit <= 0) limit = 200;
-    if (sqlite3_prepare_v2(cat->db,
-                           "SELECT j.id, j.kind, COALESCE(j.media_id,0), COALESCE(m.label,''), j.started_ms,"
-                           " COALESCE(j.finished_ms,0), j.status, j.files_done, j.files_failed, j.bytes_done"
-                           " FROM jobs j LEFT JOIN media m ON m.id=j.media_id"
-                           " WHERE ?1=0 OR j.media_id=?1 ORDER BY j.started_ms DESC, j.id DESC LIMIT ?2",
-                           -1, &q, NULL) != SQLITE_OK)
-        return bd_fail_db(cat, "list the history");
-    sqlite3_bind_int64(q, 1, media_id);
-    sqlite3_bind_int(q, 2, limit);
-    while (sqlite3_step(q) == SQLITE_ROW) {
-        bd_job_info j;
-        memset(&j, 0, sizeof(j));
-        j.job_id = sqlite3_column_int64(q, 0);
-        j.kind = (const char *)sqlite3_column_text(q, 1);
-        j.media_id = sqlite3_column_int64(q, 2);
-        j.media_label = (const char *)sqlite3_column_text(q, 3);
-        j.started_ms = sqlite3_column_int64(q, 4);
-        j.finished_ms = sqlite3_column_int64(q, 5);
-        j.status = (const char *)sqlite3_column_text(q, 6);
-        j.files_done = sqlite3_column_int64(q, 7);
-        j.files_failed = sqlite3_column_int64(q, 8);
-        j.bytes_done = sqlite3_column_int64(q, 9);
-        if (fn(ctx, &j) != 0) break;
     }
     sqlite3_finalize(q);
     return BD_OK;

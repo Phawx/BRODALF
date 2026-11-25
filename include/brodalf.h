@@ -50,17 +50,39 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out);
  * back unlocked; for a plain one the passphrase is ignored. */
 bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
 
-/* Start again on a new PC from the catalog backup a drive holds
- * (BRODALF\<catalog id>\catalog-backup.brodalf): copy it to dest_path,
+/* Start again on a new PC from a copy of the catalog a drive holds
+ * (BRODALF\<catalog id>\catalog-r<revision>.brodalf, the highest
+ * revision being the newest; drives written by 0.6.0 and older hold
+ * catalog-backup.brodalf): copy it to dest_path,
  * which must not exist yet, then open dest_path as usual. Fails with
  * BD_ERR_FORMAT if backup_path is not a catalog; bd_open_error says why. */
 bd_status bd_catalog_recover(const char *backup_path, const char *dest_path);
 
+/* The catalogs a drive holds copies of, to recover from. dir may be the
+ * drive, its BRODALF folder, or one catalog's folder on it. For each
+ * catalog (one folder per catalog id) fn gets its newest copy: the highest
+ * catalog-r<revision>.brodalf, or catalog-backup.brodalf (revision 0) on a
+ * drive written by 0.6.0 or older. Revisions of one catalog compare across
+ * drives: the highest is the newest. BD_ERR_NOT_FOUND if there is none. */
+typedef struct {
+    const char *catalog_id;  /* the folder's name: the catalog's id */
+    const char *path;        /* the newest copy in it */
+    int64_t revision;        /* 0: catalog-backup.brodalf */
+    int64_t saved_ms;        /* the copy's modified time */
+} bd_catalog_copy_info;
+typedef int (*bd_catalog_copy_fn)(void *ctx, const bd_catalog_copy_info *info);
+bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *ctx);
+
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
-/* Write the working copy back to the .brodalf file atomically. */
+/* Write the working copy back to the .brodalf file atomically. Every save
+ * is a new revision of the catalog. */
 bd_status bd_catalog_save(bd_catalog *cat);
+/* How many times the catalog has been saved: its revision. The copy put on
+ * a drive carries it in its name, and copies are never overwritten, so a
+ * drive keeps every revision it was given. */
+int64_t bd_catalog_revision(bd_catalog *cat);
 
 /* Close without saving, remove the working copy and the lock. */
 void bd_catalog_close(bd_catalog *cat);
@@ -99,7 +121,7 @@ int bd_catalog_file_has_recovery_key(const char *path);
 /* Like bd_catalog_open_with, with the recovery key instead. */
 bd_status bd_catalog_open_with_recovery(const char *path, const char *recovery_key, bd_catalog **out);
 /* Write the recovery sheet, an HTML page to print: what to do on a new PC,
- * the backup drives and what each holds, the protected folders, and the
+ * the backup drives and what each holds, the backup roots, and the
  * recovery key when one is given (from bd_catalog_make_recovery_key). */
 bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char *recovery_key);
 /* Forget the master key until the next unlock. */
@@ -121,6 +143,10 @@ typedef struct {
     int64_t files_total;
     int64_t bytes_done;
     int64_t bytes_total;
+    /* The file being worked on, for a bar of its own; 0 total when there
+     * is no single file (a scan hashing several at once). */
+    int64_t file_bytes_done;
+    int64_t file_bytes_total;
     int done;
 } bd_progress;
 typedef void (*bd_progress_fn)(void *ctx, const bd_progress *p);
@@ -136,49 +162,104 @@ void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
  * starts. */
 void bd_catalog_cancel(bd_catalog *cat);
 
-/* ---- Sources and scanning -------------------------------------------- */
+/* ---- Backup roots and scanning ----------------------------------------
+ *
+ * A catalog backs up one or more backup roots (folders, called sources in
+ * the code), everything inside them, kept as the folder structure they
+ * have. Together they are the primary dataset. */
 
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
 
-/* Point a protected folder at where it is now, e.g. on a new PC with another
- * user name. The folder keeps its name on the drives and its files keep
+/* Point a backup root at where it is now, e.g. on a new PC with another
+ * user name. The root keeps its name on the drives and its files keep
  * their versions and copies; the next scan finds them by their path inside
- * the folder. new_path must be an existing folder that no other protected
- * folder uses (BD_ERR_EXISTS). */
+ * the root. new_path must be an existing folder that no other backup root
+ * uses (BD_ERR_EXISTS). */
 bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new_path);
+
+/* Stop backing up a root (active 0), or start again (1). A stopped root is
+ * not scanned or backed up and does not count toward the copies you want;
+ * its files, versions and copies stay in the catalog and still restore. */
+bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active);
 
 typedef struct {
     int64_t files_seen;
     int64_t dirs_seen;
     int64_t files_new;
-    int64_t files_changed;   /* a new version was recorded */
-    int64_t files_deleted;   /* in the catalog but no longer on disk */
+    int64_t files_changed;   /* a new version was recorded (the checksum changed) */
+    int64_t files_deleted;   /* in the catalog but no longer on disk (or newly left out) */
+    int64_t files_moved;     /* moved or renamed: recognised by checksum, keeping their versions and copies */
+    int64_t deleted_no_copy; /* of the files this scan found deleted, those no drive holds */
     int64_t bytes_hashed;
     int64_t skipped_links;
     int64_t errors;
-    int64_t skipped;         /* files and folders left out by the skip list */
+    int64_t skipped;         /* files and folders left out by the skip lists */
     int64_t files_in_use;    /* another program has them open; see bd_list_in_use */
     int64_t files_online_only; /* cloud files not on this PC (OneDrive "online-only"): left alone, not downloaded */
+    int64_t files_damaged;   /* bit-rot scan: contents changed but size and time did not; see bd_list_damaged */
+    int64_t roots_missing;   /* backup roots not found (unplugged, moved): skipped, nothing marked deleted */
+    int64_t roots_stopped;   /* backup roots no longer backed up: not scanned */
 } bd_scan_stats;
 
-/* The skip list: files and folders a scan leaves out. One pattern per line,
- * matched against names ignoring case, with * and ? as wildcards. A pattern
- * ending in / matches folders only (and everything inside them). A pattern
- * with a / elsewhere is matched against the whole path inside the protected
- * folder, like "Photos/Exports/". Blank lines and lines starting with #
- * are ignored. Files already in the catalog that are now skipped are
- * dropped from it, or marked deleted if they have copies. */
+/* The skip lists: files and folders a scan leaves out. One list for the
+ * catalog, and one more for each backup root; a file either one matches
+ * is left out. One pattern per line, matched against names ignoring case,
+ * with * and ? as wildcards. A pattern ending in / matches folders only
+ * (and everything inside them). A pattern with a / elsewhere is matched
+ * against the whole path inside the backup root, like "Photos/Exports/".
+ * Blank lines and lines starting with # are ignored. Files already in the
+ * catalog that are now left out are marked deleted, as if gone from their
+ * folder, so they show among the deleted files for the user to keep or
+ * forget. */
 const char *bd_skip_list_default(void);
 /* The catalog's list (the default until one is set). malloc'd. */
 char *bd_skip_list_get(bd_catalog *cat);
 /* NULL goes back to the default; "" skips nothing. */
 bd_status bd_skip_list_set(bd_catalog *cat, const char *patterns);
-/* 1 if rel_path (inside a protected folder, '/'-separated) is skipped. */
+/* One backup root's own list ("" until one is set). malloc'd. */
+char *bd_source_skip_get(bd_catalog *cat, int64_t source_id);
+/* NULL or "" clears it. */
+bd_status bd_source_skip_set(bd_catalog *cat, int64_t source_id, const char *patterns);
+/* 1 if rel_path (inside a backup root, '/'-separated) is skipped. */
 int bd_skip_match(const char *patterns, const char *rel_path, int is_dir);
 
-/* Scan every source folder. New or changed files are hashed (BLAKE3) and get
- * a new version. Unreadable entries are logged and skipped. */
+typedef struct {
+    /* Bit-rot scan: also read every file whose size and time are
+     * unchanged and compare its checksum with the catalog's. A file whose
+     * contents changed anyway is listed (bd_list_damaged), not recorded as
+     * a new version: its copies on the drives are the good ones. Reads
+     * everything, so it takes as long as the first scan did. */
+    int bitrot;
+} bd_scan_opts;
+
+/* Scan every backup root. New or changed files are hashed (BLAKE3) and get
+ * a new version; a file whose checksum did not change is not a new
+ * version, whatever its size or time say. Unreadable entries are logged
+ * and skipped. A root that cannot be found is skipped without marking
+ * anything deleted, and listed (bd_source_info.missing) so the user can
+ * say where it is now (bd_source_relocate) or restore it. Files moved or
+ * renamed inside or between roots are recognised by checksum and keep
+ * their versions and copies; nothing on any drive is moved. */
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
+bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* Files the last bit-rot scan found changed without their size or time
+ * changing. */
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t size;
+    const char *hash_on_record;
+    const char *hash_found;
+} bd_damaged_info;
+typedef int (*bd_damaged_fn)(void *ctx, const bd_damaged_info *info);
+bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx);
+/* The file as it is now is right after all (it was changed on purpose):
+ * record it as a new version, to be backed up like any change. To get the
+ * good contents back instead, restore the file. */
+bd_status bd_damaged_accept(bd_catalog *cat, int64_t node_id);
 
 /* ---- Files in use ------------------------------------------------------ */
 
@@ -223,11 +304,11 @@ bd_status bd_media_set_location(bd_catalog *cat, int64_t media_id, const char *l
  * the next time the drive is plugged in. */
 bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
 
-/* Re-check every copy on a connected drive. full=0 checks existence, size
- * and modified time (rehashing only when the time differs); full=1 rehashes
- * every copy. */
-bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
-                         bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+/* Check every copy on a connected drive: that it is there, with the right
+ * size, and that its checksum is right (every copy is read back). A copy
+ * found missing or damaged stops counting until a backup writes it again.
+ * An encrypted drive needs the passphrase. */
+bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* Read back and hash every copy on a connected drive that has not been
  * read back in max_age_days (0: every copy). Copies never read back since
@@ -242,116 +323,87 @@ typedef struct {
     int64_t files_copied;
     int64_t files_already_there;
     int64_t files_failed;
-    int64_t versions_moved;   /* older copies moved into .versions */
     int64_t bytes_copied;
-    int64_t files_no_room;    /* did not fit: the drive is full */
+    int64_t files_no_room;    /* did not fit: they wait for another drive */
     int64_t bytes_no_room;
-    int64_t versions_pruned;  /* old copies removed from .versions by the keep rule */
-    int64_t bytes_pruned;
-    int64_t files_moved;      /* moved or renamed files whose copy was moved on the drive, not copied again */
-    int64_t bytes_moved;
+    int64_t copies_alongside; /* written under .versions because the usual place held an older version or a file BRODALF did not write */
+    int64_t files_rehashed;   /* changed since the scan: read again, recorded as a new version and copied */
     int64_t files_in_use;     /* another program had them open (counted in files_failed too) */
     int64_t files_online_only; /* cloud files not on this PC: not copied, so as not to download them */
 } bd_backup_stats;
 
-#define BD_MAX_CONTINUE 8
-typedef struct {
-    /* Only files with no good copy on any of these drives (0 ends the
-     * list): to carry on with what did not fit on full ones. Empty: every
-     * file missing from this drive. */
-    int64_t only_missing_from[BD_MAX_CONTINUE];
-    int keep_old_versions;    /* do not remove old versions by the keep rule this time */
-    /* Set by bd_media_replace: only the files it found the drive being
-     * replaced is needed for. Leave 0. */
-    int64_t replacing;
-} bd_backup_opts;
-
 /* Copy the current version of every file that has no good copy on this
- * drive. A file that was moved or renamed is recognised by its hash: when
- * the copy of the file it used to be is on the drive, that copy is moved to
- * the new name instead of copying the file again. The drive must be connected. source_id 0 means all sources. The
- * previous copy of a changed file is kept under .versions, never
- * overwritten. Old copies in .versions are first cleaned up by the keep
- * rule (bd_prune_versions). Files that would leave the drive nearly full
- * are left for another drive and counted in files_no_room; smaller files
- * after them are still copied. */
+ * drive. The drive must be connected and not marked lost or broken.
+ * source_id 0 means every backup root (the app always backs up all of
+ * them: a catalog is one set of files to keep N copies of).
+ *
+ * Nothing on the drive is overwritten, moved or deleted. A file goes to
+ * <root name>/<path>; when something else is already there (an older
+ * version, a damaged copy, a file BRODALF did not write) the copy goes
+ * alongside it under .versions instead. A file BRODALF did not write that
+ * is exactly this version is recorded as its copy. A file that changed
+ * since the last scan is read again and backed up as it is now, as a new
+ * version. Files that would eat into the reserve (the reserve_mb option,
+ * kept for the catalog's copies) wait for another drive and are counted in
+ * files_no_room; smaller files after them are still copied. At the end the
+ * catalog is saved and its newest revision added to the drive (see
+ * bd_catalog_copy_to_media). */
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                     bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
-bd_status bd_backup_ex(bd_catalog *cat, int64_t media_id, int64_t source_id, const bd_backup_opts *opts,
-                       bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
 
-/* What a backup to this drive would do, without doing any of it: for the
- * user to look at before pressing Start. Reads only the catalog, and the
- * drive's free space when it is plugged in. opts as for bd_backup_ex. */
+/* What a backup to this drive would do, without doing any of it: shown
+ * all the time beside the Backup button. Reads only the catalog, and the
+ * drive's free space when it is plugged in. */
 typedef struct {
     int64_t files_to_copy;     /* no good copy of the file as it is now on this drive */
     int64_t bytes_to_copy;
-    int64_t files_new;         /* of those, none of its versions is on the drive (moves aside) */
-    int64_t files_changed;     /* of those, an older version is: that copy moves to .versions */
-    int64_t files_to_move;     /* of those, moved or renamed: the copy already there is moved, not copied */
-    int64_t bytes_to_move;
-    int64_t versions_to_prune; /* old versions the keep rule removes first (0 with keep_old_versions) */
-    int64_t bytes_to_prune;
+    int64_t files_new;         /* of those, none of its versions is on the drive */
+    int64_t files_changed;     /* of those, an older version is: the new one goes alongside it */
     int64_t free_bytes;        /* now when plugged in, else as last seen; -1 unknown */
     int free_is_current;       /* read just now */
+    int64_t reserve_bytes;     /* kept free on every drive for the catalog's copies */
     int64_t bytes_short;       /* about how much would not fit; 0: it all fits (or the space is unknown) */
-    int64_t last_scan_ms;      /* the oldest of the folders' last scans: a backup copies what that found */
-    /* The files whose copy at its own path on this drive is good, and of
-     * those how many changed or were deleted since (moves aside). A large
-     * share at once is what ransomware encrypting the folders looks like. */
+    int64_t last_scan_ms;      /* the oldest of the roots' last scans: a backup copies what that found */
+    /* Files whose good copy is on this drive, and of those how many have
+     * changed contents (checksum) since. A large share at once is what
+     * ransomware encrypting the folders looks like: show the list
+     * (bd_list_changed_on_media) before backing that up. */
     int64_t files_held;
     int64_t held_changed;
-    int64_t held_gone;
-    int mass_change;           /* held_changed + held_gone is a quarter or more of files_held (at least 50 files) */
+    int mass_change;           /* held_changed is a quarter or more of files_held (at least 50 files) */
 } bd_backup_preview_info;
 
-bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, const bd_backup_opts *opts,
-                            bd_backup_preview_info *out);
+bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out);
 
-/* The keep rule for old versions, from the options "keep_versions"
- * (default 5; 0 keeps every version) and "keep_days" (default 365): an old
- * version's copy in .versions is removed once it is not among the newest
- * keep_versions versions of its file AND it was replaced more than
- * keep_days ago. Current versions are never touched. */
+/* The files counted in held_changed: the drive holds an older version
+ * than the file's contents now. */
 typedef struct {
-    int64_t copies_removed;
-    int64_t bytes_freed;
-    int64_t failed;
-} bd_prune_stats;
-
-bd_status bd_prune_versions(bd_catalog *cat, int64_t media_id, bd_prune_stats *stats, bd_log_fn log, void *log_ctx);
+    int64_t node_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t version_on_drive;
+    int64_t version_now;
+    int64_t size_on_drive;
+    int64_t size_now;
+    int64_t changed_ms;        /* when the scan first saw the new contents */
+} bd_changed_info;
+typedef int (*bd_changed_fn)(void *ctx, const bd_changed_info *info);
+bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed_fn fn, void *ctx);
 
 /* Save the catalog and put a copy of it on the drive as
- * BRODALF/<catalog-uuid>/catalog-backup.brodalf. The copy is encrypted
- * when the catalog file or the drive is. */
+ * BRODALF/<catalog-uuid>/catalog-r<revision>.brodalf, unless that revision
+ * is already there. Older revisions on the drive are never overwritten.
+ * The copy is encrypted when the catalog file or the drive is. Done after
+ * every backup and when a drive is set up. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
 
-/* Replacing a drive (worn, failing, too small). A retired drive gets
- * nothing new: bd_backup refuses it and no drive suggestion names it. Its
- * copies still restore, and still count toward the protection target until
- * the drive replacing it holds the same version. replacement_id may be 0
- * when none is chosen yet. */
-bd_status bd_media_retire(bd_catalog *cat, int64_t media_id, int64_t replacement_id);
-/* Use the drive as before. */
-bd_status bd_media_unretire(bd_catalog *cat, int64_t media_id);
-
-typedef struct {
-    int64_t files_needed;      /* on the old drive and short of the target without it */
-    bd_backup_stats backup;    /* the copy to the new drive */
-    /* Afterwards, what still has its only good copy on the old drive: */
-    int64_t files_only_old;    /* current versions (the source could not be read, or changed) */
-    int64_t deleted_only_old;  /* files deleted from their folder */
-    int64_t versions_only_old; /* older versions of files */
-} bd_replace_stats;
-
-/* Retire old_id with new_id taking its place, then copy to new_id (which
- * must be connected) every file whose current version has a good copy on
- * old_id and would have fewer copies or places than the protection target
- * without it. Files are read from their folders and checked by hash, as a
- * backup does. Deleted files and older versions whose only copy is on the
- * old drive are not copied; they are counted so the user can keep it. */
-bd_status bd_media_replace(bd_catalog *cat, int64_t old_id, int64_t new_id, bd_replace_stats *stats,
-                           bd_log_fn log, void *log_ctx);
+/* A drive that is lost or broken (why: "lost" or "broken"). Its copies no
+ * longer count toward the copies you want, so the progress toward N full
+ * backups drops and the files it held are backed up again to other drives.
+ * Nothing is backed up to it. Its records stay, so it can be found again. */
+bd_status bd_media_mark_lost(bd_catalog *cat, int64_t media_id, const char *why);
+/* It turned up again (or was marked by mistake): its copies count again. */
+bd_status bd_media_found(bd_catalog *cat, int64_t media_id);
 
 typedef struct {
     int64_t files_restored;
@@ -361,33 +413,56 @@ typedef struct {
     int64_t files_need_passphrase; /* only on an encrypted drive, and the catalog is locked */
     int64_t bytes_restored;
     int64_t files_already_there;   /* the destination already holds this exact version */
+    int64_t files_conflict;   /* another file was already at the destination: left alone, see bd_list_restore_conflicts */
 } bd_restore_stats;
 
-/* Restore the current version of every file in a source (optionally only
- * under rel_prefix) into dest_root/<source name>/..., from connected
- * storage. Every restored file is checked against its BLAKE3 hash. A file
- * already at its destination with the right contents is left alone, so the
- * same restore can be run again as each drive holding the rest arrives. */
+/* Restore the current version of every file in a backup root (0: every
+ * root; optionally only under rel_prefix) into dest_root, from connected
+ * drives. With one root (chosen, or the catalog's only one) its files go
+ * straight into dest_root as dest_root/<path>; with several, each root's
+ * into dest_root/<root name>/<path>. Folder structure is kept as it is.
+ * Every restored file is checked against its checksum and gets its
+ * original modified (and, on Windows, created) time. Nothing is ever
+ * overwritten: a file already at its destination with the right contents
+ * is left as it is, so the same restore can be run again as each drive
+ * holding the rest arrives; any other file there is left alone and listed
+ * (bd_list_restore_conflicts). */
 bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                      bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
 
 typedef struct {
-    /* 0: the current version of every file. Otherwise the files as they
-     * were at this time: the newest version BRODALF had seen by then of
-     * every file that existed then, including files deleted since. */
-    int64_t as_of_ms;
-    /* Only files deleted from their folder, each as it was when last seen
-     * (as_of_ms is ignored). See bd_list_deleted. */
+    /* Only files deleted from their folder, each as it was when last seen.
+     * See bd_list_deleted. */
     int deleted_only;
 } bd_restore_opts;
 
 bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                         const bd_restore_opts *opts, bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
 
+/* Restore one version of a file (from the file's details) into
+ * dest_folder, under the file's own name. Never overwrites, as above. */
+bd_status bd_restore_version(bd_catalog *cat, int64_t version_id, const char *dest_folder, bd_restore_stats *stats,
+                             bd_log_fn log, void *log_ctx);
+
+/* The files the last restore left alone because another file was there,
+ * to compare: what the backup has against what is there. */
+typedef struct {
+    const char *source_name;
+    const char *rel_path;
+    const char *dest;
+    int64_t want_size;
+    int64_t want_mtime_ns;
+    int64_t have_size;      /* -1: a folder is there */
+    int64_t have_mtime_ns;
+} bd_conflict_info;
+typedef int (*bd_conflict_fn)(void *ctx, const bd_conflict_info *info);
+bd_status bd_list_restore_conflicts(bd_catalog *cat, bd_conflict_fn fn, void *ctx);
+
 /* Which drives a restore needs, in the order to plug them in: drives that
  * are already plugged in first, then each drive that holds the most of
- * what is still missing. Files already at dest_root (when given) are not
- * counted. files_no_copy is set to the files no drive holds. */
+ * what is still missing. Drives marked lost or broken are left out. Files
+ * already at dest_root (when given) are not counted. files_no_copy is set
+ * to the files no drive holds. */
 typedef struct {
     int64_t media_id;
     const char *label;
@@ -429,6 +504,9 @@ typedef struct {
     int64_t files_available;
     const char *offline_media_label; /* OFFLINE: a drive to plug in */
     int64_t bytes_total;     /* size of the current version of every live file */
+    int active;              /* 0: no longer backed up (bd_source_set_active) */
+    int missing;             /* the last scan could not find it: ask where it is now, or offer to restore it */
+    int64_t last_scan_ms;
 } bd_source_info;
 
 typedef struct {
@@ -447,6 +525,7 @@ typedef struct {
 } bd_node_info;
 
 typedef struct {
+    int64_t version_id;      /* for bd_restore_version */
     int version_no;
     int is_current;
     const char *hash;
@@ -461,6 +540,7 @@ typedef struct {
     int64_t last_check_ms;
     int encrypted;           /* the copy is on an encrypted drive */
     const char *media_location; /* where that drive is kept; "" if not set */
+    int media_lost;          /* that drive was marked lost or broken: the copy no longer counts */
 } bd_copy_info;
 
 /* What a drive says about itself, read whenever it is plugged in. Strings
@@ -511,8 +591,10 @@ typedef struct {
      * written, if never checked); 0 if it holds no copies. */
     int64_t oldest_check_ms;
     int check_due;           /* older than the check_days option */
-    int64_t retired_ms;      /* when it was set to be replaced; 0 if not (see bd_media_retire) */
-    int64_t replaced_by;     /* the drive taking its place; 0 if none chosen yet */
+    int64_t lost_ms;         /* when it was marked lost or broken; 0 if not (bd_media_mark_lost) */
+    const char *lost_why;    /* "lost" or "broken"; "" if not */
+    int64_t bytes_held;      /* size of the good copies on it */
+    int64_t reserve_bytes;   /* kept free on it for the catalog's copies (reserve_mb) */
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on
@@ -535,9 +617,12 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
 
 bd_status bd_find_node(bd_catalog *cat, int64_t source_id, const char *rel_path, int64_t *out_node_id);
 
-/* Files deleted from their folder whose last version still has a good copy
- * on a drive, most recently seen first. Restore them with bd_restore_ex and
- * deleted_only set. source_id 0 means every source. */
+/* Files deleted from their folder since BRODALF last saw them, backed up or
+ * not, most recently seen first. Nothing leaves the catalog by itself: the
+ * user either acknowledges them (they stay listed, with the drives still
+ * holding them) or asks to forget them. Restore them with bd_restore_ex and
+ * deleted_only set. source_id 0 means every root; new_only lists only the
+ * ones not acknowledged yet. */
 typedef struct {
     int64_t node_id;
     int64_t source_id;
@@ -545,12 +630,22 @@ typedef struct {
     const char *rel_path;
     int64_t size;
     int64_t last_seen_ms;    /* the last scan that still found it */
-    const char *drives;      /* names of the drives holding a good copy, ", " between them */
+    const char *drives;      /* names of the drives holding a good copy, ", " between them; "" if none */
     int connected;           /* one of them is plugged in */
+    int backed_up;           /* its last version has a good copy on a drive that counts */
+    int acknowledged;        /* the user has seen it (bd_deleted_ack) */
 } bd_deleted_info;
 typedef int (*bd_deleted_fn)(void *ctx, const bd_deleted_info *info);
 /* fn may be NULL to only count; *count may be NULL. */
-bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, void *ctx, int64_t *count);
+bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, int new_only, bd_deleted_fn fn, void *ctx, int64_t *count);
+/* Mark a deleted file as seen; node_id 0 marks every deleted file. They stay
+ * in the catalog. A file that comes back stops being deleted. */
+bd_status bd_deleted_ack(bd_catalog *cat, int64_t node_id);
+/* Forget a deleted file (or a deleted folder and everything in it): the
+ * catalog stops tracking it and its copies. The copies stay on the drives;
+ * BRODALF never deletes anything there. node_id 0 forgets every deleted
+ * file. BD_ERR_INVALID if the file is not deleted. *forgotten may be NULL. */
+bd_status bd_deleted_forget(bd_catalog *cat, int64_t node_id, int64_t *forgotten);
 
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);
@@ -567,7 +662,7 @@ typedef struct {
     int64_t files_not_here;     /* no version of the file is on it */
     int64_t bytes_not_here;
     int64_t deleted_kept;       /* files deleted from their folder whose last version is on it */
-    int64_t old_versions;       /* older versions kept in .versions on it */
+    int64_t old_versions;       /* copies on it of versions that are no longer the file as it is now */
     int64_t old_bytes;
     int64_t copies_bad;         /* missing or damaged when last checked */
     int64_t copies_never_read;  /* good copies never read back since they were written */
@@ -577,30 +672,13 @@ typedef struct {
     int64_t last_backup_files;  /* files it copied */
     int64_t last_backup_failed;
     int64_t last_check_ms;      /* when the last check of its copies finished; 0: never */
-    char last_check_kind[16];   /* "quick check", "full check" or "read back" */
+    char last_check_kind[16];   /* "check" or "read back" */
     char last_check_status[16];
 } bd_media_status;
 
 bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status *out);
 
-/* The jobs the user ran: scans, backups, restores and checks, newest
- * first. media_id 0 lists every job; limit 0 means 200. */
-typedef struct {
-    int64_t job_id;
-    const char *kind;         /* "scan", "backup", "restore", "quick check", "full check", "read back" */
-    int64_t media_id;         /* 0 if none */
-    const char *media_label;  /* "" if none */
-    int64_t started_ms;
-    int64_t finished_ms;      /* 0: did not finish (BRODALF closed during it) */
-    const char *status;       /* "done", "partial", "stopped", "failed", "running" */
-    int64_t files_done;       /* scanned, copied, restored or checked */
-    int64_t files_failed;
-    int64_t bytes_done;
-} bd_job_info;
-typedef int (*bd_job_fn)(void *ctx, const bd_job_info *info);
-bd_status bd_list_jobs(bd_catalog *cat, int64_t media_id, int limit, bd_job_fn fn, void *ctx);
-
-/* Every file in the catalog as a CSV file to open in a spreadsheet: its
+/* Export every file in the catalog as a CSV file to open in a spreadsheet: its
  * folder, path, size, modified time (UTC), whether it was deleted from its
  * folder, how many versions BRODALF has seen, and which drives hold it as
  * it is now. UTF-8 with a byte order mark. *rows may be NULL. */
@@ -614,12 +692,15 @@ void bd_format_utc(int64_t ms, char *out, size_t cap);
 /* Settings kept in the catalog. BRODALF starts nothing by itself; these
  * only shape what the user's own jobs do and what the app shows.
  *   "check_days"   a drive whose oldest copy was last read back this many
- *                  days ago shows as due for a full check (default 180;
- *                  0: never).
- *   "keep_versions", "keep_days"  the keep rule for old versions (default
- *                  5 and 365; see bd_prune_versions).
+ *                  days ago shows as due for a check when it is plugged in
+ *                  (default 180; 0: never). The app only offers a check
+ *                  the user can dismiss.
  *   "verify_days"  "read back copies not checked lately" reads the copies
  *                  not read back in this many days (default 30; 0: all).
+ *   "reserve_mb"   space kept free on every drive so the newest catalog can
+ *                  always be written there (default 512).
+ *   "low_priority" 1: jobs run in the background so the PC stays usable,
+ *                  0: full speed (default 1).
  * bd_option_get returns the default for an unset option and -1 for an
  * unknown name. */
 int bd_option_get(bd_catalog *cat, const char *name);
@@ -649,9 +730,9 @@ typedef int (*bd_search_fn)(void *ctx, const bd_search_info *info);
  * included. At most limit results (0: 500). */
 bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn fn, void *ctx);
 
-/* ---- Protection target and files at risk ------------------------------- */
+/* ---- Backup sets and files at risk --------------------------------------- */
 
-/* How well every file should be protected. A copy counts when BRODALF last
+/* How many backups every file needs. A copy counts when BRODALF last
  * saw it good; each drive counts once. A place is what a drive's "kept in"
  * says (compared ignoring case and outer spaces); drives with nothing set
  * count together as one unknown place. */
@@ -663,6 +744,20 @@ typedef struct {
 bd_status bd_target_get(bd_catalog *cat, bd_target *out);
 /* copies 1..16, places 1..copies. */
 bd_status bd_target_set(bd_catalog *cat, const bd_target *target);
+
+/* Progress toward each full set of backups: set k is done when every live
+ * file in the backup roots, as the last scan found it, has at least k good
+ * copies on drives that count. A new or changed file lowers every set until
+ * it is backed up again. out gets one entry per set, up to cap; *sets gets
+ * the target's copies. */
+typedef struct {
+    int set;               /* 1, 2, ... */
+    int64_t files_done;
+    int64_t files_total;
+    int64_t bytes_done;
+    int64_t bytes_total;
+} bd_set_progress;
+bd_status bd_backup_sets(bd_catalog *cat, bd_set_progress *out, int cap, int *sets);
 
 typedef struct {
     int64_t node_id;
@@ -697,6 +792,11 @@ typedef int (*bd_risk_fn)(void *ctx, const bd_risk_info *info);
  * first. source_id 0 means every source. fn may be NULL to only count;
  * stats may be NULL. */
 bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, void *ctx, bd_risk_stats *stats);
+
+/* The largest live files in the backup roots, largest first, so the user can
+ * see where the space goes. At most limit (0: 100). The copies and places
+ * fields of each entry are filled as for bd_list_at_risk. */
+bd_status bd_list_largest(bd_catalog *cat, int limit, bd_risk_fn fn, void *ctx);
 
 typedef struct {
     int64_t media_id;

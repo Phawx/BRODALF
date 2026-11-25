@@ -211,7 +211,8 @@ static void test_recovery_key(void)
     /* On a new PC: the catalog backup on the drive opens with the recovery key. */
     char backup[1400];
     REQUIRE_OK(bd_catalog_open_with(at("rk/k.brodalf"), "second passphrase", &cat), NULL);
-    snprintf(backup, sizeof(backup), "rk/vault/BRODALF/%s/catalog-backup.brodalf", bd_catalog_uuid(cat));
+    snprintf(backup, sizeof(backup), "rk/vault/BRODALF/%s/catalog-r%08lld.brodalf", bd_catalog_uuid(cat),
+             (long long)bd_catalog_revision(cat));
     bd_catalog_close(cat);
     REQUIRE_OK(bd_catalog_recover(at(backup), at("rk/new.brodalf")), NULL);
     REQUIRE_OK(bd_catalog_open_with_recovery(at("rk/new.brodalf"), key, &cat), NULL);
@@ -219,7 +220,7 @@ static void test_recovery_key(void)
     REQUIRE_OK(bd_media_connect(cat, at("rk/vault"), &vault, quiet, NULL), cat);
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, NULL, at("rk/out"), &rs, quiet, NULL), cat);
-    CHECK(rs.files_restored == 1 && file_equals(at("rk/out/src/note.txt"), "recover me", 10));
+    CHECK(rs.files_restored == 1 && file_equals(at("rk/out/note.txt"), "recover me", 10));
 
     /* The sheet: drives, folders, the key; never the passphrase. */
     REQUIRE_OK(bd_media_set_location(cat, vault, "Top <shelf> & co"), cat);
@@ -292,14 +293,14 @@ int main(void)
     CHECK(!contains(at(p_big), "abcdefghij"));
     CHECK(state_of(cat, src, "secret.txt") == BD_STATE_AVAILABLE);
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_check(cat, vault, 1, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, vault, &cs, quiet, NULL), cat);
     CHECK(cs.ok == 4 && cs.bad == 0);
     REQUIRE_OK(bd_backup(cat, plain, 0, &bs, quiet, NULL), cat);
 
     /* The catalog backup on an encrypted drive is encrypted. */
     REQUIRE_OK(bd_catalog_copy_to_media(cat, vault), cat);
     char p_catbak[1400];
-    snprintf(p_catbak, sizeof(p_catbak), "%s/catalog-backup.brodalf", vdir);
+    snprintf(p_catbak, sizeof(p_catbak), "%s/catalog-r%08lld.brodalf", vdir, (long long)bd_catalog_revision(cat));
     CHECK(bd_catalog_file_needs_passphrase(at(p_catbak)));
     CHECK(!bd_catalog_file_needs_passphrase(at("c.brodalf")));
 
@@ -309,10 +310,9 @@ int main(void)
     REQUIRE_OK(bd_catalog_open(at("c.brodalf"), &cat), NULL);
     CHECK(bd_catalog_has_passphrase(cat) && !bd_catalog_is_unlocked(cat));
     REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, quiet, NULL), cat);
-    REQUIRE_OK(bd_media_check(cat, vault, 0, &cs, quiet, NULL), cat);
-    CHECK(cs.ok == 4);
+    /* A check reads every copy back, so an encrypted drive needs the key. */
+    CHECK(bd_media_check(cat, vault, &cs, quiet, NULL) == BD_ERR_PASSPHRASE);
     CHECK(state_of(cat, src, "secret.txt") == BD_STATE_AVAILABLE);
-    CHECK(bd_media_check(cat, vault, 1, &cs, quiet, NULL) == BD_ERR_PASSPHRASE);
 
     /* A changed file cannot go to the vault while locked. */
     write_file(at("src/Docs/secret.txt"), "the plans moved to the safe");
@@ -322,20 +322,20 @@ int main(void)
     CHECK(!bd_catalog_is_unlocked(cat));
     REQUIRE_OK(bd_catalog_unlock(cat, PASS), cat);
     REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 1 && bs.versions_moved == 1);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
     char p_old[1400];
-    snprintf(p_old, sizeof(p_old), "%s/.versions/Docs/secret.v1.txt.bdenc", vdir);
-    CHECK(exists(at(p_old)));
-    CHECK(!contains(at(p_old), "drawer"));
+    snprintf(p_old, sizeof(p_old), "%s/.versions/Docs/secret.v2.txt.bdenc", vdir);
+    CHECK(exists(at(p_old)) && exists(at(p_secret)));
+    CHECK(!contains(at(p_old), "safe"));
 
     /* Restore from the vault only (the plain drive is not connected). */
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, 0, NULL, at("restored"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 4 && rs.files_failed == 0);
-    CHECK(file_equals(at("restored/Docs/secret.txt"), "the plans moved to the safe", 27));
-    CHECK(file_equals(at("restored/Docs/big.bin"), big, sizeof(big)));
-    CHECK(file_equals(at("restored/Docs/exact.bin"), exact, sizeof(exact)));
-    CHECK(file_equals(at("restored/Docs/empty.txt"), "", 0));
+    CHECK(file_equals(at("restored/secret.txt"), "the plans moved to the safe", 27));
+    CHECK(file_equals(at("restored/big.bin"), big, sizeof(big)));
+    CHECK(file_equals(at("restored/exact.bin"), exact, sizeof(exact)));
+    CHECK(file_equals(at("restored/empty.txt"), "", 0));
 
     /* Locked: restore says it needs the passphrase instead of failing. */
     bd_catalog_lock_key(cat);
@@ -352,7 +352,7 @@ int main(void)
     n = read_all(at(p_exact), buf, sizeof(buf));
     CHECK(n == 40 + 16 + 65536 + 16); /* one full chunk and an empty last chunk */
     write_bytes(at(p_exact), buf, (size_t)(40 + 16 + 65536));
-    REQUIRE_OK(bd_media_check(cat, vault, 1, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, vault, &cs, quiet, NULL), cat);
     CHECK(cs.bad == 2);
 
     /* Encrypt the catalog file itself. */
@@ -377,7 +377,7 @@ int main(void)
     REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, quiet, NULL), cat);
     REQUIRE_OK(bd_restore(cat, 0, "secret.txt", at("restored3"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1);
-    CHECK(file_equals(at("restored3/Docs/secret.txt"), "the plans moved to the safe", 27));
+    CHECK(file_equals(at("restored3/secret.txt"), "the plans moved to the safe", 27));
 
     /* Turning catalog encryption off writes a plain file again. */
     REQUIRE_OK(bd_catalog_set_file_encrypted(cat, 0), cat);
@@ -411,7 +411,7 @@ int main(void)
     write_file(at("src/Docs/secret.txt"), "the plans are gone");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 0 && bs.files_failed == 3 && bs.versions_moved == 0);
+    CHECK(bs.files_copied == 0 && bs.files_failed == 3);
     int tmp_files = 0;
     bd_walk(at("vault"), count_tmp_cb, NULL, &tmp_files);
     CHECK(tmp_files == 0);
@@ -425,8 +425,8 @@ int main(void)
     CHECK(file_equals(at("c.brodalf"), saved, (size_t)saved_n) && !exists(at("c.brodalf.saving")));
     bd_test_random_fail = 0;
     REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 3 && bs.files_failed == 0 && bs.versions_moved == 1);
-    REQUIRE_OK(bd_media_check(cat, vault, 1, &cs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3 && bs.files_failed == 0 && bs.copies_alongside == 3);
+    REQUIRE_OK(bd_media_check(cat, vault, &cs, quiet, NULL), cat);
     CHECK(cs.bad == 0 && cs.missing == 0 && cs.ok == cs.copies);
 
     /* Argon2 settings far from what BRODALF writes (64 MiB, 3 passes) are

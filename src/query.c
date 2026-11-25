@@ -47,7 +47,9 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
                            " (SELECT m.label FROM nodes n JOIN copies c ON c.version_id=n.current_version_id"
                            "   JOIN media m ON m.id=c.media_id WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0"
                            "   AND c.state='ok' LIMIT 1),"
-                           " (SELECT COALESCE(SUM(n.size),0) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0)"
+                           " (SELECT COALESCE(SUM(n.size),0) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0),"
+                           " s.active, EXISTS(SELECT 1 FROM temp.missing_sources ms WHERE ms.source_id=s.id),"
+                           " COALESCE(s.last_scan_ms,0)"
                            " FROM sources s ORDER BY s.name COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list sources");
@@ -62,6 +64,9 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
         info.state = folder_state(info.files_total, info.files_available, sqlite3_column_int64(q, 5));
         if (info.state == BD_STATE_OFFLINE) info.offline_media_label = (const char *)sqlite3_column_text(q, 6);
         info.bytes_total = sqlite3_column_int64(q, 7);
+        info.active = sqlite3_column_int(q, 8);
+        info.missing = sqlite3_column_int(q, 9);
+        info.last_scan_ms = sqlite3_column_int64(q, 10);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
@@ -178,7 +183,7 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
                            "SELECT v.version_no, v.id=n.current_version_id, v.hash, v.size, v.mtime_ns, v.first_seen_ms,"
                            " COALESCE(c.media_id,0), m.label, c.path_on_media, c.state, k.media_id IS NOT NULL,"
                            " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(m.encrypted,0),"
-                           " COALESCE(m.location,'')"
+                           " COALESCE(m.location,''), v.id, m.retired_ms IS NOT NULL"
                            " FROM versions v JOIN nodes n ON n.id=v.node_id"
                            " LEFT JOIN copies c ON c.version_id=v.id LEFT JOIN media m ON m.id=c.media_id"
                            " LEFT JOIN temp.connected k ON k.media_id=c.media_id"
@@ -202,6 +207,8 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
         info.last_check_ms = sqlite3_column_int64(q, 11);
         info.encrypted = sqlite3_column_int(q, 12);
         info.media_location = info.media_id ? (const char *)sqlite3_column_text(q, 13) : "";
+        info.version_id = sqlite3_column_int64(q, 14);
+        info.media_lost = info.media_id ? sqlite3_column_int(q, 15) : 0;
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
@@ -232,12 +239,15 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " (SELECT MIN(COALESCE(c.last_full_check_ms, c.written_ms)) FROM copies c"
                            "   WHERE c.media_id=m.id AND c.state='ok'),"
                            " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id),"
-                           " m.retired_ms, m.replaced_by"
+                           " m.retired_ms, COALESCE(m.lost_why,''),"
+                           " (SELECT COALESCE(SUM(v.size),0) FROM copies c JOIN versions v ON v.id=c.version_id"
+                           "   WHERE c.media_id=m.id AND c.state='ok')"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list drives");
     int check_days = bd_option_get(cat, "check_days");
+    int64_t reserve = bd_reserve_bytes(cat);
     int64_t now = bd_now_ms();
     while (sqlite3_step(q) == SQLITE_ROW) {
         bd_media_info info;
@@ -257,8 +267,11 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.space_ms = col_num(q, 33);
         if (info.space_ms < 0) info.space_ms = 0;
         if (info.oldest_check_ms < 0) info.oldest_check_ms = 0;
-        info.retired_ms = sqlite3_column_type(q, 34) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 34);
-        info.replaced_by = sqlite3_column_type(q, 35) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 35);
+        info.lost_ms = sqlite3_column_type(q, 34) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 34);
+        info.lost_why = info.lost_ms ? (const char *)sqlite3_column_text(q, 35) : "";
+        if (info.lost_ms && !info.lost_why[0]) info.lost_why = "lost";
+        info.bytes_held = sqlite3_column_int64(q, 36);
+        info.reserve_bytes = reserve;
         info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
                          now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;
         bd_drive_hw hw;
@@ -419,10 +432,9 @@ done:
 /* ---- Deleted files ----------------------------------------------------------- */
 
 #define DELETED_WHERE                                                                                        \
-    " WHERE n.deleted<>0 AND n.is_dir=0 AND (?1=0 OR n.source_id=?1)"                                         \
-    " AND EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.state='ok')"
+    " WHERE n.deleted<>0 AND n.is_dir=0 AND (?1=0 OR n.source_id=?1) AND (?2=0 OR n.deleted_ack=0)"
 
-bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, void *ctx, int64_t *count)
+bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, int new_only, bd_deleted_fn fn, void *ctx, int64_t *count)
 {
     sqlite3_stmt *q;
     if (count) {
@@ -430,22 +442,26 @@ bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, 
         if (sqlite3_prepare_v2(cat->db, "SELECT COUNT(*) FROM nodes n" DELETED_WHERE, -1, &q, NULL) != SQLITE_OK)
             return bd_fail_db(cat, "count deleted files");
         sqlite3_bind_int64(q, 1, source_id);
+        sqlite3_bind_int(q, 2, new_only);
         if (sqlite3_step(q) == SQLITE_ROW) *count = sqlite3_column_int64(q, 0);
         sqlite3_finalize(q);
     }
     if (!fn) return BD_OK;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.source_id, s.name, n.rel_path, v.size, n.last_seen_ms,"
+                           "SELECT n.id, n.source_id, s.name, n.rel_path, COALESCE(v.size, n.size), n.last_seen_ms,"
                            " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label FROM copies c JOIN media m ON m.id=c.media_id"
                            "   WHERE c.version_id=v.id AND c.state='ok' ORDER BY m.label)),"
                            " EXISTS(SELECT 1 FROM copies c JOIN temp.connected k ON k.media_id=c.media_id"
-                           "   WHERE c.version_id=v.id AND c.state='ok')"
-                           " FROM nodes n JOIN sources s ON s.id=n.source_id JOIN versions v ON v.id=n.current_version_id"
+                           "   WHERE c.version_id=v.id AND c.state='ok'),"
+                           " EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") "),"
+                           " n.deleted_ack"
+                           " FROM nodes n JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=n.current_version_id"
                            DELETED_WHERE
                            " ORDER BY n.last_seen_ms DESC, s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list deleted files");
     sqlite3_bind_int64(q, 1, source_id);
+    sqlite3_bind_int(q, 2, new_only);
     while (sqlite3_step(q) == SQLITE_ROW) {
         bd_deleted_info info;
         info.node_id = sqlite3_column_int64(q, 0);
@@ -456,8 +472,63 @@ bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, bd_deleted_fn fn, 
         info.last_seen_ms = sqlite3_column_int64(q, 5);
         info.drives = sqlite3_column_type(q, 6) == SQLITE_NULL ? "" : (const char *)sqlite3_column_text(q, 6);
         info.connected = sqlite3_column_int(q, 7);
+        info.backed_up = sqlite3_column_int(q, 8);
+        info.acknowledged = sqlite3_column_int(q, 9);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
+    return BD_OK;
+}
+
+bd_status bd_deleted_ack(bd_catalog *cat, int64_t node_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE nodes SET deleted_ack=1 WHERE deleted<>0 AND (?1=0 OR id=?1)", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "mark deleted files as seen");
+    sqlite3_bind_int64(q, 1, node_id);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "mark deleted files as seen");
+    return BD_OK;
+}
+
+bd_status bd_deleted_forget(bd_catalog *cat, int64_t node_id, int64_t *forgotten)
+{
+    if (forgotten) *forgotten = 0;
+    sqlite3_stmt *q;
+    if (node_id) {
+        int deleted = -1;
+        if (sqlite3_prepare_v2(cat->db, "SELECT deleted FROM nodes WHERE id=?", -1, &q, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "forget a deleted file");
+        sqlite3_bind_int64(q, 1, node_id);
+        if (sqlite3_step(q) == SQLITE_ROW) deleted = sqlite3_column_int(q, 0);
+        sqlite3_finalize(q);
+        if (deleted < 0) return bd_fail(cat, BD_ERR_NOT_FOUND, "that file is not in the catalog");
+        if (!deleted) return bd_fail(cat, BD_ERR_INVALID, "only a deleted file can be forgotten");
+    }
+    if (sqlite3_exec(cat->db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) return bd_fail_db(cat, "forget deleted files");
+    /* Count the files first; the folders' children go with them (ON DELETE CASCADE). */
+    int64_t n = 0;
+    if (sqlite3_prepare_v2(cat->db,
+                           "WITH RECURSIVE t(id) AS (SELECT id FROM nodes WHERE deleted<>0 AND (?1=0 OR id=?1)"
+                           " UNION SELECT c.id FROM nodes c JOIN t ON c.parent_id=t.id)"
+                           " SELECT COUNT(*) FROM nodes WHERE is_dir=0 AND id IN (SELECT id FROM t)",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, node_id);
+        if (sqlite3_step(q) == SQLITE_ROW) n = sqlite3_column_int64(q, 0);
+        sqlite3_finalize(q);
+    }
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM nodes WHERE deleted<>0 AND (?1=0 OR id=?1)", -1, &q, NULL) != SQLITE_OK) {
+        sqlite3_exec(cat->db, "ROLLBACK", NULL, NULL, NULL);
+        return bd_fail_db(cat, "forget deleted files");
+    }
+    sqlite3_bind_int64(q, 1, node_id);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    if (rc != SQLITE_DONE || sqlite3_exec(cat->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_exec(cat->db, "ROLLBACK", NULL, NULL, NULL);
+        return bd_fail_db(cat, "forget deleted files");
+    }
+    if (forgotten) *forgotten = n;
     return BD_OK;
 }

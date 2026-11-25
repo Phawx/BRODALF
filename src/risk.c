@@ -1,5 +1,5 @@
-/* The protection target (so many copies in so many places) and the files
- * that fall short of it. */
+/* The backup target (so many copies in so many places), progress toward
+ * each full set of backups, and the files that fall short. */
 #include "internal.h"
 
 #include <stdio.h>
@@ -27,7 +27,8 @@
     "  (NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.state='ok')"     \
     "   AND EXISTS(SELECT 1 FROM copies c JOIN versions ov ON ov.id=c.version_id"                        \
     "    WHERE ov.node_id=n.id AND ov.id IS NOT n.current_version_id AND c.state='ok')) AS older"        \
-    "  FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND (?3=0 OR n.source_id=?3)),"                     \
+    "  FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND (?3=0 OR n.source_id=?3)"                       \
+    "  AND " BD_SQL_ACTIVE("n") "),"                                                                     \
     " r AS (SELECT * FROM f WHERE cp<?1 OR pl<?2) "
 
 bd_status bd_target_get(bd_catalog *cat, bd_target *out)
@@ -53,7 +54,7 @@ bd_status bd_target_set(bd_catalog *cat, const bd_target *t)
     snprintf(c, sizeof(c), "%d", t->copies);
     snprintf(p, sizeof(p), "%d", t->places);
     if (bd_setting_set(cat, "target_copies", c) != 0 || bd_setting_set(cat, "target_places", p) != 0)
-        return bd_fail_db(cat, "save the protection target");
+        return bd_fail_db(cat, "save the backup target");
     return BD_OK;
 }
 
@@ -134,11 +135,69 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
     return BD_OK;
 }
 
-/* What a backup leaves free on a drive (as in backup.c). */
-static int64_t reserve_for(int64_t total)
+bd_status bd_backup_sets(bd_catalog *cat, bd_set_progress *out, int cap, int *sets)
 {
-    const int64_t min = 16 * 1024 * 1024;
-    return total / 200 > min ? total / 200 : min;
+    bd_target t;
+    bd_target_get(cat, &t);
+    if (sets) *sets = t.copies;
+    if (!out || cap <= 0) return BD_OK;
+    int n = t.copies < cap ? t.copies : cap;
+    memset(out, 0, sizeof(*out) * (size_t)n);
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT cp, COUNT(*), COALESCE(SUM(size),0) FROM ("
+                           " SELECT n.size AS size, (SELECT COUNT(DISTINCT c.media_id) FROM copies c"
+                           "  WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp"
+                           " FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND " BD_SQL_ACTIVE("n") ")"
+                           " GROUP BY cp",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "work out the backup sets");
+    for (int k = 0; k < n; k++) out[k].set = k + 1;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        int cp = sqlite3_column_int(q, 0);
+        int64_t files = sqlite3_column_int64(q, 1), bytes = sqlite3_column_int64(q, 2);
+        for (int k = 0; k < n; k++) {
+            out[k].files_total += files;
+            out[k].bytes_total += bytes;
+            if (cp >= k + 1) {
+                out[k].files_done += files;
+                out[k].bytes_done += bytes;
+            }
+        }
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
+}
+
+bd_status bd_list_largest(bd_catalog *cat, int limit, bd_risk_fn fn, void *ctx)
+{
+    bd_target t;
+    bd_target_get(cat, &t);
+    sqlite3_stmt *q;
+    if (limit <= 0) limit = 100;
+    if (sqlite3_prepare_v2(cat->db,
+                           FILES_CTE "SELECT f.id, f.source_id, s.name, f.rel_path, f.size, f.cp, f.pl, f.unk, f.older"
+                                     " FROM f JOIN sources s ON s.id=f.source_id ORDER BY f.size DESC LIMIT ?4",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list the largest files");
+    bind_target(q, &t, 0);
+    sqlite3_bind_int(q, 4, limit);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_risk_info info;
+        memset(&info, 0, sizeof(info));
+        info.node_id = sqlite3_column_int64(q, 0);
+        info.source_id = sqlite3_column_int64(q, 1);
+        info.source_name = (const char *)sqlite3_column_text(q, 2);
+        info.rel_path = (const char *)sqlite3_column_text(q, 3);
+        info.size = sqlite3_column_int64(q, 4);
+        info.copies = sqlite3_column_int(q, 5);
+        info.places = sqlite3_column_int(q, 6);
+        info.unknown_place = sqlite3_column_int(q, 7);
+        info.older_copies = sqlite3_column_int(q, 8);
+        if (fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
 }
 
 bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
@@ -165,6 +224,7 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "work out which drive helps");
     bind_target(q, &t, 0);
+    int64_t reserve = bd_reserve_bytes(cat);
     while (sqlite3_step(q) == SQLITE_ROW) {
         bd_risk_help h;
         memset(&h, 0, sizeof(h));
@@ -177,7 +237,7 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
         h.bytes = sqlite3_column_int64(q, 6);
         h.free_bytes = sqlite3_column_type(q, 7) == SQLITE_NULL ? -1 : sqlite3_column_int64(q, 7);
         h.space_ms = sqlite3_column_type(q, 9) == SQLITE_NULL ? 0 : sqlite3_column_int64(q, 9);
-        h.fits = h.free_bytes >= 0 && h.bytes + reserve_for(sqlite3_column_int64(q, 8)) <= h.free_bytes;
+        h.fits = h.free_bytes >= 0 && h.bytes + reserve <= h.free_bytes;
         if (fn(ctx, &h) != 0) break;
     }
     sqlite3_finalize(q);

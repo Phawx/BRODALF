@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf VERSION 0.6.0 LANGUAGES C)
+project(brodalf VERSION 0.7.0 LANGUAGES C)
 
 # Link the C runtime statically so brodalf.exe runs on a PC without the
 # Visual C++ redistributable.
@@ -92,7 +92,6 @@ add_library(brodalf_core STATIC
     src/platform_win32.c
     src/query.c
     src/recover.c
-    src/replace.c
     src/report.c
     src/risk.c
     src/scan.c
@@ -135,6 +134,10 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_blake3 PRIVATE brodalf_core)
     target_include_directories(test_blake3 PRIVATE src)
     add_test(NAME blake3 COMMAND test_blake3)
+    add_executable(bench_many tests/bench_many.c)
+    target_link_libraries(bench_many PRIVATE brodalf_core)
+    target_include_directories(bench_many PRIVATE src)
+    add_test(NAME many_files COMMAND bench_many 5000)
 endif()
 
 if(WIN32)

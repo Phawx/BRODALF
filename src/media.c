@@ -283,7 +283,51 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     bd_status s = bd_media_record_connected(cat, id, root);
     if (s == BD_OK) read_hardware(cat, id, root, NULL, NULL);
     if (s == BD_OK && out_media_id) *out_media_id = id;
+    /* Every drive gets the latest catalog as soon as it is added. A copy
+     * that fails here is put there by the next backup. */
+    if (s == BD_OK) bd_catalog_copy_to_media(cat, id);
     return s;
+}
+
+int bd_media_lost(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *q;
+    int lost = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT retired_ms IS NOT NULL FROM media WHERE id=?", -1, &q, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(q, 1, media_id);
+    if (sqlite3_step(q) == SQLITE_ROW) lost = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    return lost;
+}
+
+bd_status bd_media_mark_lost(bd_catalog *cat, int64_t media_id, const char *why)
+{
+    if (!why || (strcmp(why, "lost") != 0 && strcmp(why, "broken") != 0))
+        return bd_fail(cat, BD_ERR_INVALID, "say whether the drive is lost or broken");
+    sqlite3_stmt *u;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET retired_ms=COALESCE(retired_ms, ?2), lost_why=?3 WHERE id=?1", -1, &u, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "mark the drive");
+    sqlite3_bind_int64(u, 1, media_id);
+    sqlite3_bind_int64(u, 2, bd_now_ms());
+    sqlite3_bind_text(u, 3, why, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(u);
+    sqlite3_finalize(u);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "mark the drive");
+    if (sqlite3_changes(cat->db) == 0) return bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
+    return BD_OK;
+}
+
+bd_status bd_media_found(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *u;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET retired_ms=NULL, lost_why=NULL, replaced_by=NULL WHERE id=?", -1, &u, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "mark the drive");
+    sqlite3_bind_int64(u, 1, media_id);
+    int rc = sqlite3_step(u);
+    sqlite3_finalize(u);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "mark the drive");
+    if (sqlite3_changes(cat->db) == 0) return bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
+    return BD_OK;
 }
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx)
@@ -333,16 +377,16 @@ void bd_media_disconnect(bd_catalog *cat, int64_t media_id)
     sqlite3_finalize(d);
 }
 
-/* due_before > 0: only copies not read back since then (or never), each
- * rehashed. Otherwise every copy, rehashed when full is set. */
-static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64_t due_before,
+/* Every copy is checked for being there with the right size, and read
+ * back to compare its checksum. due_before > 0: only copies not read back
+ * since then (or never). */
+static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_before,
                               bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
-bd_status bd_media_check(bd_catalog *cat, int64_t media_id, int full,
-                         bd_check_stats *stats, bd_log_fn log, void *log_ctx)
+bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_cancel_reset(cat);
-    return check_copies(cat, media_id, full, 0, stats, log, log_ctx);
+    return check_copies(cat, media_id, 0, stats, log, log_ctx);
 }
 
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
@@ -350,10 +394,10 @@ bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
 {
     int64_t due = max_age_days > 0 ? bd_now_ms() - (int64_t)max_age_days * 24 * 3600 * 1000 : INT64_MAX;
     bd_cancel_reset(cat);
-    return check_copies(cat, media_id, 1, due, stats, log, log_ctx);
+    return check_copies(cat, media_id, due, stats, log, log_ctx);
 }
 
-static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64_t due_before,
+static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_before,
                               bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_check_stats local;
@@ -362,7 +406,7 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
 
     int encrypted = bd_media_encrypted(cat, media_id);
     const uint8_t *key = encrypted ? cat->key : NULL;
-    if (encrypted && full && !cat->have_key)
+    if (encrypted && !cat->have_key)
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to check an encrypted drive");
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) return BD_ERR_NOT_FOUND;
@@ -396,8 +440,8 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
         }
         sqlite3_finalize(t);
     }
-    bd_progress_begin(cat, due_before ? "verify" : full ? "verify" : "check", total_files, full ? total_bytes : 0);
-    int64_t job = bd_job_start(cat, due_before ? "read back" : full ? "full check" : "quick check", media_id);
+    bd_progress_begin(cat, due_before ? "verify" : "check", total_files, total_bytes);
+    int64_t job = bd_job_start(cat, due_before ? "read back" : "check", media_id);
 
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin drive check"); goto done; }
     sqlite3_bind_int64(q, 1, media_id);
@@ -411,11 +455,8 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
         int64_t stored_size = sqlite3_column_int64(q, 2);
         int64_t stored_mtime = sqlite3_column_int64(q, 3);
         const char *expected = (const char *)sqlite3_column_text(q, 4);
-        /* A copy found missing or damaged before is only trusted again once
-         * its contents hash correctly, however unchanged it looks. */
-        int suspect = strcmp((const char *)sqlite3_column_text(q, 5), "ok") != 0;
         stats->copies++;
-        bd_report(cat, stats->copies, rel, 0);
+        bd_report_file(cat, stats->copies, rel, stored_size);
 
         bd_remote_stat st;
         int found = store->ops->stat(store, rel, &st);
@@ -428,18 +469,11 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
         const char *state = "ok";
         int hashed = 0;
         int64_t mtime = stored_mtime;
-        /* A changed modified time means the copy must be read again. */
-        int touched = st.mtime_ns != stored_mtime;
         if (found == 1) {
             state = "missing";
         } else if (st.size != stored_size) {
             state = "bad";
-        } else if (encrypted && !cat->have_key && (touched || suspect)) {
-            /* Reading it needs the key. Leave its state alone until a check
-             * with the passphrase. */
-            stats->skipped++;
-            continue;
-        } else if (full || touched || suspect) {
+        } else {
             char hash[BD_HASH_HEX_LEN + 1];
             char *path = NULL;
             int is_temp = 0;
@@ -502,7 +536,7 @@ int bd_media_encrypted(bd_catalog *cat, int64_t media_id)
     return enc;
 }
 
-/* The catalog backup on an encrypted drive is always encrypted. */
+/* The catalog's copy on an encrypted drive is always encrypted. */
 static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id);
 
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
@@ -517,13 +551,22 @@ static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
     int encrypt = bd_catalog_file_encrypted(cat) || bd_media_encrypted(cat, media_id);
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) return BD_ERR_NOT_FOUND;
-    const char *rel = "catalog-backup.brodalf";
-    char *staged = store->ops->staging_path(store, "catalog-backup.brodalf" BD_TMP_MARKER);
+    /* A new name for every revision: older copies on the drive stay as
+     * they are, never overwritten. */
+    char rel[64], tmp[96];
+    snprintf(rel, sizeof(rel), "catalog-r%08lld.brodalf", (long long)bd_catalog_revision(cat));
+    snprintf(tmp, sizeof(tmp), "%s" BD_TMP_MARKER, rel);
     bd_remote_stat st;
+    int there = store->ops->stat(store, rel, &st);
+    if (there == 0) { bd_store_close(store); return BD_OK; } /* this revision is already on the drive */
+    char *staged = there < 0 ? NULL : store->ops->staging_path(store, tmp);
     if (!staged) s = bd_fail(cat, BD_ERR_IO, "cannot copy the catalog: %s", store->err);
     else if ((s = bd_catalog_save_to(cat, staged, encrypt)) == BD_OK &&
-             store->ops->upload(store, staged, rel, &st) != 0)
+             store->ops->upload(store, staged, tmp, &st) != 0)
         s = bd_fail(cat, BD_ERR_IO, "cannot copy the catalog: %s", store->err);
+    else if (s == BD_OK && store->ops->move(store, tmp, rel, 0) != 0)
+        s = bd_fail(cat, BD_ERR_IO, "cannot copy the catalog: %s", store->err);
+    if (s != BD_OK) store->ops->remove(store, tmp);
     if (staged && s != BD_OK) bd_remove(staged);
     free(staged);
     bd_store_close(store);

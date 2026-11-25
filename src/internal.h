@@ -28,6 +28,7 @@ struct bd_catalog {
     const char *prog_phase;
     char prog_current[512];
     int64_t prog_files, prog_files_total, prog_bytes, prog_bytes_total;
+    int64_t prog_file_bytes, prog_file_total;
     uint8_t key[32];  /* master key while unlocked */
     int have_key;
     volatile long cancel; /* bd_catalog_cancel was called */
@@ -82,15 +83,25 @@ extern int64_t bd_test_free_bytes;
  * share ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place
  * of its own, so the copies it holds still count the way they did. */
 #define BD_SQL_PLACE(m) "(CASE WHEN " m ".kind<>'drive' THEN 'cloud:'||" m ".id ELSE lower(trim(COALESCE(" m ".location,''))) END)"
-/* SQL: a copy counts toward the protection target, unless it is on a drive
- * being replaced and the drive replacing it holds the same version. */
-#define BD_SQL_COUNTS(c)                                                                                  \
-    "NOT EXISTS(SELECT 1 FROM media rm JOIN copies rc ON rc.media_id=rm.replaced_by"                       \
-    " WHERE rm.id=" c ".media_id AND rm.retired_ms IS NOT NULL AND rc.version_id=" c ".version_id"         \
-    " AND rc.state='ok')"
+/* SQL: a copy counts toward the copies you want, unless its drive is
+ * marked lost or broken (bd_media_mark_lost). */
+#define BD_SQL_COUNTS(c) \
+    "NOT EXISTS(SELECT 1 FROM media rm WHERE rm.id=" c ".media_id AND rm.retired_ms IS NOT NULL)"
+/* SQL: the node's backup root is still backed up (bd_source_set_active). */
+#define BD_SQL_ACTIVE(n) "NOT EXISTS(SELECT 1 FROM sources xs WHERE xs.id=" n ".source_id AND xs.active=0)"
 
-/* 1 if the drive is being replaced (bd_media_retire). */
-int bd_media_retired(bd_catalog *cat, int64_t media_id);
+/* 1 if the drive is marked lost or broken. */
+int bd_media_lost(bd_catalog *cat, int64_t media_id);
+
+/* Record that a file now has these contents, as a scan does: the version
+ * with this hash (a new one if none has it) becomes the file's current
+ * version. 0 with *version_id and *version_no set, -1 on a database error. */
+int bd_record_version(bd_catalog *cat, int64_t node_id, const char *hash, int64_t size, int64_t mtime_ns,
+                      int64_t *version_id, int64_t *version_no);
+
+/* Bytes a backup leaves free on every drive (the reserve_mb option): room
+ * for the copies of the catalog that go there. */
+int64_t bd_reserve_bytes(bd_catalog *cat);
 
 /* Catalog settings (the settings table). get: 1 if found. set: 0 on success. */
 int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap);
@@ -155,8 +166,10 @@ int bd_exec(bd_catalog *cat, const char *sql);
  * space_log with what was happening ("plugged in", "before backup"...). */
 void bd_media_note_space(bd_catalog *cat, int64_t media_id, int64_t total, int64_t free_bytes, const char *event);
 
-/* The jobs table, which the history lists: a row when a job starts, filled
- * in when it ends ("done", "partial", "stopped", "failed"). */
+/* The jobs table, which drive status reads: a row when a job starts,
+ * filled in when it ends ("done", "partial", "stopped", "failed"). While a
+ * job runs the PC is kept from sleeping, and with the low_priority option
+ * the thread runs at background priority (bd_job_power). */
 int64_t bd_job_start(bd_catalog *cat, const char *kind, int64_t media_id);
 void bd_job_finish(bd_catalog *cat, int64_t job_id, const char *status, int64_t done, int64_t failed, int64_t bytes);
 
@@ -170,6 +183,8 @@ void bd_note_in_use(bd_catalog *cat, const char *path, int64_t size);
  * loop), so they move during a big file too. */
 void bd_progress_begin(bd_catalog *cat, const char *phase, int64_t files_total, int64_t bytes_total);
 void bd_report(bd_catalog *cat, int64_t files_done, const char *current, int force);
+/* bd_report for a file of this size that is about to be read: its own bar. */
+void bd_report_file(bd_catalog *cat, int64_t files_done, const char *current, int64_t size);
 void bd_progress_end(bd_catalog *cat);
 void bd_io_tick(int64_t bytes);
 /* Send this thread's bd_io_tick calls to fn instead (a hashing worker hands

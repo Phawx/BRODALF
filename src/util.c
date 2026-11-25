@@ -200,6 +200,8 @@ static void emit(bd_catalog *cat, int done)
     p.files_total = cat->prog_files_total;
     p.bytes_done = cat->prog_bytes;
     p.bytes_total = cat->prog_bytes_total;
+    p.file_bytes_done = cat->prog_file_bytes;
+    p.file_bytes_total = cat->prog_file_total;
     p.done = done;
     cat->progress(cat->progress_ctx, &p);
 }
@@ -211,6 +213,7 @@ void bd_progress_begin(bd_catalog *cat, const char *phase, int64_t files_total, 
     cat->prog_files = cat->prog_bytes = 0;
     cat->prog_files_total = files_total;
     cat->prog_bytes_total = bytes_total;
+    cat->prog_file_bytes = cat->prog_file_total = 0;
     cat->progress_last_ms = 0;
     g_io_cat = cat->progress ? cat : NULL;
     if (cat->progress) emit(cat, 0);
@@ -225,6 +228,13 @@ void bd_report(bd_catalog *cat, int64_t files_done, const char *current, int for
     if (!force && now - cat->progress_last_ms < 100) return;
     cat->progress_last_ms = now;
     emit(cat, 0);
+}
+
+void bd_report_file(bd_catalog *cat, int64_t files_done, const char *current, int64_t size)
+{
+    cat->prog_file_bytes = 0;
+    cat->prog_file_total = size;
+    bd_report(cat, files_done, current, 0);
 }
 
 void bd_progress_end(bd_catalog *cat)
@@ -249,6 +259,7 @@ void bd_io_tick(int64_t bytes)
     bd_catalog *cat = g_io_cat;
     if (!cat) return;
     cat->prog_bytes += bytes;
+    cat->prog_file_bytes += bytes;
     int64_t now = bd_now_ms();
     if (now - cat->progress_last_ms < 100) return;
     cat->progress_last_ms = now;

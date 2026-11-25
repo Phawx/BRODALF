@@ -418,10 +418,8 @@ static void test_search(void)
     int64_t again;
     bd_check_stats cs;
     REQUIRE_OK(bd_media_connect(cat, at("find/A"), &again, quiet, NULL), cat);
-    REQUIRE_OK(bd_media_check(cat, a, 0, &cs, quiet, NULL), cat);
-    CHECK(due_of(cat, a).due == 1); /* a quick check is not a full one */
-    REQUIRE_OK(bd_media_check(cat, a, 1, &cs, quiet, NULL), cat);
-    CHECK(due_of(cat, a).due == 0);
+    REQUIRE_OK(bd_media_check(cat, a, &cs, quiet, NULL), cat);
+    CHECK(due_of(cat, a).due == 0); /* every check reads every copy back */
 
     bd_catalog_close(cat);
 }
@@ -464,20 +462,21 @@ static void test_drives_and_versions(void)
     CHECK(!bd_skip_match("Photos/Exports/\n", "Photos/a.jpg", 0));
     CHECK(bd_skip_match("*.bak\n", "x/y/file.BAK", 0) && !bd_skip_match("", "file.bak", 0));
 
-    write_file(at("span/src/keep.txt"), "keep");
+    /* big.bin is seen first, so backups come to it first. */
     write_file(at("span/src/big.bin"), "0123456789012345678901234567890123456789");
-    write_file(at("span/src/scratch.tmp"), "tmp");
-    write_file(at("span/src/node_modules/pkg/index.js"), "js");
-    write_file(at("span/src/v.txt"), "1");
     bd_mkdirs(at("span/D"));
     bd_mkdirs(at("span/E"));
     bd_mkdirs(at("span/out"));
-
     bd_catalog *cat;
     REQUIRE_OK(bd_catalog_create(at("span/span.brodalf"), &cat), NULL);
     int64_t src, d, e;
     REQUIRE_OK(bd_source_add(cat, at("span/src"), &src), cat);
     bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    write_file(at("span/src/keep.txt"), "keep");
+    write_file(at("span/src/scratch.tmp"), "tmp");
+    write_file(at("span/src/node_modules/pkg/index.js"), "js");
+    write_file(at("span/src/v.txt"), "1");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.skipped == 2 && ss.files_seen == 3);
     CHECK(count_hits(cat, "index") == 0 && count_hits(cat, "scratch") == 0 && count_hits(cat, "keep") == 1);
@@ -488,8 +487,15 @@ static void test_drives_and_versions(void)
     CHECK(ss.skipped == 0 && count_hits(cat, "index.js") == 1);
     REQUIRE_OK(bd_skip_list_set(cat, "*.js\nnode_modules/\n*.tmp\n"), cat);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(count_hits(cat, "index") == 0 && count_hits(cat, "node_modules") == 0 && count_hits(cat, "scratch") == 0);
-    CHECK(ss.files_deleted == 0);
+    /* Newly left out: marked deleted, for the user to acknowledge or forget. */
+    CHECK(ss.files_deleted == 2);
+    {
+        int64_t n = 0;
+        REQUIRE_OK(bd_list_deleted(cat, 0, 1, NULL, NULL, &n), cat);
+        CHECK(n == 2);
+        REQUIRE_OK(bd_deleted_forget(cat, 0, NULL), cat);
+    }
+    CHECK(count_hits(cat, "index") == 0 && count_hits(cat, "scratch") == 0);
     char *list = bd_skip_list_get(cat);
     CHECK(list && strcmp(list, "*.js\nnode_modules/\n*.tmp\n") == 0);
     free(list);
@@ -510,12 +516,21 @@ static void test_drives_and_versions(void)
     bd_test_free_bytes = -1;
     CHECK(bs.files_copied == 2 && bs.files_no_room == 1 && bs.bytes_no_room == 40);
 
-    /* Carry on onto another drive with only what did not fit. */
+    /* Another drive takes what it has room for. */
     REQUIRE_OK(bd_media_init(cat, at("span/E"), "Drive E", 0, &e), cat);
     REQUIRE_OK(bd_media_set_location(cat, e, "Box 7"), cat);
-    bd_backup_opts opts = {{d}};
-    REQUIRE_OK(bd_backup_ex(cat, e, 0, &opts, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 1 && bs.bytes_copied == 40 && bs.files_no_room == 0);
+    bd_test_free_bytes = 40;
+    REQUIRE_OK(bd_backup(cat, e, 0, &bs, quiet, NULL), cat);
+    bd_test_free_bytes = -1;
+    CHECK(bs.files_copied == 1 && bs.bytes_copied == 40 && bs.files_no_room == 2);
+    {
+        bd_set_progress sp[4];
+        int sets = 0;
+        REQUIRE_OK(bd_backup_sets(cat, sp, 4, &sets), cat);
+        CHECK(sets == 2);
+        CHECK(sp[0].files_total == 3 && sp[0].files_done == 3 && sp[0].bytes_done == 45);
+        CHECK(sp[1].files_done == 0 && sp[1].bytes_total == 45);
+    }
 
     /* Restore plan: both unplugged, D holds more, so D first. */
     bd_media_disconnect(cat, d);
@@ -544,43 +559,45 @@ static void test_drives_and_versions(void)
     CHECK(total == 2 && p.n == 1 && strcmp(p.labels[0], "Drive D") == 0);
     REQUIRE_OK(bd_restore(cat, src, NULL, at("span/out"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 2 && rs.files_already_there == 1 && rs.files_offline == 0);
-    CHECK(file_equals(at("span/out/src/big.bin"), "0123456789012345678901234567890123456789"));
+    CHECK(file_equals(at("span/out/big.bin"), "0123456789012345678901234567890123456789"));
     REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
     CHECK(total == 0);
 
-    /* Old versions: the default rule (5 versions or a year) keeps them all. */
+    /* D gets big.bin now that it has room. */
+    REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 0);
+
+    /* Old versions are never removed: each new one goes next to them. */
     const char *contents[] = {"22", "333", "4444"};
     for (int i = 0; i < 3; i++) {
         write_file(at("span/src/v.txt"), contents[i]);
         REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
         REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
-        CHECK(bs.versions_pruned == 0);
+        CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
     }
     CHECK(exists(at("span/D/BRODALF")));
     char vdir[1400];
-    snprintf(vdir, sizeof(vdir), "span/D/BRODALF/%s/.versions/src", bd_catalog_uuid(cat));
-    char v1[1500], v3[1500];
-    snprintf(v1, sizeof(v1), "%s/v.v1.txt", vdir);
-    snprintf(v3, sizeof(v3), "%s/v.v3.txt", vdir);
-    CHECK(exists(at(v1)) && exists(at(v3)));
+    snprintf(vdir, sizeof(vdir), "span/D/BRODALF/%s", bd_catalog_uuid(cat));
+    char v1[1500], v2[1500], v4[1500];
+    snprintf(v1, sizeof(v1), "%s/src/v.txt", vdir);
+    snprintf(v2, sizeof(v2), "%s/.versions/src/v.v2.txt", vdir);
+    snprintf(v4, sizeof(v4), "%s/.versions/src/v.v4.txt", vdir);
+    CHECK(file_equals(at(v1), "1") && file_equals(at(v2), "22") && file_equals(at(v4), "4444"));
 
-    /* Keep 2 versions, no matter how recent: v1 and v2 go, v3 stays. */
-    REQUIRE_OK(bd_option_set(cat, "keep_versions", 2), cat);
-    REQUIRE_OK(bd_option_set(cat, "keep_days", 0), cat);
-    bd_prune_stats ps;
-    REQUIRE_OK(bd_prune_versions(cat, d, &ps, quiet, NULL), cat);
-    CHECK(ps.copies_removed == 2 && ps.bytes_freed == 3 && ps.failed == 0);
-    CHECK(!exists(at(v1)) && exists(at(v3)));
-    REQUIRE_OK(bd_prune_versions(cat, d, &ps, quiet, NULL), cat);
-    CHECK(ps.copies_removed == 0);
-    /* 0 keeps everything. */
-    REQUIRE_OK(bd_option_set(cat, "keep_versions", 0), cat);
-    write_file(at("span/src/v.txt"), "55555");
+    /* A file put on the drive by someone else at the place BRODALF would
+     * use is left alone; the copy goes next to it. */
+    write_file(at("span/src/new.txt"), "brodalf's");
+    char intruder[1500];
+    snprintf(intruder, sizeof(intruder), "%s/src/new.txt", vdir);
+    write_file(at(intruder), "not brodalf's");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    bd_test_free_bytes = 1000;
     REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.versions_pruned == 0 && bs.files_copied == 1);
+    bd_test_free_bytes = -1;
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
+    CHECK(file_equals(at(intruder), "not brodalf's"));
 
-    bd_catalog_close(cat);
+        bd_catalog_close(cat);
 }
 
 static void set_env(const char *name, const char *value)
@@ -647,6 +664,7 @@ typedef struct {
     int reports, ends;
     bd_progress last;
     char phase[32];
+    int64_t max_file_total;
 } progress_log;
 
 static void on_progress(void *ctx, const bd_progress *p)
@@ -658,19 +676,7 @@ static void on_progress(void *ctx, const bd_progress *p)
     snprintf(l->phase, sizeof(l->phase), "%s", p->phase);
     l->last.phase = l->phase;
     l->last.current = "";
-}
-
-typedef struct { int n; char first_kind[32]; char first_status[16]; int64_t first_media; } job_list;
-
-static int collect_job(void *ctx, const bd_job_info *j)
-{
-    job_list *l = ctx;
-    if (!l->n++) {
-        snprintf(l->first_kind, sizeof(l->first_kind), "%s", j->kind);
-        snprintf(l->first_status, sizeof(l->first_status), "%s", j->status);
-        l->first_media = j->media_id;
-    }
-    return 0;
+    if (p->file_bytes_total > l->max_file_total) l->max_file_total = p->file_bytes_total;
 }
 
 typedef struct { int n; char path[1024]; } in_use_list;
@@ -683,6 +689,13 @@ static int collect_in_use(void *ctx, const char *path, int64_t size)
     return 0;
 }
 
+static int count_changed(void *ctx, const bd_changed_info *c)
+{
+    (void)c;
+    (*(int *)ctx)++;
+    return 0;
+}
+
 static int first_source_path(void *ctx, const bd_source_info *info)
 {
     snprintf((char *)ctx, 1024, "%s", info->path);
@@ -690,8 +703,7 @@ static int first_source_path(void *ctx, const bd_source_info *info)
 }
 
 /* Moves, the verify pass, progress, the backup preview and its warning of
- * mass changes, restoring as of a date, drive suggestions, online-only
- * files and files in use. */
+ * mass changes, drive suggestions, online-only files and files in use. */
 static void test_moves_guard_and_progress(void)
 {
     char name[64], text[64];
@@ -722,39 +734,39 @@ static void test_moves_guard_and_progress(void)
     CHECK(pl.ends == 1 && strcmp(pl.last.phase, "backup") == 0);
     CHECK(pl.last.files_total == 60 && pl.last.files_done == 60 && pl.last.bytes_done == pl.last.bytes_total);
 
-    /* Rename a folder holding a third of the files: its copies move on the
-     * drive instead of being copied again, and the guard knows a move from damage. */
+    /* Rename a folder holding a third of the files: the scan sees the same
+     * files under a new path, so they keep their versions and copies. The
+     * copies stay where they are on the drive; only the catalog changes. */
     CHECK(bd_rename_noreplace(at("g/Work/old"), at("g/Work/renamed")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 20 && ss.files_deleted == 20);
+    CHECK(ss.files_moved == 20 && ss.files_new == 0 && ss.files_deleted == 0);
     bd_backup_preview_info pv;
-    REQUIRE_OK(bd_backup_preview(cat, d1, 0, NULL, &pv), cat);
-    CHECK(pv.files_to_copy == 20 && pv.files_to_move == 20 && pv.files_new == 0 && pv.files_changed == 0);
-    CHECK(pv.files_held == 60 && pv.held_gone == 0 && !pv.mass_change); /* a move is not damage */
+    REQUIRE_OK(bd_backup_preview(cat, d1, 0, &pv), cat);
+    CHECK(pv.files_to_copy == 0 && pv.files_new == 0 && pv.files_changed == 0);
+    CHECK(pv.files_held == 60 && !pv.mass_change);
     CHECK(pv.last_scan_ms > 0 && pv.free_is_current && pv.bytes_short == 0);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_moved == 20 && bs.files_copied == 0 && bs.files_failed == 0);
+    CHECK(bs.files_copied == 0 && bs.files_failed == 0);
     char p[1200];
-    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/renamed/f03.txt", bd_catalog_uuid(cat));
-    CHECK(file_equals(at(p), "file 3, first version"));
     snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/old/f03.txt", bd_catalog_uuid(cat));
-    CHECK(!exists(at(p)));
-    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/old", bd_catalog_uuid(cat));
-    CHECK(!exists(at(p))); /* the emptied folder went with its files */
+    CHECK(file_equals(at(p), "file 3, first version"));
     find_ctx ren = lookup(cat, src, 0, "renamed");
     CHECK(lookup(cat, src, ren.node_id, "f03.txt").state == BD_STATE_AVAILABLE);
-    /* Renamed back: the old entries return, the copies move back, no alarm. */
+    CHECK(lookup(cat, src, 0, "old").node_id == 0); /* the emptied folder is gone from the catalog */
+    /* Renamed back: the same again. */
     CHECK(bd_rename_noreplace(at("g/Work/renamed"), at("g/Work/old")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 20 && ss.files_deleted == 20);
-    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_moved == 20 && bs.files_copied == 0);
+    CHECK(ss.files_moved == 20 && ss.files_new == 0 && ss.files_deleted == 0);
     CHECK(bd_rename_noreplace(at("g/Work/old"), at("g/Work/renamed")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_moved == 20 && bs.files_copied == 0);
-    snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/renamed/f03.txt", bd_catalog_uuid(cat));
-    CHECK(file_equals(at(p), "file 3, first version"));
+    CHECK(bs.files_copied == 0);
+    /* Restoring puts the file where it is now. */
+    {
+        bd_restore_stats rs0;
+        REQUIRE_OK(bd_restore(cat, src, "renamed/f03.txt", at("g/one"), &rs0, quiet, NULL), cat);
+        CHECK(rs0.files_restored == 1 && file_equals(at("g/one/renamed/f03.txt"), "file 3, first version"));
+    }
 
     /* The verify pass reads back copies never read back, then skips them. */
     bd_check_stats cs;
@@ -781,45 +793,35 @@ static void test_moves_guard_and_progress(void)
 
     /* Half the files change at once. Nothing pauses by itself, but the
      * preview warns before the user starts a backup. */
-    int64_t before_attack = bd_now_ms();
-    bd_sleep_ms(5);
     for (int i = 20; i < 55; i++) {
         snprintf(name, sizeof(name), "g/Work/keep/f%02d.txt", i);
         write_file(at(name), "ENCRYPTED GARBAGE");
     }
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_changed == 35);
-    REQUIRE_OK(bd_backup_preview(cat, d1, 0, NULL, &pv), cat);
-    CHECK(pv.files_to_copy == 35 && pv.files_changed == 35 && pv.files_new == 0 && pv.files_to_move == 0);
-    CHECK(pv.files_held == 60 && pv.held_changed == 35 && pv.held_gone == 0 && pv.mass_change);
-    REQUIRE_OK(bd_backup_preview(cat, d2, 0, NULL, &pv), cat);
+    REQUIRE_OK(bd_backup_preview(cat, d1, 0, &pv), cat);
+    CHECK(pv.files_to_copy == 35 && pv.files_changed == 35 && pv.files_new == 0);
+    CHECK(pv.files_held == 60 && pv.held_changed == 35 && pv.mass_change);
+    {
+        int changed = 0;
+        REQUIRE_OK(bd_list_changed_on_media(cat, d1, count_changed, &changed), cat);
+        CHECK(changed == 35);
+    }
+    REQUIRE_OK(bd_backup_preview(cat, d2, 0, &pv), cat);
     CHECK(pv.files_to_copy == 60 && pv.files_held == 0 && !pv.mass_change && !pv.free_is_current);
 
-    /* Restore as the files were before. */
-    bd_restore_opts ro = {before_attack, 0};
-    int64_t total = 0, none = 0;
-    REQUIRE_OK(bd_restore_plan_ex(cat, src, NULL, NULL, &ro, NULL, NULL, &total, &none), cat);
-    CHECK(total == 60 && none == 0);
-    bd_restore_stats rs;
-    REQUIRE_OK(bd_restore_ex(cat, src, NULL, at("g/back"), &ro, &rs, quiet, NULL), cat);
-    CHECK(rs.files_restored == 60 && rs.files_no_copy == 0);
-    CHECK(file_equals(at("g/back/Work/keep/f21.txt"), "file 21, first version"));
-    CHECK(file_equals(at("g/back/Work/renamed/f03.txt"), "file 3, first version"));
     /* The latest versions were never backed up. */
+    bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, NULL, at("g/latest"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 25 && rs.files_no_copy == 35);
 
-    /* The changes were the user's: back up, keeping every old version
-     * this time. */
-    bd_backup_opts bo;
-    memset(&bo, 0, sizeof(bo));
-    bo.keep_old_versions = 1;
-    REQUIRE_OK(bd_backup_ex(cat, d1, 0, &bo, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 35 && bs.versions_moved == 35 && bs.versions_pruned == 0);
-    REQUIRE_OK(bd_backup_preview(cat, d1, 0, NULL, &pv), cat);
+    /* The changes were the user's: back up. Every old version stays. */
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 35 && bs.copies_alongside == 35);
+    REQUIRE_OK(bd_backup_preview(cat, d1, 0, &pv), cat);
     CHECK(pv.files_to_copy == 0 && !pv.mass_change);
 
-    /* Where the drive stands, and the history. */
+    /* Where the drive stands. */
     bd_media_status mst;
     REQUIRE_OK(bd_media_status_get(cat, d1, &mst), cat);
     CHECK(mst.files_current == 60 && mst.files_behind == 0 && mst.files_not_here == 0);
@@ -834,13 +836,6 @@ static void test_moves_guard_and_progress(void)
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_media_status_get(cat, d1, &mst), cat);
     CHECK(mst.files_current == 59 && mst.files_behind == 1 && mst.files_not_here == 0);
-    job_list jl;
-    memset(&jl, 0, sizeof(jl));
-    REQUIRE_OK(bd_list_jobs(cat, 0, 0, collect_job, &jl), cat);
-    CHECK(jl.n > 10 && strcmp(jl.first_kind, "scan") == 0 && strcmp(jl.first_status, "done") == 0);
-    memset(&jl, 0, sizeof(jl));
-    REQUIRE_OK(bd_list_jobs(cat, d1, 3, collect_job, &jl), cat);
-    CHECK(jl.n == 3 && strcmp(jl.first_kind, "backup") == 0 && jl.first_media == d1);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
 
     /* At risk also counts deleted files and older versions. */
@@ -874,7 +869,7 @@ static void test_moves_guard_and_progress(void)
     /* The whole list as CSV. */
     int64_t rows = 0;
     REQUIRE_OK(bd_export_csv(cat, at("g/files.csv"), &rows), cat);
-    CHECK(rows == 81); /* 60 live, 20 deleted by the rename, mail.pst */
+    CHECK(rows == 61); /* 60 live, mail.pst */
     FILE *csv = fopen(at("g/files.csv"), "rb");
     char line[512] = "";
     CHECK(csv && fgets(line, sizeof(line), csv));
@@ -974,7 +969,7 @@ typedef struct { int files, tmp; } tmp_count;
 static int count_tmp(void *ctx, const char *rel, const bd_stat_t *st)
 {
     tmp_count *t = ctx;
-    if (st->is_file) t->files++;
+    if (st->is_file && strncmp(rel, "catalog-r", 9) != 0) t->files++; /* the catalog's own copies aside */
     if (strstr(rel, BD_TMP_MARKER)) t->tmp++;
     return 0;
 }
@@ -1058,7 +1053,7 @@ static void test_parallel_scan(void)
             REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
             CHECK(bs.files_copied == 300 && bs.files_failed == 0);
             bd_check_stats cs;
-            REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
+            REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
             CHECK(cs.copies == 300 && cs.ok == 300);
             char dir[1200];
             snprintf(dir, sizeof(dir), "ps/drive/BRODALF/%s", bd_catalog_uuid(cat));
@@ -1124,7 +1119,7 @@ static void check_drive_consistent(bd_catalog *cat, int64_t drive, const char *d
     CHECK(tc.tmp == 0);
     CHECK(tc.files == 1 + count_rows(cat, "SELECT COUNT(*) FROM copies")); /* plus BRODALF.media */
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
     CHECK(cs.copies == cs.ok && cs.bad == 0 && cs.missing == 0);
 }
 
@@ -1212,11 +1207,11 @@ static void test_cancel(void)
     /* A full check stopped halfway keeps what it found and touches nothing else. */
     memset(&ca, 0, sizeof(ca));
     ca.cat = cat;
-    ca.phase = "verify";
+    ca.phase = "check";
     ca.after_files = 3;
     bd_catalog_set_progress(cat, cancel_progress, &ca);
     bd_check_stats cs;
-    CHECK(bd_media_check(cat, drive, 1, &cs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
+    CHECK(bd_media_check(cat, drive, &cs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
     /* The copy being read when the request came is left as it was. */
     CHECK(cs.copies >= 2 && cs.copies < 41 && cs.bad == 0 && cs.missing == 0 && cs.ok == cs.copies);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
@@ -1229,12 +1224,12 @@ static void test_cancel(void)
     ca.after_reports = 3;
     bd_restore_stats rs;
     CHECK(bd_restore(cat, src, "", at("cx/out"), &rs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
-    CHECK(!exists(at("cx/out/Src/big.bin")) && !exists(at("cx/out/Src/big.bin" BD_TMP_MARKER)));
+    CHECK(!exists(at("cx/out/big.bin")) && !exists(at("cx/out/big.bin" BD_TMP_MARKER)));
     bd_catalog_set_progress(cat, NULL, NULL);
     REQUIRE_OK(bd_restore(cat, src, "", at("cx/out"), &rs, quiet, NULL), cat);
     CHECK(rs.files_failed == 0 && rs.files_restored + rs.files_already_there == 41);
     char back[BD_HASH_HEX_LEN + 1], want[BD_HASH_HEX_LEN + 1];
-    CHECK(bd_hash_file(at("cx/out/Src/big.bin"), NULL, back, NULL) == 0 &&
+    CHECK(bd_hash_file(at("cx/out/big.bin"), NULL, back, NULL) == 0 &&
           bd_hash_file(at("cx/Src/big.bin"), NULL, want, NULL) == 0 && strcmp(back, want) == 0);
     bd_catalog_close(cat);
     free(data);
@@ -1289,40 +1284,37 @@ static void test_mtimes(void)
     CHECK(time_of(copy_a) == t1);
     CHECK(time_of(copy_big) == t2);
 
-    /* The quick check (size and time) finds every copy as recorded. */
+    /* The check finds every copy as recorded, reading each one back. */
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
-    CHECK(cs.copies == 2 && cs.ok == 2 && cs.rehashed == 0);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 2 && cs.ok == 2 && cs.rehashed == 2);
 
-    /* A new version: the old copy moves into .versions with its time. */
-    bd_sleep_ms(5);
-    int64_t between = bd_now_ms();
-    bd_sleep_ms(5);
+    /* A new version goes next to the old copy, which keeps its time. */
     write_file(at("mt/Src/a.txt"), "second a, longer");
     set_time(at("mt/Src/a.txt"), t3);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 1 && bs.versions_moved == 1);
-    CHECK(time_of(copy_a) == t3);
-    char *old_a = bd_sprintf("mt/drive/BRODALF/%s/.versions/Src/a.v1.txt", bd_catalog_uuid(cat));
-    CHECK(time_of(at(old_a)) == t1);
-    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
-    CHECK(cs.copies == 3 && cs.ok == 3 && cs.rehashed == 0);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
+    CHECK(time_of(copy_a) == t1);
+    char *old_a = bd_sprintf("mt/drive/BRODALF/%s/.versions/Src/a.v2.txt", bd_catalog_uuid(cat));
+    CHECK(time_of(at(old_a)) == t3);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 3 && cs.ok == 3);
 
     /* Restored files get the time the catalog has for that version. */
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, "", at("mt/now"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 2);
-    CHECK(time_of(at("mt/now/Src/a.txt")) == t3);
-    CHECK(time_of(at("mt/now/Src/big.bin")) == t2);
-    bd_restore_opts ro = {between};
-    REQUIRE_OK(bd_restore_ex(cat, src, "", at("mt/then"), &ro, &rs, quiet, NULL), cat);
-    CHECK(file_equals(at("mt/then/Src/a.txt"), "first a"));
-    CHECK(time_of(at("mt/then/Src/a.txt")) == t1);
+    CHECK(time_of(at("mt/now/a.txt")) == t3);
+    CHECK(time_of(at("mt/now/big.bin")) == t2);
+    int64_t v1 = count_rows(cat, "SELECT v.id FROM versions v JOIN nodes n ON n.id=v.node_id WHERE n.name='a.txt' AND v.version_no=1");
+    REQUIRE_OK(bd_restore_version(cat, v1, at("mt/then"), &rs, quiet, NULL), cat);
+    CHECK(file_equals(at("mt/then/a.txt"), "first a"));
+    CHECK(time_of(at("mt/then/a.txt")) == t1);
 
     /* Restored in place: the next scan sees nothing changed. */
     bd_remove(at("mt/Src/big.bin"));
-    REQUIRE_OK(bd_restore(cat, src, "big.bin", at("mt"), &rs, quiet, NULL), cat);
+    REQUIRE_OK(bd_restore(cat, src, "big.bin", at("mt/Src"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1 && time_of(at("mt/Src/big.bin")) == t2);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_changed == 0 && ss.files_new == 0 && ss.bytes_hashed == 0);
@@ -1370,11 +1362,11 @@ static void test_case_rename(void)
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 2);
     /* Nothing to copy again; a restore uses the new names. */
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 0 && bs.files_moved == 0 && bs.files_already_there == 2);
+    CHECK(bs.files_copied == 0 && bs.files_considered == 0);
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, "", at("cr/out"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 2);
-    CHECK(file_equals(at("cr/out/Src/photo.jpg"), "picture") && file_equals(at("cr/out/Src/album/One.txt"), "one"));
+    CHECK(file_equals(at("cr/out/photo.jpg"), "picture") && file_equals(at("cr/out/album/One.txt"), "one"));
 
     /* The lookup uses its index. */
     sqlite3_stmt *q;
@@ -1392,7 +1384,7 @@ static void test_case_rename(void)
     bd_test_fold_case = 0;
     CHECK(rename(at("cr/Src/photo.jpg"), at("cr/Src/PHOTO.jpg")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 1 && ss.files_deleted == 1);
+    CHECK(ss.files_moved == 1 && ss.files_new == 0 && ss.files_deleted == 0); /* the same file under a new name */
 #endif
     bd_catalog_close(cat);
 
@@ -1408,7 +1400,7 @@ static void test_case_rename(void)
     bd_test_fold_case = 1;
     REQUIRE_OK(bd_catalog_open(at("mg/c.brodalf"), &cat), NULL);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE rel_fold IS NULL") == 0);
-    CHECK(count_rows(cat, "SELECT value FROM meta WHERE key='schema_version'") == 6);
+    CHECK(count_rows(cat, "SELECT value FROM meta WHERE key='schema_version'") == 7);
     CHECK(rename(at("mg/Src/Notes.TXT"), at("mg/Src/notes.txt")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_new == 0 && ss.files_deleted == 0);
@@ -1440,12 +1432,12 @@ static void test_reserved_source_names(void)
     write_file(at("rv/Docs/a.txt"), "doc v2, longer");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 1 && bs.versions_moved == 1);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
     char *root = bd_sprintf("rv/drive/BRODALF/%s", bd_catalog_uuid(cat));
-    char *p1 = bd_sprintf("%s/_versions/a.txt", root), *p2 = bd_sprintf("%s/.versions/Docs/a.v1.txt", root);
+    char *p1 = bd_sprintf("%s/_versions/a.txt", root), *p2 = bd_sprintf("%s/.versions/Docs/a.v2.txt", root);
     char *p3 = bd_sprintf("%s/_brodalf.MEDIA/m.txt", root);
     CHECK(file_equals(at(p1), "in a folder called .versions"));
-    CHECK(file_equals(at(p2), "doc v1"));
+    CHECK(file_equals(at(p2), "doc v2, longer"));
     CHECK(file_equals(at(p3), "media"));
 
     /* A catalog that already has such a name: the next backup gives the
@@ -1460,7 +1452,7 @@ static void test_reserved_source_names(void)
     char *p4 = bd_sprintf("%s/_versions/b.txt", root);
     CHECK(file_equals(at(p4), "new file"));
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
     CHECK(cs.copies == 5 && cs.ok == 5);
     free(root);
     free(p1);
@@ -1505,7 +1497,7 @@ static void test_recover_and_relocate(void)
     REQUIRE_OK(bd_catalog_copy_to_media(cat, d1), cat);
     char uuid[64], backup[1200];
     snprintf(uuid, sizeof(uuid), "%s", bd_catalog_uuid(cat));
-    snprintf(backup, sizeof(backup), "r/d1/BRODALF/%s/catalog-backup.brodalf", uuid);
+    snprintf(backup, sizeof(backup), "r/d1/BRODALF/%s/catalog-r%08lld.brodalf", uuid, (long long)bd_catalog_revision(cat));
     bd_catalog_close(cat);
 
     /* Copy it back as a new catalog; never over an existing file, never from something else. */
@@ -1520,14 +1512,14 @@ static void test_recover_and_relocate(void)
     int64_t found = 0;
     bd_check_stats cs;
     REQUIRE_OK(bd_media_connect(cat, at("r/d1"), &found, quiet, NULL), cat);
-    REQUIRE_OK(bd_media_check(cat, found, 0, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, found, &cs, quiet, NULL), cat);
     CHECK(found == d1 && cs.ok == 3 && cs.missing == 0);
 
     /* The user folder has another name here. Until it is pointed there a
      * scan skips it rather than calling its files deleted. */
     CHECK(bd_rename_noreplace(at("r/Users/old"), at("r/Users/new")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_deleted == 0 && ss.errors == 1);
+    CHECK(ss.files_deleted == 0 && ss.roots_missing == 1);
     CHECK(bd_source_relocate(cat, docs, at("r/Users/nowhere")) == BD_ERR_NOT_FOUND);
     CHECK(bd_source_relocate(cat, docs, at("r/Other")) == BD_ERR_EXISTS);
     CHECK(bd_source_relocate(cat, 9999, at("r/Users/new/Docs")) == BD_ERR_NOT_FOUND);
@@ -1545,38 +1537,75 @@ static void test_recover_and_relocate(void)
     CHECK(bs.files_copied == 0);
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, docs, NULL, at("r/out"), &rs, quiet, NULL), cat);
-    CHECK(rs.files_restored == 2 && file_equals(at("r/out/Docs/sub/b.txt"), "beta"));
+    CHECK(rs.files_restored == 2 && file_equals(at("r/out/sub/b.txt"), "beta"));
+    /* Both roots: each goes into a folder of its own name. */
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("r/all"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 3 && file_equals(at("r/all/Docs/sub/b.txt"), "beta") && file_equals(at("r/all/Other/c.txt"), "gamma"));
+    /* A root that is no longer backed up keeps its copies but is left out. */
+    REQUIRE_OK(bd_source_set_active(cat, other, 0), cat);
+    write_file(at("r/Other/d.txt"), "delta");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_stopped == 1 && ss.files_new == 0);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    REQUIRE_OK(bd_source_set_active(cat, other, 1), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 1);
+    /* A skip list of the root's own. */
+    REQUIRE_OK(bd_source_skip_set(cat, other, "d.txt\n"), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.skipped == 1);
+    {
+        char *own = bd_source_skip_get(cat, other);
+        CHECK(own && strcmp(own, "d.txt\n") == 0);
+        free(own);
+    }
     REQUIRE_OK(bd_catalog_save(cat), cat);
     bd_catalog_close(cat);
 }
 
-typedef struct { int64_t want, retired_ms, replaced_by; } retired_snap;
+typedef struct { int64_t want, lost_ms; char why[16]; int64_t bytes_held; } lost_snap;
 
-static int snap_retired(void *ctx, const bd_media_info *m)
+static int snap_lost(void *ctx, const bd_media_info *m)
 {
-    retired_snap *r = ctx;
+    lost_snap *r = ctx;
     if (m->media_id != r->want) return 0;
-    r->retired_ms = m->retired_ms;
-    r->replaced_by = m->replaced_by;
+    r->lost_ms = m->lost_ms;
+    snprintf(r->why, sizeof(r->why), "%s", m->lost_why);
+    r->bytes_held = m->bytes_held;
     return 1;
 }
 
-static retired_snap retired_of(bd_catalog *cat, int64_t id)
+static lost_snap lost_of(bd_catalog *cat, int64_t id)
 {
-    retired_snap r = {id, -1, -1};
-    bd_list_media(cat, snap_retired, &r);
+    lost_snap r = {id, -1, "", -1};
+    bd_list_media(cat, snap_lost, &r);
     return r;
 }
 
-/* Replacing a drive: what needs it goes to the new one, nothing new goes to
- * it, and its copies stop counting once the new drive holds them. */
-static void test_replace_drive(void)
+static int count_lost_copies(void *ctx, const bd_copy_info *c)
+{
+    if (c->media_lost) (*(int *)ctx)++;
+    return 0;
+}
+
+static void sets_of(bd_catalog *cat, int64_t done[2])
+{
+    bd_set_progress sp[2];
+    int n = 0;
+    CHECK(bd_backup_sets(cat, sp, 2, &n) == BD_OK && n == 2);
+    done[0] = sp[0].files_done;
+    done[1] = sp[1].files_done;
+}
+
+/* A drive marked lost or broken: its copies stop counting, so the sets
+ * drop, nothing more goes to it, and other drives take its place. */
+static void test_lost_drive(void)
 {
     write_file(at("x/S1/f1.txt"), "one");
     write_file(at("x/S1/f2.txt"), "two");
     write_file(at("x/S2/f3.txt"), "three");
     write_file(at("x/S2/f4.txt"), "four");
-    write_file(at("x/S2/gone.txt"), "gone");
     bd_mkdirs(at("x/a"));
     bd_mkdirs(at("x/b"));
     bd_mkdirs(at("x/c"));
@@ -1591,61 +1620,55 @@ static void test_replace_drive(void)
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_media_init(cat, at("x/a"), "Old", 0, &a), cat);
     REQUIRE_OK(bd_media_init(cat, at("x/b"), "Other", 0, &b), cat);
+    int64_t done[2];
+    sets_of(cat, done);
+    CHECK(done[0] == 0 && done[1] == 0);
     bd_backup_stats bs;
     REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 5);
-    REQUIRE_OK(bd_backup(cat, b, s1, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 2);
-    /* An older version and a deleted file that only the old drive holds. */
-    write_file(at("x/S2/f3.txt"), "three, changed");
-    CHECK(bd_remove(at("x/S2/gone.txt")) == 0);
-    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4);
+    sets_of(cat, done);
+    CHECK(done[0] == 4 && done[1] == 0);
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4);
+    sets_of(cat, done);
+    CHECK(done[0] == 4 && done[1] == 4);
     risk_count rc;
-    CHECK(risk_of(cat, &rc).files_at_risk == 2); /* f3 (no copy of its new version) and f4 (one copy) */
+    CHECK(risk_of(cat, &rc).files_at_risk == 0);
+    CHECK(lost_of(cat, a).lost_ms == 0 && lost_of(cat, a).bytes_held == 3 + 3 + 5 + 4);
 
-    /* The new drive has to be plugged in; nothing changes until it is. */
-    CHECK(bd_media_replace(cat, a, 999, NULL, quiet, NULL) == BD_ERR_NOT_FOUND);
-    CHECK(retired_of(cat, a).retired_ms == 0);
-    CHECK(bd_media_retire(cat, a, a) == BD_ERR_INVALID);
-    REQUIRE_OK(bd_media_init(cat, at("x/c"), "New", 0, &c), cat);
-    bd_replace_stats rs;
-    REQUIRE_OK(bd_media_replace(cat, a, c, &rs, quiet, NULL), cat);
-    /* f1 and f2 would have one copy without the old drive, f4 none. */
-    CHECK(rs.files_needed == 3 && rs.backup.files_copied == 3 && rs.backup.files_failed == 0);
-    CHECK(rs.files_only_old == 0 && rs.deleted_only_old == 1 && rs.versions_only_old == 1);
-    retired_snap r = retired_of(cat, a);
-    CHECK(r.retired_ms > 0 && r.replaced_by == c);
-    CHECK(retired_of(cat, c).retired_ms == 0);
-    char p[1200];
-    snprintf(p, sizeof(p), "x/c/BRODALF/%s/S2/f4.txt", bd_catalog_uuid(cat));
-    CHECK(file_equals(at(p), "four"));
-    snprintf(p, sizeof(p), "x/c/BRODALF/%s/S2/f3.txt", bd_catalog_uuid(cat));
-    CHECK(!exists(at(p))); /* not needed for the old drive: a normal backup copies it */
-
-    /* f1 and f2 are on Other and New now (Old no longer counts); f4 has one
-     * copy that counts, on New. */
-    CHECK(risk_of(cat, &rc).files_at_risk == 2 && rc.copies_sum == 1);
+    /* Marked lost: the second set drops to nothing. */
+    CHECK(bd_media_mark_lost(cat, a, "stolen") == BD_ERR_INVALID);
+    REQUIRE_OK(bd_media_mark_lost(cat, a, "lost"), cat);
+    lost_snap ls = lost_of(cat, a);
+    CHECK(ls.lost_ms > 0 && strcmp(ls.why, "lost") == 0);
+    sets_of(cat, done);
+    CHECK(done[0] == 4 && done[1] == 0);
+    CHECK(risk_of(cat, &rc).files_at_risk == 4);
     CHECK(bd_backup(cat, a, 0, &bs, quiet, NULL) == BD_ERR_INVALID);
     help_list h = help_of(cat);
     for (int i = 0; i < h.n; i++) CHECK(strcmp(h.labels[i], "Old") != 0);
-    /* Its copies still restore. */
-    find_ctx f = lookup(cat, s2, 0, "gone.txt");
-    CHECK(f.found && f.state == BD_STATE_DELETED);
+    find_ctx f1 = lookup(cat, s1, 0, "f1.txt");
+    int lost_copies = 0;
+    bd_list_copies(cat, f1.node_id, count_lost_copies, &lost_copies);
+    CHECK(lost_copies == 1);
+    /* Any drive with room makes it whole again; no drive "replaces" another. */
+    REQUIRE_OK(bd_media_init(cat, at("x/c"), "New", 0, &c), cat);
+    REQUIRE_OK(bd_backup(cat, c, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4);
+    sets_of(cat, done);
+    CHECK(done[0] == 4 && done[1] == 4);
 
-    /* Changed my mind: it counts and takes backups again. */
-    REQUIRE_OK(bd_media_unretire(cat, a), cat);
-    CHECK(retired_of(cat, a).retired_ms == 0 && retired_of(cat, a).replaced_by == 0);
-    CHECK(risk_of(cat, &rc).files_at_risk == 1); /* only f3 */
-    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 1);
-    /* Retiring with no replacement chosen keeps every copy counting. */
-    REQUIRE_OK(bd_media_retire(cat, a, 0), cat);
-    CHECK(retired_of(cat, a).retired_ms > 0 && retired_of(cat, a).replaced_by == 0);
-    CHECK(risk_of(cat, &rc).files_at_risk == 1);
+    /* Found again: it counts again. Broken is recorded as such. */
+    REQUIRE_OK(bd_media_found(cat, a), cat);
+    CHECK(lost_of(cat, a).lost_ms == 0);
+    REQUIRE_OK(bd_media_mark_lost(cat, b, "broken"), cat);
+    CHECK(strcmp(lost_of(cat, b).why, "broken") == 0);
+    sets_of(cat, done);
+    CHECK(done[0] == 4 && done[1] == 4); /* Old and New */
     bd_catalog_close(cat);
 }
 
-typedef struct { int n; char first[256]; char drives[256]; int connected; int64_t last_seen; } deleted_list;
+typedef struct { int n; char first[256]; char drives[256]; int connected; int64_t last_seen; int backed_up; int64_t never_id; } deleted_list;
 
 static int collect_deleted(void *ctx, const bd_deleted_info *d)
 {
@@ -1656,6 +1679,8 @@ static int collect_deleted(void *ctx, const bd_deleted_info *d)
         l->connected = d->connected;
         l->last_seen = d->last_seen_ms;
     }
+    l->backed_up += d->backed_up;
+    if (strstr(d->rel_path, "never")) l->never_id = d->node_id;
     return 0;
 }
 
@@ -1684,12 +1709,12 @@ static void test_deleted_files(void)
     REQUIRE_OK(bd_backup(cat, one, 0, &bs, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, two, 0, &bs, quiet, NULL), cat);
     bd_media_disconnect(cat, two);
-    /* A file that never had a copy is not listed when it goes. */
+    /* A file that never had a copy is listed too when it goes. */
     write_file(at("del/D/never.txt"), "never backed up");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
 
     int64_t count = -1;
-    REQUIRE_OK(bd_list_deleted(cat, 0, NULL, NULL, &count), cat);
+    REQUIRE_OK(bd_list_deleted(cat, 0, 0, NULL, NULL, &count), cat);
     CHECK(count == 0);
     CHECK(bd_remove(at("del/D/a.txt")) == 0);
     CHECK(bd_remove(at("del/D/sub/b.txt")) == 0);
@@ -1697,13 +1722,13 @@ static void test_deleted_files(void)
     CHECK(bd_rmdir_empty(at("del/D/sub")) == 0);
     CHECK(bd_remove(at("del/D/never.txt")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_deleted == 4);
+    CHECK(ss.files_deleted == 4 && ss.deleted_no_copy == 1);
     deleted_list dl;
     memset(&dl, 0, sizeof(dl));
-    REQUIRE_OK(bd_list_deleted(cat, src, collect_deleted, &dl, &count), cat);
-    CHECK(count == 3 && dl.n == 3 && dl.last_seen > 0);
+    REQUIRE_OK(bd_list_deleted(cat, src, 1, collect_deleted, &dl, &count), cat);
+    CHECK(count == 4 && dl.n == 4 && dl.last_seen > 0 && dl.backed_up == 3);
     CHECK(strcmp(dl.first, "D/a.txt") == 0 && strcmp(dl.drives, "One, Two") == 0 && dl.connected);
-    REQUIRE_OK(bd_list_deleted(cat, 9999, NULL, NULL, &count), cat);
+    REQUIRE_OK(bd_list_deleted(cat, 9999, 0, NULL, NULL, &count), cat);
     CHECK(count == 0);
 
     /* The plan and the restore of a folder take only what was deleted from it. */
@@ -1716,23 +1741,228 @@ static void test_deleted_files(void)
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore_ex(cat, src, "sub", at("del/out"), &ro, &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 2 && rs.files_failed == 0);
-    CHECK(file_equals(at("del/out/D/sub/b.txt"), "b") && file_equals(at("del/out/D/sub/c.txt"), "c2, changed"));
-    CHECK(!exists(at("del/out/D/a.txt")) && !exists(at("del/out/D/keep.txt")));
+    CHECK(file_equals(at("del/out/sub/b.txt"), "b") && file_equals(at("del/out/sub/c.txt"), "c2, changed"));
+    CHECK(!exists(at("del/out/a.txt")) && !exists(at("del/out/keep.txt")));
     REQUIRE_OK(bd_restore_ex(cat, src, "a.txt", at("del/out"), &ro, &rs, quiet, NULL), cat);
-    CHECK(rs.files_restored == 1 && file_equals(at("del/out/D/a.txt"), "a"));
+    CHECK(rs.files_restored == 1 && file_equals(at("del/out/a.txt"), "a"));
     REQUIRE_OK(bd_restore_ex(cat, src, "", at("del/out"), &ro, &rs, quiet, NULL), cat);
-    CHECK(rs.files_restored == 0 && rs.files_already_there == 3 && rs.files_no_copy == 1 && !exists(at("del/out/D/keep.txt")));
+    CHECK(rs.files_restored == 0 && rs.files_already_there == 3 && rs.files_no_copy == 1 && !exists(at("del/out/keep.txt")));
 
     /* Back in its folder, it is no longer deleted. */
     write_file(at("del/D/a.txt"), "a");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    REQUIRE_OK(bd_list_deleted(cat, 0, NULL, NULL, &count), cat);
-    CHECK(count == 2);
+    REQUIRE_OK(bd_list_deleted(cat, 0, 0, NULL, NULL, &count), cat);
+    CHECK(count == 3);
     bd_media_disconnect(cat, one);
     memset(&dl, 0, sizeof(dl));
-    REQUIRE_OK(bd_list_deleted(cat, 0, collect_deleted, &dl, NULL), cat);
-    CHECK(dl.n == 2 && !dl.connected);
+    REQUIRE_OK(bd_list_deleted(cat, 0, 0, collect_deleted, &dl, NULL), cat);
+    CHECK(dl.n == 3 && !dl.connected && dl.never_id > 0);
+
+    /* Forgetting: only when asked, and only deleted files. The copies stay
+     * on the drives. */
+    int64_t forgotten = -1;
+    CHECK(bd_deleted_forget(cat, lookup(cat, src, 0, "keep.txt").node_id, &forgotten) == BD_ERR_INVALID);
+    REQUIRE_OK(bd_deleted_forget(cat, dl.never_id, &forgotten), cat);
+    CHECK(forgotten == 1);
+    REQUIRE_OK(bd_list_deleted(cat, 0, 0, NULL, NULL, &count), cat);
+    CHECK(count == 2);
+    REQUIRE_OK(bd_deleted_forget(cat, 0, &forgotten), cat);
+    CHECK(forgotten == 2);
+    REQUIRE_OK(bd_list_deleted(cat, 0, 0, NULL, NULL, &count), cat);
+    CHECK(count == 0);
+    char kept[1200];
+    snprintf(kept, sizeof(kept), "del/two/BRODALF/%s/D/sub/b.txt", bd_catalog_uuid(cat));
+    CHECK(file_equals(at(kept), "b"));
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_deleted == 0 && ss.files_new == 0);
     bd_catalog_close(cat);
+}
+
+typedef struct { int n; int64_t node_id; char rel[256]; int differ; } damaged_list;
+
+static int collect_damaged(void *ctx, const bd_damaged_info *d)
+{
+    damaged_list *l = ctx;
+    if (!l->n++) {
+        l->node_id = d->node_id;
+        snprintf(l->rel, sizeof(l->rel), "%s", d->rel_path);
+        l->differ = strcmp(d->hash_on_record, d->hash_found) != 0;
+    }
+    return 0;
+}
+
+/* Change a byte of a file but keep its size and modified time, as bit rot
+ * would. */
+static void rot_byte(const char *path)
+{
+    bd_stat_t st;
+    CHECK(bd_stat(path, &st) == 0);
+    FILE *f = bd_fopen(path, "r+b");
+    CHECK(f != NULL);
+    if (!f) return;
+    int c = fgetc(f);
+    fseek(f, 0, SEEK_SET);
+    fputc(c ^ 0x20, f);
+    fflush(f);
+    CHECK(bd_set_mtime(f, st.mtime_ns) == 0);
+    fclose(f);
+    bd_stat_t after;
+    CHECK(bd_stat(path, &after) == 0 && after.size == st.size && after.mtime_ns == st.mtime_ns);
+}
+
+typedef struct { int n; int64_t first_size; } largest_list;
+
+static int collect_largest(void *ctx, const bd_risk_info *r)
+{
+    largest_list *l = ctx;
+    if (!l->n++) l->first_size = r->size;
+    return 0;
+}
+
+/* The bit-rot scan, the largest files, the reserve and progress inside a
+ * file. */
+static void test_bitrot_and_sizes(void)
+{
+    write_file(at("br/S/a.txt"), "alpha alpha alpha");
+    write_file(at("br/S/b.txt"), "beta");
+    write_file(at("br/S/big.txt"), "a longer file than the others, by some way");
+    bd_mkdirs(at("br/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("br/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("br/S"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("br/drive"), "Rot", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+
+    /* A plain scan trusts size and time; the bit-rot scan reads everything. */
+    rot_byte(at("br/S/a.txt"));
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 0 && ss.files_damaged == 0);
+    bd_scan_opts so = {1};
+    progress_log pl;
+    memset(&pl, 0, sizeof(pl));
+    bd_catalog_set_progress(cat, on_progress, &pl);
+    REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(strcmp(pl.phase, "bit-rot scan") == 0);
+    CHECK(ss.files_damaged == 1 && ss.files_changed == 0 && ss.bytes_hashed > 0);
+    damaged_list dl;
+    memset(&dl, 0, sizeof(dl));
+    REQUIRE_OK(bd_list_damaged(cat, collect_damaged, &dl), cat);
+    CHECK(dl.n == 1 && strcmp(dl.rel, "a.txt") == 0 && dl.differ);
+    /* The damaged file is not taken as a new version: the backup holds the
+     * good one, and restoring it brings the file back. */
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 3);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, "a.txt", at("br/fixed"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && file_equals(at("br/fixed/a.txt"), "alpha alpha alpha"));
+    /* Or the user says the change was theirs: it becomes a new version. */
+    REQUIRE_OK(bd_damaged_accept(cat, dl.node_id), cat);
+    memset(&dl, 0, sizeof(dl));
+    REQUIRE_OK(bd_list_damaged(cat, collect_damaged, &dl), cat);
+    CHECK(dl.n == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 4);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
+    REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
+    CHECK(ss.files_damaged == 0);
+
+    /* Largest first. */
+    largest_list ll = {0, 0};
+    REQUIRE_OK(bd_list_largest(cat, 2, collect_largest, &ll), cat);
+    CHECK(ll.n == 2 && ll.first_size == 42);
+
+    /* The reserve and low priority are settings of the catalog. */
+    CHECK(bd_option_get(cat, "reserve_mb") == 512 && bd_option_get(cat, "low_priority") == 1);
+    REQUIRE_OK(bd_option_set(cat, "reserve_mb", 256), cat);
+    REQUIRE_OK(bd_option_set(cat, "low_priority", 0), cat);
+    CHECK(bd_option_get(cat, "reserve_mb") == 256 && bd_option_get(cat, "low_priority") == 0);
+    CHECK(bd_option_set(cat, "low_priority", 2) == BD_ERR_INVALID);
+    bd_backup_preview_info pv;
+    REQUIRE_OK(bd_backup_preview(cat, drive, 0, &pv), cat);
+    CHECK(pv.reserve_bytes == (int64_t)256 * 1024 * 1024);
+
+    /* A changed file shows how far into it the copy is. */
+    size_t len = (size_t)3 * 1024 * 1024 + 5;
+    char *data = malloc(len);
+    CHECK(data != NULL);
+    if (data) {
+        memset(data, 'x', len);
+        FILE *bf = bd_fopen(at("br/S/huge.bin"), "wb");
+        CHECK(bf && fwrite(data, 1, len, bf) == len);
+        if (bf) fclose(bf);
+        free(data);
+    }
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    memset(&pl, 0, sizeof(pl));
+    bd_catalog_set_progress(cat, on_progress, &pl);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(bs.files_copied == 1);
+    CHECK(pl.max_file_total == (int64_t)len);
+    bd_catalog_close(cat);
+}
+
+static int count_conflict(void *ctx, const bd_conflict_info *c)
+{
+    (void)c;
+    (*(int *)ctx)++;
+    return 0;
+}
+
+typedef struct {
+    int64_t v1;
+} version_pick;
+
+static int pick_version(void *ctx, const bd_copy_info *c)
+{
+    version_pick *vp = ctx;
+    if (c->version_no == 1) vp->v1 = c->version_id;
+    return 0;
+}
+
+typedef struct {
+    int active, missing;
+} source_flags;
+
+static int get_flags(void *ctx, const bd_source_info *info)
+{
+    source_flags *sf = ctx;
+    sf->active = info->active;
+    sf->missing = info->missing;
+    return 1;
+}
+
+static int count_catalog_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    (void)st;
+    if (strncmp(rel, "catalog-r", 9) == 0 && !strstr(rel, "tmp")) (*(int *)ctx)++;
+    return strchr(rel, '/') ? 0 : (st->is_dir ? BD_WALK_SKIP : 0);
+}
+
+typedef struct { int n; int64_t revision; char id[64]; char path[1024]; } found_copy;
+
+static int found_copy_cb(void *ctx, const bd_catalog_copy_info *info)
+{
+    found_copy *f = ctx;
+    f->n++;
+    f->revision = info->revision;
+    snprintf(f->id, sizeof(f->id), "%s", info->catalog_id);
+    snprintf(f->path, sizeof(f->path), "%s", info->path);
+    return 0;
+}
+
+static int count_catalog_copies(const char *dir)
+{
+    int n = 0;
+    bd_walk(dir, count_catalog_cb, NULL, &n);
+    return n;
 }
 
 int main(void)
@@ -1798,8 +2028,8 @@ int main(void)
     REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &cat), NULL);
     bd_check_stats cs;
     REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, quiet, NULL), cat);
-    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
-    CHECK(cs.copies == 2 && cs.ok == 2);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 2 && cs.ok == 2 && cs.rehashed == 2);
     CHECK(lookup(cat, src, 0, "a.txt").state == BD_STATE_AVAILABLE);
 
     /* Change a file: only the old version is reachable until the next backup. */
@@ -1810,104 +2040,148 @@ int main(void)
     CHECK(a.state == BD_STATE_AVAILABLE_OLDER);
     CHECK(a.version_no == 2);
     CHECK(totals(cat).state == BD_STATE_PARTIAL && totals(cat).available == 1);
+    /* The new version is written next to the old one, which is never
+     * touched: BRODALF only adds to a drive. */
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
-    CHECK(bs.versions_moved == 1);
-    CHECK(file_equals(at(p1), "hello, version two"));
+    CHECK(bs.copies_alongside == 1);
+    CHECK(file_equals(at(p1), "hello"));
     char pv[1200];
-    snprintf(pv, sizeof(pv), "%s/.versions/Photos/a.v1.txt", drive_dir);
-    CHECK(file_equals(at(pv), "hello"));
+    snprintf(pv, sizeof(pv), "%s/.versions/Photos/a.v2.txt", drive_dir);
+    CHECK(file_equals(at(pv), "hello, version two"));
     int copies = 0;
     bd_list_copies(cat, a.node_id, count_copies, &copies);
     CHECK(copies == 2);
+    CHECK(lookup(cat, src, 0, "a.txt").state == BD_STATE_AVAILABLE);
 
-    /* Lose a copy on the drive: the quick check notices it. */
+    /* Lose a copy on the drive: the check notices it. */
     char pb[1200];
     snprintf(pb, sizeof(pb), "%s/Photos/sub/b.txt", drive_dir);
     bd_remove(at(pb));
-    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
     CHECK(cs.missing == 1);
     find_ctx sub = lookup(cat, src, 0, "sub");
     CHECK(sub.state == BD_STATE_NO_COPY || sub.state == BD_STATE_PARTIAL || sub.state == BD_STATE_OFFLINE);
     CHECK(lookup(cat, src, sub.node_id, "b.txt").state == BD_STATE_BAD);
 
-    /* Damage a copy: the full check notices it. */
-    write_file(at(pv), "HELLO");
-    REQUIRE_OK(bd_media_check(cat, drive, 1, &cs, quiet, NULL), cat);
-    CHECK(cs.bad == 1);
-
-    /* Bit rot looks like this: the bytes are wrong but the size and the
-     * modified time are just what the catalog recorded. A quick check must
-     * go on calling the copy damaged until a re-read proves it good, not
-     * trust the unchanged time. */
+    /* Bit rot: the bytes are wrong but the size and modified time are just
+     * what the catalog recorded. Every check reads the copy back, so it is
+     * caught. */
     {
-        bd_stat_t rot;
-        CHECK(bd_stat(at(pv), &rot) == 0);
+        bd_stat_t before, after;
+        CHECK(bd_stat(at(pv), &before) == 0);
+        FILE *rot = bd_fopen(at(pv), "r+b");
+        CHECK(rot != NULL);
+        if (rot) { fputc('H', rot); fclose(rot); }
+        CHECK(bd_stat(at(pv), &after) == 0);
         sqlite3_stmt *fix;
-        CHECK(sqlite3_prepare_v2(cat->db, "UPDATE copies SET stored_mtime_ns=? WHERE state='bad'", -1, &fix, NULL) == SQLITE_OK);
-        sqlite3_bind_int64(fix, 1, rot.mtime_ns);
+        CHECK(sqlite3_prepare_v2(cat->db, "UPDATE copies SET stored_mtime_ns=? WHERE path_on_media LIKE '.versions/%'", -1, &fix, NULL) == SQLITE_OK);
+        sqlite3_bind_int64(fix, 1, after.mtime_ns);
         CHECK(sqlite3_step(fix) == SQLITE_DONE);
         sqlite3_finalize(fix);
-        REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
-        CHECK(cs.bad == 1 && cs.rehashed == 1);
-        /* The right bytes come back (as if from another drive), with the
-         * recorded time: the next quick check re-reads it and clears the mark. */
-        write_file(at(pv), "hello");
-        CHECK(bd_stat(at(pv), &rot) == 0);
-        CHECK(sqlite3_prepare_v2(cat->db, "UPDATE copies SET stored_mtime_ns=? WHERE state='bad'", -1, &fix, NULL) == SQLITE_OK);
-        sqlite3_bind_int64(fix, 1, rot.mtime_ns);
-        CHECK(sqlite3_step(fix) == SQLITE_DONE);
-        sqlite3_finalize(fix);
-        REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
-        CHECK(cs.bad == 0 && cs.rehashed == 1);
+        REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+        CHECK(cs.bad == 1);
+        CHECK(lookup(cat, src, 0, "a.txt").state == BD_STATE_AVAILABLE_OLDER);
+        /* The right bytes come back: the next check clears the mark. */
+        write_file(at(pv), "hello, version two");
+        REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+        CHECK(cs.bad == 0);
+        CHECK(lookup(cat, src, 0, "a.txt").state == BD_STATE_AVAILABLE);
     }
 
-    /* The next backup rewrites the missing copy. */
+    /* The next backup writes the missing copy again. */
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
+    CHECK(file_equals(at(pb), "world"));
     CHECK(lookup(cat, src, sub.node_id, "b.txt").state == BD_STATE_AVAILABLE);
 
-    /* The old copy of b vanishes, then b changes: the new copy still records. */
+    /* The copy of b vanishes, then b changes: the new version goes next to
+     * where the old one was, and the old one stays recorded as missing. */
     bd_remove(at(pb));
     write_file(at("src/Photos/sub/b.txt"), "world, version two");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
     CHECK(bs.files_failed == 0);
+    CHECK(!exists(at(pb)));
     CHECK(lookup(cat, src, sub.node_id, "b.txt").state == BD_STATE_AVAILABLE);
 
-    /* Restore everything and compare. */
+    /* Restore everything: with one backup root its files go straight into
+     * the chosen folder. */
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, 0, NULL, at("restore"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 2);
-    CHECK(file_equals(at("restore/Photos/a.txt"), "hello, version two"));
-    CHECK(file_equals(at("restore/Photos/sub/b.txt"), "world, version two"));
+    CHECK(file_equals(at("restore/a.txt"), "hello, version two"));
+    CHECK(file_equals(at("restore/sub/b.txt"), "world, version two"));
+    /* Again: the files are already there. */
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("restore"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 0 && rs.files_already_there == 2 && rs.files_conflict == 0);
+    /* A different file at the destination is never overwritten: it is
+     * skipped and listed. */
+    write_file(at("restore/a.txt"), "someone else's a");
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("restore"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_conflict == 1 && rs.files_already_there == 1);
+    CHECK(file_equals(at("restore/a.txt"), "someone else's a"));
+    {
+        int conflicts = 0;
+        REQUIRE_OK(bd_list_restore_conflicts(cat, count_conflict, &conflicts), cat);
+        CHECK(conflicts == 1);
+    }
+    /* One chosen version of a file, into a folder. */
+    {
+        version_pick vp = {0};
+        bd_list_copies(cat, a.node_id, pick_version, &vp);
+        CHECK(vp.v1 > 0);
+        REQUIRE_OK(bd_restore_version(cat, vp.v1, at("restore-v1"), &rs, quiet, NULL), cat);
+        CHECK(rs.files_restored == 1);
+        CHECK(file_equals(at("restore-v1/a.txt"), "hello"));
+    }
 
-    /* A backup whose catalog was never saved: the next run adopts the copy. */
+    /* A copy the catalog lost track of (BRODALF closed before it saved):
+     * the next run finds the same file there and adopts it. */
     write_file(at("src/Photos/c.txt"), "unsaved");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    REQUIRE_OK(bd_catalog_save(cat), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
-    bd_catalog_close(cat); /* closed without saving */
-    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &cat), NULL);
-    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, quiet, NULL), cat);
+    CHECK(bd_exec(cat, "DELETE FROM copies WHERE path_on_media LIKE '%/c.txt'") == 0);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 0);
-    CHECK(bs.files_already_there == 3);
+    CHECK(bs.files_already_there == 1);
     CHECK(lookup(cat, src, 0, "c.txt").state == BD_STATE_AVAILABLE);
 
-    /* A missing source folder must not mark its files deleted. */
+    /* A missing backup root must not mark its files deleted; the app asks
+     * where it went. */
     bd_rename_noreplace(at("src/Photos"), at("src/Photos-away"));
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_deleted == 0);
+    CHECK(ss.files_deleted == 0 && ss.roots_missing == 1);
+    {
+        source_flags sf = {0};
+        bd_list_sources(cat, get_flags, &sf);
+        CHECK(sf.missing == 1 && sf.active == 1);
+    }
     bd_rename_noreplace(at("src/Photos-away"), at("src/Photos"));
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_missing == 0);
 
-    /* A real deletion is recorded but the copies stay tracked. */
+    /* A real deletion is recorded and the copies stay tracked; the user
+     * acknowledges it or forgets it. */
     bd_remove(at("src/Photos/c.txt"));
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_deleted == 1);
+    CHECK(ss.files_deleted == 1 && ss.deleted_no_copy == 0);
     CHECK(lookup(cat, src, 0, "c.txt").state == BD_STATE_DELETED);
+    {
+        int64_t n = -1;
+        REQUIRE_OK(bd_list_deleted(cat, 0, 1, NULL, NULL, &n), cat);
+        CHECK(n == 1);
+        REQUIRE_OK(bd_deleted_ack(cat, 0), cat);
+        REQUIRE_OK(bd_list_deleted(cat, 0, 1, NULL, NULL, &n), cat);
+        CHECK(n == 0);
+        REQUIRE_OK(bd_list_deleted(cat, 0, 0, NULL, NULL, &n), cat);
+        CHECK(n == 1);
+        REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+        REQUIRE_OK(bd_list_deleted(cat, 0, 1, NULL, NULL, &n), cat);
+        CHECK(n == 0); /* seen stays seen */
+    }
 
     /* Where a drive is kept, renaming, and what the disk said about itself. */
     REQUIRE_OK(bd_media_set_location(cat, drive, "Box A, top shelf"), cat);
@@ -1977,10 +2251,29 @@ int main(void)
     CHECK(!bd_drive_hw_bus_is_ata(17) && !bd_drive_hw_bus_is_ata(1) && !bd_drive_hw_bus_is_ata(10));
     CHECK(!bd_drive_hw_bus_is_ata(7) && !bd_drive_hw_bus_is_ata(8) && !bd_drive_hw_bus_is_ata(0));
 
+    /* Each save is a new revision: its copy is added to the drive, and an
+     * older one is never overwritten. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
     REQUIRE_OK(bd_catalog_copy_to_media(cat, drive), cat);
     char pc[1200];
-    snprintf(pc, sizeof(pc), "%s/catalog-backup.brodalf", drive_dir);
+    snprintf(pc, sizeof(pc), "%s/catalog-r%08lld.brodalf", drive_dir, (long long)bd_catalog_revision(cat));
     CHECK(exists(at(pc)));
+    {
+        char dd[1200];
+        snprintf(dd, sizeof(dd), "%s", at(drive_dir));
+        CHECK(count_catalog_copies(dd) >= 2);
+        /* Recovering finds the newest copy whether given the drive, its
+         * BRODALF folder or the catalog's own folder. */
+        const char *where[3] = {"drive", "drive/BRODALF", drive_dir};
+        for (int w = 0; w < 3; w++) {
+            found_copy fc;
+            memset(&fc, 0, sizeof(fc));
+            REQUIRE_OK(bd_find_catalog_copies(at(where[w]), found_copy_cb, &fc), cat);
+            CHECK(fc.n == 1 && fc.revision == bd_catalog_revision(cat));
+            CHECK(strcmp(fc.id, bd_catalog_uuid(cat)) == 0 && strstr(fc.path, "catalog-r") != NULL);
+        }
+        CHECK(bd_find_catalog_copies(at("src"), NULL, NULL) == BD_ERR_NOT_FOUND);
+    }
     bd_catalog_close(cat);
     CHECK(!exists(at("test.brodalf.lock")));
 
@@ -1998,8 +2291,9 @@ int main(void)
     test_mtimes();
 #endif
     test_recover_and_relocate();
-    test_replace_drive();
+    test_lost_drive();
     test_deleted_files();
+    test_bitrot_and_sizes();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

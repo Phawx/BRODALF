@@ -20,6 +20,36 @@
 /* 100ns intervals between 1601-01-01 and 1970-01-01. */
 #define BD_EPOCH_DIFF 116444736000000000LL
 
+/* What Windows does to a path without the \\?\ prefix, and does not do
+ * with it: a run of separators counts as one, a "." part goes, and ".."
+ * takes away the part before it, never what keep covers (the "C:\" of a
+ * drive path, or the "\\server\share\" of a network one). In place, on a
+ * path with '\\' separators only. Without it, C:\a\b\..\c would name a
+ * folder called ".." once prefixed. */
+static void squeeze_dots(char *p, size_t keep)
+{
+    char *top = p + keep, *out = top, *in = top;
+    while (*in) {
+        while (*in == '\\') in++;
+        if (!*in) break;
+        char *e = in;
+        while (*e && *e != '\\') e++;
+        size_t seg = (size_t)(e - in);
+        if (seg == 1 && in[0] == '.') {
+            /* nothing */
+        } else if (seg == 2 && in[0] == '.' && in[1] == '.') {
+            while (out > top && out[-1] != '\\') out--;
+            if (out > top) out--; /* the '\' before that part */
+        } else {
+            if (out > top) *out++ = '\\';
+            memmove(out, in, seg);
+            out += seg;
+        }
+        in = e;
+    }
+    *out = '\0';
+}
+
 /* UTF-8 -> UTF-16 with '\\' separators. Absolute paths get the long-path
  * prefix so paths longer than MAX_PATH work: \\?\ for a drive path
  * (C:\x becomes \\?\C:\x), \\?\UNC\ for a network path (\\server\share\x
@@ -36,10 +66,15 @@ static wchar_t *to_wide(const char *path)
     const wchar_t *prefix = NULL;
     if (len >= 3 && tmp[1] == ':' && tmp[2] == '\\') {
         prefix = L"\\\\?\\";
+        squeeze_dots(tmp, 3);
     } else if (len >= 3 && tmp[0] == '\\' && tmp[1] == '\\' && tmp[2] != '\\' &&
                !((tmp[2] == '?' || tmp[2] == '.') && tmp[3] == '\\')) {
         prefix = L"\\\\?\\UNC\\";
         from = tmp + 2; /* \\server\share -> \\?\UNC\server\share */
+        /* "\\server\share\" stays as it is. */
+        const char *share = strchr(from, '\\');
+        const char *after = share ? strchr(share + 1, '\\') : NULL;
+        if (after) squeeze_dots(tmp, (size_t)(after + 1 - tmp));
     }
     size_t plen = prefix ? wcslen(prefix) : 0;
     int n = MultiByteToWideChar(CP_UTF8, 0, from, -1, NULL, 0);

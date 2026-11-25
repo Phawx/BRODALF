@@ -651,6 +651,10 @@ static HICON g_warn_hicon;
 static int64_t g_warn_media; /* the first drive it is about: a click shows it on Next backup */
 static wchar_t g_tip_text[4096];
 static volatile LONG g_stopping;
+/* Windows is shutting down or signing out (WM_ENDSESSION): no job starts
+ * any more, and the one that was running is waited for. */
+static volatile LONG g_session_end;
+static HANDLE g_worker_thread; /* the running (or last) job's thread */
 static int g_close_after, g_running_kind;
 /* >0 while the UI thread is in the middle of a command or of what comes
  * after a job (its end-of-job prompts), perhaps waiting in a message box:
@@ -1973,7 +1977,7 @@ static DWORD WINAPI worker(LPVOID arg)
     /* What the window shows of the drives and files, read now while the
      * catalog is still the worker's. A refresh keeps the bar and its line
      * for the job before it. */
-    if (!j->skip_figures) {
+    if (!j->skip_figures && !g_session_end) {
         if (j->kind != JOB_REFRESH) post_busy_text(T(L"Updating the figures for your drives and files..."));
         j->figs = read_figures();
     }
@@ -2005,6 +2009,7 @@ static void set_busy(int busy)
     if (busy && f && f != g_stop && IsChild(g_main, f)) g_focus_job = f;
     if (!busy) hide_stop();
     InterlockedExchange(&g_busy, busy);
+    if (!busy && g_main) ShutdownBlockReasonDestroy(g_main);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy && g_cat);
     int refresh = busy && g_running_kind == JOB_REFRESH; /* a save: it has no Stop */
     int was_shown = g_nodb_open && IsWindowVisible(g_nodb_open);
@@ -2034,24 +2039,33 @@ static void set_busy(int busy)
     }
 }
 
+/* What each kind of job is doing, for the status bar, for Windows' list of
+ * what holds up a shutdown, and for the note after one cut a job short. */
+static const wchar_t *g_job_doing[] = {N_(L"Looking for BRODALF drives..."), N_(L"Scanning your backup roots..."),
+                                       N_(L"Backing up..."), N_(L"Checking every copy on the drive..."), N_(L"Restoring..."),
+                                       N_(L"Reading back copies not read lately..."), N_(L"Reading files that are in use from a shadow copy..."),
+                                       N_(L"Compressing the copies on the drive..."), N_(L"Saving your changes and updating the figures...")};
+
 static void start_next_job(void)
 {
-    if (g_busy || g_ui_depth || !g_queue) return;
+    if (g_busy || g_ui_depth || !g_queue || g_session_end) return;
     job *j = g_queue;
     g_queue = j->next;
     j->next = NULL;
     InterlockedExchange(&g_stopping, 0);
     g_running_kind = j->kind;
     set_busy(1);
-    static const wchar_t *starting[] = {N_(L"Looking for BRODALF drives..."), N_(L"Scanning your backup roots..."),
-                                        N_(L"Backing up..."), N_(L"Checking every copy on the drive..."), N_(L"Restoring..."),
-                                        N_(L"Reading back copies not read lately..."), N_(L"Reading files that are in use from a shadow copy..."),
-                                        N_(L"Compressing the copies on the drive..."), N_(L"Saving your changes and updating the figures...")};
     const wchar_t *what = j->kind == JOB_SCAN && j->bitrot      ? T(L"Bit-rot scan: reading every file again...")
                           : j->kind == JOB_COMPRESS && !j->compress_on ? T(L"Making the copies on the drive whole again...")
                           : j->kind == JOB_REFRESH && !j->saving ? T(L"Updating the figures for your drives and files...")
-                                                                  : T(starting[j->kind]);
+                                                                  : T(g_job_doing[j->kind]);
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
+    /* If Windows shuts down or signs out now, its list of what holds that
+     * up says what BRODALF is doing (WM_ENDSESSION stops it and saves). */
+    wchar_t reason[400];
+    if (j->kind == JOB_REFRESH) swprintf(reason, 400, L"%ls", what);
+    else swprintf(reason, 400, T(L"%ls Shutting down now stops it; what was done until then is kept."), what);
+    ShutdownBlockReasonCreate(g_main, reason);
     /* A refresh says what it does in the status bar only: the bar and its
      * line still show how the last job ended. */
     if (j->kind != JOB_REFRESH) {
@@ -2060,8 +2074,13 @@ static void start_next_job(void)
         show_file_progress(-1, L"");
     }
     HANDLE h = CreateThread(NULL, 0, worker, j, 0, NULL);
-    if (h) CloseHandle(h);
-    else { set_busy(0); job_free(j); }
+    if (h) {
+        if (g_worker_thread) CloseHandle(g_worker_thread);
+        g_worker_thread = h;
+    } else {
+        set_busy(0);
+        job_free(j);
+    }
 }
 
 /* Ask the running job to stop, and drop the ones waiting after it. */
@@ -9448,6 +9467,63 @@ static void dpi_changed(HWND hwnd, int dpi, const RECT *want)
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
+static void close_database(void);
+
+/* Windows is shutting down or signing out (WM_ENDSESSION). The running job
+ * is stopped and waited for, so what it did is saved, and the database is
+ * saved and closed, which also removes its working copy. The next start
+ * says which job was cut short. */
+static void end_session(void)
+{
+    InterlockedExchange(&g_session_end, 1);
+    if (g_busy) {
+        int kind = g_running_kind;
+        bd_applog("Windows is shutting down or signing out: stopping the running job");
+        ShutdownBlockReasonCreate(g_main, T(L"Stopping the job and saving the database..."));
+        if (kind != JOB_REFRESH) {
+            DWORD v = (DWORD)kind;
+            RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"Interrupted", REG_DWORD, &v, sizeof(v));
+        }
+        stop_job(); /* a save (JOB_REFRESH) is let finish */
+        if (!g_worker_thread || WaitForSingleObject(g_worker_thread, 60000) != WAIT_OBJECT_0) {
+            bd_applog("the job did not stop in time: the database could not be saved");
+            return;
+        }
+        /* The job's end, which the window would have shown. */
+        MSG m;
+        while (PeekMessageW(&m, g_main, WM_APP_DONE, WM_APP_DONE, PM_REMOVE)) {
+            job *j = (job *)m.lParam;
+            char *s = narrow(j->summary);
+            bd_applog("the job ended: %s", s ? s : "");
+            free(s);
+            job_free(j);
+        }
+    } else {
+        bd_applog("Windows is shutting down or signing out");
+    }
+    /* With a dialog open its code still holds the database: only save. */
+    if (g_ui_depth) {
+        if (g_cat) bd_catalog_save(g_cat);
+    } else {
+        close_database();
+    }
+    ShutdownBlockReasonDestroy(g_main);
+}
+
+/* After a shutdown or sign-out cut a job short, the next start says so. */
+static void say_interrupted(void)
+{
+    DWORD kind = 0, n = sizeof(kind);
+    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"Interrupted", RRF_RT_REG_DWORD, NULL, &kind, &n) != ERROR_SUCCESS) return;
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"Interrupted");
+    if (kind >= sizeof(g_job_doing) / sizeof(g_job_doing[0])) return;
+    wchar_t text[600];
+    swprintf(text, 600, T(L"Windows shut down or signed out while BRODALF was busy (%ls). BRODALF stopped it and kept what was done "
+                          L"until then; start it again to finish it."),
+             T(g_job_doing[kind]));
+    log_append(text);
+}
+
 static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     LRESULT themed;
@@ -9710,6 +9786,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_APP_DONE: {
         job *j = (job *)lp;
+        if (g_session_end) { /* the database is closed (end_session) */
+            job_free(j);
+            return 0;
+        }
         int stopping = g_stopping != 0;
         if (j->figs) {
             figures_free(g_figs);
@@ -9846,6 +9926,9 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
         return TRUE;
+    case WM_ENDSESSION:
+        if (wp) end_session();
+        return 0;
     case WM_CLOSE:
         if (g_busy && g_running_kind == JOB_REFRESH) {
             /* A change is being saved: close once it is. */
@@ -10507,6 +10590,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);
     update_drives_label();
+    say_interrupted();
 
     /* A database named on the command line (a double-click) is tried
      * first; otherwise BRODALF asks which to use. With none open the

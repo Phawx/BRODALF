@@ -363,13 +363,40 @@ static int fill_path_keys(bd_catalog *cat)
     return rc;
 }
 
+/* Called as each transaction commits. A transaction that wrote to the
+ * main database (the catalog's own tables, not the TEMP ones) is a change
+ * to save, however it was made: rows, a DELETE without WHERE (which SQLite
+ * runs without the update hook), the schema. The callback only reads the
+ * connection's state, as the commit hook must. */
+static int on_commit(void *ctx)
+{
+    bd_catalog *cat = ctx;
+    if (sqlite3_txn_state(cat->db, "main") == SQLITE_TXN_WRITE) cat->changes++;
+    return 0;
+}
+
+static int schema_cookie(bd_catalog *cat)
+{
+    sqlite3_stmt *q;
+    int v = -1;
+    if (sqlite3_prepare_v2(cat->db, "PRAGMA main.schema_version", -1, &q, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_step(q) == SQLITE_ROW) v = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    return v;
+}
+
 static bd_status open_db(bd_catalog *cat)
 {
     if (sqlite3_open_v2(cat->work_path, &cat->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "cannot open working database");
     sqlite3_busy_timeout(cat->db, 5000);
+    sqlite3_commit_hook(cat->db, on_commit, cat);
     if (bd_exec(cat, "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") != 0)
         return bd_fail_db(cat, "cannot configure database");
+    /* What opening changes is saved with the next save; when it changes
+     * nothing (the fix-ups below find nothing to fix), the catalog counts
+     * as saved once it is open. */
+    int cookie = schema_cookie(cat);
     if (bd_exec(cat, SCHEMA_SQL) != 0) return bd_fail_db(cat, "cannot create catalog tables");
     /* Schema 1 catalogs have no media.encrypted column. */
     sqlite3_stmt *probe;
@@ -422,10 +449,14 @@ static bd_status open_db(bd_catalog *cat)
      * for good: it is lost or broken now. */
     if (bd_exec(cat, "UPDATE media SET lost_why='broken' WHERE retired_ms IS NOT NULL AND lost_why IS NULL") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
     /* Before 0.8.0 only whole drives were encrypted and copies.encrypted
      * was never set: every copy on an encrypted drive is sealed. */
     if (bd_exec(cat, "UPDATE copies SET encrypted=1 WHERE encrypted=0 AND media_id IN (SELECT id FROM media WHERE encrypted<>0)") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
+    int now_cookie = schema_cookie(cat);
+    if (cookie < 0 || now_cookie != cookie) cat->open_upgraded = 1;
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
                      /* Copies of files in use taken from a shadow copy, read in their place. */
@@ -621,15 +652,34 @@ int64_t bd_catalog_revision(bd_catalog *cat)
     return cat && cat->db && meta_get(cat, "revision", v, sizeof(v)) ? atoll(v) : 0;
 }
 
+int bd_catalog_unsaved(bd_catalog *cat)
+{
+    if (!cat || !cat->db) return 0;
+    bd_stat_t st;
+    return cat->changes != cat->saved_changes || bd_stat(cat->path, &st) != 0;
+}
+
+void bd_catalog_mark_changed(bd_catalog *cat)
+{
+    if (cat) cat->changes++;
+}
+
 /* Every save is a new revision, so copies of the catalog on the drives
- * can be told apart and the newest found. */
+ * can be told apart and the newest found. A save with nothing to save does
+ * nothing: no new revision, no rewrite of the file. */
 bd_status bd_catalog_save(bd_catalog *cat)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
+    if (!bd_catalog_unsaved(cat)) return BD_OK;
     char v[32];
     snprintf(v, sizeof(v), "%lld", (long long)(bd_catalog_revision(cat) + 1));
     if (meta_set(cat, "revision", v) != 0) return bd_fail_db(cat, "count the save");
-    return bd_catalog_save_to(cat, cat->path, bd_catalog_file_encrypted(cat));
+    /* What the snapshot will hold: a change made from here on (another
+     * thread) keeps the catalog unsaved. */
+    int64_t at = cat->changes;
+    bd_status s = bd_catalog_save_to(cat, cat->path, bd_catalog_file_encrypted(cat));
+    if (s == BD_OK) cat->saved_changes = at;
+    return s;
 }
 
 bd_status bd_catalog_create(const char *path, bd_catalog **out)
@@ -768,13 +818,17 @@ static bd_status open_with_secret(const char *path, const char *secret, int reco
     if (s == BD_OK && !meta_get(cat, "catalog_uuid", cat->uuid, sizeof(cat->uuid)))
         s = bd_fail(cat, BD_ERR_FORMAT, "%s has no catalog id", path);
     if (s == BD_OK) {
-        char v[32];
+        char v[32] = "", now[32] = "";
         if (meta_get(cat, "schema_version", v, sizeof(v)) && atoi(v) > BD_SCHEMA_VERSION)
             s = bd_fail(cat, BD_ERR_FORMAT, "%s was made by a newer BRODALF", path);
         else if (bd_catalog_note_schema(cat) != 0)
             s = bd_fail_db(cat, "cannot upgrade catalog");
+        else if (!meta_get(cat, "schema_version", now, sizeof(now)) || strcmp(now, v) != 0)
+            cat->open_upgraded = 1;
     }
     if (s != BD_OK) return fail_open(cat, s, 1);
+    /* The file holds what is open now, unless opening changed something. */
+    if (!cat->open_upgraded) cat->saved_changes = cat->changes;
     *out = cat;
     return BD_OK;
 }

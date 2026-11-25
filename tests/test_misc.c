@@ -351,6 +351,92 @@ static void test_stale_work_files(void)
 }
 #endif
 
+static int64_t file_mtime(const char *path)
+{
+    bd_stat_t st;
+    return bd_stat(path, &st) == 0 ? st.mtime_ns : -1;
+}
+
+/* Item 8: a save with nothing to save leaves the file and the revision
+ * alone; every kind of change still gets saved. */
+static void test_save_only_changes(void)
+{
+    begin("save");
+    bd_mkdirs(at("src"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("test.brodalf"), &cat), NULL);
+    int64_t rev = bd_catalog_revision(cat), t = file_mtime(at("test.brodalf"));
+    CHECK(rev >= 1 && t > 0);
+    CHECK(!bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == rev && file_mtime(at("test.brodalf")) == t);
+
+    /* A change through the API. */
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("src"), &src), cat);
+    CHECK(bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == rev + 1);
+    rev++;
+
+    /* Only the session's TEMP tables: nothing to save. */
+    CHECK(bd_exec(cat, "INSERT INTO temp.missing_sources(source_id) VALUES(1); DELETE FROM temp.missing_sources") == 0);
+    CHECK(!bd_catalog_unsaved(cat));
+
+    /* A DELETE without WHERE on a table no foreign key involves, which
+     * SQLite runs without the update hook. */
+    CHECK(bd_exec(cat, "INSERT INTO settings VALUES('test_a', '1'), ('test_b', '2')") == 0);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == ++rev);
+    CHECK(bd_exec(cat, "DELETE FROM settings") == 0);
+    CHECK(bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == ++rev);
+
+    /* A schema change. */
+    CHECK(bd_exec(cat, "CREATE INDEX IF NOT EXISTS test_only ON space_log(event)") == 0);
+    CHECK(bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == ++rev);
+    CHECK(bd_exec(cat, "DROP INDEX test_only") == 0);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == ++rev);
+
+    /* A change kept outside the database. */
+    bd_catalog_mark_changed(cat);
+    CHECK(bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == ++rev);
+
+    /* A save that fails leaves the change unsaved for the next one. */
+    CHECK(bd_exec(cat, "INSERT INTO settings VALUES('test_only', '1')") == 0);
+    bd_mkdirs(at("test.brodalf.saving"));
+    CHECK(bd_catalog_save(cat) != BD_OK);
+    bd_rmdir_empty(at("test.brodalf.saving"));
+    CHECK(bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(!bd_catalog_unsaved(cat));
+    rev = bd_catalog_revision(cat);
+
+    /* The file gone: written again. */
+    CHECK(bd_remove(at("test.brodalf")) == 0);
+    CHECK(bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(exists(at("test.brodalf")) && bd_catalog_revision(cat) == ++rev);
+    bd_catalog_close(cat);
+
+    /* Opened and saved with nothing changed: the same file. */
+    t = file_mtime(at("test.brodalf"));
+    REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &cat), NULL);
+    CHECK(!bd_catalog_unsaved(cat));
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_catalog_revision(cat) == rev && file_mtime(at("test.brodalf")) == t);
+    /* The setting written before the failed save is in the file. */
+    char v[8] = "";
+    CHECK(bd_setting_get(cat, "test_only", v, sizeof(v)) && strcmp(v, "1") == 0);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -363,6 +449,7 @@ int main(void)
 
     test_drive_status();
     test_mass_change();
+    test_save_only_changes();
 #ifndef _WIN32
     test_walk_error();
     test_stale_work_files();

@@ -34,6 +34,12 @@ struct bd_catalog {
     uint8_t key[32];  /* master key while unlocked */
     int have_key;
     volatile long cancel; /* bd_catalog_cancel was called */
+    /* Changes since the file was last written: changes counts commits that
+     * wrote to the main database (the commit hook) and calls of
+     * bd_catalog_mark_changed; saved_changes is what it was at the last
+     * save that worked (or at open, when opening changed nothing). */
+    int64_t changes, saved_changes;
+    int open_upgraded; /* opening changed the database (schema upgrade, fix-ups) */
 };
 
 /* Record an error message on the catalog and return status. */

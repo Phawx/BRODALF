@@ -76,9 +76,19 @@ bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *c
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
-/* Write the working copy back to the .brodalf file atomically. Every save
- * is a new revision of the catalog. */
+/* Write the working copy back to the .brodalf file atomically, as a new
+ * revision of the catalog, when anything changed since the catalog was
+ * opened or last saved; with nothing to save it does nothing (no new
+ * revision, the file is not rewritten) and returns BD_OK. Every committed
+ * change to the catalog's own tables counts, however it was made, and so
+ * does bd_catalog_mark_changed; a catalog file that is not there is always
+ * written. A save that fails leaves the changes unsaved for the next one. */
 bd_status bd_catalog_save(bd_catalog *cat);
+/* 1 if bd_catalog_save has something to write, 0 if not. */
+int bd_catalog_unsaved(bd_catalog *cat);
+/* For a change kept outside the catalog's tables: the next bd_catalog_save
+ * writes the file even if nothing in the database changed. */
+void bd_catalog_mark_changed(bd_catalog *cat);
 /* How many times the catalog has been saved: its revision. The copy put on
  * a drive carries it in its name, and copies are never overwritten, so a
  * drive keeps every revision it was given. */

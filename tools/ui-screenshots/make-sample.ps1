@@ -95,6 +95,7 @@ Run-Cli @("new", $Db, $docs, $photos, $projects)
 Run-Cli @("passphrase", $Db)
 Remove-Item Env:\BRODALF_NEW_PASSPHRASE
 $env:BRODALF_PASSPHRASE = $Passphrase
+Run-Cli @("scan", $Db) @(0, 2)
 Run-Cli @("roots", $Db)
 Run-Cli @("encrypt-folder", $Db, "Documents", "Taxes")
 Run-Cli @("star", $Db, "Documents", "Letters")
@@ -103,7 +104,6 @@ Run-Cli @("drive", $Db, "$Root\Drives\Blue", "Blue", "--location", "Desk drawer 
 Run-Cli @("drive", $Db, "R:\", "Red", "--location", "At my sister's")
 Run-Cli @("drive", $Db, "$Root\Drives\Gray", "Gray", "--location", "Office")
 Run-Cli @("place", $Db, "$Root\Cloud\OneDrive", "OneDrive folder on this PC", "--limit", "2GB")
-Run-Cli @("scan", $Db) @(0, 2)
 Run-Cli @("backup", $Db, "$Root\Drives\Blue", "R:\", "$Root\Drives\Gray", "$Root\Cloud\OneDrive") @(0, 2)
 Run-Cli @("drive-lost", $Db, "Gray", "broken", "--yes")
 

@@ -20,8 +20,11 @@
 /* 100ns intervals between 1601-01-01 and 1970-01-01. */
 #define BD_EPOCH_DIFF 116444736000000000LL
 
-/* UTF-8 -> UTF-16 with '\\' separators. Absolute drive paths get the
- * \\?\ prefix so paths longer than MAX_PATH work. Caller frees. */
+/* UTF-8 -> UTF-16 with '\\' separators. Absolute paths get the long-path
+ * prefix so paths longer than MAX_PATH work: \\?\ for a drive path
+ * (C:\x becomes \\?\C:\x), \\?\UNC\ for a network path (\\server\share\x
+ * becomes \\?\UNC\server\share\x). A path that already starts with \\?\ or
+ * \\.\ is left as it is, and so is a relative one. Caller frees. */
 static wchar_t *to_wide(const char *path)
 {
     size_t len = strlen(path);
@@ -29,24 +32,55 @@ static wchar_t *to_wide(const char *path)
     if (!tmp) return NULL;
     for (size_t i = 0; i <= len; i++) tmp[i] = path[i] == '/' ? '\\' : path[i];
 
-    int prefix = (len >= 3 && tmp[1] == ':' && tmp[2] == '\\');
-    int n = MultiByteToWideChar(CP_UTF8, 0, tmp, -1, NULL, 0);
+    const char *from = tmp;
+    const wchar_t *prefix = NULL;
+    if (len >= 3 && tmp[1] == ':' && tmp[2] == '\\') {
+        prefix = L"\\\\?\\";
+    } else if (len >= 3 && tmp[0] == '\\' && tmp[1] == '\\' && tmp[2] != '\\' &&
+               !((tmp[2] == '?' || tmp[2] == '.') && tmp[3] == '\\')) {
+        prefix = L"\\\\?\\UNC\\";
+        from = tmp + 2; /* \\server\share -> \\?\UNC\server\share */
+    }
+    size_t plen = prefix ? wcslen(prefix) : 0;
+    int n = MultiByteToWideChar(CP_UTF8, 0, from, -1, NULL, 0);
     if (n <= 0) { free(tmp); return NULL; }
-    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n + (prefix ? 4 : 0)));
+    wchar_t *w = malloc(sizeof(wchar_t) * ((size_t)n + plen));
     if (!w) { free(tmp); return NULL; }
-    wchar_t *dst = w;
-    if (prefix) { wcscpy(w, L"\\\\?\\"); dst = w + 4; }
-    MultiByteToWideChar(CP_UTF8, 0, tmp, -1, dst, n);
+    if (prefix) wcscpy(w, prefix);
+    MultiByteToWideChar(CP_UTF8, 0, from, -1, w + plen, n);
     free(tmp);
     return w;
 }
 
+/* A network path as 0.9.0 gave it, without the \\?\UNC\ prefix
+ * (\\server\share\x), in place: for the volume queries, which only need
+ * the share and are not documented for the prefixed form. */
+static wchar_t *unprefix_unc(wchar_t *w)
+{
+    if (w && _wcsnicmp(w, L"\\\\?\\UNC\\", 8) == 0) {
+        w[1] = L'\\';
+        memmove(w + 2, w + 8, sizeof(wchar_t) * (wcslen(w + 8) + 1));
+    }
+    return w;
+}
+
+#ifndef WC_ERR_INVALID_CHARS
+#define WC_ERR_INVALID_CHARS 0x00000080 /* winnls.h, Windows Vista and later */
+#endif
+
+/* UTF-16 -> UTF-8. NULL when out of memory or when w is not valid UTF-16
+ * (an unpaired surrogate, which NTFS allows in names): such a name is not
+ * made up with U+FFFD in its place, since the made-up name would not open
+ * the file. Caller frees. */
 static char *to_utf8(const wchar_t *w)
 {
-    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w, -1, NULL, 0, NULL, NULL);
     if (n <= 0) return NULL;
     char *s = malloc((size_t)n);
-    if (s) WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL);
+    if (s && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w, -1, s, n, NULL, NULL) <= 0) {
+        free(s);
+        return NULL;
+    }
     return s;
 }
 
@@ -372,6 +406,63 @@ int bd_create_exclusive(const char *path)
     return 0;
 }
 
+int bd_work_owner_begin(const char *marker_path, void **handle)
+{
+    *handle = NULL;
+    wchar_t *w = to_wide(marker_path);
+    if (!w) return -1;
+    /* Held open for the catalog's life; others may read it, nobody may
+     * open it without sharing while this handle is open. */
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%lu\n", (unsigned long)GetCurrentProcessId());
+    DWORD put = 0;
+    if (!WriteFile(h, buf, (DWORD)len, &put, NULL) || put != (DWORD)len) {
+        CloseHandle(h);
+        return -1;
+    }
+    *handle = h;
+    return 0;
+}
+
+void bd_work_owner_end(void *handle)
+{
+    if (handle && handle != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)handle);
+}
+
+/* Open with no sharing and close again: 0 it opened (*write_ms its last
+ * write), 2 it is not there, 1 anything else (in use, no access). */
+static int open_alone(const char *path, int64_t *write_ms)
+{
+    wchar_t *w = to_wide(path);
+    if (!w) return 1;
+    HANDLE h = CreateFileW(w, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 2 : 1;
+    FILETIME ft;
+    int ok = GetFileTime(h, NULL, NULL, &ft) != 0;
+    CloseHandle(h);
+    if (!ok) return 1;
+    *write_ms = filetime_to_ns(ft) / 1000000;
+    return 0;
+}
+
+int bd_work_in_use(const char *marker_path, char **paths, size_t n)
+{
+    int64_t when = 0, now = bd_now_ms();
+    int marker = open_alone(marker_path, &when);
+    if (marker == 1) return 1;
+    for (size_t i = 0; i < n; i++) {
+        int r = open_alone(paths[i], &when);
+        if (r == 1) return 1;
+        if (r == 0 && marker == 2 && now - when < 10 * 60 * 1000) return 1;
+    }
+    return 0;
+}
+
 typedef struct {
     char **items;
     size_t len, cap;
@@ -420,10 +511,21 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             free(rel);
             continue;
         }
+        /* The error FindNextFileW stopped with, read before any other call
+         * can change it: anything but ERROR_NO_MORE_FILES means the folder
+         * was not read to the end. */
+        DWORD werr = ERROR_NO_MORE_FILES;
+        int bad_name = 0;
         do {
             if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
             char *name = to_utf8(fd.cFileName);
-            if (!name) continue;
+            if (!name) {
+                /* Reported against the folder, so the scan treats it as not
+                 * read in full and marks nothing in it deleted. */
+                if (err_cb && !bad_name) err_cb(ctx, pattern, "a name in this folder is not valid Unicode and cannot be read");
+                bad_name = 1;
+                continue;
+            }
             char *child_rel = malloc(rlen + strlen(name) + 2);
             if (!child_rel) { free(name); rc = -1; stop = 1; break; }
             sprintf(child_rel, rlen ? "%s/%s" : "%s%s", rel, name);
@@ -435,8 +537,13 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             else if (st.is_dir && stack_push(&stack, child_rel) != 0) { rc = -1; stop = 1; }
             free(child_rel);
             free(name);
-        } while (!stop && FindNextFileW(h, &fd));
+        } while (!stop && (FindNextFileW(h, &fd) || ((werr = GetLastError()), 0)));
         FindClose(h);
+        if (!stop && werr != ERROR_NO_MORE_FILES && err_cb) {
+            char msg[80];
+            snprintf(msg, sizeof(msg), "the folder could not be read to the end (error %lu)", (unsigned long)werr);
+            err_cb(ctx, pattern, msg);
+        }
         free(pattern);
         free(rel);
     }
@@ -492,7 +599,7 @@ int bd_temp_dir(char *out, size_t out_len)
 
 int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 {
-    wchar_t *w = to_wide(path);
+    wchar_t *w = unprefix_unc(to_wide(path));
     if (!w) return -1;
     ULARGE_INTEGER avail, total, freeb;
     BOOL ok = GetDiskFreeSpaceExW(w, &avail, &total, &freeb);
@@ -507,13 +614,29 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 
 int bd_fs_can_compress(const char *path)
 {
-    wchar_t *w = to_wide(path), vol[MAX_PATH + 8];
+    wchar_t *w = unprefix_unc(to_wide(path)), vol[MAX_PATH + 8];
     if (!w) return 0;
     BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
     free(w);
     DWORD flags = 0;
     if (!ok || !GetVolumeInformationW(vol, NULL, 0, NULL, NULL, &flags, NULL, 0)) return 0;
     return (flags & FILE_FILE_COMPRESSION) != 0;
+}
+
+int bd_fs_name(const char *path, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+    wchar_t *w = unprefix_unc(to_wide(path)), vol[MAX_PATH + 8], fs[MAX_PATH + 1];
+    if (!w) return -1;
+    BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
+    free(w);
+    if (!ok || !GetVolumeInformationW(vol, NULL, 0, NULL, NULL, NULL, fs, MAX_PATH + 1)) return -1;
+    char *u = to_utf8(fs);
+    if (!u) return -1;
+    int rc = strlen(u) < cap ? 0 : -1;
+    if (rc == 0) strcpy(out, u);
+    free(u);
+    return rc;
 }
 
 int bd_fs_compressed(const char *path)
@@ -647,8 +770,9 @@ int bd_cpu_count(void)
  * the path was written (relative or not, short 8.3 names, case, / or \). */
 static int catalog_mutex_name(const char *catalog_path, wchar_t *name, size_t cap)
 {
-    /* to_wide gives drive paths the \\?\ prefix and leaves relative and UNC
-     * paths alone; GetFullPathNameW keeps a prefix it is given. */
+    /* to_wide gives drive paths the \\?\ prefix and network paths the
+     * \\?\UNC\ prefix, and leaves relative paths alone; GetFullPathNameW
+     * keeps a prefix it is given. */
     wchar_t *w = to_wide(catalog_path);
     if (!w) return -1;
     DWORD n = GetFullPathNameW(w, 0, NULL, NULL);
@@ -660,7 +784,16 @@ static int catalog_mutex_name(const char *catalog_path, wchar_t *name, size_t ca
     wchar_t *lng = ln ? malloc(sizeof(wchar_t) * ln) : NULL;
     if (lng && (got = GetLongPathNameW(full, lng, ln)) > 0 && got < ln) { free(full); full = lng; }
     else free(lng);
-    wchar_t *p = wcsncmp(full, L"\\\\?\\", 4) == 0 ? full + 4 : full;
+    /* The name is of the path without its prefix, as 0.9.0 made it (it
+     * gave network paths none), so that both keep each other out of the
+     * same catalog: \\?\C:\x is C:\x, \\?\UNC\server\x is \\server\x. */
+    wchar_t *p = full;
+    if (_wcsnicmp(full, L"\\\\?\\UNC\\", 8) == 0) {
+        p = full + 6;
+        p[0] = L'\\';
+    } else if (wcsncmp(full, L"\\\\?\\", 4) == 0) {
+        p = full + 4;
+    }
     CharUpperBuffW(p, (DWORD)wcslen(p));
     char *u = to_utf8(p);
     free(full);

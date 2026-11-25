@@ -1,6 +1,7 @@
 /* Encryption: passphrase, encrypted drives, encrypted catalog file. */
 #include "brodalf.h"
 #include "internal.h"
+#include "test_tree.h"
 #include "sqlite3.h"
 
 #include <stdio.h>
@@ -612,6 +613,9 @@ int main(void)
     REQUIRE_OK(bd_catalog_open_with(at("c.brodalf"), PASS2, &cat), NULL);
     bd_catalog_close(cat);
 
+    remove_tree(base);
+    bd_stat_t gone;
+    CHECK(bd_stat(base, &gone) != 0);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

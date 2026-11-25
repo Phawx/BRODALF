@@ -108,7 +108,7 @@ target_compile_definitions(brodalf_core PRIVATE
     BRODALF_VERSION="${PROJECT_VERSION}"
     BRODALF_BUILD_ID="${BRODALF_BUILD_ID}")
 if(WIN32)
-    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 ole32 user32)
+    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 authz ole32 user32)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)
 else()
     find_package(Threads REQUIRED)
@@ -138,10 +138,29 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_blake3 PRIVATE brodalf_core)
     target_include_directories(test_blake3 PRIVATE src)
     add_test(NAME blake3 COMMAND test_blake3)
+    add_executable(test_misc tests/test_misc.c)
+    target_link_libraries(test_misc PRIVATE brodalf_core)
+    target_include_directories(test_misc PRIVATE src)
+    add_test(NAME misc COMMAND test_misc)
+    add_test(NAME cli_exit_codes
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:brodalf-cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli-exit-codes
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_exit_codes.cmake)
     add_executable(bench_many tests/bench_many.c)
     target_link_libraries(bench_many PRIVATE brodalf_core)
     target_include_directories(bench_many PRIVATE src)
     add_test(NAME many_files COMMAND bench_many 5000)
+    # The tests make their folders and the catalogs' working copies in the
+    # temp folder: under ctest that is one inside the build folder, made
+    # before and removed after them, so a test that stops half way (or one
+    # that does not tidy up after itself) leaves nothing in the system's.
+    set(BRODALF_TEST_TMP ${CMAKE_CURRENT_BINARY_DIR}/test-tmp)
+    add_test(NAME test_tmp_make COMMAND ${CMAKE_COMMAND} -E make_directory ${BRODALF_TEST_TMP})
+    add_test(NAME test_tmp_remove COMMAND ${CMAKE_COMMAND} -E remove_directory ${BRODALF_TEST_TMP})
+    set_tests_properties(test_tmp_make PROPERTIES FIXTURES_SETUP brodalf_test_tmp)
+    set_tests_properties(test_tmp_remove PROPERTIES FIXTURES_CLEANUP brodalf_test_tmp)
+    set_tests_properties(core crypto blake3 misc many_files PROPERTIES
+                         FIXTURES_REQUIRED brodalf_test_tmp
+                         ENVIRONMENT "TMPDIR=${BRODALF_TEST_TMP};TMP=${BRODALF_TEST_TMP};TEMP=${BRODALF_TEST_TMP}")
 endif()
 
 if(WIN32)

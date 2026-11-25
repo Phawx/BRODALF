@@ -5,6 +5,7 @@
  * the big numbers. */
 #include "brodalf.h"
 #include "internal.h"
+#include "test_tree.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -134,6 +135,16 @@ int main(int argc, char **argv)
     REQUIRE_OK(bd_backup_sets(cat, sets, 2, &nsets), cat);
     CHECK(sets[0].files_done == n && sets[1].files_done == 0);
 
+    bd_media_status ms;
+    t0 = bd_now_ms();
+    REQUIRE_OK(bd_media_status_get(cat, drive, &ms), cat);
+    lap("drive status", n);
+    CHECK(ms.files_current == n && ms.files_behind == 0 && ms.files_not_here == 0);
+
+    REQUIRE_OK(bd_backup_preview(cat, drive, 0, &pv), cat);
+    lap("what a backup would do now", n);
+    CHECK(pv.files_to_copy == 0 && pv.files_held == n);
+
     bd_check_stats cs;
     t0 = bd_now_ms();
     REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
@@ -146,6 +157,9 @@ int main(int argc, char **argv)
     CHECK(rk.files_at_risk == n);
 
     bd_catalog_close(cat);
+    remove_tree(base);
+    bd_stat_t gone;
+    CHECK(bd_stat(base, &gone) != 0);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

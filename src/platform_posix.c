@@ -7,10 +7,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#ifdef __linux__
+#include <sys/vfs.h>
+#endif
 #include <sys/time.h>
 #include <sys/types.h>
 #include <time.h>
@@ -197,6 +201,49 @@ int bd_create_exclusive(const char *path)
     return 0;
 }
 
+int bd_work_owner_begin(const char *marker_path, void **handle)
+{
+    *handle = NULL;
+    char *p = dup_native(marker_path);
+    if (!p) return -1;
+    int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    free(p);
+    if (fd < 0) return -1;
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%ld\n", (long)getpid());
+    int ok = write(fd, buf, (size_t)len) == (ssize_t)len;
+    if (close(fd) != 0) ok = 0;
+    return ok ? 0 : -1;
+}
+
+void bd_work_owner_end(void *handle)
+{
+    (void)handle;
+}
+
+int bd_work_in_use(const char *marker_path, char **paths, size_t n)
+{
+    (void)paths;
+    (void)n;
+    char *p = dup_native(marker_path);
+    if (!p) return 1;
+    int fd = open(p, O_RDONLY | O_CLOEXEC);
+    free(p);
+    if (fd < 0) return 1; /* no marker: the owner is not known */
+    char buf[32];
+    ssize_t got = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (got <= 0) return 1;
+    buf[got] = '\0';
+    char *end;
+    errno = 0;
+    long pid = strtol(buf, &end, 10);
+    if (errno != 0 || end == buf || (*end != '\n' && *end != '\0') || pid <= 0 || (pid_t)pid != pid) return 1;
+    if ((pid_t)pid == getpid()) return 1;
+    if (kill((pid_t)pid, 0) == 0) return 1;
+    return errno == ESRCH ? 0 : 1; /* EPERM: it runs, as another user */
+}
+
 typedef struct {
     char **items;
     size_t len, cap;
@@ -216,6 +263,8 @@ static int stack_push(str_stack *s, const char *v)
     s->len++;
     return 0;
 }
+
+const char *bd_test_walk_fail = NULL;
 
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
 {
@@ -242,8 +291,21 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             free(rel);
             continue;
         }
-        struct dirent *de;
-        while (!stop && (de = readdir(d)) != NULL) {
+        /* readdir gives NULL at the end and on an error, telling them apart
+         * only by errno, which everything in the loop may change: clear it
+         * just before each call. */
+        struct dirent *de = NULL;
+        int seen = 0, read_err = 0;
+        while (!stop) {
+            errno = 0;
+            if (bd_test_walk_fail && seen >= 1 && strcmp(rel, bd_test_walk_fail) == 0) {
+                de = NULL;
+                errno = EIO;
+            } else {
+                de = readdir(d);
+            }
+            if (!de) { read_err = errno; break; }
+            seen++;
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
             size_t nlen = strlen(de->d_name);
             char *child_rel = malloc(rlen + nlen + 2);
@@ -267,6 +329,9 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             free(child_path);
         }
         closedir(d);
+        /* What was read is kept; the folder is reported so the scan treats
+         * it as not read in full and marks nothing in it deleted. */
+        if (read_err && err_cb) err_cb(ctx, dir_path, strerror(read_err));
         free(dir_path);
         free(rel);
     }
@@ -335,6 +400,28 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 }
 
 /* File compression is Windows' own (NTFS): nothing to do elsewhere. */
+int bd_fs_name(const char *path, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+#ifdef __linux__
+    char *p = dup_native(path);
+    if (!p) return -1;
+    struct statfs sf;
+    int rc = statfs(p, &sf);
+    free(p);
+    if (rc != 0) return -1;
+    const char *name = "other";
+    if ((unsigned long)sf.f_type == 0x4d44ul) name = "FAT";              /* MSDOS_SUPER_MAGIC: FAT12, 16 or 32 */
+    else if ((unsigned long)sf.f_type == 0x2011bab0ul) name = "exFAT";   /* EXFAT_SUPER_MAGIC */
+    if (strlen(name) >= cap) return -1;
+    strcpy(out, name);
+    return 0;
+#else
+    (void)path;
+    return -1;
+#endif
+}
+
 int bd_fs_can_compress(const char *path)
 {
     (void)path;

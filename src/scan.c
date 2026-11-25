@@ -68,6 +68,119 @@ static int name_taken(bd_catalog *cat, const char *name)
     return taken;
 }
 
+/* A backup root's path as the file system compares paths: '/' between
+ * names, no empty, "." or ".." names (".." taken off with the name before
+ * it), no '/' at the end, and on Windows letter case folded as Windows
+ * folds it (bd_fold_case; in tests too with bd_test_fold_case). "\\?\"
+ * and "\\?\UNC\" prefixes are taken off; a UNC path keeps its leading
+ * "//". NULL when out of memory. */
+static char *root_key(const char *path)
+{
+    size_t len = strlen(path);
+    char *s = malloc(len + 3);
+    if (!s) return NULL;
+    for (size_t i = 0; i <= len; i++) s[i] = path[i] == '\\' ? '/' : path[i];
+    const char *p = s;
+    char prefix[4] = "";
+    if (strncmp(p, "//?/UNC/", 8) == 0) { p += 8; strcpy(prefix, "//"); }
+    else if (strncmp(p, "//?/", 4) == 0) p += 4;
+    if (!prefix[0]) {
+        if (p[0] == '/' && p[1] == '/') { strcpy(prefix, "//"); p += 2; }
+        else if (p[0] && p[1] == ':' && (p[2] == '/' || p[2] == '\0')) {
+            prefix[0] = p[0];
+            prefix[1] = ':';
+            prefix[2] = '/';
+            p += 2;
+        } else if (p[0] == '/') { strcpy(prefix, "/"); }
+    }
+    char *out = malloc(len + 4);
+    size_t *starts = malloc(sizeof(size_t) * (len / 2 + 2)); /* where each name kept begins */
+    if (!out || !starts) { free(s); free(out); free(starts); return NULL; }
+    size_t plen = strlen(prefix), n = plen, depth = 0, up = 0; /* up: ".." kept at the front (relative path) */
+    memcpy(out, prefix, plen);
+    while (*p) {
+        while (*p == '/') p++;
+        const char *e = p;
+        while (*e && *e != '/') e++;
+        size_t seg = (size_t)(e - p);
+        if (seg == 0 || (seg == 1 && p[0] == '.')) {
+            /* nothing */
+        } else if (seg == 2 && p[0] == '.' && p[1] == '.' && depth > up) {
+            n = starts[--depth];
+            if (n > plen) n--; /* the '/' before it */
+        } else if (seg == 2 && p[0] == '.' && p[1] == '.' && plen > 0) {
+            /* above the top of an absolute path: stays at the top */
+        } else {
+            if (n > plen) out[n++] = '/';
+            starts[depth++] = n;
+            if (seg == 2 && p[0] == '.' && p[1] == '.') up++;
+            memcpy(out + n, p, seg);
+            n += seg;
+        }
+        p = e;
+    }
+    free(starts);
+    out[n] = '\0';
+    free(s);
+#ifdef _WIN32
+    int fold = 1;
+#else
+    int fold = bd_test_fold_case;
+#endif
+    if (!fold) return out;
+    char *folded = bd_fold_case(out);
+    free(out);
+    return folded;
+}
+
+/* 1 if the folder whose key is inner is inside the one whose key is outer. */
+static int key_inside(const char *inner, const char *outer)
+{
+    size_t lo = strlen(outer);
+    if (strncmp(inner, outer, lo) != 0 || inner[lo] == '\0') return 0;
+    return inner[lo] == '/' || (lo > 0 && outer[lo - 1] == '/'); /* outer is "/" or "c:/" */
+}
+
+/* Two backup roots never overlap: a folder inside a root, or holding one,
+ * would have its files scanned and backed up twice, under two names. Roots
+ * that are stopped (active 0) are not scanned and do not count. *same gets
+ * the id of a root that is this very folder, spelled another way (any
+ * root, stopped or not), or 0. BD_OK, or BD_ERR_EXISTS with a message
+ * naming the root in the way. */
+static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except_id, int64_t *same)
+{
+    *same = 0;
+    char *key = root_key(path);
+    if (!key) return BD_ERR_NOMEM;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id, path, active FROM sources WHERE id<>? ORDER BY id", -1, &q, NULL) != SQLITE_OK) {
+        free(key);
+        return bd_fail_db(cat, "source lookup");
+    }
+    sqlite3_bind_int64(q, 1, except_id);
+    bd_status s = BD_OK;
+    while (s == BD_OK && sqlite3_step(q) == SQLITE_ROW) {
+        const char *other = (const char *)sqlite3_column_text(q, 1);
+        char *okey = other ? root_key(other) : NULL;
+        if (!okey) { s = BD_ERR_NOMEM; break; }
+        if (strcmp(key, okey) == 0) {
+            if (!*same) *same = sqlite3_column_int64(q, 0);
+        } else if (sqlite3_column_int(q, 2) && key_inside(key, okey)) {
+            s = bd_fail(cat, BD_ERR_EXISTS, "%s is inside %s, which is already a backup root: its files are backed up with it",
+                        path, other);
+        } else if (sqlite3_column_int(q, 2) && key_inside(okey, key)) {
+            s = bd_fail(cat, BD_ERR_EXISTS,
+                        "%s holds %s, which is already a backup root: a folder can be in only one backup root."
+                        " Stop backing up %s first, or choose another folder",
+                        path, other, other);
+        }
+        free(okey);
+    }
+    sqlite3_finalize(q);
+    free(key);
+    return s;
+}
+
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
 {
     bd_stat_t st;
@@ -88,6 +201,15 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
         return BD_OK;
     }
     sqlite3_finalize(q);
+
+    int64_t same = 0;
+    bd_status overlap = check_overlap(cat, path, 0, &same);
+    if (overlap == BD_OK && same) {
+        if (out_id) *out_id = same;
+        free(path);
+        return BD_OK;
+    }
+    if (overlap != BD_OK) { free(path); return overlap; }
 
     char *base = sanitize_name(path);
     if (base && name_reserved(base)) {
@@ -235,6 +357,21 @@ bd_status bd_source_skip_set(bd_catalog *cat, int64_t source_id, const char *pat
 bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active)
 {
     sqlite3_stmt *u;
+    if (active) {
+        /* Started again, it must not overlap a root added while it was stopped. */
+        char *path = NULL;
+        if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE id=?", -1, &u, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "change the backup root");
+        sqlite3_bind_int64(u, 1, source_id);
+        if (sqlite3_step(u) == SQLITE_ROW) path = bd_strdup((const char *)sqlite3_column_text(u, 0));
+        sqlite3_finalize(u);
+        if (path) {
+            int64_t same = 0;
+            bd_status s = check_overlap(cat, path, source_id, &same);
+            free(path);
+            if (s != BD_OK) return s;
+        }
+    }
     if (sqlite3_prepare_v2(cat->db, "UPDATE sources SET active=? WHERE id=?", -1, &u, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "change the backup root");
     sqlite3_bind_int(u, 1, active ? 1 : 0);
@@ -420,7 +557,8 @@ typedef struct {
     void *log_ctx;
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
-    sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged;
+    sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged, *clear_damaged;
+    int have_damaged; /* damaged_files has rows: a file read again may clear one */
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
     int db_error;
@@ -520,6 +658,17 @@ done:
     return rc;
 }
 
+/* The file was read and found right, or recorded as it is now: it is no
+ * longer listed as damaged. 0, or -1 (db_error set) on a database error. */
+static int forget_damage(scan_ctx *c, int64_t node_id)
+{
+    if (!c->have_damaged) return 0;
+    sqlite3_reset(c->clear_damaged);
+    sqlite3_bind_int64(c->clear_damaged, 1, node_id);
+    if (sqlite3_step(c->clear_damaged) != SQLITE_DONE) { c->db_error = 1; return -1; }
+    return 0;
+}
+
 /* Record one hashed file, as the scan always did. Frees the job's strings. */
 static void apply_hash(scan_ctx *c, hash_job *j)
 {
@@ -546,10 +695,15 @@ static void apply_hash(scan_ctx *c, hash_job *j)
         if (strcmp(j->hash, j->expect) != 0) {
             sqlite3_reset(c->note_damaged);
             sqlite3_bind_int64(c->note_damaged, 1, j->node_id);
-            sqlite3_bind_text(c->note_damaged, 2, j->hash, -1, SQLITE_TRANSIENT);
-            sqlite3_step(c->note_damaged);
+            sqlite3_bind_int64(c->note_damaged, 2, j->old_version);
+            sqlite3_bind_text(c->note_damaged, 3, j->hash, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(c->note_damaged, 4, c->scan_ms);
+            if (sqlite3_step(c->note_damaged) != SQLITE_DONE) { c->db_error = 1; goto done; }
+            c->have_damaged = 1;
             c->stats->files_damaged++;
             bd_logf(c->log, c->log_ctx, "contents changed but size and time did not (damage?): %s", j->rel);
+        } else if (forget_damage(c, j->node_id) != 0) {
+            goto done; /* right again (restored, say): no longer damaged */
         }
         if (j->was_deleted) c->stats->files_new++;
         goto done;
@@ -565,6 +719,9 @@ static void apply_hash(scan_ctx *c, hash_job *j)
     sqlite3_bind_int64(c->update_file, 3, version_id);
     sqlite3_bind_int64(c->update_file, 4, j->node_id);
     if (sqlite3_step(c->update_file) != SQLITE_DONE) { c->db_error = 1; goto done; }
+    /* Read and recorded as it is now: right again, or a new version, and
+     * either way the damage once found no longer stands. */
+    if (forget_damage(c, j->node_id) != 0) goto done;
 
     if (j->is_new || j->was_deleted) c->stats->files_new++;
     else if (version_id != j->old_version) c->stats->files_changed++;
@@ -987,7 +1144,13 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         {&c.next_version_no, SQL_NEXT_VERSION_NO},
         {&c.insert_version, SQL_INSERT_VERSION},
         {&c.note_new, "INSERT OR IGNORE INTO temp.scan_new(node_id) VALUES(?)"},
-        {&c.note_damaged, "INSERT OR REPLACE INTO temp.damaged(node_id, found_hash) VALUES(?,?)"},
+        /* Found again as it was: keep when it was first found. */
+        {&c.note_damaged, "INSERT INTO damaged_files(node_id, version_id, found_hash, found_ms) VALUES(?1,?2,?3,?4)"
+                          " ON CONFLICT(node_id) DO UPDATE SET"
+                          " found_ms=CASE WHEN found_hash=excluded.found_hash AND version_id=excluded.version_id"
+                          " THEN found_ms ELSE excluded.found_ms END,"
+                          " version_id=excluded.version_id, found_hash=excluded.found_hash"},
+        {&c.clear_damaged, "DELETE FROM damaged_files WHERE node_id=?"},
     };
     bd_status s = BD_OK;
     size_t n = sizeof(stmts) / sizeof(stmts[0]);
@@ -995,6 +1158,14 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         if (sqlite3_prepare_v2(cat->db, stmts[i].sql, -1, stmts[i].st, NULL) != SQLITE_OK) { s = bd_fail_db(cat, "prepare scan"); goto done; }
 
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin scan"); goto done; }
+    sqlite3_stmt *any;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM damaged_files LIMIT 1", -1, &any, NULL) != SQLITE_OK) {
+        s = bd_fail_db(cat, "prepare scan");
+        bd_exec(cat, "ROLLBACK");
+        goto done;
+    }
+    c.have_damaged = sqlite3_step(any) == SQLITE_ROW;
+    sqlite3_finalize(any);
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
     /* The files still with the workers. */
     pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
@@ -1291,7 +1462,6 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
     }
     bd_progress_begin(cat, bitrot ? "bit-rot scan" : "scan", expect, bitrot ? expect_bytes : 0);
     bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.scan_new; DELETE FROM temp.scan_gone;");
-    if (bitrot) bd_exec(cat, "DELETE FROM temp.damaged");
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);
 
     bd_status s = BD_OK;
@@ -1356,14 +1526,20 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
 
 bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx)
 {
+    /* An entry stands while the version it was found against is still the
+     * file's and the file is still in its folder (another program, or an
+     * earlier BRODALF, may have recorded a new version since). */
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.source_id, s.name, n.rel_path, n.size, v.hash, d.found_hash FROM temp.damaged d"
-                           " JOIN nodes n ON n.id=d.node_id JOIN sources s ON s.id=n.source_id"
+                           "SELECT n.id, n.source_id, s.name, n.rel_path, n.size, v.hash, d.found_hash, d.found_ms"
+                           " FROM damaged_files d"
+                           " JOIN nodes n ON n.id=d.node_id AND n.current_version_id=d.version_id AND n.deleted=0"
+                           " JOIN sources s ON s.id=n.source_id"
                            " LEFT JOIN versions v ON v.id=n.current_version_id ORDER BY s.name, n.rel_path",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list damaged files");
-    while (sqlite3_step(q) == SQLITE_ROW) {
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
         bd_damaged_info d;
         memset(&d, 0, sizeof(d));
         d.node_id = sqlite3_column_int64(q, 0);
@@ -1373,9 +1549,11 @@ bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx)
         d.size = sqlite3_column_int64(q, 4);
         d.hash_on_record = sqlite3_column_text(q, 5) ? (const char *)sqlite3_column_text(q, 5) : "";
         d.hash_found = (const char *)sqlite3_column_text(q, 6);
-        if (fn(ctx, &d) != 0) break;
+        d.found_ms = sqlite3_column_int64(q, 7);
+        if (fn(ctx, &d) != 0) { rc = SQLITE_DONE; break; }
     }
     sqlite3_finalize(q);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "list damaged files");
     return BD_OK;
 }
 
@@ -1384,24 +1562,29 @@ bd_status bd_damaged_accept(bd_catalog *cat, int64_t node_id)
     /* The user says the file as it is now is right: record it as a new
      * version, to be backed up like any change. */
     sqlite3_stmt *q;
-    if (sqlite3_prepare_v2(cat->db, "SELECT d.found_hash, n.size, n.mtime_ns FROM temp.damaged d JOIN nodes n ON n.id=d.node_id"
+    if (sqlite3_prepare_v2(cat->db, "SELECT d.found_hash, n.size, n.mtime_ns FROM damaged_files d"
+                                    " JOIN nodes n ON n.id=d.node_id AND n.current_version_id=d.version_id AND n.deleted=0"
                                     " WHERE d.node_id=?", -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "accept a changed file");
     sqlite3_bind_int64(q, 1, node_id);
     if (sqlite3_step(q) != SQLITE_ROW) {
         sqlite3_finalize(q);
-        return bd_fail(cat, BD_ERR_NOT_FOUND, "the last bit-rot scan did not list that file");
+        return bd_fail(cat, BD_ERR_NOT_FOUND, "that file is not listed as damaged");
     }
     char hash[BD_HASH_HEX_LEN + 1];
     snprintf(hash, sizeof(hash), "%s", (const char *)sqlite3_column_text(q, 0));
     int64_t size = sqlite3_column_int64(q, 1), mtime = sqlite3_column_int64(q, 2);
     sqlite3_finalize(q);
-    if (bd_record_version(cat, node_id, hash, size, mtime, NULL, NULL) != 0) return bd_fail_db(cat, "accept a changed file");
-    sqlite3_stmt *d;
-    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.damaged WHERE node_id=?", -1, &d, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(d, 1, node_id);
-        sqlite3_step(d);
-        sqlite3_finalize(d);
+    if (bd_exec(cat, "BEGIN") != 0) return bd_fail_db(cat, "accept a changed file");
+    sqlite3_stmt *d = NULL;
+    int ok = bd_record_version(cat, node_id, hash, size, mtime, NULL, NULL) == 0 &&
+             sqlite3_prepare_v2(cat->db, "DELETE FROM damaged_files WHERE node_id=?", -1, &d, NULL) == SQLITE_OK &&
+             sqlite3_bind_int64(d, 1, node_id) == SQLITE_OK && sqlite3_step(d) == SQLITE_DONE;
+    sqlite3_finalize(d);
+    if (!ok || bd_exec(cat, "COMMIT") != 0) {
+        bd_status st = bd_fail_db(cat, "accept a changed file");
+        bd_exec(cat, "ROLLBACK");
+        return st;
     }
     return BD_OK;
 }

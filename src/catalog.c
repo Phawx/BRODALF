@@ -140,7 +140,17 @@ static const char *SCHEMA_SQL =
     "  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,"
     "  rel_path TEXT NOT NULL,"
     "  added_ms INTEGER NOT NULL,"
-    "  PRIMARY KEY(source_id, rel_path));";
+    "  PRIMARY KEY(source_id, rel_path));"
+    /* Files a bit-rot scan found changed while their size and time were
+     * not, until the user accepts the change or a scan finds the file
+     * right again. version_id is the version on record when it was found:
+     * the entry stands only while that is still the file's version.
+     * Earlier versions of BRODALF do not know this table and leave it be. */
+    "CREATE TABLE IF NOT EXISTS damaged_files("
+    "  node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,"
+    "  version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,"
+    "  found_hash TEXT NOT NULL,"
+    "  found_ms INTEGER NOT NULL);";
 
 static void put_u32(unsigned char *p, uint32_t v)
 {
@@ -155,6 +165,93 @@ static uint32_t get_u32(const unsigned char *p)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* The working copy is <temp>/brodalf-<uuid>.db, with SQLite's files and
+ * the save's snapshot beside it (these suffixes), and the marker naming the
+ * process it belongs to (OWNER_SUFFIX). */
+static const char *const WORK_SUFFIXES[] = {"", "-wal", "-shm", "-journal", ".snapshot"};
+#define N_WORK_SUFFIXES (sizeof(WORK_SUFFIXES) / sizeof(WORK_SUFFIXES[0]))
+#define OWNER_SUFFIX ".owner"
+
+/* 36 characters as bd_uuid_v4 writes them: lower-case hex, dashes at 8,
+ * 13, 18 and 23. */
+static int is_uuid(const char *s)
+{
+    for (int i = 0; i < 36; i++) {
+        char ch = s[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (ch != '-') return 0;
+        } else if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+typedef struct {
+    char (*ids)[37];
+    size_t n, cap;
+    const char *own; /* this catalog's own working copy, never touched */
+} work_ids;
+
+static int note_work_file(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    work_ids *w = ctx;
+    if (st->is_dir) return BD_WALK_SKIP; /* only the temp folder itself */
+    if (st->is_link || !st->is_file) return 0;
+    if (strncmp(rel, "brodalf-", 8) != 0 || strlen(rel) < 8 + 36 + 3) return 0;
+    const char *id = rel + 8, *rest = rel + 8 + 36;
+    if (!is_uuid(id) || strncmp(rest, ".db", 3) != 0) return 0;
+    rest += 3;
+    int known = strcmp(rest, OWNER_SUFFIX) == 0;
+    for (size_t i = 0; i < N_WORK_SUFFIXES && !known; i++) known = strcmp(rest, WORK_SUFFIXES[i]) == 0;
+    if (!known || strncmp(id, w->own, 36) == 0) return 0;
+    for (size_t i = 0; i < w->n; i++)
+        if (strncmp(w->ids[i], id, 36) == 0) return 0;
+    if (w->n == w->cap) {
+        size_t cap = w->cap ? w->cap * 2 : 16;
+        char (*nd)[37] = realloc(w->ids, cap * sizeof(*nd));
+        if (!nd) return 1;
+        w->ids = nd;
+        w->cap = cap;
+    }
+    memcpy(w->ids[w->n], id, 36);
+    w->ids[w->n][36] = '\0';
+    w->n++;
+    return 0;
+}
+
+/* Working copies a BRODALF left in the temp folder when it ended without
+ * closing its catalog (a crash, a power cut, a killed process). Each can be
+ * as big as the catalog unpacked, and nothing else would ever remove them.
+ * Only files named exactly as catalog_alloc names them are looked at, and
+ * a working copy goes only when bd_work_in_use says its owner is gone. */
+static void remove_stale_work_files(const char *tmp, const char *own_id)
+{
+    work_ids w = {0};
+    w.own = own_id;
+    bd_walk(tmp, note_work_file, NULL, &w);
+    for (size_t i = 0; i < w.n; i++) {
+        char *paths[N_WORK_SUFFIXES];
+        char *marker = bd_sprintf("%s%cbrodalf-%s.db" OWNER_SUFFIX, tmp, BD_SEP, w.ids[i]);
+        int ok = marker != NULL;
+        for (size_t k = 0; k < N_WORK_SUFFIXES; k++) {
+            paths[k] = bd_sprintf("%s%cbrodalf-%s.db%s", tmp, BD_SEP, w.ids[i], WORK_SUFFIXES[k]);
+            if (!paths[k]) ok = 0;
+        }
+        if (ok && !bd_work_in_use(marker, paths, N_WORK_SUFFIXES)) {
+            int left = 0;
+            bd_stat_t st;
+            for (size_t k = 0; k < N_WORK_SUFFIXES; k++)
+                if (bd_remove(paths[k]) != 0 && bd_stat(paths[k], &st) == 0) left = 1;
+            /* The marker goes last, and only once the rest has. */
+            if (!left) bd_remove(marker);
+        }
+        for (size_t k = 0; k < N_WORK_SUFFIXES; k++) free(paths[k]);
+        free(marker);
+    }
+    free(w.ids);
+}
+
 static bd_catalog *catalog_alloc(const char *path)
 {
     bd_catalog *cat = calloc(1, sizeof(*cat));
@@ -163,24 +260,36 @@ static bd_catalog *catalog_alloc(const char *path)
     cat->lock_path = bd_sprintf("%s.lock", path);
     char tmp[1024], id[37];
     bd_uuid_v4(id);
-    if (bd_temp_dir(tmp, sizeof(tmp)) == 0) cat->work_path = bd_sprintf("%s%cbrodalf-%s.db", tmp, BD_SEP, id);
-    if (!cat->path || !cat->lock_path || !cat->work_path) {
+    if (bd_temp_dir(tmp, sizeof(tmp)) == 0) {
+        cat->work_path = bd_sprintf("%s%cbrodalf-%s.db", tmp, BD_SEP, id);
+        cat->owner_path = bd_sprintf("%s%cbrodalf-%s.db" OWNER_SUFFIX, tmp, BD_SEP, id);
+    }
+    if (!cat->path || !cat->lock_path || !cat->work_path || !cat->owner_path) {
         free(cat->path);
         free(cat->lock_path);
         free(cat->work_path);
+        free(cat->owner_path);
         free(cat);
         return NULL;
     }
+    /* The marker before the working copy, so there is never a moment when
+     * the working copy is there without it. Without a marker (the temp
+     * folder refused it) the working copy is simply never taken for
+     * stale. */
+    bd_work_owner_begin(cat->owner_path, &cat->owner);
+    remove_stale_work_files(tmp, id);
     return cat;
 }
 
 static void remove_work_files(bd_catalog *cat)
 {
-    const char *suffixes[] = {"", "-wal", "-shm", "-journal", ".snapshot"};
-    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
-        char *p = bd_sprintf("%s%s", cat->work_path, suffixes[i]);
+    for (size_t i = 0; i < N_WORK_SUFFIXES; i++) {
+        char *p = bd_sprintf("%s%s", cat->work_path, WORK_SUFFIXES[i]);
         if (p) { bd_remove(p); free(p); }
     }
+    bd_work_owner_end(cat->owner);
+    cat->owner = NULL;
+    bd_remove(cat->owner_path);
 }
 
 static void catalog_free(bd_catalog *cat, int owns_lock)
@@ -195,6 +304,7 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
     free(cat->path);
     free(cat->lock_path);
     free(cat->work_path);
+    free(cat->owner_path);
     free(cat);
 }
 
@@ -263,13 +373,40 @@ static int fill_path_keys(bd_catalog *cat)
     return rc;
 }
 
+/* Called as each transaction commits. A transaction that wrote to the
+ * main database (the catalog's own tables, not the TEMP ones) is a change
+ * to save, however it was made: rows, a DELETE without WHERE (which SQLite
+ * runs without the update hook), the schema. The callback only reads the
+ * connection's state, as the commit hook must. */
+static int on_commit(void *ctx)
+{
+    bd_catalog *cat = ctx;
+    if (sqlite3_txn_state(cat->db, "main") == SQLITE_TXN_WRITE) cat->changes++;
+    return 0;
+}
+
+static int schema_cookie(bd_catalog *cat)
+{
+    sqlite3_stmt *q;
+    int v = -1;
+    if (sqlite3_prepare_v2(cat->db, "PRAGMA main.schema_version", -1, &q, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_step(q) == SQLITE_ROW) v = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    return v;
+}
+
 static bd_status open_db(bd_catalog *cat)
 {
     if (sqlite3_open_v2(cat->work_path, &cat->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "cannot open working database");
     sqlite3_busy_timeout(cat->db, 5000);
+    sqlite3_commit_hook(cat->db, on_commit, cat);
     if (bd_exec(cat, "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") != 0)
         return bd_fail_db(cat, "cannot configure database");
+    /* What opening changes is saved with the next save; when it changes
+     * nothing (the fix-ups below find nothing to fix), the catalog counts
+     * as saved once it is open. */
+    int cookie = schema_cookie(cat);
     if (bd_exec(cat, SCHEMA_SQL) != 0) return bd_fail_db(cat, "cannot create catalog tables");
     /* Schema 1 catalogs have no media.encrypted column. */
     sqlite3_stmt *probe;
@@ -322,18 +459,27 @@ static bd_status open_db(bd_catalog *cat)
      * for good: it is lost or broken now. */
     if (bd_exec(cat, "UPDATE media SET lost_why='broken' WHERE retired_ms IS NOT NULL AND lost_why IS NULL") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
     /* Before 0.8.0 only whole drives were encrypted and copies.encrypted
      * was never set: every copy on an encrypted drive is sealed. */
     if (bd_exec(cat, "UPDATE copies SET encrypted=1 WHERE encrypted=0 AND media_id IN (SELECT id FROM media WHERE encrypted<>0)") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
+    if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
+    /* A job saved while it ran (a long backup saves every few minutes) and
+     * never finished was cut short: one BRODALF at a time has the catalog
+     * open, so nothing is running now. */
+    if (bd_exec(cat, "UPDATE jobs SET status='stopped' WHERE status='running' AND finished_ms IS NULL") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    if (sqlite3_changes(cat->db) > 0) cat->open_upgraded = 1;
+    int now_cookie = schema_cookie(cat);
+    if (cookie < 0 || now_cookie != cookie) cat->open_upgraded = 1;
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
                      /* Copies of files in use taken from a shadow copy, read in their place. */
                      "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
-                     /* The last scan: backup roots it could not reach, and files whose
-                      * contents changed while their size and time did not. */
+                     /* The last scan: backup roots it could not reach. (Damaged
+                      * files are kept in the catalog: damaged_files.) */
                      "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY);"
-                     "CREATE TEMP TABLE IF NOT EXISTS damaged(node_id INTEGER PRIMARY KEY, found_hash TEXT NOT NULL);"
                      /* During a scan: files it added and files it marked deleted. */
                      "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"
@@ -521,15 +667,34 @@ int64_t bd_catalog_revision(bd_catalog *cat)
     return cat && cat->db && meta_get(cat, "revision", v, sizeof(v)) ? atoll(v) : 0;
 }
 
+int bd_catalog_unsaved(bd_catalog *cat)
+{
+    if (!cat || !cat->db) return 0;
+    bd_stat_t st;
+    return cat->changes != cat->saved_changes || bd_stat(cat->path, &st) != 0;
+}
+
+void bd_catalog_mark_changed(bd_catalog *cat)
+{
+    if (cat) cat->changes++;
+}
+
 /* Every save is a new revision, so copies of the catalog on the drives
- * can be told apart and the newest found. */
+ * can be told apart and the newest found. A save with nothing to save does
+ * nothing: no new revision, no rewrite of the file. */
 bd_status bd_catalog_save(bd_catalog *cat)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
+    if (!bd_catalog_unsaved(cat)) return BD_OK;
     char v[32];
     snprintf(v, sizeof(v), "%lld", (long long)(bd_catalog_revision(cat) + 1));
     if (meta_set(cat, "revision", v) != 0) return bd_fail_db(cat, "count the save");
-    return bd_catalog_save_to(cat, cat->path, bd_catalog_file_encrypted(cat));
+    /* What the snapshot will hold: a change made from here on (another
+     * thread) keeps the catalog unsaved. */
+    int64_t at = cat->changes;
+    bd_status s = bd_catalog_save_to(cat, cat->path, bd_catalog_file_encrypted(cat));
+    if (s == BD_OK) cat->saved_changes = at;
+    return s;
 }
 
 bd_status bd_catalog_create(const char *path, bd_catalog **out)
@@ -668,13 +833,17 @@ static bd_status open_with_secret(const char *path, const char *secret, int reco
     if (s == BD_OK && !meta_get(cat, "catalog_uuid", cat->uuid, sizeof(cat->uuid)))
         s = bd_fail(cat, BD_ERR_FORMAT, "%s has no catalog id", path);
     if (s == BD_OK) {
-        char v[32];
+        char v[32] = "", now[32] = "";
         if (meta_get(cat, "schema_version", v, sizeof(v)) && atoi(v) > BD_SCHEMA_VERSION)
             s = bd_fail(cat, BD_ERR_FORMAT, "%s was made by a newer BRODALF", path);
         else if (bd_catalog_note_schema(cat) != 0)
             s = bd_fail_db(cat, "cannot upgrade catalog");
+        else if (!meta_get(cat, "schema_version", now, sizeof(now)) || strcmp(now, v) != 0)
+            cat->open_upgraded = 1;
     }
     if (s != BD_OK) return fail_open(cat, s, 1);
+    /* The file holds what is open now, unless opening changed something. */
+    if (!cat->open_upgraded) cat->saved_changes = cat->changes;
     *out = cat;
     return BD_OK;
 }

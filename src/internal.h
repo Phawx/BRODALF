@@ -20,6 +20,8 @@ struct bd_catalog {
     char *lock_path;
     void *lock;       /* bd_catalog_lock_take's handle while this catalog holds the lock */
     char *work_path;  /* unpacked SQLite working copy */
+    char *owner_path; /* work_path + ".owner": names the process the working copy belongs to */
+    void *owner;      /* bd_work_owner_begin's handle */
     char uuid[37];
     char err[1024];
     bd_progress_fn progress;
@@ -32,6 +34,12 @@ struct bd_catalog {
     uint8_t key[32];  /* master key while unlocked */
     int have_key;
     volatile long cancel; /* bd_catalog_cancel was called */
+    /* Changes since the file was last written: changes counts commits that
+     * wrote to the main database (the commit hook) and calls of
+     * bd_catalog_mark_changed; saved_changes is what it was at the last
+     * save that worked (or at open, when opening changed nothing). */
+    int64_t changes, saved_changes;
+    int open_upgraded; /* opening changed the database (schema upgrade, fix-ups) */
 };
 
 /* Record an error message on the catalog and return status. */
@@ -87,6 +95,17 @@ long bd_source_read(bd_source *k, void *buf, size_t cap);
 
 /* Tests only: pretend every drive has this much free space (-1: ask it). */
 extern int64_t bd_test_free_bytes;
+/* Tests only: a backup saves the catalog between batches this often (ms;
+ * 0: every 5 minutes). */
+extern int64_t bd_test_save_every_ms;
+/* Tests only: every drive's file system has this name, and with
+ * bd_test_fat_limit > 0 a FAT drive holds files up to that many bytes
+ * (instead of 4 GiB less one). */
+extern const char *bd_test_fs_name;
+extern int64_t bd_test_fat_limit;
+/* The biggest file (as stored, sealing included) the drive can hold, or -1
+ * for no known limit; root is where it is plugged in, or NULL. */
+int64_t bd_drive_file_limit(bd_catalog *cat, int64_t media_id, const char *root);
 
 /* SQL: where a drive is kept, its "kept in" text (all drives with none set
  * share ''). A cloud account left in a catalog by BRODALF 0.3.0 is a place

@@ -87,9 +87,19 @@ bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *c
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
-/* Write the working copy back to the .brodalf file atomically. Every save
- * is a new revision of the catalog. */
+/* Write the working copy back to the .brodalf file atomically, as a new
+ * revision of the catalog, when anything changed since the catalog was
+ * opened or last saved; with nothing to save it does nothing (no new
+ * revision, the file is not rewritten) and returns BD_OK. Every committed
+ * change to the catalog's own tables counts, however it was made, and so
+ * does bd_catalog_mark_changed; a catalog file that is not there is always
+ * written. A save that fails leaves the changes unsaved for the next one. */
 bd_status bd_catalog_save(bd_catalog *cat);
+/* 1 if bd_catalog_save has something to write, 0 if not. */
+int bd_catalog_unsaved(bd_catalog *cat);
+/* For a change kept outside the catalog's tables: the next bd_catalog_save
+ * writes the file even if nothing in the database changed. */
+void bd_catalog_mark_changed(bd_catalog *cat);
 /* How many times the catalog has been saved: its revision. The copy put on
  * a drive carries it in its name, and copies are never overwritten, so a
  * drive keeps every revision it was given. */
@@ -179,6 +189,11 @@ void bd_catalog_cancel(bd_catalog *cat);
  * the code), everything inside them, kept as the folder structure they
  * have. Together they are the primary dataset. */
 
+/* Add a backup root, or give the id of the one that is that folder already
+ * (the same path, compared as the file system compares paths). A folder
+ * inside a backup root, or holding one, is refused (BD_ERR_EXISTS, with a
+ * message naming that root): its files would be backed up twice. Stopped
+ * roots (bd_source_set_active 0) do not count. */
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
 
 /* Point a backup root at where it is now, e.g. on a new PC with another
@@ -190,7 +205,9 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
 
 /* Stop backing up a root (active 0), or start again (1). A stopped root is
  * not scanned or backed up and does not count toward the copies you want;
- * its files, versions and copies stay in the catalog and still restore. */
+ * its files, versions and copies stay in the catalog and still restore.
+ * Starting a root again that is inside another root, or holds one, is
+ * refused as bd_source_add refuses it (BD_ERR_EXISTS). */
 bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active);
 
 typedef struct {
@@ -254,8 +271,13 @@ typedef struct {
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 
-/* Files the last bit-rot scan found changed without their size or time
- * changing. */
+/* Files a bit-rot scan found changed without their size or time changing.
+ * They are kept in the catalog, so they are still listed after it is
+ * closed and opened again, until the user accepts the change
+ * (bd_damaged_accept) or a later scan reads the file and finds it right
+ * again (restored from a drive) or records it as a new version (it was
+ * changed again, with its time). A file gone from its folder is not
+ * listed. */
 typedef struct {
     int64_t node_id;
     int64_t source_id;
@@ -264,12 +286,14 @@ typedef struct {
     int64_t size;
     const char *hash_on_record;
     const char *hash_found;
+    int64_t found_ms;        /* when a bit-rot scan first found it like this */
 } bd_damaged_info;
 typedef int (*bd_damaged_fn)(void *ctx, const bd_damaged_info *info);
 bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx);
 /* The file as it is now is right after all (it was changed on purpose):
- * record it as a new version, to be backed up like any change. To get the
- * good contents back instead, restore the file. */
+ * record it as a new version, to be backed up like any change, and stop
+ * listing it. BD_ERR_NOT_FOUND if it is not listed. To get the good
+ * contents back instead, restore the file. */
 bd_status bd_damaged_accept(bd_catalog *cat, int64_t node_id);
 
 /* ---- Files in use ------------------------------------------------------ */
@@ -448,7 +472,18 @@ typedef struct {
     int64_t files_rehashed;   /* changed since the scan: read again, recorded as a new version and copied */
     int64_t files_in_use;     /* another program had them open (counted in files_failed too) */
     int64_t files_online_only; /* cloud files not on this PC: not copied, so as not to download them */
+    /* Of files_no_room, those too big for the drive's file system: never
+     * read or written, planned out up front. too_big_why says why, in a
+     * sentence the window can show (BD_WHY_FAT32); NULL when none was. */
+    int64_t files_too_big;
+    int64_t bytes_too_big;
+    const char *too_big_why;
 } bd_backup_stats;
+
+/* Why files of 4 GiB or more do not fit on a FAT32 drive (the file system
+ * holds files up to 4 GiB less one byte; Windows' "FAT" for FAT12 and FAT16
+ * too). Sealed copies count with their few extra bytes. */
+#define BD_WHY_FAT32 "this drive is FAT32 and can't hold files of 4 GB or more; reformat it as exFAT or NTFS"
 
 /* Copy the current version of every file that has no good copy on this
  * drive. The drive must be connected and not marked lost or broken.
@@ -463,7 +498,9 @@ typedef struct {
  * since the last scan is read again and backed up as it is now, as a new
  * version. Files that would eat into the reserve (the reserve_mb option,
  * kept for the catalog's copies) wait for another drive and are counted in
- * files_no_room; smaller files after them are still copied. At the end the
+ * files_no_room; smaller files after them are still copied. So are files
+ * too big for the drive's file system (FAT32: 4 GiB or more), which are
+ * not read at all and are counted in files_too_big as well. At the end the
  * catalog is saved and its newest revision added to the drive (see
  * bd_catalog_copy_to_media). */
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
@@ -493,15 +530,26 @@ typedef struct {
     int64_t free_bytes;        /* now when plugged in, else as last seen; -1 unknown */
     int free_is_current;       /* read just now */
     int64_t reserve_bytes;     /* kept free on every drive for the catalog's copies */
-    int64_t bytes_short;       /* about how much would not fit; 0: it all fits (or the space is unknown) */
+    int64_t bytes_short;       /* about how much would not fit, too big files included; 0: it all fits (or the space is unknown and none is too big) */
     int64_t last_scan_ms;      /* the oldest of the roots' last scans: a backup copies what that found */
     /* Files whose good copy is on this drive, and of those how many have
-     * changed contents (checksum) since. A large share at once is what
-     * ransomware encrypting the folders looks like: show the list
-     * (bd_list_changed_on_media) before backing that up. */
+     * changed contents (checksum) since or are gone from their folder.
+     * A large share at once is what ransomware encrypting the folders
+     * looks like, in place or to new names with the originals deleted:
+     * show the list (bd_list_changed_on_media) before backing that up. A
+     * deleted file counts until the user acknowledges it in the deleted
+     * list (bd_deleted_ack); a moved file does not count. */
     int64_t files_held;
     int64_t held_changed;
     int mass_change;           /* held_changed is a quarter or more of files_held (at least 50 files) */
+    /* Of files_to_copy, those too big for the drive's file system (FAT32:
+     * 4 GiB or more): they will not fit and are in bytes_short. The file
+     * system is read now when the drive is plugged in, else as last seen.
+     * too_big_why says why, in a sentence the window can show
+     * (BD_WHY_FAT32); NULL when none is too big. */
+    int64_t files_too_big;
+    int64_t bytes_too_big;
+    const char *too_big_why;
 } bd_backup_preview_info;
 
 bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out);
@@ -525,12 +573,15 @@ typedef struct {
     int is_new;              /* no version of it is on that drive yet (media_id > 0) */
     int starred;
     int encrypt;             /* in a folder set to be encrypted */
+    int too_big;             /* media_id > 0: too big for that drive's file system, so it will not fit (BD_WHY_FAT32) */
 } bd_pending_info;
 typedef int (*bd_pending_fn)(void *ctx, const bd_pending_info *info);
 bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pending_fn fn, void *ctx, int64_t *total);
 
 /* The files counted in held_changed: the drive holds an older version
- * than the file's contents now. */
+ * than the file's contents now, or the file is gone from its folder and
+ * not yet acknowledged (deleted set; version_now and size_now are then
+ * its last version, and changed_ms when that was first seen). */
 typedef struct {
     int64_t node_id;
     const char *source_name;
@@ -540,6 +591,7 @@ typedef struct {
     int64_t size_on_drive;
     int64_t size_now;
     int64_t changed_ms;        /* when the scan first saw the new contents */
+    int deleted;               /* gone from its folder (see above) */
 } bd_changed_info;
 typedef int (*bd_changed_fn)(void *ctx, const bd_changed_info *info);
 bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed_fn fn, void *ctx);

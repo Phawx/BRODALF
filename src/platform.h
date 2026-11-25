@@ -77,6 +77,27 @@ int bd_fsync_dir(const char *path);
  * 0 on success, 1 if it already exists, -1 on other errors. */
 int bd_create_exclusive(const char *path);
 
+/* A catalog's working copy in the temp folder belongs to the process that
+ * made it. bd_work_owner_begin writes a small marker file naming this
+ * process (its ID), before the working copy is made; on Windows the marker
+ * is also held open, without sharing, until bd_work_owner_end, which only
+ * closes it (the caller removes the file). 0 on success; *handle may be
+ * NULL either way.
+ * bd_work_in_use: 1 if the working copy made of paths[0..n) (files that
+ * are not there are ignored), with its marker at marker_path (which may not
+ * be there either), may still be in use, 0 if its owner is gone and the
+ * files may be removed. It errs toward 1. On Windows: in use if the marker
+ * or any of the files cannot be opened with no sharing (an open handle
+ * anywhere, the owner's SQLite connection included, stops that), and, for
+ * a working copy with no marker (made by BRODALF 0.9.0 or before), if any
+ * of its files was written in the last 10 minutes, which covers the moments
+ * between unpacking the catalog and opening it, or between writing a
+ * snapshot and reading it, when no handle is open. Elsewhere: in use unless
+ * the marker names a process that no longer runs. */
+int bd_work_owner_begin(const char *marker_path, void **handle);
+void bd_work_owner_end(void *handle);
+int bd_work_in_use(const char *marker_path, char **paths, size_t n);
+
 /* Keep a second BRODALF from opening the same catalog. On Windows a named
  * mutex (Local\BRODALF-catalog-<hash of the full path>) plus the lock file
  * held open without sharing; both go away when the process ends, crash or
@@ -90,11 +111,19 @@ void bd_catalog_lock_release(void *handle, const char *lock_path);
 /* Directory walk. The callback gets the path relative to the root, joined
  * with '/'. Return BD_WALK_SKIP for a folder to leave out what is inside it,
  * any other non-zero value to stop the walk. Entries that cannot be read
- * are reported through err_cb and skipped. */
+ * are reported through err_cb and skipped; so is a folder that cannot be
+ * opened or read to the end, or that holds a name that cannot be turned
+ * into UTF-8 (Windows), with the folder's path (on Windows its search
+ * pattern, the path with a backslash and a star added). */
 #define BD_WALK_SKIP 2
 typedef int (*bd_walk_cb)(void *ctx, const char *rel_path, const bd_stat_t *st);
 typedef void (*bd_walk_err_cb)(void *ctx, const char *path, const char *message);
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx);
+#ifndef _WIN32
+/* Tests only: reading the folder with this path relative to the root ("" the
+ * root itself) fails with EIO after its first entry. */
+extern const char *bd_test_walk_fail;
+#endif
 
 /* A copy of s with letter case folded the way the file system compares
  * names: Windows' own case mapping there; elsewhere (names are case
@@ -119,6 +148,11 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes);
  * files already in it stay as they are until set one by one.
  * bd_fs_size_on_disk: the room a file takes, or -1. */
 int bd_fs_can_compress(const char *path);
+/* The name of the file system holding path, as the system gives it
+ * ("NTFS", "exFAT", "FAT32", "FAT" ...), into out. 0 on success, -1 if it
+ * cannot be told. Elsewhere than Windows only Linux tells, and only "FAT"
+ * (which may be FAT32 or older), "exFAT" or "other". */
+int bd_fs_name(const char *path, char *out, size_t cap);
 int bd_fs_compressed(const char *path);
 int bd_fs_set_compressed(const char *path, int on);
 int64_t bd_fs_size_on_disk(const char *path);

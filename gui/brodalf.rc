@@ -131,9 +131,24 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 198, 130, 54, 14
 END
 
+IDD_PLACE DIALOGEX 0, 0, 270, 186
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Extra place for starred files"
+FONT 9, "Segoe UI", 0, 0, 1
+BEGIN
+    LTEXT "", IDC_PLACE_TEXT, 8, 8, 254, 58
+    LTEXT "Describe it, so you can tell later what it is and where it lives (at least two words), like ""Dropbox folder on the laptop"":", -1, 8, 70, 254, 18
+    EDITTEXT IDC_PLACE_LABEL, 8, 90, 254, 14, ES_AUTOHSCROLL
+    LTEXT "Most it may take, in GB (leave empty for no limit), so a small free account does not fill up:", IDC_PLACE_LIMIT_TEXT, 8, 110, 254, 18
+    EDITTEXT IDC_PLACE_LIMIT, 8, 130, 60, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX "Encrypt every copy there (needs a passphrase)", IDC_PLACE_ENCRYPT, 8, 150, 254, 12
+    DEFPUSHBUTTON "Add it", IDOK, 148, 166, 60, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 212, 166, 50, 14
+END
+
 1 VERSIONINFO
-FILEVERSION 0,7,0,0
-PRODUCTVERSION 0,7,0,0
+FILEVERSION 0,8,0,0
+PRODUCTVERSION 0,8,0,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -143,8 +158,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "BRODALF backup tracker"
             VALUE "ProductName", "BRODALF"
-            VALUE "FileVersion", "0.7.0"
-            VALUE "ProductVersion", "0.7.0"
+            VALUE "FileVersion", "0.8.0"
+            VALUE "ProductVersion", "0.8.0"
         END
     END
     BLOCK "VarFileInfo"

@@ -8,255 +8,255 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: gui/main.c:587
+#: gui/main.c:588
 msgid "bytes"
 msgstr ""
 
-#: gui/main.c:587
+#: gui/main.c:588
 msgid "KB"
 msgstr ""
 
-#: gui/main.c:587
+#: gui/main.c:588
 msgid "MB"
 msgstr ""
 
-#: gui/main.c:587
+#: gui/main.c:588
 msgid "GB"
 msgstr ""
 
-#: gui/main.c:587
+#: gui/main.c:588
 msgid "TB"
 msgstr ""
 
-#: gui/main.c:591
+#: gui/main.c:592
 #, c-format
 msgid "%lld bytes"
 msgstr ""
 
-#: gui/main.c:597
+#: gui/main.c:598
 msgid "never"
 msgstr ""
 
-#: gui/main.c:626
+#: gui/main.c:627
 msgid "Primary Database"
 msgstr ""
 
-#: gui/main.c:626
+#: gui/main.c:627
 msgid "Next backup"
 msgstr ""
 
-#: gui/main.c:626
+#: gui/main.c:627
 msgid "Local backups"
 msgstr ""
 
-#: gui/main.c:627
+#: gui/main.c:628
 msgid "Starred files and extra places"
 msgstr ""
 
-#: gui/main.c:627
+#: gui/main.c:628
 msgid "Encryption"
 msgstr ""
 
-#: gui/main.c:627
+#: gui/main.c:628
 msgid "Restore"
 msgstr ""
 
-#: gui/main.c:809
+#: gui/main.c:810
 msgid "Ctrl"
 msgstr ""
 
-#: gui/main.c:809
+#: gui/main.c:810
 msgid "Shift"
 msgstr ""
 
-#: gui/main.c:1217
+#: gui/main.c:1218
 msgid "BRODALF shows the new language the next time you open it."
 msgstr ""
 
-#: gui/main.c:1409
+#: gui/main.c:1431
 msgid ", less than a minute left"
 msgstr ""
 
-#: gui/main.c:1412
+#: gui/main.c:1434
 #, c-format
 msgid ", about %d minute left"
 msgid_plural ", about %d minutes left"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1414
+#: gui/main.c:1436
 #, c-format
 msgid ", about %.1f hours left"
 msgstr ""
 
-#: gui/main.c:1426
+#: gui/main.c:1448
 msgid "Scanning"
 msgstr ""
 
-#: gui/main.c:1426
+#: gui/main.c:1448
 msgid "Backing up"
 msgstr ""
 
-#: gui/main.c:1427
+#: gui/main.c:1449
 msgid "Restoring"
 msgstr ""
 
-#: gui/main.c:1427
+#: gui/main.c:1449
 msgid "Reading back copies"
 msgstr ""
 
-#: gui/main.c:1428
+#: gui/main.c:1450
 msgid "Checking copies"
 msgstr ""
 
-#: gui/main.c:1429
+#: gui/main.c:1451
 msgid "files looked at"
 msgstr ""
 
-#: gui/main.c:1429
+#: gui/main.c:1451
 msgid "files copied"
 msgstr ""
 
-#: gui/main.c:1430
+#: gui/main.c:1452
 msgid "files restored"
 msgstr ""
 
-#: gui/main.c:1430
+#: gui/main.c:1452
 msgid "copies read"
 msgstr ""
 
-#: gui/main.c:1439
+#: gui/main.c:1461
 #, c-format
 msgid "%ls: %lld of %lld %ls, %ls of %ls%ls%ls%ls."
 msgstr ""
 
-#: gui/main.c:1443
+#: gui/main.c:1465
 #, c-format
 msgid "%ls: %lld of about %lld %ls, %ls read%ls%ls."
 msgstr ""
 
-#: gui/main.c:1444 gui/main.c:1448
+#: gui/main.c:1466 gui/main.c:1470
 msgid " at "
 msgstr ""
 
-#: gui/main.c:1447
+#: gui/main.c:1469
 #, c-format
 msgid "%ls: %lld %ls, %ls read%ls%ls."
 msgstr ""
 
-#: gui/main.c:1460
+#: gui/main.c:1482
 #, c-format
 msgid "%ls (%ls of %ls)"
 msgstr ""
 
-#: gui/main.c:1578
+#: gui/main.c:1600
 #, c-format
 msgid "Found %d BRODALF drive."
 msgid_plural "Found %d BRODALF drives."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1578
+#: gui/main.c:1600
 msgid "No BRODALF drives are plugged in."
 msgstr ""
 
-#: gui/main.c:1676
+#: gui/main.c:1698
 #, c-format
 msgid "%ls: %lld files copied (%ls), %lld already there, %lld failed%ls."
 msgstr ""
 
-#: gui/main.c:1678
+#: gui/main.c:1700
 msgid ", some did not fit"
 msgstr ""
 
-#: gui/main.c:1684
+#: gui/main.c:1706
 #, c-format
 msgid "%d drive"
 msgid_plural "%d drives"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1685
+#: gui/main.c:1707
 #, c-format
 msgid "%d extra place"
 msgid_plural "%d extra places"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1686
+#: gui/main.c:1708
 #, c-format
 msgid "%ls and %ls"
 msgstr ""
 
-#: gui/main.c:1689
+#: gui/main.c:1711
 #, c-format
 msgid "Backup to %ls %ls, %ls: %lld files copied (%ls) in all, %lld failed."
 msgstr ""
 
-#: gui/main.c:1690 gui/main.c:2913
+#: gui/main.c:1712 gui/main.c:3076
 msgid "stopped"
 msgstr ""
 
-#: gui/main.c:1690
+#: gui/main.c:1712
 msgid "done"
 msgstr ""
 
-#: gui/main.c:1690
+#: gui/main.c:1712
 msgid "all at once"
 msgstr ""
 
-#: gui/main.c:1690 gui/main.c:5159
+#: gui/main.c:1712 gui/main.c:5339
 msgid "one after another"
 msgstr ""
 
-#: gui/main.c:1694
+#: gui/main.c:1716
 #, c-format
 msgid ""
 " %lld went alongside an older copy (under .versions): nothing there was overwritten."
 msgstr ""
 
-#: gui/main.c:1697
+#: gui/main.c:1719
 #, c-format
 msgid " %lld copy (%ls) did not fit and waits for another drive."
 msgid_plural " %lld copies (%ls) did not fit and wait for another drive."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1723
+#: gui/main.c:1745
 #, c-format
 msgid ""
 "%ls done: %lld files, %lld new, %lld changed, %lld moved or renamed, %lld deleted, %ls read."
 msgstr ""
 
-#: gui/main.c:1724 gui/main.c:3733
+#: gui/main.c:1746 gui/main.c:3917
 msgid "Bit-rot scan"
 msgstr ""
 
-#: gui/main.c:1724 gui/main.c:3733
+#: gui/main.c:1746 gui/main.c:3917
 msgid "Scan"
 msgstr ""
 
-#: gui/main.c:1726
+#: gui/main.c:1748
 #, c-format
 msgid " %lld of the deleted files were never backed up."
 msgstr ""
 
-#: gui/main.c:1727
+#: gui/main.c:1749
 #, c-format
 msgid " %lld left out by the skip lists."
 msgstr ""
 
-#: gui/main.c:1728 gui/main.c:1781
+#: gui/main.c:1750 gui/main.c:1803
 #, c-format
 msgid " %lld in use by another program."
 msgstr ""
 
-#: gui/main.c:1729
+#: gui/main.c:1751
 #, c-format
 msgid " %lld online-only cloud files left alone (not downloaded)."
 msgstr ""
 
-#: gui/main.c:1731
+#: gui/main.c:1753
 #, c-format
 msgid ""
 " %lld file changed without its size or time changing: it may be damaged."
@@ -265,50 +265,50 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1735
+#: gui/main.c:1757
 #, c-format
 msgid " %lld backup root could not be found."
 msgid_plural " %lld backup roots could not be found."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1737
+#: gui/main.c:1759
 #, c-format
 msgid " %lld stopped root left alone."
 msgid_plural " %lld stopped roots left alone."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1739
+#: gui/main.c:1761
 #, c-format
 msgid " %lld file or folder could not be read; the log says which."
 msgid_plural " %lld files or folders could not be read; the log says which."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1775
+#: gui/main.c:1797
 #, c-format
 msgid ""
 "Backup done: %lld files copied (%ls), %lld already there, %lld failed."
 msgstr ""
 
-#: gui/main.c:1778
+#: gui/main.c:1800
 #, c-format
 msgid ""
 " %lld went alongside an older copy (under .versions on the drive): nothing there was overwritten."
 msgstr ""
 
-#: gui/main.c:1780
+#: gui/main.c:1802
 #, c-format
 msgid " %lld changed since the scan and were read again first."
 msgstr ""
 
-#: gui/main.c:1782
+#: gui/main.c:1804
 #, c-format
 msgid " %lld online-only cloud files not copied."
 msgstr ""
 
-#: gui/main.c:1785
+#: gui/main.c:1807
 #, c-format
 msgid ""
 " The drive is full: %lld file (%ls) did not fit and waits for another drive."
@@ -317,138 +317,154 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:1804
+#: gui/main.c:1826
 #, c-format
 msgid ""
 "Read back: every copy on the drive was read back within the last %d days."
 msgstr ""
 
-#: gui/main.c:1806
+#: gui/main.c:1828
 #, c-format
 msgid "Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls"
 msgstr ""
 
-#: gui/main.c:1808 gui/main.c:1819
+#: gui/main.c:1830 gui/main.c:1841
 msgid " The next backup to this drive writes them again."
 msgstr ""
 
-#: gui/main.c:1809 gui/main.c:1820
+#: gui/main.c:1831 gui/main.c:1842
 #, c-format
 msgid " %lld encrypted copies need the passphrase to check."
 msgstr ""
 
-#: gui/main.c:1817
+#: gui/main.c:1839
 #, c-format
 msgid ""
 "Check done: %lld copies read, %lld good, %lld missing, %lld damaged.%ls"
 msgstr ""
 
-#: gui/main.c:1834
+#: gui/main.c:1851
+msgid "Your changes are saved."
+msgstr ""
+
+#: gui/main.c:1851 gui/main.c:9063
+msgid "Ready."
+msgstr ""
+
+#: gui/main.c:1860
 #, c-format
 msgid "Compression %ls: %lld files; their %ls now take %ls on the drive."
 msgstr ""
 
-#: gui/main.c:1835
+#: gui/main.c:1861
 msgid "turned on"
 msgstr ""
 
-#: gui/main.c:1835
+#: gui/main.c:1861
 msgid "turned off"
 msgstr ""
 
-#: gui/main.c:1837
+#: gui/main.c:1863
 #, c-format
 msgid " %lld could not be changed (another program may have them open)."
 msgstr ""
 
-#: gui/main.c:1838
+#: gui/main.c:1864
 msgid " Copies made from now on are compressed too."
 msgstr ""
 
-#: gui/main.c:1872
+#: gui/main.c:1898
 #, c-format
 msgid ""
 "Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed."
 msgstr ""
 
-#: gui/main.c:1876
+#: gui/main.c:1902
 #, c-format
 msgid ""
 " %lld left alone because another file was already there: nothing was overwritten."
 msgstr ""
 
-#: gui/main.c:1878
+#: gui/main.c:1904
 #, c-format
 msgid " %lld need the passphrase."
 msgstr ""
 
-#: gui/main.c:1886 gui/main.c:2136
+#: gui/main.c:1912 gui/main.c:2220
 msgid "Stopped. What was done until then is kept."
 msgstr ""
 
-#: gui/main.c:1889
+#: gui/main.c:1915
 #, c-format
 msgid "Stopped: %ls"
 msgstr ""
 
-#: gui/main.c:1889 gui/main.c:1896
+#: gui/main.c:1915 gui/main.c:1922
 msgid "unknown error"
 msgstr ""
 
-#: gui/main.c:1896
+#: gui/main.c:1922
 #, c-format
 msgid "Could not save the database: %ls"
 msgstr ""
 
-#: gui/main.c:1898
+#: gui/main.c:1924
 msgid "Could not save the database:"
 msgstr ""
 
-#: gui/main.c:1966
+#: gui/main.c:1934 gui/main.c:2009
+msgid "Updating the figures for your drives and files..."
+msgstr ""
+
+#: gui/main.c:2003
 msgid "Looking for BRODALF drives..."
 msgstr ""
 
-#: gui/main.c:1966
+#: gui/main.c:2003
 msgid "Scanning your backup roots..."
 msgstr ""
 
-#: gui/main.c:1967
+#: gui/main.c:2004
 msgid "Backing up..."
 msgstr ""
 
-#: gui/main.c:1967
+#: gui/main.c:2004
 msgid "Checking every copy on the drive..."
 msgstr ""
 
-#: gui/main.c:1967
+#: gui/main.c:2004
 msgid "Restoring..."
 msgstr ""
 
-#: gui/main.c:1968
+#: gui/main.c:2005
 msgid "Reading back copies not read lately..."
 msgstr ""
 
-#: gui/main.c:1968
+#: gui/main.c:2005
 msgid "Reading files that are in use from a shadow copy..."
 msgstr ""
 
-#: gui/main.c:1969
+#: gui/main.c:2006
 msgid "Compressing the copies on the drive..."
 msgstr ""
 
-#: gui/main.c:1970
+#: gui/main.c:2006
+msgid "Saving your changes and updating the figures..."
+msgstr ""
+
+#: gui/main.c:2007
 msgid "Bit-rot scan: reading every file again..."
 msgstr ""
 
-#: gui/main.c:1971
+#: gui/main.c:2008
 msgid "Making the copies on the drive whole again..."
 msgstr ""
 
-#: gui/main.c:1997 gui/main.c:1998
+#: gui/main.c:2048 gui/main.c:2049
 msgid "Stopping..."
 msgstr ""
 
-#: gui/main.c:2064
+#: gui/main.c:2148
 #, c-format
 msgid ""
 "%ls\n"
@@ -461,7 +477,7 @@ msgid ""
 "Show the report file now?"
 msgstr ""
 
-#: gui/main.c:2069
+#: gui/main.c:2153
 #, c-format
 msgid ""
 "%ls\n"
@@ -469,353 +485,353 @@ msgid ""
 "The error report could not be saved."
 msgstr ""
 
-#: gui/main.c:2104
+#: gui/main.c:2188
 msgid "BRODALF could not read or write a file or a drive."
 msgstr ""
 
-#: gui/main.c:2105
+#: gui/main.c:2189
 msgid ""
 "A drive may be full, unplugged or failing, or another program may have the file open. What was done until then is kept. Check the drive and try again; the app log says more."
 msgstr ""
 
-#: gui/main.c:2109
+#: gui/main.c:2193
 msgid "Something BRODALF needed was not there."
 msgstr ""
 
-#: gui/main.c:2110
+#: gui/main.c:2194
 msgid ""
 "A drive may have been unplugged, or a file or folder moved or renamed. Plug the drive in, or check where it is, and try again."
 msgstr ""
 
-#: gui/main.c:2114
+#: gui/main.c:2198
 msgid "The database is open in another BRODALF window."
 msgstr ""
 
-#: gui/main.c:2115
+#: gui/main.c:2199
 msgid "Use that window, or close it and try again."
 msgstr ""
 
-#: gui/main.c:2119
+#: gui/main.c:2203
 msgid "Something with that name is already there."
 msgstr ""
 
-#: gui/main.c:2120
+#: gui/main.c:2204
 msgid "BRODALF never overwrites anything. Choose another name or place."
 msgstr ""
 
-#: gui/main.c:2124
+#: gui/main.c:2208
 msgid "This is not a BRODALF database, or a newer BRODALF made it."
 msgstr ""
 
-#: gui/main.c:2125
+#: gui/main.c:2209
 msgid "Choose a .brodalf file, or update BRODALF to open this one."
 msgstr ""
 
-#: gui/main.c:2128
+#: gui/main.c:2212
 msgid "BRODALF could not do that with what was chosen."
 msgstr ""
 
-#: gui/main.c:2129
+#: gui/main.c:2213
 msgid "Check what you chose and try again."
 msgstr ""
 
-#: gui/main.c:2132
+#: gui/main.c:2216
 msgid "The passphrase is needed, or the one given is not right."
 msgstr ""
 
-#: gui/main.c:2133
+#: gui/main.c:2217
 msgid ""
 "Enter the passphrase when BRODALF asks for it. The recovery key on your recovery sheet can be used instead."
 msgstr ""
 
-#: gui/main.c:2143
+#: gui/main.c:2227
 msgid "A drive was unplugged or stopped answering during the job."
 msgstr ""
 
-#: gui/main.c:2144
+#: gui/main.c:2228
 msgid ""
 "What was done until then is kept. Plug the drive back in and start the job again: a backup copies only what the drive is still missing."
 msgstr ""
 
-#: gui/main.c:2157 gui/main.c:3634
+#: gui/main.c:2241 gui/main.c:3818
 msgid "Show the app log"
 msgstr ""
 
-#: gui/main.c:2189
+#: gui/main.c:2273
 #, c-format
 msgid "BRODALF crashed (exception 0x%08lX in %ls at +0x%llx)."
 msgstr ""
 
-#: gui/main.c:2236
+#: gui/main.c:2320
 #, c-format
 msgid "%ls   (0 of %lld available, copies on %ls)"
 msgstr ""
 
-#: gui/main.c:2238
+#: gui/main.c:2322
 #, c-format
 msgid "%ls   (%lld of %lld available)"
 msgstr ""
 
-#: gui/main.c:2240
+#: gui/main.c:2324
 #, c-format
 msgid "%ls   v%d  on %ls"
 msgstr ""
 
-#: gui/main.c:2241
+#: gui/main.c:2325
 #, c-format
 msgid "%ls   on %ls"
 msgstr ""
 
-#: gui/main.c:2243
+#: gui/main.c:2327
 #, c-format
 msgid "%ls   v%d"
 msgstr ""
 
-#: gui/main.c:2298
+#: gui/main.c:2382
 msgid "   ★ starred"
 msgstr ""
 
-#: gui/main.c:2301
+#: gui/main.c:2385
 msgid "   [encrypted]"
 msgstr ""
 
-#: gui/main.c:2467
+#: gui/main.c:2551
 msgid "   - not found: unplugged, moved or renamed?"
 msgstr ""
 
-#: gui/main.c:2468
+#: gui/main.c:2552
 msgid "   - no longer backed up"
 msgstr ""
 
-#: gui/main.c:2515
+#: gui/main.c:2599
 #, c-format
 msgid "v%d (current)"
 msgstr ""
 
-#: gui/main.c:2515
+#: gui/main.c:2599
 #, c-format
 msgid "v%d"
 msgstr ""
 
-#: gui/main.c:2521 gui/main.c:2733
+#: gui/main.c:2605 gui/main.c:2896
 msgid " (encrypted)"
 msgstr ""
 
-#: gui/main.c:2528
+#: gui/main.c:2612
 msgid "Missing from drive"
 msgstr ""
 
-#: gui/main.c:2528
+#: gui/main.c:2612
 msgid "Damaged"
 msgstr ""
 
-#: gui/main.c:2529
+#: gui/main.c:2613
 msgid "Drive marked lost or broken: does not count"
 msgstr ""
 
-#: gui/main.c:2530
+#: gui/main.c:2614
 msgid "Good, plugged in"
 msgstr ""
 
-#: gui/main.c:2530
+#: gui/main.c:2614
 msgid "Good, drive not plugged in"
 msgstr ""
 
-#: gui/main.c:2559
+#: gui/main.c:2643
 msgid "Available: a good copy is on a drive that is plugged in."
 msgstr ""
 
-#: gui/main.c:2560
+#: gui/main.c:2644
 msgid ""
 "Changed since the last backup. Only an older version is on a plugged-in drive."
 msgstr ""
 
-#: gui/main.c:2561
+#: gui/main.c:2645
 msgid "Backed up, but the drive is not plugged in."
 msgstr ""
 
-#: gui/main.c:2562
+#: gui/main.c:2646
 msgid "Not backed up yet."
 msgstr ""
 
-#: gui/main.c:2563
+#: gui/main.c:2647
 msgid ""
 "The copy on the plugged-in drive is missing or damaged. Back up again to fix it."
 msgstr ""
 
-#: gui/main.c:2564
+#: gui/main.c:2648
 msgid "Deleted from your folder. BRODALF still tracks its copies."
 msgstr ""
 
-#: gui/main.c:2565
+#: gui/main.c:2649
 msgid "Some files inside are available."
 msgstr ""
 
-#: gui/main.c:2668
+#: gui/main.c:2831
 msgid ""
 "The drive says it is failing. Set up another drive and back up to it; then mark this one broken."
 msgstr ""
 
-#: gui/main.c:2669
+#: gui/main.c:2832
 msgid "The drive is nearly worn out. Plan to set up another drive."
 msgstr ""
 
-#: gui/main.c:2671
+#: gui/main.c:2834
 msgid ""
 "The drive reports problems reading some of its sectors. Plan to set up another drive."
 msgstr ""
 
-#: gui/main.c:2681
+#: gui/main.c:2844
 #, c-format
 msgid ""
 "%lsNo hardware details yet; they are read the next time the drive is plugged in.\r\n"
 msgstr ""
 
-#: gui/main.c:2695
+#: gui/main.c:2858
 #, c-format
 msgid "%lsDisk: %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2696
+#: gui/main.c:2859
 #, c-format
 msgid "%lsSerial number %ls%ls%ls\r\n"
 msgstr ""
 
-#: gui/main.c:2696
+#: gui/main.c:2859
 msgid ", firmware "
 msgstr ""
 
-#: gui/main.c:2697
+#: gui/main.c:2860
 #, c-format
 msgid "%lsVolume \"%ls\" (%ls, serial %ls)\r\n"
 msgstr ""
 
-#: gui/main.c:2697
+#: gui/main.c:2860
 msgid "no name"
 msgstr ""
 
-#: gui/main.c:2699
+#: gui/main.c:2862
 #, c-format
 msgid "%lsHealth: %ls"
 msgstr ""
 
-#: gui/main.c:2699 gui/main.c:3257 gui/main.c:7529
+#: gui/main.c:2862 gui/main.c:3433 gui/main.c:7723
 msgid "unknown"
 msgstr ""
 
-#: gui/main.c:2701
+#: gui/main.c:2864
 #, c-format
 msgid ", %lld hours powered on"
 msgstr ""
 
-#: gui/main.c:2702
+#: gui/main.c:2865
 #, c-format
 msgid ", %lld power cycles"
 msgstr ""
 
-#: gui/main.c:2703
+#: gui/main.c:2866
 #, c-format
 msgid ", %d%% worn"
 msgstr ""
 
-#: gui/main.c:2706
+#: gui/main.c:2869
 #, c-format
 msgid ""
 "%ls%lld reallocated, %lld waiting to be reallocated, %lld unreadable sectors\r\n"
 msgstr ""
 
-#: gui/main.c:2711
+#: gui/main.c:2874
 #, c-format
 msgid "%lsTemperature %d °C\r\n"
 msgstr ""
 
-#: gui/main.c:2717
+#: gui/main.c:2880
 #, c-format
 msgid "%lsRead from the drive %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2721
+#: gui/main.c:2884
 #, c-format
 msgid "%ls%ls free of %ls when last seen\r\n"
 msgstr ""
 
-#: gui/main.c:2733
+#: gui/main.c:2896
 msgid " (encrypted, names hidden)"
 msgstr ""
 
-#: gui/main.c:2734
+#: gui/main.c:2897
 #, c-format
 msgid "%ls    Kept in: %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2735
+#: gui/main.c:2898
 #, c-format
 msgid ""
 "%ls    Cloud account from an earlier version (not supported in this version)\r\n"
 msgstr ""
 
-#: gui/main.c:2736
+#: gui/main.c:2899
 #, c-format
 msgid "%ls    Plugged in now at %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2737
+#: gui/main.c:2900
 #, c-format
 msgid "%ls    Not plugged in. Last seen %ls at %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2738
+#: gui/main.c:2901
 #, c-format
 msgid "%ls    Not plugged in. Last seen %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2742
+#: gui/main.c:2905
 #, c-format
 msgid ""
 "%ls    Marked %ls %ls: its copies no longer count and nothing is backed up to it\r\n"
 msgstr ""
 
-#: gui/main.c:2743 gui/main.c:3137 gui/main.c:3467 gui/main.c:4219 ...
+#: gui/main.c:2906 gui/main.c:3310 gui/main.c:3651 gui/main.c:4403 ...
 msgid "broken"
 msgstr ""
 
-#: gui/main.c:2743 gui/main.c:3137 gui/main.c:3467 gui/main.c:4219 ...
+#: gui/main.c:2906 gui/main.c:3310 gui/main.c:3651 gui/main.c:4403 ...
 msgid "lost"
 msgstr ""
 
-#: gui/main.c:2748
+#: gui/main.c:2911
 #, c-format
 msgid ""
 "%ls    Holds %ls of good copies; the oldest was last read back %ls%ls\r\n"
 msgstr ""
 
-#: gui/main.c:2749
+#: gui/main.c:2912
 msgid " (due for a check)"
 msgstr ""
 
-#: gui/main.c:2813
+#: gui/main.c:2976
 msgid ""
 "Select a file to see what it is, its versions, and which drives hold it."
 msgstr ""
 
-#: gui/main.c:2822
+#: gui/main.c:2985
 msgid "Starred: also backed up to your extra places"
 msgstr ""
 
-#: gui/main.c:2823
+#: gui/main.c:2986
 msgid "Starred with its folder: also backed up to your extra places"
 msgstr ""
 
-#: gui/main.c:2825
+#: gui/main.c:2988
 msgid "Encrypted on every drive and extra place it is copied to"
 msgstr ""
 
-#: gui/main.c:2826
+#: gui/main.c:2989
 msgid ""
 "Encrypted with its folder, on every drive and extra place it is copied to"
 msgstr ""
 
-#: gui/main.c:2845
+#: gui/main.c:3008
 #, c-format
 msgid ""
 "\r\n"
@@ -825,329 +841,343 @@ msgid ""
 "    BLAKE3 %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2852
+#: gui/main.c:3015
 msgid ""
 "\r\n"
 "Copies of this version\r\n"
 msgstr ""
 
-#: gui/main.c:2861
+#: gui/main.c:3024
 #, c-format
 msgid "        Copy %ls, at %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2862
+#: gui/main.c:3025
 msgid "good"
 msgstr ""
 
-#: gui/main.c:2862
+#: gui/main.c:3025
 msgid "missing"
 msgstr ""
 
-#: gui/main.c:2862
+#: gui/main.c:3025
 msgid "damaged"
 msgstr ""
 
-#: gui/main.c:2867
+#: gui/main.c:3030
 msgid "    None yet. Back up to put a copy on a drive.\r\n"
 msgstr ""
 
-#: gui/main.c:2878
+#: gui/main.c:3041
 msgid ""
 "\r\n"
 "Older versions are also on\r\n"
 msgstr ""
 
-#: gui/main.c:2893
+#: gui/main.c:3056
 msgid ""
 "\r\n"
 "Right-click a version below to restore it or to open it on its drive.\r\n"
 msgstr ""
 
-#: gui/main.c:2910
+#: gui/main.c:3073
 msgid "did not finish (BRODALF was closed during it)"
 msgstr ""
 
-#: gui/main.c:2911
+#: gui/main.c:3074
 msgid "finished"
 msgstr ""
 
-#: gui/main.c:2912
+#: gui/main.c:3075
 msgid "finished with problems"
 msgstr ""
 
-#: gui/main.c:2914
+#: gui/main.c:3077
 msgid "failed"
 msgstr ""
 
-#: gui/main.c:2924
+#: gui/main.c:3086
+#, c-format
+msgid "%lsWhere it stands: being read...\r\n"
+msgstr ""
+
+#: gui/main.c:3090
+#, c-format
+msgid "%lsWhere it stands could not be read from the database.\r\n"
+msgstr ""
+
+#: gui/main.c:3095
 #, c-format
 msgid "%lsWhere it stands\r\n"
 msgstr ""
 
-#: gui/main.c:2926
+#: gui/main.c:3097
 #, c-format
 msgid "%ls    %lld files as they are now (%ls)\r\n"
 msgstr ""
 
-#: gui/main.c:2929
+#: gui/main.c:3100
 #, c-format
 msgid "%ls    %lld changed since (%ls): only an older version is on it\r\n"
 msgstr ""
 
-#: gui/main.c:2933
+#: gui/main.c:3104
 #, c-format
 msgid "%ls    %lld not on it at all (%ls)\r\n"
 msgstr ""
 
-#: gui/main.c:2936
+#: gui/main.c:3107
 #, c-format
 msgid "%ls    %lld deleted from their folders, still kept on it\r\n"
 msgstr ""
 
-#: gui/main.c:2939
+#: gui/main.c:3110
 #, c-format
 msgid "%ls    %lld older versions kept on it (%ls)\r\n"
 msgstr ""
 
-#: gui/main.c:2943
+#: gui/main.c:3114
 #, c-format
 msgid "%ls    Last backup %ls: %ls, %lld files copied"
 msgstr ""
 
-#: gui/main.c:2945
+#: gui/main.c:3116
 #, c-format
 msgid ", %lld failed"
 msgstr ""
 
-#: gui/main.c:2948
+#: gui/main.c:3119
 #, c-format
 msgid "%ls    Never backed up to\r\n"
 msgstr ""
 
-#: gui/main.c:2952
+#: gui/main.c:3123
 #, c-format
 msgid "%ls    Last read back %ls: %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2952
+#: gui/main.c:3123
 #, c-format
 msgid "%ls    Last check %ls: %ls\r\n"
 msgstr ""
 
-#: gui/main.c:2955
+#: gui/main.c:3126
 #, c-format
 msgid "%ls    Its copies were never checked (Check drive...)\r\n"
 msgstr ""
 
-#: gui/main.c:2957
+#: gui/main.c:3128
 #, c-format
 msgid ""
 "%ls    %lld copies were missing or damaged when last checked: the next backup to it writes them again\r\n"
 msgstr ""
 
-#: gui/main.c:2960
+#: gui/main.c:3131
 #, c-format
 msgid ""
 "%ls    %lld copies were never read back since they were written (Check drive..., Read back)\r\n"
 msgstr ""
 
-#: gui/main.c:2980
+#: gui/main.c:3151
 #, c-format
 msgid ""
 "    Set up %ls, %ls copies recorded\r\n"
 "\r\n"
 msgstr ""
 
-#: gui/main.c:2987
+#: gui/main.c:3158
 msgid ""
 "\r\n"
 "Its copies still restore if it turns up, but they no longer count toward your full copies, so the files it held are backed up again to your other drives. If you find it, choose Found it.\r\n"
 msgstr ""
 
-#: gui/main.c:2990 gui/main.c:7939 gui/main.c:7953
+#: gui/main.c:3161 gui/main.c:8134 gui/main.c:8148
 msgid "Found it"
 msgstr ""
 
-#: gui/main.c:2990 gui/main.c:7144 gui/main.c:7176 gui/main.c:7939 ...
+#: gui/main.c:3161 gui/main.c:7324 gui/main.c:7356 gui/main.c:8134 ...
 msgid "Mark lost or broken..."
 msgstr ""
 
-#: gui/main.c:3027 gui/main.c:3480
+#: gui/main.c:3198 gui/main.c:3664
 msgid "No drives yet. Use Back up to set one up."
 msgstr ""
 
-#: gui/main.c:3036 gui/main.c:6007
+#: gui/main.c:3207 gui/main.c:6187
 msgid "  - extra place for starred files"
 msgstr ""
 
-#: gui/main.c:3037
+#: gui/main.c:3208
 msgid ""
 "  - Cloud account from an earlier version (not supported in this version)"
 msgstr ""
 
-#: gui/main.c:3038 gui/main.c:6008
+#: gui/main.c:3209 gui/main.c:6188
 msgid "  - plugged in"
 msgstr ""
 
-#: gui/main.c:3039
+#: gui/main.c:3210
 msgid "  - marked broken"
 msgstr ""
 
-#: gui/main.c:3039
+#: gui/main.c:3210
 msgid "  - marked lost"
 msgstr ""
 
-#: gui/main.c:3040
+#: gui/main.c:3211
 msgid "  - its health data warns"
 msgstr ""
 
-#: gui/main.c:3041
+#: gui/main.c:3212
 msgid "  - due for a check"
 msgstr ""
 
-#: gui/main.c:3083
+#: gui/main.c:3257
 #, c-format
 msgid "Full copy %d of %d: nothing to back up yet"
 msgstr ""
 
-#: gui/main.c:3085
+#: gui/main.c:3259
 #, c-format
 msgid "Full copy %d of %d: complete, %lld files (%ls)"
 msgstr ""
 
-#: gui/main.c:3087
+#: gui/main.c:3261
 #, c-format
 msgid "Full copy %d of %d: %d%%, %lld of %lld files (%ls of %ls)"
 msgstr ""
 
-#: gui/main.c:3107
+#: gui/main.c:3281
 msgid ""
 "No database is open. Open one or create a new one below; to start again from a backup drive, use File > Recover."
 msgstr ""
 
-#: gui/main.c:3132
+#: gui/main.c:3305
 msgid "Plugged in: "
 msgstr ""
 
-#: gui/main.c:3137
+#: gui/main.c:3310
 #, c-format
 msgid "marked %ls."
 msgstr ""
 
-#: gui/main.c:3142
+#: gui/main.c:3314
+msgid "reading what a backup would copy..."
+msgstr ""
+
+#: gui/main.c:3318
 msgid "cannot tell what a backup would copy."
 msgstr ""
 
-#: gui/main.c:3147
+#: gui/main.c:3324
 msgid "up to date."
 msgstr ""
 
-#: gui/main.c:3148
+#: gui/main.c:3325
 #, c-format
 msgid "%lld file (%ls) to back up"
 msgid_plural "%lld files (%ls) to back up"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3151
+#: gui/main.c:3328
 #, c-format
 msgid ", about %ls will not fit"
 msgstr ""
 
-#: gui/main.c:3154
+#: gui/main.c:3331
 msgid " Many files changed at once: look before backing up."
 msgstr ""
 
-#: gui/main.c:3155
+#: gui/main.c:3332
 msgid " Due for a check."
 msgstr ""
 
-#: gui/main.c:3159
+#: gui/main.c:3336
 msgid "No backup drives yet. Use Back up to set one up."
 msgstr ""
 
-#: gui/main.c:3162
+#: gui/main.c:3339
 #, c-format
 msgid "Your %d backup drive is not plugged in. Plug it in to back up."
 msgid_plural "None of your %d backup drives are plugged in. Plug one in to back up."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3168
+#: gui/main.c:3345
 #, c-format
 msgid "   Extra places: %lld starred file to copy."
 msgid_plural "   Extra places: %lld starred files to copy."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3170
+#: gui/main.c:3347
 msgid "   Extra places: up to date."
 msgstr ""
 
-#: gui/main.c:3177 gui/main.c:8813
+#: gui/main.c:3353 gui/main.c:9008
 msgid "At ris&k..."
 msgstr ""
 
-#: gui/main.c:3179
+#: gui/main.c:3355
 #, c-format
 msgid "At ris&k (%lld)..."
 msgstr ""
 
-#: gui/main.c:3238
+#: gui/main.c:3414
 msgid "Changed since its last backup. "
 msgstr ""
 
-#: gui/main.c:3239
+#: gui/main.c:3415
 msgid "On a drive with no place set."
 msgstr ""
 
-#: gui/main.c:3252 gui/main.c:5374
+#: gui/main.c:3428 gui/main.c:5554
 msgid "  (plugged in)"
 msgstr ""
 
-#: gui/main.c:3253
+#: gui/main.c:3429
 #, c-format
 msgid "%lld file"
 msgid_plural "%lld files"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3255 gui/main.c:3336 gui/main.c:3429 gui/main.c:7149
+#: gui/main.c:3431 gui/main.c:3512 gui/main.c:3605 gui/main.c:7329
 msgid "Drive"
 msgstr ""
 
-#: gui/main.c:3262
+#: gui/main.c:3438
 #, c-format
 msgid "%ls free%ls"
 msgstr ""
 
-#: gui/main.c:3262
+#: gui/main.c:3438
 msgid ", room for all of it"
 msgstr ""
 
-#: gui/main.c:3262
+#: gui/main.c:3438
 msgid ", not enough"
 msgstr ""
 
-#: gui/main.c:3264
+#: gui/main.c:3440
 msgid "(not set)"
 msgstr ""
 
-#: gui/main.c:3269
+#: gui/main.c:3445
 msgid " (kept in "
 msgstr ""
 
-#: gui/main.c:3290
+#: gui/main.c:3466
 msgid "No files yet. Add a folder and scan it first."
 msgstr ""
 
-#: gui/main.c:3292
+#: gui/main.c:3468
 #, c-format
 msgid "All %lld files have at least %d copies in %d different places."
 msgstr ""
 
-#: gui/main.c:3295
+#: gui/main.c:3471
 #, c-format
 msgid ""
 "%lld of %lld files (%ls) has fewer than %d copies in %d different places."
@@ -1156,515 +1186,523 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3298
+#: gui/main.c:3474
 #, c-format
 msgid "%lld has no copy of its current version at all."
 msgid_plural "%lld have no copy of their current version at all."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3304
+#: gui/main.c:3480
 #, c-format
 msgid ""
 " Also kept: %lld deleted files (%lld short of the target) and %lld older versions (%lld short)."
 msgstr ""
 
-#: gui/main.c:3317
+#: gui/main.c:3493
 msgid ""
 "None of your drives would help. Set up another drive, or one kept somewhere else."
 msgstr ""
 
-#: gui/main.c:3324
+#: gui/main.c:3500
 #, c-format
 msgid "... and %lld more"
 msgstr ""
 
-#: gui/main.c:3336
+#: gui/main.c:3512
 msgid "Kind"
 msgstr ""
 
-#: gui/main.c:3336
+#: gui/main.c:3512
 msgid "Kept in"
 msgstr ""
 
-#: gui/main.c:3336
+#: gui/main.c:3512
 msgid "Would help"
 msgstr ""
 
-#: gui/main.c:3336 gui/main.c:3338 gui/main.c:3502 gui/main.c:3538 ...
+#: gui/main.c:3512 gui/main.c:3514 gui/main.c:3686 gui/main.c:3722 ...
 msgid "Size"
 msgstr ""
 
-#: gui/main.c:3336
+#: gui/main.c:3512
 msgid "Free space"
 msgstr ""
 
-#: gui/main.c:3338 gui/main.c:3502 gui/main.c:3538 gui/main.c:3555 ...
+#: gui/main.c:3514 gui/main.c:3686 gui/main.c:3722 gui/main.c:3739 ...
 msgid "File"
 msgstr ""
 
-#: gui/main.c:3338 gui/main.c:7151 gui/main.c:7367
+#: gui/main.c:3514 gui/main.c:7331 gui/main.c:7551
 msgid "Copies"
 msgstr ""
 
-#: gui/main.c:3338 gui/main.c:3502 gui/main.c:7368
+#: gui/main.c:3514 gui/main.c:3686 gui/main.c:7552
 msgid "Places"
 msgstr ""
 
-#: gui/main.c:3338 gui/main.c:7166
+#: gui/main.c:3514 gui/main.c:7346
 msgid "Note"
 msgstr ""
 
-#: gui/main.c:3359
+#: gui/main.c:3535
 msgid "Pick a drive in the list first."
 msgstr ""
 
-#: gui/main.c:3364
+#: gui/main.c:3540
 #, c-format
 msgid "Plug in %ls first, then try again."
 msgstr ""
 
-#: gui/main.c:3380
+#: gui/main.c:3556
 msgid "Could not change the target."
 msgstr ""
 
-#: gui/main.c:3384
+#: gui/main.c:3560
 msgid "The number of full copies to keep changed."
 msgstr ""
 
-#: gui/main.c:3429 gui/main.c:7149
+#: gui/main.c:3605 gui/main.c:7329
 msgid "Plugged in"
 msgstr ""
 
-#: gui/main.c:3429
+#: gui/main.c:3605
 msgid "As it is now"
 msgstr ""
 
-#: gui/main.c:3429
+#: gui/main.c:3605
 msgid "Changed since"
 msgstr ""
 
-#: gui/main.c:3429
+#: gui/main.c:3605
 msgid "Not on it"
 msgstr ""
 
-#: gui/main.c:3429
+#: gui/main.c:3605
 msgid "Last backup"
 msgstr ""
 
-#: gui/main.c:3429
+#: gui/main.c:3605
 msgid "Last check"
 msgstr ""
 
-#: gui/main.c:3429 gui/main.c:7151
+#: gui/main.c:3605 gui/main.c:7331
 msgid "Problems"
 msgstr ""
 
-#: gui/main.c:3440 gui/main.c:4697
+#: gui/main.c:3622 gui/main.c:4881
 msgid "Never"
 msgstr ""
 
-#: gui/main.c:3451
+#: gui/main.c:3629
+msgid "could not be read"
+msgstr ""
+
+#: gui/main.c:3629
+msgid "being read..."
+msgstr ""
+
+#: gui/main.c:3635
 msgid ", did not finish"
 msgstr ""
 
-#: gui/main.c:3452
+#: gui/main.c:3636
 msgid ", with problems"
 msgstr ""
 
-#: gui/main.c:3452
+#: gui/main.c:3636
 msgid ", stopped"
 msgstr ""
 
-#: gui/main.c:3453
+#: gui/main.c:3637
 msgid ", failed"
 msgstr ""
 
-#: gui/main.c:3458
+#: gui/main.c:3642
 msgid "read back"
 msgstr ""
 
-#: gui/main.c:3458
+#: gui/main.c:3642
 msgid "check"
 msgstr ""
 
-#: gui/main.c:3460 gui/main.c:7540
+#: gui/main.c:3644 gui/main.c:7733
 #, c-format
 msgid "%lld missing or damaged"
 msgstr ""
 
-#: gui/main.c:3463
+#: gui/main.c:3647
 #, c-format
 msgid "%ls%lld never read back"
 msgstr ""
 
-#: gui/main.c:3467
+#: gui/main.c:3651
 #, c-format
 msgid "%lsmarked %ls"
 msgstr ""
 
-#: gui/main.c:3470
+#: gui/main.c:3654
 #, c-format
 msgid "%lsdue for a check"
 msgstr ""
 
-#: gui/main.c:3472 gui/main.c:7288 gui/main.c:7293 gui/main.c:7642 ...
+#: gui/main.c:3656 gui/main.c:7468 gui/main.c:7473 gui/main.c:7837 ...
 msgid "Yes"
 msgstr ""
 
-#: gui/main.c:3472 gui/main.c:7288 gui/main.c:7517 gui/main.c:7642 ...
+#: gui/main.c:3656 gui/main.c:7468 gui/main.c:7711 gui/main.c:7837 ...
 msgid "No"
-msgstr ""
-
-#: gui/main.c:3478
-msgid ""
-"Where each drive stands, from the database (the drives need not be plugged in). \"Changed since\": only an older version of the file is on the drive. Double-click a drive for its details."
-msgstr ""
-
-#: gui/main.c:3502 gui/main.c:3538 gui/main.c:7166 gui/main.c:7197
-msgid "Backup root"
-msgstr ""
-
-#: gui/main.c:3502
-msgid "Good copies"
-msgstr ""
-
-#: gui/main.c:3510
-msgid ""
-"The largest files in your backup roots, largest first (the top 200): where the space on your drives goes."
-msgstr ""
-
-#: gui/main.c:3511
-msgid "No files yet. Add a backup root and scan it."
-msgstr ""
-
-#: gui/main.c:3547
-msgid ""
-"These files changed although their size and modified time did not: that is what a failing disk or bit rot looks like. Their copies on your drives are the good ones: restore a file to get it back. If you changed one on purpose, pick it and choose Keep as it is now."
-msgstr ""
-
-#: gui/main.c:3550
-msgid ""
-"No damaged files. A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them."
-msgstr ""
-
-#: gui/main.c:3555
-msgid "Was going to"
-msgstr ""
-
-#: gui/main.c:3555
-msgid "Backup has"
-msgstr ""
-
-#: gui/main.c:3555
-msgid "Already there"
-msgstr ""
-
-#: gui/main.c:3564 gui/main.c:7889
-msgid "a folder"
-msgstr ""
-
-#: gui/main.c:3575
-msgid ""
-"The last restore left these alone because another file was already where each would go: nothing was overwritten. Compare them, move or rename the one that is there, and restore again."
-msgstr ""
-
-#: gui/main.c:3577
-msgid "The last restore left nothing alone."
-msgstr ""
-
-#: gui/main.c:3586 gui/main.c:3588
-#, c-format
-msgid "v%lld, %ls"
-msgstr ""
-
-#: gui/main.c:3602
-msgid "On the drive"
-msgstr ""
-
-#: gui/main.c:3602
-msgid "Now"
-msgstr ""
-
-#: gui/main.c:3602
-msgid "Changed"
-msgstr ""
-
-#: gui/main.c:3608
-msgid ""
-"These files changed since their copy on this drive was made (the first 5000). If you did not change them, do not trust them as they are: restore them from the drive."
-msgstr ""
-
-#: gui/main.c:3614
-msgid "What BRODALF reported"
-msgstr ""
-
-#: gui/main.c:3623
-msgid ""
-"Everything BRODALF reported while the job ran, in order. The app log keeps it too, with the time of each line."
-msgstr ""
-
-#: gui/main.c:3632
-msgid "Status of every drive"
-msgstr ""
-
-#: gui/main.c:3632
-msgid "Largest files"
-msgstr ""
-
-#: gui/main.c:3632
-msgid "Damaged files"
-msgstr ""
-
-#: gui/main.c:3632
-msgid "Left alone by the last restore"
-msgstr ""
-
-#: gui/main.c:3633
-msgid "Changed since the copy on the drive"
-msgstr ""
-
-#: gui/main.c:3633
-msgid "What went wrong"
-msgstr ""
-
-#: gui/main.c:3634 gui/brodalf.rc:94
-msgid "Details..."
-msgstr ""
-
-#: gui/main.c:3634
-msgid "Keep as it is now"
-msgstr ""
-
-#: gui/main.c:3634 gui/main.c:6001 gui/main.c:6521 gui/main.c:7140 ...
-msgid "Open in Explorer"
-msgstr ""
-
-#: gui/main.c:3658
-msgid "Pick a row in the list first."
 msgstr ""
 
 #: gui/main.c:3662
 msgid ""
+"Where each drive stands, from the database (the drives need not be plugged in). \"Changed since\": only an older version of the file is on the drive. Double-click a drive for its details."
+msgstr ""
+
+#: gui/main.c:3686 gui/main.c:3722 gui/main.c:7346 gui/main.c:7377
+msgid "Backup root"
+msgstr ""
+
+#: gui/main.c:3686
+msgid "Good copies"
+msgstr ""
+
+#: gui/main.c:3694
+msgid ""
+"The largest files in your backup roots, largest first (the top 200): where the space on your drives goes."
+msgstr ""
+
+#: gui/main.c:3695
+msgid "No files yet. Add a backup root and scan it."
+msgstr ""
+
+#: gui/main.c:3731
+msgid ""
+"These files changed although their size and modified time did not: that is what a failing disk or bit rot looks like. Their copies on your drives are the good ones: restore a file to get it back. If you changed one on purpose, pick it and choose Keep as it is now."
+msgstr ""
+
+#: gui/main.c:3734
+msgid ""
+"No damaged files. A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them."
+msgstr ""
+
+#: gui/main.c:3739
+msgid "Was going to"
+msgstr ""
+
+#: gui/main.c:3739
+msgid "Backup has"
+msgstr ""
+
+#: gui/main.c:3739
+msgid "Already there"
+msgstr ""
+
+#: gui/main.c:3748 gui/main.c:8084
+msgid "a folder"
+msgstr ""
+
+#: gui/main.c:3759
+msgid ""
+"The last restore left these alone because another file was already where each would go: nothing was overwritten. Compare them, move or rename the one that is there, and restore again."
+msgstr ""
+
+#: gui/main.c:3761
+msgid "The last restore left nothing alone."
+msgstr ""
+
+#: gui/main.c:3770 gui/main.c:3772
+#, c-format
+msgid "v%lld, %ls"
+msgstr ""
+
+#: gui/main.c:3786
+msgid "On the drive"
+msgstr ""
+
+#: gui/main.c:3786
+msgid "Now"
+msgstr ""
+
+#: gui/main.c:3786
+msgid "Changed"
+msgstr ""
+
+#: gui/main.c:3792
+msgid ""
+"These files changed since their copy on this drive was made (the first 5000). If you did not change them, do not trust them as they are: restore them from the drive."
+msgstr ""
+
+#: gui/main.c:3798
+msgid "What BRODALF reported"
+msgstr ""
+
+#: gui/main.c:3807
+msgid ""
+"Everything BRODALF reported while the job ran, in order. The app log keeps it too, with the time of each line."
+msgstr ""
+
+#: gui/main.c:3816
+msgid "Status of every drive"
+msgstr ""
+
+#: gui/main.c:3816
+msgid "Largest files"
+msgstr ""
+
+#: gui/main.c:3816
+msgid "Damaged files"
+msgstr ""
+
+#: gui/main.c:3816
+msgid "Left alone by the last restore"
+msgstr ""
+
+#: gui/main.c:3817
+msgid "Changed since the copy on the drive"
+msgstr ""
+
+#: gui/main.c:3817
+msgid "What went wrong"
+msgstr ""
+
+#: gui/main.c:3818 gui/brodalf.rc:94
+msgid "Details..."
+msgstr ""
+
+#: gui/main.c:3818
+msgid "Keep as it is now"
+msgstr ""
+
+#: gui/main.c:3818 gui/main.c:6181 gui/main.c:6701 gui/main.c:7320 ...
+msgid "Open in Explorer"
+msgstr ""
+
+#: gui/main.c:3842
+msgid "Pick a row in the list first."
+msgstr ""
+
+#: gui/main.c:3846
+msgid ""
 "Keep this file as it is now? It is recorded as a new version and backed up like any change; the older copies on your drives stay as they are."
 msgstr ""
 
-#: gui/main.c:3668
+#: gui/main.c:3852
 msgid "Could not record it."
 msgstr ""
 
-#: gui/main.c:3729
+#: gui/main.c:3913
 #, c-format
 msgid "Backup finished with %lld problem."
 msgid_plural "Backup finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3732
+#: gui/main.c:3916
 #, c-format
 msgid "%ls finished with %lld problem."
 msgid_plural "%ls finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3736
+#: gui/main.c:3920
 #, c-format
 msgid "Check finished with %lld problem."
 msgid_plural "Check finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3739
+#: gui/main.c:3923
 #, c-format
 msgid "Read-back finished with %lld problem."
 msgid_plural "Read-back finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3742
+#: gui/main.c:3926
 #, c-format
 msgid "Restore finished with %lld problem."
 msgid_plural "Restore finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3745
+#: gui/main.c:3929
 #, c-format
 msgid "Changing the compression finished with %lld problem."
 msgid_plural "Changing the compression finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3749
+#: gui/main.c:3933
 #, c-format
 msgid "Finished with %lld problem."
 msgid_plural "Finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:3778
+#: gui/main.c:3962
 msgid "Show what went wrong"
 msgstr ""
 
-#: gui/main.c:3804
+#: gui/main.c:3988
 msgid "BRODALF files.csv"
 msgstr ""
 
-#: gui/main.c:3814
+#: gui/main.c:3998
 msgid "Export the file list"
 msgstr ""
 
-#: gui/main.c:3825
+#: gui/main.c:4009
 #, c-format
 msgid "Could not export the file list: %ls"
 msgstr ""
 
-#: gui/main.c:3825
+#: gui/main.c:4009
 msgid "the file could not be written."
 msgstr ""
 
-#: gui/main.c:3831
+#: gui/main.c:4015
 #, c-format
 msgid "Exported %lld files to %ls."
 msgstr ""
 
-#: gui/main.c:3919
+#: gui/main.c:4103
 msgid "Enter the recovery key"
 msgstr ""
 
-#: gui/main.c:3933
+#: gui/main.c:4117
 msgid ""
 "Use at least 8 characters. A few unrelated words make a good passphrase."
 msgstr ""
 
-#: gui/main.c:3937
+#: gui/main.c:4121
 msgid "The two passphrases are different. Type them again."
 msgstr ""
 
-#: gui/main.c:3974
+#: gui/main.c:4158
 msgid ""
 "Type the recovery key from your recovery sheet. Dashes and spaces do not matter."
 msgstr ""
 
-#: gui/main.c:3991
+#: gui/main.c:4175
 msgid ""
 "Unlocked with the recovery key. If you no longer know the passphrase, set a new one now. The recovery key keeps working.\n"
 "\n"
 "Set a new passphrase now?"
 msgstr ""
 
-#: gui/main.c:4019 gui/main.c:9395
+#: gui/main.c:4203 gui/main.c:9638
 msgid ""
 "That recovery key is not right. Check it against the sheet and try again."
 msgstr ""
 
-#: gui/main.c:4020 gui/main.c:9396
+#: gui/main.c:4204 gui/main.c:9639
 msgid "That passphrase is not right. Try again."
 msgstr ""
 
-#: gui/main.c:4029
+#: gui/main.c:4213
 msgid "Enter the current passphrase first."
 msgstr ""
 
-#: gui/main.c:4031
+#: gui/main.c:4215
 msgid ""
 "The passphrase protects encrypted drives and, if you choose, this database file. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone."
 msgstr ""
 
-#: gui/main.c:4041
+#: gui/main.c:4225
 msgid "Could not set the passphrase."
 msgstr ""
 
-#: gui/main.c:4045
+#: gui/main.c:4229
 msgid "Passphrase changed."
 msgstr ""
 
-#: gui/main.c:4045
+#: gui/main.c:4229
 msgid "Passphrase set."
 msgstr ""
 
-#: gui/main.c:4047
+#: gui/main.c:4231
 msgid ""
 "Print a recovery sheet now? It lists your drives and holds a recovery key, which opens your encrypted backups if you ever forget the passphrase."
 msgstr ""
 
-#: gui/main.c:4077 gui/main.c:4312 gui/main.c:6349
+#: gui/main.c:4261 gui/main.c:4496 gui/main.c:6529
 msgid "This drive is encrypted. Enter the passphrase to back up to it."
 msgstr ""
 
-#: gui/main.c:4103
+#: gui/main.c:4287
 #, c-format
 msgid "%ls (kept in %ls)"
 msgstr ""
 
-#: gui/main.c:4113
+#: gui/main.c:4297
 msgid "This drive is encrypted. Enter the passphrase to check its copies."
 msgstr ""
 
-#: gui/main.c:4122
+#: gui/main.c:4306
 msgid "This drive is encrypted. Enter the passphrase to read its copies."
 msgstr ""
 
-#: gui/main.c:4143
+#: gui/main.c:4327
 #, c-format
 msgid ""
 "Some copies on %ls have not been read back since %ls.%ls Checking changes nothing on the drive."
 msgstr ""
 
-#: gui/main.c:4144
+#: gui/main.c:4328
 msgid " That is longer than Settings asks for, so a check is due."
 msgstr ""
 
-#: gui/main.c:4146
+#: gui/main.c:4330
 #, c-format
 msgid ""
 "Checking reads the copies on %ls and compares each one with its checksum. It changes nothing on the drive."
 msgstr ""
 
-#: gui/main.c:4149
+#: gui/main.c:4333
 #, c-format
 msgid ""
 "Read back copies not read lately\n"
 "Reads the copies not read back in the last %d days, and new ones. A full check spread over time."
 msgstr ""
 
-#: gui/main.c:4152
+#: gui/main.c:4336
 msgid ""
 "Read back every copy\n"
 "The same as checking every copy (Settings has read-back set to every copy)."
 msgstr ""
 
-#: gui/main.c:4154
+#: gui/main.c:4338
 msgid ""
 "Check every copy\n"
 "Reads every copy and compares its size, time and checksum. Takes a while on a big drive."
 msgstr ""
 
-#: gui/main.c:4165
+#: gui/main.c:4349
 msgid "How should BRODALF check the drive?"
 msgstr ""
 
-#: gui/main.c:4201
+#: gui/main.c:4385
 #, c-format
 msgid "BRODALF could not use that drive: %ls"
 msgstr ""
 
-#: gui/main.c:4201
+#: gui/main.c:4385
 msgid "it is not a BRODALF drive for this database."
 msgstr ""
 
-#: gui/main.c:4218
+#: gui/main.c:4402
 #, c-format
 msgid ""
 "%ls is marked %ls, so nothing is backed up to it. If it is back and working, open Drives..., choose it and press Found it."
 msgstr ""
 
-#: gui/main.c:4234
+#: gui/main.c:4418
 #, c-format
 msgid "Many files changed at once. Back up to %ls?"
 msgstr ""
 
-#: gui/main.c:4235
+#: gui/main.c:4419
 #, c-format
 msgid ""
 "%lld of the %lld files whose copies on this drive were up to date have changed since. That many at once can mean ransomware encrypted your files.\n"
@@ -1672,37 +1710,37 @@ msgid ""
 "Backing up overwrites nothing: the copies already on the drive stay as they are and the changed files go alongside them. If you did not change these files, look at them first, and restore from this drive instead."
 msgstr ""
 
-#: gui/main.c:4241
+#: gui/main.c:4425
 msgid "Show the changed files"
 msgstr ""
 
-#: gui/main.c:4243
+#: gui/main.c:4427
 msgid ""
 "Back up anyway\n"
 "The copies already on the drive are kept."
 msgstr ""
 
-#: gui/main.c:4245
+#: gui/main.c:4429
 msgid "Scan your backup roots first?"
 msgstr ""
 
-#: gui/main.c:4246
+#: gui/main.c:4430
 #, c-format
 msgid ""
 "Your backup roots have not been scanned yet, so BRODALF does not know of any files to put on %ls."
 msgstr ""
 
-#: gui/main.c:4248
+#: gui/main.c:4432
 msgid "Scan first, then back up"
 msgstr ""
 
-#: gui/main.c:4250
+#: gui/main.c:4434
 msgid ""
 "Back up anyway\n"
 "Only the database is saved to the drive."
 msgstr ""
 
-#: gui/main.c:4307
+#: gui/main.c:4491
 #, c-format
 msgid ""
 "%ls is full: %lld file (%ls) did not fit. It waits for another drive.\n"
@@ -1715,7 +1753,7 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:4323
+#: gui/main.c:4507
 #, c-format
 msgid "%ls is full: %lld file (%ls) did not fit. It waits for another drive."
 msgid_plural ""
@@ -1723,23 +1761,23 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:4327
+#: gui/main.c:4511
 msgid ""
 "Plug in another backup drive (or set up a new one with Back up... > Another drive or folder) and back up to it. Each drive gets whatever it is missing."
 msgstr ""
 
-#: gui/main.c:4340 gui/main.c:5636
+#: gui/main.c:4524 gui/main.c:5816
 #, c-format
 msgid "    %d. %ls: %lld file (%ls)%ls\n"
 msgid_plural "    %d. %ls: %lld files (%ls)%ls\n"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:4341 gui/main.c:5637
+#: gui/main.c:4525 gui/main.c:5817
 msgid ", plugged in"
 msgstr ""
 
-#: gui/main.c:4365
+#: gui/main.c:4549
 #, c-format
 msgid ""
 "%d file was left alone because another file was already where it would go. Nothing was overwritten.\n"
@@ -1752,7 +1790,7 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:4376
+#: gui/main.c:4560
 #, c-format
 msgid ""
 "%lld file is on drives that are not plugged in. Plug one in, then restore again."
@@ -1761,11 +1799,11 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:4385
+#: gui/main.c:4569
 msgid "The restore is complete: every file that has a copy is back."
 msgstr ""
 
-#: gui/main.c:4400
+#: gui/main.c:4584
 #, c-format
 msgid ""
 "%lld file is on drives that are not plugged in. Plug these in, one at a time, and press Restore... after each to continue:\r\n"
@@ -1776,60 +1814,60 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:4430 gui/main.c:5257 gui/main.c:5604 gui/main.c:5674
+#: gui/main.c:4614 gui/main.c:5437 gui/main.c:5784 gui/main.c:5854
 msgid ""
 "Some copies are on an encrypted drive. Enter the passphrase to restore them."
 msgstr ""
 
-#: gui/main.c:4500
+#: gui/main.c:4684
 #, c-format
 msgid "\"%ls\" (%ls) was plugged in. It is not one of your backup drives."
 msgstr ""
 
-#: gui/main.c:4501
+#: gui/main.c:4685
 #, c-format
 msgid "The disk at %ls was plugged in. It is not one of your backup drives."
 msgstr ""
 
-#: gui/main.c:4504
+#: gui/main.c:4688
 #, c-format
 msgid " It holds %ls."
 msgstr ""
 
-#: gui/main.c:4507
+#: gui/main.c:4691
 msgid ""
 "Set it up as a backup drive\n"
 "BRODALF makes its own folder on it and backs up to it. Nothing else on the disk is touched."
 msgstr ""
 
-#: gui/main.c:4508
+#: gui/main.c:4692
 msgid "Not now"
 msgstr ""
 
-#: gui/main.c:4509
+#: gui/main.c:4693
 msgid "Never ask about this disk"
 msgstr ""
 
-#: gui/main.c:4518
+#: gui/main.c:4702
 msgid "Use this disk for backups?"
 msgstr ""
 
-#: gui/main.c:4555
+#: gui/main.c:4739
 #, c-format
 msgid "%ls is plugged in."
 msgstr ""
 
-#: gui/main.c:4557
+#: gui/main.c:4741
 msgid ""
 " It is marked lost or broken, so its copies do not count: if it is back and working, open Drives..., choose it and press Found it."
 msgstr ""
 
-#: gui/main.c:4562
+#: gui/main.c:4746
 msgid ""
 " It holds files for the restore that is waiting: press Restore... to continue it."
 msgstr ""
 
-#: gui/main.c:4576
+#: gui/main.c:4760
 #, c-format
 msgid ""
 "%ls is due for a check: some of its copies have not been read back since %ls.\n"
@@ -1837,174 +1875,174 @@ msgid ""
 "Check every copy on it now? It changes nothing on the drive. (No: BRODALF does not ask again until it is opened again.)"
 msgstr ""
 
-#: gui/main.c:4616
+#: gui/main.c:4800
 #, c-format
 msgid "What to leave out in %ls"
 msgstr ""
 
-#: gui/main.c:4618
+#: gui/main.c:4802
 #, c-format
 msgid ""
 "Scans of %ls leave out what matches these, as well as what the list for every backup root (Settings) leaves out. One per line: * matches anything, ? one character, a line ending in / matches folders. A file now left out shows among the deleted files, for you to keep or forget."
 msgstr ""
 
-#: gui/main.c:4622
+#: gui/main.c:4806
 msgid "Clear"
 msgstr ""
 
-#: gui/main.c:4625
+#: gui/main.c:4809
 msgid ""
 "Scans of every backup root leave out files and folders that match these, one per line. * matches anything, ? one character. End a line with / for folders only (and everything in them). A line with / in the middle, like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes."
 msgstr ""
 
-#: gui/main.c:4657
+#: gui/main.c:4841
 msgid "Could not save the list."
 msgstr ""
 
-#: gui/main.c:4676
+#: gui/main.c:4860
 msgid "The skip list changed. Scanning your backup roots again."
 msgstr ""
 
-#: gui/main.c:4687 gui/main.c:7956
+#: gui/main.c:4871 gui/main.c:8151
 msgid "Change the passphrase..."
 msgstr ""
 
-#: gui/main.c:4687 gui/main.c:7184 gui/main.c:7956
+#: gui/main.c:4871 gui/main.c:7364 gui/main.c:8151
 msgid "Set a passphrase..."
 msgstr ""
 
-#: gui/main.c:4689 gui/main.c:7189
+#: gui/main.c:4873 gui/main.c:7369
 msgid "Encrypt the database file"
 msgstr ""
 
-#: gui/main.c:4690 gui/main.c:7185
+#: gui/main.c:4874 gui/main.c:7365
 msgid "Forget the passphrase until it is needed"
 msgstr ""
 
-#: gui/main.c:4694
+#: gui/main.c:4878
 msgid "Every 3 months"
 msgstr ""
 
-#: gui/main.c:4695
+#: gui/main.c:4879
 msgid "Every 6 months"
 msgstr ""
 
-#: gui/main.c:4696
+#: gui/main.c:4880
 msgid "Every year"
 msgstr ""
 
-#: gui/main.c:4698
+#: gui/main.c:4882
 msgid "A plugged-in drive offers a check after"
 msgstr ""
 
-#: gui/main.c:4701
+#: gui/main.c:4885
 msgid "Copies not read back in a week"
 msgstr ""
 
-#: gui/main.c:4702
+#: gui/main.c:4886
 msgid "Copies not read back in a month"
 msgstr ""
 
-#: gui/main.c:4703
+#: gui/main.c:4887
 msgid "Copies not read back in 3 months"
 msgstr ""
 
-#: gui/main.c:4704
+#: gui/main.c:4888
 msgid "Every copy"
 msgstr ""
 
-#: gui/main.c:4705
+#: gui/main.c:4889
 msgid "Check drive, Read back: which copies"
 msgstr ""
 
-#: gui/main.c:4708
+#: gui/main.c:4892
 msgid "256 MB"
 msgstr ""
 
-#: gui/main.c:4709
+#: gui/main.c:4893
 msgid "512 MB"
 msgstr ""
 
-#: gui/main.c:4710
+#: gui/main.c:4894
 msgid "1 GB"
 msgstr ""
 
-#: gui/main.c:4711
+#: gui/main.c:4895
 msgid "2 GB"
 msgstr ""
 
-#: gui/main.c:4712
+#: gui/main.c:4896
 msgid "Space kept free on each drive for the database's copies"
 msgstr ""
 
-#: gui/main.c:4714
+#: gui/main.c:4898
 msgid "Let other programs come first while a job runs"
 msgstr ""
 
-#: gui/main.c:4716 gui/main.c:7147
+#: gui/main.c:4900 gui/main.c:7327
 msgid "Back up to several drives at once"
 msgstr ""
 
-#: gui/main.c:4717
+#: gui/main.c:4901
 msgid "What to leave out in every backup root..."
 msgstr ""
 
-#: gui/main.c:4731
+#: gui/main.c:4915
 msgid "Enter the passphrase to encrypt the database file."
 msgstr ""
 
-#: gui/main.c:4736
+#: gui/main.c:4920
 msgid "Could not change the database encryption."
 msgstr ""
 
-#: gui/main.c:4740
+#: gui/main.c:4924
 msgid ""
 "The database file is now encrypted. BRODALF will ask for the passphrase when it opens."
 msgstr ""
 
-#: gui/main.c:4741
+#: gui/main.c:4925
 msgid "The database file is no longer encrypted."
 msgstr ""
 
-#: gui/main.c:4744
+#: gui/main.c:4928
 msgid "Passphrase forgotten. BRODALF will ask for it again when it needs it."
 msgstr ""
 
-#: gui/main.c:4752
+#: gui/main.c:4936
 #, c-format
 msgid ""
 "Read back now reads the copies not read back in %d days, and new ones."
 msgstr ""
 
-#: gui/main.c:4753
+#: gui/main.c:4937
 msgid "Read back now reads every copy on the drive."
 msgstr ""
 
-#: gui/main.c:4761
+#: gui/main.c:4945
 #, c-format
 msgid ""
 "A plugged-in drive whose copies have not been read back in %d days offers a check."
 msgstr ""
 
-#: gui/main.c:4762
+#: gui/main.c:4946
 msgid "Drives never offer a check by themselves."
 msgstr ""
 
-#: gui/main.c:4771
+#: gui/main.c:4955
 #, c-format
 msgid "Backups now keep %d MB free on each drive for the database's copies."
 msgstr ""
 
-#: gui/main.c:4778
+#: gui/main.c:4962
 msgid ""
 "Jobs now let other programs come first: they may take longer while the PC is busy."
 msgstr ""
 
-#: gui/main.c:4779
+#: gui/main.c:4963
 msgid "Jobs now run at normal speed, even while other programs are busy."
 msgstr ""
 
-#: gui/main.c:4783
+#: gui/main.c:4967
 msgid ""
 "Back up to several drives at once?\n"
 "\n"
@@ -2015,111 +2053,111 @@ msgid ""
 "When it is off (as it starts), drives are backed up one after another."
 msgstr ""
 
-#: gui/main.c:4792
+#: gui/main.c:4976
 msgid "Backups to every plugged-in drive now write to all of them at once."
 msgstr ""
 
-#: gui/main.c:4793
+#: gui/main.c:4977
 msgid "Backups to every plugged-in drive now go one drive after another."
 msgstr ""
 
-#: gui/main.c:4806
+#: gui/main.c:4990
 msgid ""
 "Put a new recovery key on it\n"
 "It opens your encrypted backups if the passphrase is lost. The key on any earlier sheet stops working."
 msgstr ""
 
-#: gui/main.c:4808
+#: gui/main.c:4992
 msgid "Leave the recovery key off"
 msgstr ""
 
-#: gui/main.c:4818
+#: gui/main.c:5002
 msgid "Put a recovery key on the sheet?"
 msgstr ""
 
-#: gui/main.c:4819
+#: gui/main.c:5003
 msgid ""
 "Your backups are encrypted. The sheet lists your drives and what is on them. It never shows the passphrase."
 msgstr ""
 
-#: gui/main.c:4827
+#: gui/main.c:5011
 msgid "Enter the passphrase to make a recovery key."
 msgstr ""
 
-#: gui/main.c:4833
+#: gui/main.c:5017
 msgid "Could not make a recovery key."
 msgstr ""
 
-#: gui/main.c:4847
+#: gui/main.c:5031
 msgid ""
 "Made a new recovery key. Drives that are not plugged in learn it at their next backup."
 msgstr ""
 
-#: gui/main.c:4851
+#: gui/main.c:5035
 msgid "BRODALF recovery sheet.html"
 msgstr ""
 
-#: gui/main.c:4861
+#: gui/main.c:5045
 msgid "Save the recovery sheet"
 msgstr ""
 
-#: gui/main.c:4873
+#: gui/main.c:5057
 msgid ""
 "The new recovery key was not saved anywhere, so it cannot be used. Make the sheet again to get one."
 msgstr ""
 
-#: gui/main.c:4879
+#: gui/main.c:5063
 msgid "Could not write the recovery sheet."
 msgstr ""
 
-#: gui/main.c:4885
+#: gui/main.c:5069
 msgid ""
 "The sheet is open in your browser. Print it and keep it somewhere safe, away from the PC and the drives. Then delete the file: anyone who finds the recovery key can read your encrypted backups."
 msgstr ""
 
-#: gui/main.c:4966
+#: gui/main.c:5150
 #, c-format
 msgid "Where is \"%ls\" on this PC?"
 msgstr ""
 
-#: gui/main.c:4968
+#: gui/main.c:5152
 #, c-format
 msgid ""
 "BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files keep their copies and history."
 msgstr ""
 
-#: gui/main.c:4971
+#: gui/main.c:5155
 #, c-format
 msgid ""
 "BRODALF backed up %ls, which the last scan could not find. If it is somewhere else, for example under another user name or on another drive letter, choose where it is now. Its files keep their copies and history."
 msgstr ""
 
-#: gui/main.c:4978
+#: gui/main.c:5162
 #, c-format
 msgid ""
 "Use %ls\n"
 "The same folder in your user folder on this PC"
 msgstr ""
 
-#: gui/main.c:4983
+#: gui/main.c:5167
 msgid "Choose where it is now..."
 msgstr ""
 
-#: gui/main.c:4985
+#: gui/main.c:5169
 msgid "Leave it where it is"
 msgstr ""
 
-#: gui/main.c:4986
+#: gui/main.c:5170
 msgid ""
 "I cannot find it\n"
 "BRODALF offers to restore it from your backup drives instead."
 msgstr ""
 
-#: gui/main.c:5004
+#: gui/main.c:5188
 msgid "Choose where this backup root is now."
 msgstr ""
 
-#: gui/main.c:5013
+#: gui/main.c:5197
 #, c-format
 msgid ""
 "%ls is empty. If BRODALF backs up this folder, every file of \"%ls\" will look deleted.\n"
@@ -2129,20 +2167,16 @@ msgid ""
 "Use this empty folder anyway?"
 msgstr ""
 
-#: gui/main.c:5024
+#: gui/main.c:5208
 #, c-format
 msgid "Backup root \"%ls\" is now at %ls"
 msgstr ""
 
-#: gui/main.c:5031
+#: gui/main.c:5215
 msgid "That folder cannot be used."
 msgstr ""
 
-#: gui/main.c:5040
-msgid "The database could not be saved."
-msgstr ""
-
-#: gui/main.c:5063
+#: gui/main.c:5243
 #, c-format
 msgid ""
 "Restore \"%ls\" from your backup drives?\n"
@@ -2152,89 +2186,89 @@ msgid ""
 "No: nothing changes, and its files are not marked deleted. The next scan asks again."
 msgstr ""
 
-#: gui/main.c:5103
+#: gui/main.c:5283
 msgid "Select the backup root in the list first."
 msgstr ""
 
-#: gui/main.c:5113
+#: gui/main.c:5293
 msgid ""
 "Choose a folder to back up. BRODALF will scan it and keep track of every file inside."
 msgstr ""
 
-#: gui/main.c:5122
+#: gui/main.c:5302
 #, c-format
 msgid "New backup root: %ls"
 msgstr ""
 
-#: gui/main.c:5139
+#: gui/main.c:5319
 #, c-format
 msgid "%ls (%ls), %ls free%ls%ls%ls"
 msgstr ""
 
-#: gui/main.c:5139
+#: gui/main.c:5319
 msgid ", encrypted, names hidden"
 msgstr ""
 
-#: gui/main.c:5139
+#: gui/main.c:5319
 msgid ", encrypted"
 msgstr ""
 
-#: gui/main.c:5140
+#: gui/main.c:5320
 msgid ", extra place for starred files"
 msgstr ""
 
-#: gui/main.c:5140
+#: gui/main.c:5320
 msgid " - marked lost or broken"
 msgstr ""
 
-#: gui/main.c:5158
+#: gui/main.c:5338
 #, c-format
 msgid "All %d of them, %ls"
 msgstr ""
 
-#: gui/main.c:5159
+#: gui/main.c:5339
 msgid "at once"
 msgstr ""
 
-#: gui/main.c:5165
+#: gui/main.c:5345
 msgid "Another drive or folder..."
 msgstr ""
 
-#: gui/main.c:5168 gui/main.c:8450
+#: gui/main.c:5348 gui/main.c:8645
 msgid "Plug in a backup drive first."
 msgstr ""
 
-#: gui/main.c:5190
+#: gui/main.c:5370
 msgid "Choose the drive (or a folder on it) to back up to."
 msgstr ""
 
-#: gui/main.c:5206
+#: gui/main.c:5386
 msgid "Backup drive"
 msgstr ""
 
-#: gui/main.c:5213
+#: gui/main.c:5393
 msgid "Enter the passphrase to set up an encrypted drive."
 msgstr ""
 
-#: gui/main.c:5254
+#: gui/main.c:5434
 msgid "Select a backup root, a folder inside it, or a file to restore."
 msgstr ""
 
-#: gui/main.c:5262 gui/main.c:5609
+#: gui/main.c:5442 gui/main.c:5789
 msgid ""
 "Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten."
 msgstr ""
 
-#: gui/main.c:5263 gui/main.c:5608
+#: gui/main.c:5443 gui/main.c:5788
 msgid ""
 "Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten."
 msgstr ""
 
-#: gui/main.c:5274
+#: gui/main.c:5454
 msgid "Everything here is already restored in that folder."
 msgstr ""
 
-#: gui/main.c:5279
+#: gui/main.c:5459
 #, c-format
 msgid ""
 "Restoring %lld file needs these drives:\n"
@@ -2247,11 +2281,11 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5280
+#: gui/main.c:5460
 msgid "    (none)\n"
 msgstr ""
 
-#: gui/main.c:5281
+#: gui/main.c:5461
 #, c-format
 msgid ""
 "\n"
@@ -2262,13 +2296,13 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5283
+#: gui/main.c:5463
 msgid ""
 "\n"
 "BRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press Restore... again to continue with its files.\n"
 msgstr ""
 
-#: gui/main.c:5307
+#: gui/main.c:5487
 #, c-format
 msgid ""
 "A restore into %ls is waiting for these drives:\n"
@@ -2276,40 +2310,40 @@ msgid ""
 "%ls"
 msgstr ""
 
-#: gui/main.c:5308
+#: gui/main.c:5488
 msgid "    (none: it can finish now)\n"
 msgstr ""
 
-#: gui/main.c:5312
+#: gui/main.c:5492
 msgid ""
 "Continue the restore\n"
 "Restores what the drives plugged in now hold."
 msgstr ""
 
-#: gui/main.c:5313
+#: gui/main.c:5493
 msgid ""
 "Restore something else\n"
 "The waiting restore is forgotten."
 msgstr ""
 
-#: gui/main.c:5323
+#: gui/main.c:5503
 msgid "Continue the restore that is waiting?"
 msgstr ""
 
-#: gui/main.c:5375
+#: gui/main.c:5555
 msgid "Never backed up"
 msgstr ""
 
-#: gui/main.c:5376
+#: gui/main.c:5556
 msgid "New"
 msgstr ""
 
-#: gui/main.c:5448
+#: gui/main.c:5628
 msgid ""
 "No files have been deleted from your backup roots. When one is, it shows here with the drives that still hold it, until you choose what to do with it."
 msgstr ""
 
-#: gui/main.c:5452
+#: gui/main.c:5632
 #, c-format
 msgid "%lld file deleted from your backup roots%ls."
 msgid_plural ""
@@ -2317,43 +2351,43 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5454
+#: gui/main.c:5634
 msgid " (only the first ones are listed)"
 msgstr ""
 
-#: gui/main.c:5455
+#: gui/main.c:5635
 #, c-format
 msgid "%lld is new."
 msgid_plural "%lld are new."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5457
+#: gui/main.c:5637
 msgid ""
 "Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them (BRODALF stops tracking them; nothing on the drives is deleted)."
 msgstr ""
 
-#: gui/main.c:5473
+#: gui/main.c:5653
 msgid "Last seen"
 msgstr ""
 
-#: gui/main.c:5473
+#: gui/main.c:5653
 msgid "On drives"
 msgstr ""
 
-#: gui/main.c:5485
+#: gui/main.c:5665
 msgid "Select one or more files in the list first."
 msgstr ""
 
-#: gui/main.c:5502
+#: gui/main.c:5682
 msgid "Could not record that."
 msgstr ""
 
-#: gui/main.c:5512
+#: gui/main.c:5692
 msgid "Select the files to forget first."
 msgstr ""
 
-#: gui/main.c:5516
+#: gui/main.c:5696
 #, c-format
 msgid ""
 "Forget %d deleted file?\n"
@@ -2366,23 +2400,23 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5533
+#: gui/main.c:5713
 msgid "Could not forget them."
 msgstr ""
 
-#: gui/main.c:5537
+#: gui/main.c:5717
 #, c-format
 msgid "Forgot %lld deleted file. Its copies stay on the drives."
 msgid_plural "Forgot %lld deleted files. Their copies stay on the drives."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5624
+#: gui/main.c:5804
 msgid ""
 "Everything selected is already restored in that folder, or has no copy on any drive."
 msgstr ""
 
-#: gui/main.c:5631
+#: gui/main.c:5811
 #, c-format
 msgid ""
 "Restoring %lld deleted file needs these drives:\n"
@@ -2393,69 +2427,69 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5640
+#: gui/main.c:5820
 msgid ""
 "\n"
 "BRODALF restores what the plugged-in drives hold now. For the rest, plug in another drive and restore them again from Deleted files.\n"
 msgstr ""
 
-#: gui/main.c:5662
+#: gui/main.c:5842
 msgid "Restoring deleted files."
 msgstr ""
 
-#: gui/main.c:5676
+#: gui/main.c:5856
 msgid ""
 "Choose the folder to put this version in. It keeps the file's own name; nothing there is overwritten."
 msgstr ""
 
-#: gui/main.c:5809
+#: gui/main.c:5989
 msgid "No files are in use any more."
 msgstr ""
 
-#: gui/main.c:5831
+#: gui/main.c:6011
 msgid "Could not write the list of files in use."
 msgstr ""
 
-#: gui/main.c:5838
+#: gui/main.c:6018
 msgid "Asking Windows for administrator permission to take a shadow copy..."
 msgstr ""
 
-#: gui/main.c:5851
+#: gui/main.c:6031
 msgid ""
 "Without administrator permission the files in use stay as they were last backed up."
 msgstr ""
 
-#: gui/main.c:5854
+#: gui/main.c:6034
 #, c-format
 msgid "Could not start the shadow copy helper (Windows error %lu)."
 msgstr ""
 
-#: gui/main.c:5884
+#: gui/main.c:6064
 #, c-format
 msgid "%d file outside your backup roots was left alone."
 msgid_plural "%d files outside your backup roots were left alone."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5890
+#: gui/main.c:6070
 #, c-format
 msgid "The shadow copy did not work: %ls"
 msgstr ""
 
-#: gui/main.c:5890
+#: gui/main.c:6070
 msgid "no reason was given (see the app log)"
 msgstr ""
 
-#: gui/main.c:5895
+#: gui/main.c:6075
 #, c-format
 msgid "Read %d of %d files in use from a shadow copy. Scanning them now."
 msgstr ""
 
-#: gui/main.c:5927
+#: gui/main.c:6107
 msgid "No files were in use by another program at the last scan or backup."
 msgstr ""
 
-#: gui/main.c:5933
+#: gui/main.c:6113
 #, c-format
 msgid ""
 "%d file (%ls) is in use by another program, so BRODALF could not read it:\n"
@@ -2466,12 +2500,12 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5941
+#: gui/main.c:6121
 #, c-format
 msgid "    ... and %d more\n"
 msgstr ""
 
-#: gui/main.c:5945
+#: gui/main.c:6125
 msgid ""
 "\n"
 "You can close the program that has it open (an email program often keeps its mail files open) and scan again. Or Windows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read it from that. Windows will ask for administrator permission.\n"
@@ -2485,7 +2519,7 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5953
+#: gui/main.c:6133
 msgid ""
 "\n"
 "The shadow copy could not read it either. Close the program that has it open, then press Scan now, and Back up if you were backing up."
@@ -2495,372 +2529,372 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5992
+#: gui/main.c:6172
 #, c-format
 msgid "Marked %ls: its copies do not count"
 msgstr ""
 
-#: gui/main.c:5993
+#: gui/main.c:6173
 #, c-format
 msgid "Plugged in now at %ls, %ls free"
 msgstr ""
 
-#: gui/main.c:5994
+#: gui/main.c:6174
 #, c-format
 msgid "Not plugged in. %ls free when last seen (%ls)"
 msgstr ""
 
-#: gui/main.c:5995
+#: gui/main.c:6175
 msgid "Not plugged in"
 msgstr ""
 
-#: gui/main.c:5998 gui/main.c:7925
+#: gui/main.c:6178 gui/main.c:8120
 msgid "Back up to it now"
 msgstr ""
 
-#: gui/main.c:5999
+#: gui/main.c:6179
 msgid "Check every copy on it"
 msgstr ""
 
-#: gui/main.c:6000 gui/main.c:7139
+#: gui/main.c:6180 gui/main.c:7319
 msgid "Read back copies not read lately"
 msgstr ""
 
-#: gui/main.c:6002
+#: gui/main.c:6182
 msgid "Compress the copies on it..."
 msgstr ""
 
-#: gui/main.c:6004
+#: gui/main.c:6184
 msgid "Where it stands, name, where it is kept, hardware details..."
 msgstr ""
 
-#: gui/main.c:6005
+#: gui/main.c:6185
 msgid "Found it: count its copies again"
 msgstr ""
 
-#: gui/main.c:6005
+#: gui/main.c:6185
 msgid "Mark it lost or broken..."
 msgstr ""
 
-#: gui/main.c:6008
+#: gui/main.c:6188
 msgid "  - marked lost or broken"
 msgstr ""
 
-#: gui/main.c:6008
+#: gui/main.c:6188
 msgid "  - found"
 msgstr ""
 
-#: gui/main.c:6022
+#: gui/main.c:6202
 msgid "No backup disks yet"
 msgstr ""
 
-#: gui/main.c:6024
+#: gui/main.c:6204
 msgid "Set up an external or removable disk..."
 msgstr ""
 
-#: gui/main.c:6025
+#: gui/main.c:6205
 msgid "Add an extra place for starred files..."
 msgstr ""
 
-#: gui/main.c:6026 gui/main.c:7129 gui/main.c:7137
+#: gui/main.c:6206 gui/main.c:7309 gui/main.c:7317
 msgid "Back up to every plugged-in drive"
 msgstr ""
 
-#: gui/main.c:6027
+#: gui/main.c:6207
 msgid "All disks..."
 msgstr ""
 
-#: gui/main.c:6028
+#: gui/main.c:6208
 msgid "Status of every disk..."
 msgstr ""
 
-#: gui/main.c:6029
+#: gui/main.c:6209
 msgid "What needs backing up, and which disk to plug in..."
 msgstr ""
 
-#: gui/main.c:6037 gui/main.c:8815
+#: gui/main.c:6217 gui/main.c:9010
 msgid "&New database..."
 msgstr ""
 
-#: gui/main.c:6038
+#: gui/main.c:6218
 msgid "&Open database..."
 msgstr ""
 
-#: gui/main.c:6039
+#: gui/main.c:6219
 msgid "&Recover the database from a backup drive..."
 msgstr ""
 
-#: gui/main.c:6041
+#: gui/main.c:6221
 msgid "&Print a recovery sheet..."
 msgstr ""
 
-#: gui/main.c:6042
+#: gui/main.c:6222
 msgid "&Export the file list (CSV)..."
 msgstr ""
 
-#: gui/main.c:6044
+#: gui/main.c:6224
 msgid "E&xit"
 msgstr ""
 
-#: gui/main.c:6045
+#: gui/main.c:6225
 msgid "&File"
 msgstr ""
 
-#: gui/main.c:6048
+#: gui/main.c:6228
 msgid "&Primary Database"
 msgstr ""
 
-#: gui/main.c:6048
+#: gui/main.c:6228
 msgid "&Next backup"
 msgstr ""
 
-#: gui/main.c:6048
+#: gui/main.c:6228
 msgid "L&ocal backups"
 msgstr ""
 
-#: gui/main.c:6049
+#: gui/main.c:6229
 msgid "&Starred files and extra places"
 msgstr ""
 
-#: gui/main.c:6049
+#: gui/main.c:6229
 msgid "&Encryption"
 msgstr ""
 
-#: gui/main.c:6049
+#: gui/main.c:6229
 msgid "Res&tore"
 msgstr ""
 
-#: gui/main.c:6055
+#: gui/main.c:6235
 msgid "Ne&xt tab"
 msgstr ""
 
-#: gui/main.c:6056
+#: gui/main.c:6236
 msgid "Pre&vious tab"
 msgstr ""
 
-#: gui/main.c:6058
+#: gui/main.c:6238
 msgid "&Find a file or folder"
 msgstr ""
 
-#: gui/main.c:6059
+#: gui/main.c:6239
 msgid "Status of every &drive..."
 msgstr ""
 
-#: gui/main.c:6060
+#: gui/main.c:6240
 msgid "Files short of your &copies, and which drive to plug in..."
 msgstr ""
 
-#: gui/main.c:6061
+#: gui/main.c:6241
 msgid "Lar&gest files..."
 msgstr ""
 
-#: gui/main.c:6062
+#: gui/main.c:6242
 msgid "Deleted f&iles..."
 msgstr ""
 
-#: gui/main.c:6063
+#: gui/main.c:6243
 msgid "Da&maged files (found by a bit-rot scan)..."
 msgstr ""
 
-#: gui/main.c:6064
+#: gui/main.c:6244
 msgid "Files that were in &use at the last scan..."
 msgstr ""
 
-#: gui/main.c:6065
+#: gui/main.c:6245
 msgid "Files t&he last restore left alone..."
 msgstr ""
 
-#: gui/main.c:6067
+#: gui/main.c:6247
 msgid "&Refresh"
 msgstr ""
 
-#: gui/main.c:6070
+#: gui/main.c:6250
 msgid "Like Windows (its app mode, light or dark)"
 msgstr ""
 
-#: gui/main.c:6071
+#: gui/main.c:6251
 msgid "Light"
 msgstr ""
 
-#: gui/main.c:6072
+#: gui/main.c:6252
 msgid "Dark"
 msgstr ""
 
-#: gui/main.c:6074
+#: gui/main.c:6254
 msgid "&Appearance"
 msgstr ""
 
-#: gui/main.c:6076
+#: gui/main.c:6256
 msgid "Like Windows (its display language)"
 msgstr ""
 
-#: gui/main.c:6080
+#: gui/main.c:6260
 msgid "&Language"
 msgstr ""
 
-#: gui/main.c:6081
+#: gui/main.c:6261
 msgid "&View"
 msgstr ""
 
-#: gui/main.c:6084
+#: gui/main.c:6264
 msgid "&Add a backup root..."
 msgstr ""
 
-#: gui/main.c:6085
+#: gui/main.c:6265
 msgid "S&can the backup roots for changes now"
 msgstr ""
 
-#: gui/main.c:6086
+#: gui/main.c:6266
 msgid "&Bit-rot scan: read every file again..."
 msgstr ""
 
-#: gui/main.c:6087
+#: gui/main.c:6267
 msgid "Change &where a backup root is..."
 msgstr ""
 
-#: gui/main.c:6089
+#: gui/main.c:6269
 msgid "Back &up..."
 msgstr ""
 
-#: gui/main.c:6090
+#: gui/main.c:6270
 msgid "Back up to &every plugged-in drive"
 msgstr ""
 
-#: gui/main.c:6091
+#: gui/main.c:6271
 msgid "Chec&k a drive..."
 msgstr ""
 
-#: gui/main.c:6093
+#: gui/main.c:6273
 msgid "&Restore what is selected..."
 msgstr ""
 
-#: gui/main.c:6094
+#: gui/main.c:6274
 msgid "Restore &deleted files..."
 msgstr ""
 
-#: gui/main.c:6096
+#: gui/main.c:6276
 msgid "Set up an e&xternal or removable disk..."
 msgstr ""
 
-#: gui/main.c:6097
+#: gui/main.c:6277
 msgid "Add an extra &place for starred files..."
 msgstr ""
 
-#: gui/main.c:6098
+#: gui/main.c:6278
 msgid "S&tar or unstar what is selected"
 msgstr ""
 
-#: gui/main.c:6099
+#: gui/main.c:6279
 msgid "E&ncrypt what is selected, or stop..."
 msgstr ""
 
-#: gui/main.c:6101
+#: gui/main.c:6281
 msgid "Backup dr&ives and extra places"
 msgstr ""
 
-#: gui/main.c:6103
+#: gui/main.c:6283
 msgid "Stop the running &job"
 msgstr ""
 
-#: gui/main.c:6105
+#: gui/main.c:6285
 msgid "&Settings..."
 msgstr ""
 
-#: gui/main.c:6106
+#: gui/main.c:6286
 msgid "&Tools"
 msgstr ""
 
-#: gui/main.c:6109
+#: gui/main.c:6289
 msgid "Show the app &log"
 msgstr ""
 
-#: gui/main.c:6110
+#: gui/main.c:6290
 msgid "Show saved error &reports"
 msgstr ""
 
-#: gui/main.c:6111
+#: gui/main.c:6291
 msgid "&About BRODALF"
 msgstr ""
 
-#: gui/main.c:6112
+#: gui/main.c:6292
 msgid "&Help"
 msgstr ""
 
-#: gui/main.c:6179
+#: gui/main.c:6359
 #, c-format
 msgid "What happened to %ls?"
 msgstr ""
 
-#: gui/main.c:6181
+#: gui/main.c:6361
 msgid ""
 "It is lost\n"
 "You do not know where it is."
 msgstr ""
 
-#: gui/main.c:6182
+#: gui/main.c:6362
 msgid ""
 "It is broken\n"
 "It no longer works, or its files cannot be read."
 msgstr ""
 
-#: gui/main.c:6193
+#: gui/main.c:6373
 msgid ""
 "BRODALF stops counting its copies, so your full copies show what you really have, and backs the files it held up again to your other drives. Nothing on any drive is deleted, and you can undo this with Found it."
 msgstr ""
 
-#: gui/main.c:6205
+#: gui/main.c:6385
 msgid "The drive could not be marked."
 msgstr ""
 
-#: gui/main.c:6211
+#: gui/main.c:6391
 #, c-format
 msgid ""
 "Marking %ls %ls changes your full copies:\n"
 "\n"
 msgstr ""
 
-#: gui/main.c:6217
+#: gui/main.c:6397
 #, c-format
 msgid "    Full copy %d: %d%% now, %d%% after (%lld files fewer)\n"
 msgstr ""
 
-#: gui/main.c:6219
+#: gui/main.c:6399
 msgid "    No change: every file it held has enough good copies elsewhere.\n"
 msgstr ""
 
-#: gui/main.c:6220
+#: gui/main.c:6400
 #, c-format
 msgid ""
 "\n"
 "Mark it %ls?"
 msgstr ""
 
-#: gui/main.c:6229
+#: gui/main.c:6409
 #, c-format
 msgid ""
 "%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it."
 msgstr ""
 
-#: gui/main.c:6239
+#: gui/main.c:6419
 #, c-format
 msgid ""
 "%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are still good."
 msgstr ""
 
-#: gui/main.c:6259
+#: gui/main.c:6439
 msgid ""
 "An extra place keeps its old description: describe it in at least two words, saying what it is and where it lives, like \"Dropbox folder on the laptop\"."
 msgstr ""
 
-#: gui/main.c:6275
+#: gui/main.c:6455
 msgid "The drive could not be changed."
 msgstr ""
 
-#: gui/main.c:6307
+#: gui/main.c:6487
 msgid "Plug the drive in first."
 msgstr ""
 
-#: gui/main.c:6315
+#: gui/main.c:6495
 #, c-format
 msgid ""
 "Compression is on for %ls: Windows keeps BRODALF's copies there smaller, and makes them whole again as they are read.\n"
@@ -2868,12 +2902,12 @@ msgid ""
 "Turn it off? Every copy on the drive is made whole again, which needs room for them to grow back to their full size, and takes about as long as reading and writing every copy there."
 msgstr ""
 
-#: gui/main.c:6321
+#: gui/main.c:6501
 #, c-format
 msgid "%ls cannot be compressed. %ls"
 msgstr ""
 
-#: gui/main.c:6326
+#: gui/main.c:6506
 #, c-format
 msgid ""
 "Windows can compress the copies on %ls with its own file compression. They stay ordinary files that any Windows PC reads without BRODALF; they just take less room on the drive.\n"
@@ -2885,7 +2919,7 @@ msgid ""
 "Compress the copies on this drive now?"
 msgstr ""
 
-#: gui/main.c:6412
+#: gui/main.c:6592
 #, c-format
 msgid ""
 "BRODALF %ls\n"
@@ -2895,58 +2929,58 @@ msgid ""
 "https://github.com/Phawx/BRODALF"
 msgstr ""
 
-#: gui/main.c:6455
+#: gui/main.c:6635
 msgid ""
 "A bit-rot scan reads every file in your backup roots again and compares it with its checksum, to find files that changed although their size and time did not (damage on this PC's disk). It takes as long as the first scan did. Nothing is changed or backed up.\n"
 "\n"
 "Start it now?"
 msgstr ""
 
-#: gui/main.c:6522
+#: gui/main.c:6702
 msgid "Restore..."
 msgstr ""
 
-#: gui/main.c:6528 gui/main.c:7163 gui/main.c:7919
+#: gui/main.c:6708 gui/main.c:7343 gui/main.c:8114
 msgid "Unstar it"
 msgstr ""
 
-#: gui/main.c:6528 gui/main.c:7919
+#: gui/main.c:6708 gui/main.c:8114
 msgid "Starred with its folder"
 msgstr ""
 
-#: gui/main.c:6528
+#: gui/main.c:6708
 msgid "Star it: also back it up to the extra places"
 msgstr ""
 
-#: gui/main.c:6530 gui/main.c:7194 gui/main.c:7921
+#: gui/main.c:6710 gui/main.c:7374 gui/main.c:8116
 msgid "Stop encrypting it..."
 msgstr ""
 
-#: gui/main.c:6530 gui/main.c:7921
+#: gui/main.c:6710 gui/main.c:8116
 msgid "Encrypted with its folder"
 msgstr ""
 
-#: gui/main.c:6530
+#: gui/main.c:6710
 msgid "Encrypt it on every drive..."
 msgstr ""
 
-#: gui/main.c:6535
+#: gui/main.c:6715
 msgid "Stop backing up this root..."
 msgstr ""
 
-#: gui/main.c:6535
+#: gui/main.c:6715
 msgid "Back up this root again"
 msgstr ""
 
-#: gui/main.c:6536
+#: gui/main.c:6716
 msgid "What to leave out in this root..."
 msgstr ""
 
-#: gui/main.c:6537
+#: gui/main.c:6717
 msgid "Change where it is..."
 msgstr ""
 
-#: gui/main.c:6563
+#: gui/main.c:6743
 #, c-format
 msgid ""
 "Stop backing up %ls?\n"
@@ -2954,25 +2988,25 @@ msgid ""
 "Scans leave it alone and nothing new from it is backed up. Everything BRODALF knows about it stays, and its copies on your drives stay and still restore. You can back it up again at any time."
 msgstr ""
 
-#: gui/main.c:6569
+#: gui/main.c:6749
 #, c-format
 msgid "%ls is no longer backed up."
 msgstr ""
 
-#: gui/main.c:6577
+#: gui/main.c:6757
 #, c-format
 msgid "%ls is backed up again. Scanning it."
 msgstr ""
 
-#: gui/main.c:6610
+#: gui/main.c:6790
 msgid "Restore this version..."
 msgstr ""
 
-#: gui/main.c:6611
+#: gui/main.c:6791
 msgid "Open in Explorer (on its drive)"
 msgstr ""
 
-#: gui/main.c:6631
+#: gui/main.c:6811
 #, c-format
 msgid ""
 "%lld file changed although its size and time did not. That usually means damage on this PC's disk (bit rot), and the copies on your drives are the good ones.\n"
@@ -2985,7 +3019,7 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:6643
+#: gui/main.c:6823
 #, c-format
 msgid ""
 "%lld file is gone from your backup roots since you last looked. BRODALF keeps tracking it and its copies on your drives.\n"
@@ -2998,454 +3032,454 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:6678
+#: gui/main.c:6858
 msgid "Available"
 msgstr ""
 
-#: gui/main.c:6679
+#: gui/main.c:6859
 msgid "Changed since backup"
 msgstr ""
 
-#: gui/main.c:6680
+#: gui/main.c:6860
 msgid "Drive not plugged in"
 msgstr ""
 
-#: gui/main.c:6681
+#: gui/main.c:6861
 msgid "Not backed up"
 msgstr ""
 
-#: gui/main.c:6682
+#: gui/main.c:6862
 msgid "Copy damaged"
 msgstr ""
 
-#: gui/main.c:6683
+#: gui/main.c:6863
 msgid "Deleted"
 msgstr ""
 
-#: gui/main.c:6684
+#: gui/main.c:6864
 msgid "Partly available"
 msgstr ""
 
-#: gui/main.c:6712
+#: gui/main.c:6892
 msgid "(no copies)"
 msgstr ""
 
-#: gui/main.c:6739
+#: gui/main.c:6919
 msgid "Search is available when the current job finishes."
 msgstr ""
 
-#: gui/main.c:6751
+#: gui/main.c:6931
 msgid "No files or folders match."
 msgstr ""
 
-#: gui/main.c:6975
+#: gui/main.c:7155
 msgid "under a second"
 msgstr ""
 
-#: gui/main.c:6976
+#: gui/main.c:7156
 #, c-format
 msgid "%.0f seconds"
 msgstr ""
 
-#: gui/main.c:6977
+#: gui/main.c:7157
 #, c-format
 msgid "%.0f minutes"
 msgstr ""
 
-#: gui/main.c:6978
+#: gui/main.c:7158
 #, c-format
 msgid "%.1f hours"
 msgstr ""
 
-#: gui/main.c:6979
+#: gui/main.c:7159
 #, c-format
 msgid "%.1f days"
 msgstr ""
 
-#: gui/main.c:7112
+#: gui/main.c:7292
 msgid "Add backup root..."
 msgstr ""
 
-#: gui/main.c:7113 gui/main.c:7919
+#: gui/main.c:7293 gui/main.c:8114
 msgid "Star it"
 msgstr ""
 
-#: gui/main.c:7114 gui/main.c:7921
+#: gui/main.c:7294 gui/main.c:8116
 msgid "Encrypt it..."
 msgstr ""
 
-#: gui/main.c:7115
+#: gui/main.c:7295
 msgid "Bit-rot scan..."
 msgstr ""
 
-#: gui/main.c:7116
+#: gui/main.c:7296
 msgid "Change where a root is..."
 msgstr ""
 
-#: gui/main.c:7117
+#: gui/main.c:7297
 msgid "What to leave out..."
 msgstr ""
 
-#: gui/main.c:7118
+#: gui/main.c:7298
 msgid "Deleted files..."
 msgstr ""
 
-#: gui/main.c:7119
+#: gui/main.c:7299
 msgid "Damaged files..."
 msgstr ""
 
-#: gui/main.c:7120
+#: gui/main.c:7300
 msgid "In use at the last scan..."
 msgstr ""
 
-#: gui/main.c:7121
+#: gui/main.c:7301
 msgid "Largest files..."
 msgstr ""
 
-#: gui/main.c:7122
+#: gui/main.c:7302
 msgid "Export the list (CSV)..."
 msgstr ""
 
-#: gui/main.c:7124
+#: gui/main.c:7304
 msgid "What the next backup copies to:"
 msgstr ""
 
-#: gui/main.c:7128 gui/main.c:7925
+#: gui/main.c:7308 gui/main.c:8120
 msgid "Back up..."
 msgstr ""
 
-#: gui/main.c:7130
+#: gui/main.c:7310
 msgid "Files changed on it..."
 msgstr ""
 
-#: gui/main.c:7131 gui/main.c:7146
+#: gui/main.c:7311 gui/main.c:7326
 msgid "Which drive to plug in..."
 msgstr ""
 
-#: gui/main.c:7132
+#: gui/main.c:7312
 msgid "Refresh"
 msgstr ""
 
-#: gui/main.c:7135
+#: gui/main.c:7315
 msgid "Set up a disk..."
 msgstr ""
 
-#: gui/main.c:7136 gui/brodalf.rc:55
+#: gui/main.c:7316 gui/brodalf.rc:55
 msgid "Back up to it"
 msgstr ""
 
-#: gui/main.c:7138
+#: gui/main.c:7318
 msgid "Check every copy"
 msgstr ""
 
-#: gui/main.c:7141
+#: gui/main.c:7321
 msgid "Compress copies..."
 msgstr ""
 
-#: gui/main.c:7142
+#: gui/main.c:7322
 msgid "Files changed since..."
 msgstr ""
 
-#: gui/main.c:7143
+#: gui/main.c:7323
 msgid "Name and where it is kept..."
 msgstr ""
 
-#: gui/main.c:7145
+#: gui/main.c:7325
 msgid "Where every drive stands..."
 msgstr ""
 
-#: gui/main.c:7149
+#: gui/main.c:7329
 msgid "Free"
 msgstr ""
 
-#: gui/main.c:7149
+#: gui/main.c:7329
 msgid "BRODALF's copies"
 msgstr ""
 
-#: gui/main.c:7149
+#: gui/main.c:7329
 msgid "Other files"
 msgstr ""
 
-#: gui/main.c:7150
+#: gui/main.c:7330
 msgid "Kept free"
 msgstr ""
 
-#: gui/main.c:7150
+#: gui/main.c:7330
 msgid "Health"
 msgstr ""
 
-#: gui/main.c:7150
+#: gui/main.c:7330
 msgid "Temperature"
 msgstr ""
 
-#: gui/main.c:7150
+#: gui/main.c:7330
 msgid "Hours on"
 msgstr ""
 
-#: gui/main.c:7150
+#: gui/main.c:7330
 msgid "Worn"
 msgstr ""
 
-#: gui/main.c:7150
+#: gui/main.c:7330
 msgid "Oldest read-back"
 msgstr ""
 
-#: gui/main.c:7158
+#: gui/main.c:7338
 msgid ""
 "Starred files are backed up to your drives like every file, and also to the extra places below: a second, secondary backup of the files that matter most, such as your Dropbox, OneDrive or Google Drive folder on this PC, a network share or a folder on another disk. BRODALF only copies files into the folder; that folder's own app does any syncing. Copies in extra places never count toward your full copies."
 msgstr ""
 
-#: gui/main.c:7162
+#: gui/main.c:7342
 msgid "Star what is selected in Primary Database"
 msgstr ""
 
-#: gui/main.c:7164 gui/main.c:7195
+#: gui/main.c:7344 gui/main.c:7375
 msgid "Show it in Primary Database"
 msgstr ""
 
-#: gui/main.c:7166 gui/main.c:7373
+#: gui/main.c:7346 gui/main.c:7557
 msgid "Starred"
 msgstr ""
 
-#: gui/main.c:7166 gui/main.c:7197
+#: gui/main.c:7346 gui/main.c:7377
 msgid "Files"
 msgstr ""
 
-#: gui/main.c:7166
+#: gui/main.c:7346
 msgid "Starred on"
 msgstr ""
 
-#: gui/main.c:7170
+#: gui/main.c:7350
 msgid "Extra places"
 msgstr ""
 
-#: gui/main.c:7171
+#: gui/main.c:7351
 msgid "Add an extra place..."
 msgstr ""
 
-#: gui/main.c:7172
+#: gui/main.c:7352
 msgid "Back up starred files to it"
 msgstr ""
 
-#: gui/main.c:7173
+#: gui/main.c:7353
 msgid "Change its size limit..."
 msgstr ""
 
-#: gui/main.c:7175
+#: gui/main.c:7355
 msgid "Description and details..."
 msgstr ""
 
-#: gui/main.c:7178
+#: gui/main.c:7358
 msgid "Extra place"
 msgstr ""
 
-#: gui/main.c:7178 gui/main.c:8840
+#: gui/main.c:7358 gui/main.c:9035
 msgid "Folder"
 msgstr ""
 
-#: gui/main.c:7178
+#: gui/main.c:7358
 msgid "Found now"
 msgstr ""
 
-#: gui/main.c:7178
+#: gui/main.c:7358
 msgid "Size limit"
 msgstr ""
 
-#: gui/main.c:7178
+#: gui/main.c:7358
 msgid "Starred files there"
 msgstr ""
 
-#: gui/main.c:7179
+#: gui/main.c:7359
 msgid "Waiting"
 msgstr ""
 
-#: gui/main.c:7179
+#: gui/main.c:7359
 msgid "Over the limit"
 msgstr ""
 
-#: gui/main.c:7179
+#: gui/main.c:7359
 msgid "Space used"
 msgstr ""
 
-#: gui/main.c:7179 gui/main.c:7197 gui/main.c:7374
+#: gui/main.c:7359 gui/main.c:7377 gui/main.c:7558
 msgid "Encrypted"
 msgstr ""
 
-#: gui/main.c:7186
+#: gui/main.c:7366
 msgid "Make a new recovery key..."
 msgstr ""
 
-#: gui/main.c:7187
+#: gui/main.c:7367
 msgid "Print the recovery sheet..."
 msgstr ""
 
-#: gui/main.c:7188
+#: gui/main.c:7368
 msgid "Set up an encrypted drive..."
 msgstr ""
 
-#: gui/main.c:7191
+#: gui/main.c:7371
 msgid "Folders encrypted on every drive and extra place they are copied to:"
 msgstr ""
 
-#: gui/main.c:7192
+#: gui/main.c:7372
 msgid "Encrypt what is selected in Primary Database"
 msgstr ""
 
-#: gui/main.c:7193
+#: gui/main.c:7373
 msgid "Choose a folder to encrypt..."
 msgstr ""
 
-#: gui/main.c:7197
+#: gui/main.c:7377
 msgid "Encrypting them takes"
 msgstr ""
 
-#: gui/main.c:7197
+#: gui/main.c:7377
 msgid "Chosen on"
 msgstr ""
 
-#: gui/main.c:7203
+#: gui/main.c:7383
 msgid ""
 "Restoring copies files from your drives into a folder you choose. Nothing there is overwritten: a file already where one would go is left alone and listed below, so you can compare the two."
 msgstr ""
 
-#: gui/main.c:7205
+#: gui/main.c:7385
 msgid "Restore what is selected in Primary Database..."
 msgstr ""
 
-#: gui/main.c:7206
+#: gui/main.c:7386
 msgid "Restore everything..."
 msgstr ""
 
-#: gui/main.c:7207
+#: gui/main.c:7387
 msgid "Restore deleted files..."
 msgstr ""
 
-#: gui/main.c:7208
+#: gui/main.c:7388
 msgid "Continue the restore that waits for drives"
 msgstr ""
 
-#: gui/main.c:7210
+#: gui/main.c:7390
 msgid "Files the last restore left alone"
 msgstr ""
 
-#: gui/main.c:7211
+#: gui/main.c:7391
 msgid "Show it in Explorer"
 msgstr ""
 
-#: gui/main.c:7212
+#: gui/main.c:7392
 msgid "Show them in a window..."
 msgstr ""
 
-#: gui/main.c:7214
+#: gui/main.c:7394
 msgid "Where it would go"
 msgstr ""
 
-#: gui/main.c:7214
+#: gui/main.c:7394
 msgid "Backed-up size"
 msgstr ""
 
-#: gui/main.c:7214
+#: gui/main.c:7394
 msgid "Backed-up modified"
 msgstr ""
 
-#: gui/main.c:7214
+#: gui/main.c:7394
 msgid "Size there"
 msgstr ""
 
-#: gui/main.c:7215
+#: gui/main.c:7395
 msgid "Modified there"
 msgstr ""
 
-#: gui/main.c:7215
+#: gui/main.c:7395
 msgid "Newer"
 msgstr ""
 
-#: gui/main.c:7263
+#: gui/main.c:7443
 msgid "(the whole backup root)"
 msgstr ""
 
-#: gui/main.c:7287
+#: gui/main.c:7467
 msgid "Not there yet"
 msgstr ""
 
-#: gui/main.c:7287
+#: gui/main.c:7467
 msgid "An older version"
 msgstr ""
 
-#: gui/main.c:7326
+#: gui/main.c:7506
 msgid "Any drive: every file that does not have all the copies you want yet"
 msgstr ""
 
-#: gui/main.c:7335
+#: gui/main.c:7516
 msgid "Extra place:"
 msgstr ""
 
-#: gui/main.c:7335
+#: gui/main.c:7516
 msgid "Drive:"
 msgstr ""
 
-#: gui/main.c:7336
+#: gui/main.c:7517
 msgid " (not found now)"
 msgstr ""
 
-#: gui/main.c:7336
+#: gui/main.c:7517
 msgid " (plugged in)"
 msgstr ""
 
-#: gui/main.c:7336
+#: gui/main.c:7517
 msgid " (not plugged in)"
 msgstr ""
 
-#: gui/main.c:7365
+#: gui/main.c:7549
 msgid "In this extra place"
 msgstr ""
 
-#: gui/main.c:7365
+#: gui/main.c:7549
 msgid "On this drive"
 msgstr ""
 
-#: gui/main.c:7366
+#: gui/main.c:7550
 msgid "Has all its copies"
 msgstr ""
 
-#: gui/main.c:7370
+#: gui/main.c:7554
 #, c-format
 msgid "Copy %d"
 msgstr ""
 
-#: gui/main.c:7386
+#: gui/main.c:7574
 #, c-format
 msgid ""
 "Every file has the %d copies in %d places you want. Nothing waits for a backup."
 msgstr ""
 
-#: gui/main.c:7388
+#: gui/main.c:7576
 #, c-format
 msgid ""
 "%lld of your %lld files (%ls) do not have the %d copies in %d places you want yet"
 msgstr ""
 
-#: gui/main.c:7390
+#: gui/main.c:7578
 #, c-format
 msgid ", and %lld of them have no copy anywhere"
 msgstr ""
 
-#: gui/main.c:7391
+#: gui/main.c:7579
 msgid ""
 ". A backup to any drive brings them closer; Which drive to plug in... says which drive helps most."
 msgstr ""
 
-#: gui/main.c:7394
+#: gui/main.c:7582
 msgid ""
 "\r\n"
 "Each Copy column is one full copy: a tick means the file is in it. Choose a drive above to see what a backup to it would copy."
 msgstr ""
 
-#: gui/main.c:7401
+#: gui/main.c:7592
 msgid "This drive is up to date: the next backup to it copies nothing."
 msgstr ""
 
-#: gui/main.c:7403
+#: gui/main.c:7594
 #, c-format
 msgid ""
 "The next backup to this drive copies %lld file (%ls): %lld new, %lld changed. A changed file goes alongside its older copy; nothing on the drive is overwritten."
@@ -3454,58 +3488,58 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7410
+#: gui/main.c:7601
 #, c-format
 msgid ""
 "\r\n"
 "Free on it: %ls%ls."
 msgstr ""
 
-#: gui/main.c:7410
+#: gui/main.c:7601
 msgid " (read just now)"
 msgstr ""
 
-#: gui/main.c:7410
+#: gui/main.c:7601
 msgid " (when it was last plugged in)"
 msgstr ""
 
-#: gui/main.c:7414
+#: gui/main.c:7605
 #, c-format
 msgid " About %ls will not fit and waits for another drive."
 msgstr ""
 
-#: gui/main.c:7418
+#: gui/main.c:7609
 #, c-format
 msgid ""
 "\r\n"
 "It copies what the scans found; the oldest scan of your backup roots was %ls."
 msgstr ""
 
-#: gui/main.c:7420
+#: gui/main.c:7611
 msgid ""
 "\r\n"
 "Your backup roots have not been scanned yet, so there is nothing to copy. Press Scan now."
 msgstr ""
 
-#: gui/main.c:7422
+#: gui/main.c:7613
 #, c-format
 msgid ""
 "\r\n"
 "Warning: %lld of the %lld files whose copies on this drive were up to date have changed at once. That can mean ransomware. Look at Files changed on it... before backing up."
 msgstr ""
 
-#: gui/main.c:7425
+#: gui/main.c:7616
 msgid ""
 "\r\n"
 "Plug it in to back up to it."
 msgstr ""
 
-#: gui/main.c:7432
+#: gui/main.c:7626
 msgid ""
 "An extra place takes only starred files, as a second, secondary backup; its copies do not count toward your full copies."
 msgstr ""
 
-#: gui/main.c:7434
+#: gui/main.c:7628
 #, c-format
 msgid "%lld starred file (%ls) in all; %lld of them is there as it is now."
 msgid_plural ""
@@ -3513,111 +3547,111 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7439
+#: gui/main.c:7633
 #, c-format
 msgid ""
 "\r\n"
 "The next backup to it copies %lld (%ls)."
 msgstr ""
 
-#: gui/main.c:7443
+#: gui/main.c:7637
 #, c-format
 msgid " It may take at most %ls of starred files."
 msgstr ""
 
-#: gui/main.c:7446
+#: gui/main.c:7640
 #, c-format
 msgid " %lld file (%ls) would go over that and is not copied there."
 msgid_plural " %lld files (%ls) would go over that and are not copied there."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7451
+#: gui/main.c:7645
 msgid ""
 "\r\n"
 "Nothing is starred yet: star files or folders on the Primary Database tab."
 msgstr ""
 
-#: gui/main.c:7452
+#: gui/main.c:7646
 msgid ""
 "\r\n"
 "The folder was not found the last time BRODALF looked."
 msgstr ""
 
-#: gui/main.c:7460
+#: gui/main.c:7654
 #, c-format
 msgid ""
 "\r\n"
 "The list shows the first %d of %lld files, by backup root and path."
 msgstr ""
 
-#: gui/main.c:7476
+#: gui/main.c:7670
 msgid "Select a drive to see where it stands, its space and its health."
 msgstr ""
 
-#: gui/main.c:7477
+#: gui/main.c:7671
 msgid ""
 "No backup drives yet. Set up a disk... makes one: an external or removable disk, or a folder on one."
 msgstr ""
 
-#: gui/main.c:7488
+#: gui/main.c:7682
 #, c-format
 msgid ""
 "    Set up %ls, %lld copies recorded\r\n"
 "\r\n"
 msgstr ""
 
-#: gui/main.c:7516
+#: gui/main.c:7710
 #, c-format
 msgid "Yes, at %ls"
 msgstr ""
 
-#: gui/main.c:7534
+#: gui/main.c:7728
 msgid "not reported"
 msgstr ""
 
-#: gui/main.c:7534
+#: gui/main.c:7728
 msgid "not read yet"
 msgstr ""
 
-#: gui/main.c:7541
+#: gui/main.c:7734
 msgid "marked broken"
 msgstr ""
 
-#: gui/main.c:7541
+#: gui/main.c:7734
 msgid "marked lost"
 msgstr ""
 
-#: gui/main.c:7542
+#: gui/main.c:7735
 msgid "its health data warns"
 msgstr ""
 
-#: gui/main.c:7542
+#: gui/main.c:7735
 msgid "due for a check"
 msgstr ""
 
-#: gui/main.c:7581
+#: gui/main.c:7774
 msgid "Not in the last scan: renamed, moved or deleted?"
 msgstr ""
 
-#: gui/main.c:7629
+#: gui/main.c:7824
 msgid "No limit"
 msgstr ""
 
-#: gui/main.c:7631
+#: gui/main.c:7826
 #, c-format
 msgid "%lld of %lld (%ls)"
 msgstr ""
 
-#: gui/main.c:7641
+#: gui/main.c:7836
 msgid "Marked broken"
 msgstr ""
 
-#: gui/main.c:7641
+#: gui/main.c:7836
 msgid "Marked lost"
 msgstr ""
 
-#: gui/main.c:7655
+#: gui/main.c:7850
 #, c-format
 msgid ""
 "Extra places: a second, secondary backup of your %lld starred file (%ls)%ls"
@@ -3626,59 +3660,59 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7657
+#: gui/main.c:7852
 msgid ". None yet: Add an extra place... sets one up."
 msgstr ""
 
-#: gui/main.c:7687
+#: gui/main.c:7882
 msgid "not measured yet"
 msgstr ""
 
-#: gui/main.c:7723
+#: gui/main.c:7918
 msgid ""
 "Nothing is encrypted unless you choose it, and every kind below is optional: use none, any one of them, or all of them together.\r\n"
 "\r\n"
 msgstr ""
 
-#: gui/main.c:7725
+#: gui/main.c:7920
 msgid "Passphrase\r\n"
 msgstr ""
 
-#: gui/main.c:7727
+#: gui/main.c:7922
 msgid ""
 "    None set. Each kind of encryption needs one: Set a passphrase... above. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone.\r\n"
 msgstr ""
 
-#: gui/main.c:7730
+#: gui/main.c:7925
 #, c-format
 msgid "    Set. %ls\r\n"
 msgstr ""
 
-#: gui/main.c:7730
+#: gui/main.c:7925
 msgid ""
 "Entered for now: BRODALF can encrypt, and read encrypted copies, until you press Forget the passphrase or close it."
 msgstr ""
 
-#: gui/main.c:7732
+#: gui/main.c:7927
 msgid "Not entered now: BRODALF asks for it when a job needs it."
 msgstr ""
 
-#: gui/main.c:7733
+#: gui/main.c:7928
 #, c-format
 msgid "    Recovery key: %ls\r\n"
 msgstr ""
 
-#: gui/main.c:7734
+#: gui/main.c:7929
 msgid ""
 "made. It is on the recovery sheet, and opens your encrypted backups if the passphrase is ever forgotten."
 msgstr ""
 
-#: gui/main.c:7736
+#: gui/main.c:7931
 msgid ""
 "none yet. Make a new recovery key... puts one on a recovery sheet to print."
 msgstr ""
 
-#: gui/main.c:7738
+#: gui/main.c:7933
 #, c-format
 msgid ""
 "\r\n"
@@ -3686,46 +3720,46 @@ msgid ""
 "    %ls\r\n"
 msgstr ""
 
-#: gui/main.c:7739
+#: gui/main.c:7934
 msgid "Encrypted: BRODALF asks for the passphrase when it opens it."
 msgstr ""
 
-#: gui/main.c:7740
+#: gui/main.c:7935
 msgid "Not encrypted. Tick Encrypt the database file above to encrypt it."
 msgstr ""
 
-#: gui/main.c:7741
+#: gui/main.c:7936
 msgid ""
 "\r\n"
 "Whole drives and extra places\r\n"
 msgstr ""
 
-#: gui/main.c:7749
+#: gui/main.c:7944
 #, c-format
 msgid "    %ls%ls: every copy on it is encrypted\r\n"
 msgstr ""
 
-#: gui/main.c:7749
+#: gui/main.c:7944
 msgid " (extra place)"
 msgstr ""
 
-#: gui/main.c:7754
+#: gui/main.c:7949
 msgid ""
 "    None. You choose it when you set up a drive (Set up an encrypted drive... above) or add an extra place: every copy on it is then encrypted. A drive already set up stays as it is.\r\n"
 msgstr ""
 
-#: gui/main.c:7756
+#: gui/main.c:7951
 msgid ""
 "\r\n"
 "Only the folders you choose (listed below)\r\n"
 msgstr ""
 
-#: gui/main.c:7758
+#: gui/main.c:7953
 msgid ""
 "    None. Choose a folder below to encrypt just it, on every drive and extra place it is copied to, also drives that are not encrypted. Everything else stays plain, which is quicker to back up and to restore.\r\n"
 msgstr ""
 
-#: gui/main.c:7762
+#: gui/main.c:7957
 #, c-format
 msgid ""
 "    %lld file (%ls) in them is encrypted wherever it is copied. Names stay readable: a copy is the file's name with .bdenc after it.\r\n"
@@ -3734,14 +3768,14 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7768
+#: gui/main.c:7963
 #, c-format
 msgid "%lld encrypted copy so far"
 msgid_plural "%lld encrypted copies so far"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7769
+#: gui/main.c:7964
 #, c-format
 msgid ""
 "%lld file still waits for a first encrypted copy, which the next backups make."
@@ -3750,7 +3784,7 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7774
+#: gui/main.c:7969
 #, c-format
 msgid ""
 "    %lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF never overwrites or deletes anything on a drive.\r\n"
@@ -3759,51 +3793,51 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7780
+#: gui/main.c:7975
 msgid ""
 "\r\n"
 "What it means for time\r\n"
 msgstr ""
 
-#: gui/main.c:7787
+#: gui/main.c:7982
 msgid ""
 "    Backing up, checking and restoring what is encrypted need the passphrase entered; BRODALF asks for it.\r\n"
 msgstr ""
 
-#: gui/main.c:7844
+#: gui/main.c:8039
 msgid ""
 "Select a backup root, a folder or a file on the Primary Database tab to see which drives restoring it needs.\n"
 msgstr ""
 
-#: gui/main.c:7847
+#: gui/main.c:8042
 #, c-format
 msgid "Selected on the Primary Database tab: %ls\n"
 msgstr ""
 
-#: gui/main.c:7853
+#: gui/main.c:8048
 msgid "    There is nothing in it to restore.\n"
 msgstr ""
 
-#: gui/main.c:7855
+#: gui/main.c:8050
 #, c-format
 msgid ""
 "Restoring it takes these drives, in this order:\n"
 "%ls"
 msgstr ""
 
-#: gui/main.c:7856
+#: gui/main.c:8051
 #, c-format
 msgid "%lld file has no copy on any drive.\n"
 msgid_plural "%lld files have no copy on any drive.\n"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:7858
+#: gui/main.c:8053
 msgid ""
 "BRODALF restores what the plugged-in drives hold first; then plug in each other drive and press Continue.\n"
 msgstr ""
 
-#: gui/main.c:7867
+#: gui/main.c:8062
 #, c-format
 msgid ""
 "\n"
@@ -3811,80 +3845,80 @@ msgid ""
 "%ls"
 msgstr ""
 
-#: gui/main.c:7868
+#: gui/main.c:8063
 msgid "    (none: it can finish now; press Continue)\n"
 msgstr ""
 
-#: gui/main.c:7877
+#: gui/main.c:8072
 #, c-format
 msgid ""
 "Files the last restore left alone (%d), because another file was already where each would go. Nothing was overwritten:"
 msgstr ""
 
-#: gui/main.c:7880
+#: gui/main.c:8075
 msgid "Files the last restore left alone: none."
 msgstr ""
 
-#: gui/main.c:7892
+#: gui/main.c:8087
 msgid "The backed-up copy"
 msgstr ""
 
-#: gui/main.c:7893
+#: gui/main.c:8088
 msgid "The file there"
 msgstr ""
 
-#: gui/main.c:7894
+#: gui/main.c:8089
 msgid "Same time, other size"
 msgstr ""
 
-#: gui/main.c:7894
+#: gui/main.c:8089
 msgid "Same time and size"
 msgstr ""
 
-#: gui/main.c:8071
+#: gui/main.c:8266
 msgid "Could not star it."
 msgstr ""
 
-#: gui/main.c:8071
+#: gui/main.c:8266
 msgid "Could not unstar it."
 msgstr ""
 
-#: gui/main.c:8075
+#: gui/main.c:8270
 #, c-format
 msgid "Starred %ls. %ls"
 msgstr ""
 
-#: gui/main.c:8076
+#: gui/main.c:8271
 msgid "The next backup to each extra place copies it there."
 msgstr ""
 
-#: gui/main.c:8077
+#: gui/main.c:8272
 msgid ""
 "Add an extra place on the Starred files tab to give it a second, secondary copy there."
 msgstr ""
 
-#: gui/main.c:8079
+#: gui/main.c:8274
 #, c-format
 msgid ""
 "Unstarred %ls. Its copies in extra places stay there; nothing new of it goes there."
 msgstr ""
 
-#: gui/main.c:8086
+#: gui/main.c:8281
 msgid ""
 "Starred files are copied to your extra places as a second, secondary backup, and you have none yet. Add one now, like your Dropbox or OneDrive folder on this PC?"
 msgstr ""
 
-#: gui/main.c:8096 gui/main.c:8195
+#: gui/main.c:8291 gui/main.c:8390
 msgid ""
 "Select a backup root, a folder or a file on the Primary Database tab first."
 msgstr ""
 
-#: gui/main.c:8102
+#: gui/main.c:8297
 msgid ""
 "It is already starred, with a folder above it. Unstar that folder on the Starred files tab to change it."
 msgstr ""
 
-#: gui/main.c:8131
+#: gui/main.c:8326
 #, c-format
 msgid ""
 "Stop encrypting %ls?\n"
@@ -3892,27 +3926,27 @@ msgid ""
 "New copies of it are then plain. The encrypted copies already on your drives stay as they are and still restore with the passphrase."
 msgstr ""
 
-#: gui/main.c:8134
+#: gui/main.c:8329
 msgid "Could not change the encryption."
 msgstr ""
 
-#: gui/main.c:8135
+#: gui/main.c:8330
 #, c-format
 msgid "New copies of %ls are plain from now on."
 msgstr ""
 
-#: gui/main.c:8145
+#: gui/main.c:8340
 msgid ""
 "Encrypting needs a passphrase, and none is set yet. Without it, encrypted copies cannot be read, by you or anyone.\n"
 "\n"
 "Set one now?"
 msgstr ""
 
-#: gui/main.c:8154 gui/main.c:8179
+#: gui/main.c:8349 gui/main.c:8374
 msgid "Could not encrypt it."
 msgstr ""
 
-#: gui/main.c:8165
+#: gui/main.c:8360
 #, c-format
 msgid ""
 "Encrypt %ls?\n"
@@ -3927,151 +3961,151 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:8172
+#: gui/main.c:8367
 #, c-format
 msgid ""
 "What it means for time: %ls\n"
 "\n"
 msgstr ""
 
-#: gui/main.c:8173
+#: gui/main.c:8368
 msgid ""
 "Copies already on your drives stay as they are, since BRODALF never overwrites or deletes anything there: new copies and new versions are encrypted. Backing up, checking and restoring them need the passphrase entered."
 msgstr ""
 
-#: gui/main.c:8181
+#: gui/main.c:8376
 #, c-format
 msgid ""
 "%ls is encrypted on every drive and extra place from now on (%lld files, %ls)."
 msgstr ""
 
-#: gui/main.c:8201
+#: gui/main.c:8396
 msgid ""
 "It is already encrypted, with a folder above it. Change that folder on the Encryption tab."
 msgstr ""
 
-#: gui/main.c:8213
+#: gui/main.c:8408
 msgid ""
 "Choose a folder in one of your backup roots. Its files are encrypted on every drive and extra place they are copied to."
 msgstr ""
 
-#: gui/main.c:8219
+#: gui/main.c:8414
 msgid ""
 "That folder is not in any of your backup roots, so BRODALF does not back it up. Choose a folder inside a backup root, or add it as a backup root first."
 msgstr ""
 
-#: gui/main.c:8222
+#: gui/main.c:8417
 msgid "It is already encrypted, or a folder above it is."
 msgstr ""
 
-#: gui/main.c:8280
+#: gui/main.c:8475
 msgid "Size limit of an extra place"
 msgstr ""
 
-#: gui/main.c:8284 gui/brodalf.rc:37
+#: gui/main.c:8479 gui/brodalf.rc:37
 msgid "Save"
 msgstr ""
 
-#: gui/main.c:8307
+#: gui/main.c:8502
 msgid ""
 "Describe it in at least two words, saying what it is and where it lives, like \"Dropbox folder on the laptop\" or \"NAS share in the office\". It is how you tell your extra places apart later."
 msgstr ""
 
-#: gui/main.c:8314
+#: gui/main.c:8509
 msgid ""
 "Type the most it may take in GB, like 2 or 15.5, or leave it empty for no limit."
 msgstr ""
 
-#: gui/main.c:8337
+#: gui/main.c:8532
 msgid ""
 "Choose the folder for a second copy of your starred files: your Dropbox, OneDrive or Google Drive folder on this PC, a network share, or a folder on another disk."
 msgstr ""
 
-#: gui/main.c:8341
+#: gui/main.c:8536
 msgid "That folder is already one of your backup drives or extra places."
 msgstr ""
 
-#: gui/main.c:8347
+#: gui/main.c:8542
 msgid "this PC"
 msgstr ""
 
-#: gui/main.c:8349
+#: gui/main.c:8544
 #, c-format
 msgid "%ls folder on %ls"
 msgstr ""
 
-#: gui/main.c:8349
+#: gui/main.c:8544
 msgid "Backup"
 msgstr ""
 
-#: gui/main.c:8351
+#: gui/main.c:8546
 #, c-format
 msgid ""
 "Your starred files get a second, secondary copy in %ls. It is not one of your backup drives: its copies never count toward the full copies you want. BRODALF only copies files into it, in a BRODALF folder; that folder's own app does any syncing, and BRODALF talks to no cloud service. Nothing is copied until you back up to it."
 msgstr ""
 
-#: gui/main.c:8365
+#: gui/main.c:8560
 msgid "Enter the passphrase to encrypt the copies in the extra place."
 msgstr ""
 
-#: gui/main.c:8374
+#: gui/main.c:8569
 msgid "Could not add the extra place."
 msgstr ""
 
-#: gui/main.c:8377
+#: gui/main.c:8572
 #, c-format
 msgid "Extra place added: %ls, at %ls. Only starred files go there."
 msgstr ""
 
-#: gui/main.c:8389
+#: gui/main.c:8584
 #, c-format
 msgid "Back up your %lld starred file (%ls) to it now?"
 msgid_plural "Back up your %lld starred files (%ls) to it now?"
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:8393
+#: gui/main.c:8588
 msgid ""
 "Nothing is starred yet. Star files or folders on the Primary Database tab (Star it, or right-click), then back up to the extra place."
 msgstr ""
 
-#: gui/main.c:8407
+#: gui/main.c:8602
 msgid ""
 "How much of your starred files may go to this extra place in all, so a small free account does not fill up. Files that would go over it are not copied there; your drives still get them. Copies already there stay."
 msgstr ""
 
-#: gui/main.c:8412
+#: gui/main.c:8607
 msgid "Could not change the size limit."
 msgstr ""
 
-#: gui/main.c:8415
+#: gui/main.c:8610
 #, c-format
 msgid "%ls may now take at most %ls of starred files."
 msgstr ""
 
-#: gui/main.c:8416
+#: gui/main.c:8611
 #, c-format
 msgid "%ls now takes every starred file (no limit)."
 msgstr ""
 
-#: gui/main.c:8456
+#: gui/main.c:8651
 msgid ""
 "Some of what this backs up is encrypted. Enter the passphrase to back up."
 msgstr ""
 
-#: gui/main.c:8475
+#: gui/main.c:8670
 #, c-format
 msgid "    %ls: %lld of %lld files changed\n"
 msgstr ""
 
-#: gui/main.c:8479
+#: gui/main.c:8674
 msgid ""
 "Your backup roots have not been scanned yet, so BRODALF does not know of any files to back up.\n"
 "\n"
 "Scan first, then back up to every plugged-in drive?"
 msgstr ""
 
-#: gui/main.c:8495
+#: gui/main.c:8690
 #, c-format
 msgid ""
 "Many files changed at once since their copies were made:\n"
@@ -4082,7 +4116,7 @@ msgid ""
 "Back up anyway?"
 msgstr ""
 
-#: gui/main.c:8512
+#: gui/main.c:8707
 #, c-format
 msgid ""
 "%d more plugged-in drive is left for the next backup: at most 16 at a time."
@@ -4091,130 +4125,130 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:8638
+#: gui/main.c:8833
 msgid ""
 "A restore is waiting for more drives. Restoring everything forgets it (what it restored stays).\n"
 "\n"
 "Restore everything instead?"
 msgstr ""
 
-#: gui/main.c:8806
+#: gui/main.c:9001
 msgid "&Add backup root..."
 msgstr ""
 
-#: gui/main.c:8807
+#: gui/main.c:9002
 msgid "&Scan now"
 msgstr ""
 
-#: gui/main.c:8808
+#: gui/main.c:9003
 msgid "&Back up..."
 msgstr ""
 
-#: gui/main.c:8809
+#: gui/main.c:9004
 msgid "&Check drive..."
 msgstr ""
 
-#: gui/main.c:8810
+#: gui/main.c:9005
 msgid "&Restore..."
 msgstr ""
 
-#: gui/main.c:8811
+#: gui/main.c:9006
 msgid "&Drives..."
 msgstr ""
 
-#: gui/main.c:8812
+#: gui/main.c:9007
 msgid "Settin&gs..."
 msgstr ""
 
-#: gui/main.c:8814
+#: gui/main.c:9009
 msgid "&Open a database..."
 msgstr ""
 
-#: gui/main.c:8832
+#: gui/main.c:9027
 msgid "Search files and folders by name"
 msgstr ""
 
-#: gui/main.c:8840
+#: gui/main.c:9035
 msgid "Name"
 msgstr ""
 
-#: gui/main.c:8840 gui/main.c:8855
+#: gui/main.c:9035 gui/main.c:9050
 msgid "State"
 msgstr ""
 
-#: gui/main.c:8840
+#: gui/main.c:9035
 msgid "Where it is"
 msgstr ""
 
-#: gui/main.c:8855
+#: gui/main.c:9050
 msgid "Version"
 msgstr ""
 
-#: gui/main.c:8855
+#: gui/main.c:9050
 msgid "Where"
 msgstr ""
 
-#: gui/main.c:8855
+#: gui/main.c:9050
 msgid "Last checked"
 msgstr ""
 
-#: gui/main.c:8855
+#: gui/main.c:9050
 msgid "Path on drive"
 msgstr ""
 
-#: gui/main.c:8868
-msgid "Ready."
-msgstr ""
-
-#: gui/main.c:8871
+#: gui/main.c:9066
 msgid "Sto&p"
 msgstr ""
 
-#: gui/main.c:9172
+#: gui/main.c:9409
 msgid ""
 "The scan was stopped before it finished, so BRODALF may not know about every new or changed file yet. A backup now copies what the scans so far found.\n"
 "\n"
 "Scan again when you can, so your backups are as up to date as possible."
 msgstr ""
 
-#: gui/main.c:9178
+#: gui/main.c:9415
 msgid ""
 "Some of what this needs is encrypted: an encrypted drive, or folders you chose to encrypt. Enter the passphrase to continue."
 msgstr ""
 
-#: gui/main.c:9237
+#: gui/main.c:9476
+msgid "Closing as soon as your changes are saved..."
+msgstr ""
+
+#: gui/main.c:9480
 msgid "Stop looking for drives and close?"
 msgstr ""
 
-#: gui/main.c:9237
+#: gui/main.c:9480
 msgid "Stop the scan and close?"
 msgstr ""
 
-#: gui/main.c:9238
+#: gui/main.c:9481
 msgid "Stop the backup and close?"
 msgstr ""
 
-#: gui/main.c:9238
+#: gui/main.c:9481
 msgid "Stop the check and close?"
 msgstr ""
 
-#: gui/main.c:9239
+#: gui/main.c:9482
 msgid "Stop the restore and close?"
 msgstr ""
 
-#: gui/main.c:9239
+#: gui/main.c:9482
 msgid "Stop reading back the copies and close?"
 msgstr ""
 
-#: gui/main.c:9240
+#: gui/main.c:9483
 msgid "Stop reading the files in use and close?"
 msgstr ""
 
-#: gui/main.c:9241
+#: gui/main.c:9484
 msgid "Stop compressing the drive and close?"
 msgstr ""
 
-#: gui/main.c:9244
+#: gui/main.c:9487
 #, c-format
 msgid ""
 "%ls\n"
@@ -4222,158 +4256,158 @@ msgid ""
 "What was done until then is kept. BRODALF closes as soon as the job has stopped."
 msgstr ""
 
-#: gui/main.c:9255
+#: gui/main.c:9498
 msgid ""
 "BRODALF is still working. Close it when the status bar says the job is done."
 msgstr ""
 
-#: gui/main.c:9314
+#: gui/main.c:9557
 msgid "Open a BRODALF database"
 msgstr ""
 
-#: gui/main.c:9330
+#: gui/main.c:9573
 msgid "My backups.brodalf"
 msgstr ""
 
-#: gui/main.c:9338
+#: gui/main.c:9581
 msgid ""
 "A file with that name is already there. Choose another name, so nothing is overwritten."
 msgstr ""
 
-#: gui/main.c:9349
+#: gui/main.c:9592
 #, c-format
 msgid ""
 "Open the last database\n"
 "%ls"
 msgstr ""
 
-#: gui/main.c:9354
+#: gui/main.c:9597
 msgid ""
 "Open a database...\n"
 "A .brodalf file you made before"
 msgstr ""
 
-#: gui/main.c:9356
+#: gui/main.c:9599
 msgid ""
 "Create a new database...\n"
 "Choose the folders to back up, then where to keep the database file"
 msgstr ""
 
-#: gui/main.c:9358
+#: gui/main.c:9601
 msgid ""
 "Recover the database from a backup drive...\n"
 "On a new PC, or after losing the database file: start from the newest copy on your drives"
 msgstr ""
 
-#: gui/main.c:9369
+#: gui/main.c:9612
 msgid "Which database do you want to use?"
 msgstr ""
 
-#: gui/main.c:9370
+#: gui/main.c:9613
 msgid ""
 "A database records every file in your backup roots and which drives hold a copy of it. It never holds the files themselves."
 msgstr ""
 
-#: gui/main.c:9389
+#: gui/main.c:9632
 msgid "This database is encrypted. Enter its passphrase to open it."
 msgstr ""
 
-#: gui/main.c:9455
+#: gui/main.c:9700
 #, c-format
 msgid "%ls - BRODALF"
 msgstr ""
 
-#: gui/main.c:9469
+#: gui/main.c:9714
 msgid ""
 "Database recovered from a backup drive. Scanning your backup roots to see whether they are on this PC and what changed since that copy was saved."
 msgstr ""
 
-#: gui/main.c:9472
+#: gui/main.c:9717
 msgid ""
 "New database. Scanning your backup roots for the first time. Nothing is backed up until you press Back up."
 msgstr ""
 
-#: gui/main.c:9474
+#: gui/main.c:9719
 msgid ""
 "Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up."
 msgstr ""
 
-#: gui/main.c:9488
+#: gui/main.c:9733
 msgid ""
 "It has no backup roots yet: use Add backup root to choose what to back up."
 msgstr ""
 
-#: gui/main.c:9503
+#: gui/main.c:9748
 msgid "The database could not be opened."
 msgstr ""
 
-#: gui/main.c:9530
+#: gui/main.c:9775
 msgid "Choose a folder to back up (a backup root)."
 msgstr ""
 
-#: gui/main.c:9584
+#: gui/main.c:9829
 msgid "Choose where to keep the new database file"
 msgstr ""
 
-#: gui/main.c:9596
+#: gui/main.c:9841
 #, c-format
 msgid "%ls was not added: %ls"
 msgstr ""
 
-#: gui/main.c:9605
+#: gui/main.c:9850
 msgid "The database could not be created."
 msgstr ""
 
-#: gui/main.c:9678
+#: gui/main.c:9923
 #, c-format
 msgid "revision %lld"
 msgstr ""
 
-#: gui/main.c:9679
+#: gui/main.c:9924
 msgid "saved by BRODALF 0.6 or older"
 msgstr ""
 
-#: gui/main.c:9680
+#: gui/main.c:9925
 #, c-format
 msgid ""
 "Database saved %ls (%ls)\n"
 "%ls"
 msgstr ""
 
-#: gui/main.c:9693
+#: gui/main.c:9938
 msgid ""
 "Your drives hold copies of more than one database. Which one is yours?"
 msgstr ""
 
-#: gui/main.c:9694
+#: gui/main.c:9939
 msgid "Each is the newest copy found of that database."
 msgstr ""
 
-#: gui/main.c:9711
+#: gui/main.c:9956
 msgid ""
 "No copy of a BRODALF database was found on the drives that are plugged in.\n"
 "\n"
 "Every backup puts the newest copy of the database on its drive. Plug in one of your backup drives, then press OK. If it is plugged in already, press OK to choose the folder that holds the copy."
 msgstr ""
 
-#: gui/main.c:9718
+#: gui/main.c:9963
 msgid ""
 "Choose the backup drive, or the folder on it that holds the copy of your database."
 msgstr ""
 
-#: gui/main.c:9723
+#: gui/main.c:9968
 msgid "No copy of a BRODALF database was found there."
 msgstr ""
 
-#: gui/main.c:9730
+#: gui/main.c:9975
 msgid "Choose where to keep your database on this PC"
 msgstr ""
 
-#: gui/main.c:9746
+#: gui/main.c:9991
 msgid "The database could not be recovered."
 msgstr ""
 
-#: gui/main.c:9884
+#: gui/main.c:10129
 msgid ""
 "No database is open. Use File > New database, Open database or Recover the database from a backup drive."
 msgstr ""

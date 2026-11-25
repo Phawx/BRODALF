@@ -219,7 +219,8 @@ enum {
 enum {
     WM_APP_LOG = WM_APP + 1,  /* lParam: malloc'd wide string */
     WM_APP_PROGRESS,          /* lParam: malloc'd prog_msg */
-    WM_APP_DONE               /* lParam: job* */
+    WM_APP_DONE,              /* lParam: job* */
+    WM_APP_KICK               /* start the next job, once the command that asked for it is done */
 };
 
 /* ---- Languages -----------------------------------------------------------
@@ -1231,7 +1232,10 @@ static void theme_choose(int choice)
 
 /* ---- Jobs --------------------------------------------------------------- */
 
-typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW, JOB_COMPRESS } job_kind;
+/* JOB_REFRESH saves a change made in the window and reads the figures the
+ * window shows again (see read_figures). It runs like the others, but has
+ * no Stop: a save cannot be stopped half way. */
+typedef enum { JOB_DRIVES, JOB_SCAN, JOB_BACKUP, JOB_CHECK, JOB_RESTORE, JOB_VERIFY, JOB_SHADOW, JOB_COMPRESS, JOB_REFRESH } job_kind;
 #define SUMMARY_LEN 2048 /* room for the longer translations */
 
 /* A file a restore left alone because another file was already where it
@@ -1282,6 +1286,9 @@ typedef struct job {
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
     int problems;
+    int saving;         /* refresh: a change made in the window is saved */
+    int skip_figures;   /* another job is waiting: it reads the figures after it */
+    struct figures *figs; /* read after the job, for the window to show */
     /* What went wrong, counted as the summary counts it (files that failed
      * or did not fit, copies missing or damaged...), and of those the ones
      * no question after the job is about. */
@@ -1300,10 +1307,14 @@ static job *g_queue;
 static void start_backup(job *b, int offer_scan);
 static bd_status run_shadow(job *j);
 static void free_conflicts(conflict_row *c, int n);
+struct figures;
+static struct figures *read_figures(void);
+static void figures_free(struct figures *f);
 
 static void job_free(job *j)
 {
     if (!j) return;
+    figures_free(j->figs);
     free(j->root);
     free(j->label);
     free(j->location);
@@ -1381,6 +1392,17 @@ static void job_log(void *ctx, const char *message)
  * line with the counts, the data rate and the time left; and for the file
  * being worked on, its own percent (-1: no bar) and name. */
 typedef struct { int percent, file_percent; wchar_t text[1024], file[600]; } prog_msg;
+
+/* A line for the bar, with no count: the bar keeps moving. */
+static void post_busy_text(const wchar_t *text)
+{
+    prog_msg *m = calloc(1, sizeof(*m));
+    if (!m) return;
+    m->percent = -1;
+    m->file_percent = -1;
+    swprintf(m->text, 1024, L"%ls", text);
+    if (!PostMessageW(g_main, WM_APP_PROGRESS, 0, (LPARAM)m)) free(m);
+}
 
 /* The data rate over the last few seconds: a ring of (time, bytes). */
 #define RATE_SAMPLES 16
@@ -1824,6 +1846,10 @@ static DWORD WINAPI worker(LPVOID arg)
     case JOB_SHADOW:
         s = run_shadow(j);
         break;
+    case JOB_REFRESH:
+        /* Saved below, like after every job; then the figures are read. */
+        swprintf(j->summary, SUMMARY_LEN, L"%ls", j->saving ? T(L"Your changes are saved.") : T(L"Ready."));
+        break;
     case JOB_COMPRESS: {
         bd_compress_stats zs;
         memset(&zs, 0, sizeof(zs));
@@ -1901,6 +1927,13 @@ static DWORD WINAPI worker(LPVOID arg)
         free(e);
     }
     bd_catalog_set_progress(g_cat, NULL, NULL);
+    /* What the window shows of the drives and files, read now while the
+     * catalog is still the worker's. A refresh keeps the bar and its line
+     * for the job before it. */
+    if (!j->skip_figures) {
+        if (j->kind != JOB_REFRESH) post_busy_text(T(L"Updating the figures for your drives and files..."));
+        j->figs = read_figures();
+    }
     PostMessageW(g_main, WM_APP_DONE, 0, (LPARAM)j);
     return 0;
 }
@@ -1930,6 +1963,7 @@ static void set_busy(int busy)
     if (!busy) hide_stop();
     InterlockedExchange(&g_busy, busy);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy && g_cat);
+    int refresh = busy && g_running_kind == JOB_REFRESH; /* a save: it has no Stop */
     int was_shown = g_nodb_open && IsWindowVisible(g_nodb_open);
     if (g_nodb_open) {
         ShowWindow(g_nodb_open, g_cat ? SW_HIDE : SW_SHOW);
@@ -1938,15 +1972,18 @@ static void set_busy(int busy)
         EnableWindow(g_nodb_new, !busy);
         if (was_shown != !g_cat) layout();
     }
-    if (busy) {
+    if (busy && !refresh) {
         EnableWindow(g_stop, TRUE);
         ShowWindow(g_stop, SW_SHOW);
     }
     update_menus();
     page_buttons_state();
     /* A button that started the job is turned off while it runs: the focus
-     * goes to Stop (Esc does the same), and back when the job ends. */
-    if (busy) keep_focus(g_stop);
+     * goes to Stop (Esc does the same), and back when the job ends. While
+     * a change is saved it stays where it is, and comes back the same way. */
+    if (busy) {
+        if (!refresh) keep_focus(g_stop);
+    }
     else if (g_refocus || !usable(focus_now())) {
         g_refocus = 0;
         if (usable(g_focus_job)) put_focus(g_focus_job);
@@ -1966,14 +2003,19 @@ static void start_next_job(void)
     static const wchar_t *starting[] = {N_(L"Looking for BRODALF drives..."), N_(L"Scanning your backup roots..."),
                                         N_(L"Backing up..."), N_(L"Checking every copy on the drive..."), N_(L"Restoring..."),
                                         N_(L"Reading back copies not read lately..."), N_(L"Reading files that are in use from a shadow copy..."),
-                                        N_(L"Compressing the copies on the drive...")};
+                                        N_(L"Compressing the copies on the drive..."), N_(L"Saving your changes and updating the figures...")};
     const wchar_t *what = j->kind == JOB_SCAN && j->bitrot      ? T(L"Bit-rot scan: reading every file again...")
                           : j->kind == JOB_COMPRESS && !j->compress_on ? T(L"Making the copies on the drive whole again...")
+                          : j->kind == JOB_REFRESH && !j->saving ? T(L"Updating the figures for your drives and files...")
                                                                   : T(starting[j->kind]);
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
-    SendMessageW(g_progress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
-    show_progress(-1, what);
-    show_file_progress(-1, L"");
+    /* A refresh says what it does in the status bar only: the bar and its
+     * line still show how the last job ended. */
+    if (j->kind != JOB_REFRESH) {
+        SendMessageW(g_progress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
+        show_progress(-1, what);
+        show_file_progress(-1, L"");
+    }
     HANDLE h = CreateThread(NULL, 0, worker, j, 0, NULL);
     if (h) CloseHandle(h);
     else { set_busy(0); job_free(j); }
@@ -1982,14 +2024,23 @@ static void start_next_job(void)
 /* Ask the running job to stop, and drop the ones waiting after it. */
 static void stop_job(void)
 {
-    if (!g_busy) return;
+    if (!g_busy || g_running_kind == JOB_REFRESH) return; /* a save is not stopped */
     InterlockedExchange(&g_stopping, 1);
     bd_catalog_cancel(g_cat);
+    /* A change waiting to be saved is still saved. */
+    job *keep = NULL, **kept = &keep;
     while (g_queue) {
         job *q = g_queue;
         g_queue = q->next;
-        job_free(q);
+        q->next = NULL;
+        if (q->kind == JOB_REFRESH) {
+            q->skip_figures = 0; /* the job that would have read them is gone */
+            *kept = q;
+            kept = &q->next;
+        } else
+            job_free(q);
     }
+    g_queue = keep;
     if (focus_now() == g_stop) g_refocus = 1;
     EnableWindow(g_stop, FALSE);
     keep_focus(g_tabs);
@@ -2001,6 +2052,20 @@ static void stop_job(void)
 static void enqueue(job *j)
 {
     if (!j) return;
+    /* One save waiting is enough. Any other job waiting runs after the
+     * change and reads the figures itself. */
+    if (j->kind == JOB_REFRESH) {
+        for (job *q = g_queue; q; q = q->next)
+            if (q->kind == JOB_REFRESH) {
+                q->saving |= j->saving;
+                job_free(j);
+                return;
+            }
+        j->skip_figures = g_queue != NULL;
+    } else {
+        for (job *q = g_queue; q; q = q->next)
+            if (q->kind == JOB_REFRESH) q->skip_figures = 1;
+    }
     /* Don't stack up drive scans; one pending is enough. */
     if (j->kind == JOB_DRIVES)
         for (job *q = g_queue; q; q = q->next)
@@ -2032,6 +2097,25 @@ static job *new_job(job_kind kind)
     job *j = calloc(1, sizeof(job));
     if (j) j->kind = kind;
     return j;
+}
+
+/* Save a change made in the window. Saving a large catalog takes seconds,
+ * so the worker does it, and then reads the figures the window shows
+ * again; until then the window shows the figures from before. It starts
+ * once the command that made the change is done, so the rest of the
+ * command still has the catalog. If it cannot be saved, the window says
+ * so when it is done. */
+static bd_status ui_save(void)
+{
+    if (!g_cat) return BD_OK;
+    job *j = new_job(JOB_REFRESH);
+    if (!j) return bd_catalog_save(g_cat);
+    j->saving = 1;
+    g_ui_depth++; /* queued, not started here */
+    enqueue(j);
+    g_ui_depth--;
+    PostMessageW(g_main, WM_APP_KICK, 0, 0);
+    return BD_OK;
 }
 
 /* ---- Log pane ----------------------------------------------------------- */
@@ -2636,6 +2720,85 @@ static const drive_snap *find_drive(const drive_list *l, int64_t id)
     return NULL;
 }
 
+/* ---- Figures for the window ----------------------------------------------
+ *
+ * What a backup to each plugged-in drive would copy, where each drive and
+ * extra place stands, how many files are short of their copies and how far
+ * each full copy has got. On a large catalog these take seconds, so the
+ * worker reads them at the end of every job (and of every save of a change
+ * made in the window), while the catalog is still its own, and the window
+ * shows what it read. The window never reads them itself.
+ *
+ * Why not a second connection that reads them while the window is idle:
+ * a catalog can be open only once (its lock, a named mutex, lets one
+ * BRODALF use it at a time, and opening it again says it is in use), and
+ * an encrypted catalog exists decrypted only in this connection. So the
+ * one connection is shared, and a job owns it while it runs, as before. */
+typedef struct {
+    int tried_pv, has_pv, has_ms, has_ps;
+    bd_backup_preview_info pv; /* a plugged-in drive: what a backup to it would copy */
+    bd_media_status ms;        /* a drive: where it stands */
+    bd_place_status ps;        /* an extra place: its starred files */
+} drive_fig;
+
+typedef struct figures {
+    drive_list dl; /* the drives as they were then */
+    drive_fig *d;  /* d[i] is for dl.items[i] */
+    int has_risk, has_sets, n_sets;
+    bd_risk_stats risk;
+    bd_set_progress sets[MAX_SET_BARS];
+} figures;
+
+static figures *g_figs; /* the window's: the last ones read */
+
+static void figures_free(figures *f)
+{
+    if (!f) return;
+    free(f->dl.items);
+    free(f->d);
+    free(f);
+}
+
+/* On the worker thread, with the catalog its own. */
+static figures *read_figures(void)
+{
+    figures *f = calloc(1, sizeof(*f));
+    if (!f) return NULL;
+    f->dl = load_drives();
+    if (f->dl.n) {
+        f->d = calloc((size_t)f->dl.n, sizeof(drive_fig));
+        if (!f->d) {
+            figures_free(f);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < f->dl.n; i++) {
+        const drive_snap *d = &f->dl.items[i];
+        drive_fig *g = &f->d[i];
+        if (strcmp(d->kind, "drive") != 0) continue; /* a cloud account from an earlier version */
+        if (d->secondary) {
+            g->has_ps = bd_place_status_get(g_cat, d->id, &g->ps) == BD_OK;
+        } else if (d->connected && !d->lost_ms) {
+            g->tried_pv = 1;
+            g->has_pv = bd_backup_preview(g_cat, d->id, 0, &g->pv) == BD_OK;
+        }
+        g->has_ms = bd_media_status_get(g_cat, d->id, &g->ms) == BD_OK;
+    }
+    f->has_risk = bd_list_at_risk(g_cat, 0, NULL, NULL, &f->risk) == BD_OK;
+    f->has_sets = bd_backup_sets(g_cat, f->sets, MAX_SET_BARS, &f->n_sets) == BD_OK;
+    return f;
+}
+
+/* What was read for a drive, or NULL if it was not there then (it is read
+ * at the end of the job or save running now). */
+static const drive_fig *fig_of(int64_t id)
+{
+    if (!g_figs) return NULL;
+    for (int i = 0; i < g_figs->dl.n; i++)
+        if (g_figs->dl.items[i].id == id) return &g_figs->d[i];
+    return NULL;
+}
+
 /* Growing wide-text buffer. */
 typedef struct { wchar_t *p; size_t len, cap; } wtext;
 
@@ -2918,8 +3081,16 @@ static const wchar_t *job_end_words(const char *status, int64_t finished_ms)
  * is behind, its last backup and its last check. */
 static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
 {
-    bd_media_status ms;
-    if (bd_media_status_get(g_cat, id, &ms) != BD_OK) return;
+    const drive_fig *g = fig_of(id);
+    if (!g) {
+        wadd(t, T(L"%lsWhere it stands: being read...\r\n"), indent);
+        return;
+    }
+    if (!g->has_ms) {
+        wadd(t, T(L"%lsWhere it stands could not be read from the database.\r\n"), indent);
+        return;
+    }
+    bd_media_status ms = g->ms;
     wchar_t a[64], when[64];
     wadd(t, T(L"%lsWhere it stands\r\n"), indent);
     format_bytes(ms.bytes_current, a, 64);
@@ -3063,7 +3234,10 @@ static void update_set_bars(void)
     bd_set_progress sets[MAX_SET_BARS];
     int n = 0;
     memset(sets, 0, sizeof(sets));
-    if (g_cat && bd_backup_sets(g_cat, sets, MAX_SET_BARS, &n) != BD_OK) n = 0;
+    if (g_cat && g_figs && g_figs->has_sets) {
+        n = g_figs->n_sets;
+        memcpy(sets, g_figs->sets, sizeof(sets));
+    }
     int shown = n < MAX_SET_BARS ? n : MAX_SET_BARS;
     for (int i = 0; i < MAX_SET_BARS; i++) {
         if (i >= shown) {
@@ -3116,13 +3290,12 @@ static void update_drives_label(void)
     for (int i = 0; i < dl.n; i++) {
         const drive_snap *d = &dl.items[i];
         if (strcmp(d->kind, "drive") != 0) continue; /* a cloud account from an earlier version is not a drive to plug in */
+        const drive_fig *g = fig_of(d->id);
         if (d->secondary) {
             /* Extra places hold starred files only: a line of their own. */
-            bd_place_status ps;
-            memset(&ps, 0, sizeof(ps));
-            if (d->connected && !d->lost_ms && bd_place_status_get(g_cat, d->id, &ps) == BD_OK) {
+            if (d->connected && !d->lost_ms && g && g->has_ps) {
                 places++;
-                if (ps.waiting_files > ps.over_limit_files) place_wait += ps.waiting_files - ps.over_limit_files;
+                if (g->ps.waiting_files > g->ps.over_limit_files) place_wait += g->ps.waiting_files - g->ps.over_limit_files;
             }
             continue;
         }
@@ -3137,21 +3310,25 @@ static void update_drives_label(void)
             wadd(&t, T(L"marked %ls."), strcmp(d->lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"));
             continue;
         }
-        bd_backup_preview_info pv;
-        if (bd_backup_preview(g_cat, d->id, 0, &pv) != BD_OK) {
+        if (!g || !g->tried_pv) {
+            wadd(&t, T(L"reading what a backup would copy..."));
+            continue;
+        }
+        if (!g->has_pv) {
             wadd(&t, T(L"cannot tell what a backup would copy."));
             continue;
         }
+        const bd_backup_preview_info *pv = &g->pv;
         wchar_t size[64], shortb[64];
-        format_bytes(pv.bytes_to_copy, size, 64);
-        if (pv.files_to_copy == 0) wadd(&t, T(L"up to date."));
-        else wadd(&t, TN(pv.files_to_copy, L"%lld file (%ls) to back up", L"%lld files (%ls) to back up"), (long long)pv.files_to_copy, size);
-        if (pv.files_to_copy && pv.bytes_short > 0) {
-            format_bytes(pv.bytes_short, shortb, 64);
+        format_bytes(pv->bytes_to_copy, size, 64);
+        if (pv->files_to_copy == 0) wadd(&t, T(L"up to date."));
+        else wadd(&t, TN(pv->files_to_copy, L"%lld file (%ls) to back up", L"%lld files (%ls) to back up"), (long long)pv->files_to_copy, size);
+        if (pv->files_to_copy && pv->bytes_short > 0) {
+            format_bytes(pv->bytes_short, shortb, 64);
             wadd(&t, T(L", about %ls will not fit"), shortb);
         }
-        if (pv.files_to_copy) wadd(&t, L".");
-        if (pv.mass_change) wadd(&t, T(L" Many files changed at once: look before backing up."));
+        if (pv->files_to_copy) wadd(&t, L".");
+        if (pv->mass_change) wadd(&t, T(L" Many files changed at once: look before backing up."));
         if (d->check_due) wadd(&t, T(L" Due for a check."));
     }
     if (total == 0) {
@@ -3172,11 +3349,10 @@ static void update_drives_label(void)
     free(t.p);
     free(dl.items);
     /* The button says how many files are short of the target. */
-    bd_risk_stats rs;
     wchar_t risk[64];
     wcscpy(risk, T(L"At ris&k..."));
-    if (bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK && rs.files_at_risk > 0)
-        swprintf(risk, 64, T(L"At ris&k (%lld)..."), (long long)rs.files_at_risk);
+    if (g_figs && g_figs->has_risk && g_figs->risk.files_at_risk > 0)
+        swprintf(risk, 64, T(L"At ris&k (%lld)..."), (long long)g_figs->risk.files_at_risk);
     SetWindowTextW(g_buttons[7], risk);
     update_set_bars();
 }
@@ -3374,7 +3550,7 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             t.copies = (int)GetDlgItemInt(dlg, IDC_RISK_COPIES, NULL, FALSE);
             t.places = (int)GetDlgItemInt(dlg, IDC_RISK_PLACES, NULL, FALSE);
             bd_status s = bd_target_set(g_cat, &t);
-            if (s == BD_OK) s = bd_catalog_save(g_cat);
+            if (s == BD_OK) s = ui_save();
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
                 MessageBoxW(dlg, e ? e : T(L"Could not change the target."), APP_NAME, MB_ICONWARNING);
@@ -3434,16 +3610,24 @@ static void table_drives(HWND lv)
     for (int i = 0; i < dl.n && g_table_n < 256; i++) {
         const drive_snap *d = &dl.items[i];
         if (strcmp(d->kind, "drive") != 0) continue;
+        /* From the figures read after the last job: reading them here would
+         * hold up the window. */
+        const drive_fig *g = fig_of(d->id);
         bd_media_status ms;
-        if (bd_media_status_get(g_cat, d->id, &ms) != BD_OK) continue;
-        wchar_t name[600], cur[96], behind[96], notit[96], backup[128], check[128], probs[160] = L"";
-        wcsncpy(backup, T(L"Never"), 127);
-        backup[127] = 0;
-        wcscpy(check, backup);
+        memset(&ms, 0, sizeof(ms));
+        int have = g && g->has_ms;
+        if (have) ms = g->ms;
+        wchar_t name[600], cur[96] = L"", behind[96] = L"", notit[96] = L"", backup[128] = L"", check[128] = L"", probs[160] = L"";
+        if (have) {
+            wcsncpy(backup, T(L"Never"), 127);
+            backup[127] = 0;
+            wcscpy(check, backup);
+            table_count(ms.files_current, ms.bytes_current, cur, 96);
+            table_count(ms.files_behind, ms.bytes_behind, behind, 96);
+            table_count(ms.files_not_here, ms.bytes_not_here, notit, 96);
+        } else
+            wcscpy(probs, g ? T(L"could not be read") : T(L"being read..."));
         drive_name(d->label, d->location, name, 600);
-        table_count(ms.files_current, ms.bytes_current, cur, 96);
-        table_count(ms.files_behind, ms.bytes_behind, behind, 96);
-        table_count(ms.files_not_here, ms.bytes_not_here, notit, 96);
         if (ms.last_backup_ms) {
             wchar_t when[64];
             format_time_ms(ms.last_backup_ms, when, 64);
@@ -3669,7 +3853,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                     free(e);
                     return TRUE;
                 }
-                bd_catalog_save(g_cat);
+                ui_save();
                 ListView_DeleteAllItems(lv);
                 while (ListView_DeleteColumn(lv, 0)) {}
                 table_damaged(lv);
@@ -4651,7 +4835,7 @@ static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             }
             bd_status s = !u ? BD_ERR_NOMEM : g_skip_source ? bd_source_skip_set(g_cat, g_skip_source, u) : bd_skip_list_set(g_cat, u);
             free(u);
-            if (s == BD_OK) s = bd_catalog_save(g_cat);
+            if (s == BD_OK) s = ui_save();
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
                 MessageBoxW(dlg, e ? e : T(L"Could not save the list."), APP_NAME, MB_ICONWARNING);
@@ -4747,7 +4931,7 @@ static void settings_command(int cmd)
     } else if (cmd >= ID_M_VERIFY_7 && cmd <= ID_M_VERIFY_NEVER) {
         static const int choice[] = {7, 30, 90, 0};
         int d = choice[cmd - ID_M_VERIFY_7];
-        if (bd_option_set(g_cat, "verify_days", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+        if (bd_option_set(g_cat, "verify_days", d) == BD_OK && ui_save() == BD_OK) {
             wchar_t line[200];
             if (d) swprintf(line, 200, T(L"Read back now reads the copies not read back in %d days, and new ones."), d);
             else wcscpy(line, T(L"Read back now reads every copy on the drive."));
@@ -4756,7 +4940,7 @@ static void settings_command(int cmd)
     } else if (cmd >= ID_MENU_CHECK_90 && cmd <= ID_MENU_CHECK_NEVER) {
         static const int choice[] = {90, 180, 365, 0};
         int d = choice[cmd - ID_MENU_CHECK_90];
-        if (bd_option_set(g_cat, "check_days", d) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+        if (bd_option_set(g_cat, "check_days", d) == BD_OK && ui_save() == BD_OK) {
             wchar_t line[200];
             if (d) swprintf(line, 200, T(L"A plugged-in drive whose copies have not been read back in %d days offers a check."), d);
             else wcscpy(line, T(L"Drives never offer a check by themselves."));
@@ -4766,7 +4950,7 @@ static void settings_command(int cmd)
     } else if (cmd >= ID_MENU_RESERVE_256 && cmd <= ID_MENU_RESERVE_2048) {
         static const int choice[] = {256, 512, 1024, 2048};
         int mb = choice[cmd - ID_MENU_RESERVE_256];
-        if (bd_option_set(g_cat, "reserve_mb", mb) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+        if (bd_option_set(g_cat, "reserve_mb", mb) == BD_OK && ui_save() == BD_OK) {
             wchar_t line[200];
             swprintf(line, 200, T(L"Backups now keep %d MB free on each drive for the database's copies."), mb);
             log_append(line);
@@ -4774,7 +4958,7 @@ static void settings_command(int cmd)
         }
     } else if (cmd == ID_MENU_LOW_PRIORITY) {
         int on = !bd_option_get(g_cat, "low_priority");
-        if (bd_option_set(g_cat, "low_priority", on) == BD_OK && bd_catalog_save(g_cat) == BD_OK)
+        if (bd_option_set(g_cat, "low_priority", on) == BD_OK && ui_save() == BD_OK)
             log_append(on ? T(L"Jobs now let other programs come first: they may take longer while the PC is busy.")
                           : T(L"Jobs now run at normal speed, even while other programs are busy."));
     } else if (cmd == ID_MENU_PARALLEL) {
@@ -4788,7 +4972,7 @@ static void settings_command(int cmd)
                                 L"(as it starts), drives are backed up one after another."),
                         APP_NAME, MB_ICONQUESTION | MB_OKCANCEL) != IDOK)
             return;
-        if (bd_option_set(g_cat, "parallel_copies", on) == BD_OK && bd_catalog_save(g_cat) == BD_OK)
+        if (bd_option_set(g_cat, "parallel_copies", on) == BD_OK && ui_save() == BD_OK)
             log_append(on ? T(L"Backups to every plugged-in drive now write to all of them at once.")
                           : T(L"Backups to every plugged-in drive now go one drive after another."));
     }
@@ -5035,11 +5219,7 @@ static int relocate_source(const source_place *sp)
 
 static void places_changed(void)
 {
-    if (bd_catalog_save(g_cat) != BD_OK) {
-        wchar_t *e = widen(bd_catalog_error(g_cat));
-        report_error(g_main, e ? e : T(L"The database could not be saved."));
-        free(e);
-    }
+    ui_save(); /* says so when it is done if it could not be saved */
     rebuild_tree();
     show_detail();
 }
@@ -5496,7 +5676,7 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             for (int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED); row >= 0 && s == BD_OK;
                  row = ListView_GetNextItem(lv, row, LVNI_SELECTED))
                 if (row < g_del_n) s = bd_deleted_ack(g_cat, g_del[row].node_id);
-            if (s == BD_OK) s = bd_catalog_save(g_cat);
+            if (s == BD_OK) s = ui_save();
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
                 MessageBoxW(dlg, e ? e : T(L"Could not record that."), APP_NAME, MB_ICONWARNING);
@@ -5527,7 +5707,7 @@ static INT_PTR CALLBACK deleted_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 if (row < g_del_n) s = bd_deleted_forget(g_cat, g_del[row].node_id, &one);
                 gone += one;
             }
-            if (s == BD_OK) s = bd_catalog_save(g_cat);
+            if (s == BD_OK) s = ui_save();
             if (s != BD_OK) {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
                 MessageBoxW(dlg, e ? e : T(L"Could not forget them."), APP_NAME, MB_ICONWARNING);
@@ -6130,7 +6310,7 @@ static void update_menus(void)
     if (tools) {
         int k = GetMenuItemCount(tools);
         for (int i = 0; i < k; i++) {
-            int on = (int)GetMenuItemID(tools, i) == ID_M_STOP ? g_busy && !g_stopping : !g_busy && g_cat;
+            int on = (int)GetMenuItemID(tools, i) == ID_M_STOP ? g_busy && !g_stopping && g_running_kind != JOB_REFRESH : !g_busy && g_cat;
             EnableMenuItem(tools, (UINT)i, MF_BYPOSITION | (on ? MF_ENABLED : MF_GRAYED));
         }
     }
@@ -6224,7 +6404,7 @@ static void mark_lost_ui(const drive_snap *d)
         bd_media_found(g_cat, d->id);
         return;
     }
-    if (bd_catalog_save(g_cat) == BD_OK) {
+    if (ui_save() == BD_OK) {
         wchar_t line[800];
         swprintf(line, 800, T(L"%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it."), name, wwhy);
         log_append(line);
@@ -6235,7 +6415,7 @@ static void mark_found_ui(const drive_snap *d)
 {
     wchar_t name[600], line[800];
     drive_name(d->label, d->location, name, 600);
-    if (bd_media_found(g_cat, d->id) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+    if (bd_media_found(g_cat, d->id) == BD_OK && ui_save() == BD_OK) {
         swprintf(line, 800, T(L"%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are "
                             L"still good."), name);
         log_append(line);
@@ -6262,7 +6442,7 @@ static void edit_drive(int64_t id)
                 st = bd_media_rename(g_cat, id, name);
         }
         if (st == BD_OK && loc && strcmp(loc, d->location) != 0) st = bd_media_set_location(g_cat, id, loc);
-        if (st == BD_OK) st = bd_catalog_save(g_cat);
+        if (st == BD_OK) st = ui_save();
         free(name);
         free(loc);
     }
@@ -6564,7 +6744,7 @@ static void tree_context_menu(int x, int y)
                          L"knows about it stays, and its copies on your drives stay and still restore. You can back it up again "
                          L"at any time."), root_name);
         if (MessageBoxW(g_main, q, APP_NAME, MB_ICONQUESTION | MB_YESNO) == IDYES && bd_source_set_active(g_cat, r->source_id, 0) == BD_OK &&
-            bd_catalog_save(g_cat) == BD_OK) {
+            ui_save() == BD_OK) {
             wchar_t line[400];
             swprintf(line, 400, T(L"%ls is no longer backed up."), root_name);
             log_append(line);
@@ -6572,7 +6752,7 @@ static void tree_context_menu(int x, int y)
             update_drives_label();
         }
     } else if (cmd == ID_CTX_RESUME_ROOT) {
-        if (bd_source_set_active(g_cat, r->source_id, 1) == BD_OK && bd_catalog_save(g_cat) == BD_OK) {
+        if (bd_source_set_active(g_cat, r->source_id, 1) == BD_OK && ui_save() == BD_OK) {
             wchar_t line[400];
             swprintf(line, 400, T(L"%ls is backed up again. Scanning it."), root_name);
             log_append(line);
@@ -7327,6 +7507,7 @@ static void fill_next(void)
     memset(&g_next_opts[0], 0, sizeof(g_next_opts[0]));
     g_next_nopts = 1;
     int sel = 0;
+    const drive_fig *fig = NULL;
     for (int i = 0; i < dl.n && g_next_nopts < 65; i++) {
         const drive_snap *d = &dl.items[i];
         if (strcmp(d->kind, "drive") != 0 || d->lost_ms) continue;
@@ -7340,7 +7521,10 @@ static void fill_next(void)
         o->connected = d->connected;
         o->lost = d->lost_ms != 0;
         o->secondary = d->secondary;
-        if (d->id == g_next_media) sel = g_next_nopts;
+        if (d->id == g_next_media) {
+            sel = g_next_nopts;
+            fig = fig_of(d->id);
+        }
         g_next_nopts++;
     }
     free(dl.items);
@@ -7380,7 +7564,11 @@ static void fill_next(void)
     if (!drive) {
         bd_risk_stats rs;
         memset(&rs, 0, sizeof(rs));
-        if (bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK) {
+        /* The figures read after the last job, when there are some. */
+        int have = g_figs && g_figs->has_risk;
+        if (have) rs = g_figs->risk;
+        else have = bd_list_at_risk(g_cat, 0, NULL, NULL, &rs) == BD_OK;
+        if (have) {
             format_bytes(rs.bytes_at_risk, a, 64);
             if (rs.files_at_risk == 0)
                 wadd(&t, T(L"Every file has the %d copies in %d places you want. Nothing waits for a backup."), tg.copies, tg.places);
@@ -7396,7 +7584,10 @@ static void fill_next(void)
     } else if (!o->secondary) {
         bd_backup_preview_info pv;
         memset(&pv, 0, sizeof(pv));
-        if (bd_backup_preview(g_cat, g_next_media, 0, &pv) == BD_OK) {
+        int have = fig && fig->has_pv;
+        if (have) pv = fig->pv;
+        else have = bd_backup_preview(g_cat, g_next_media, 0, &pv) == BD_OK; /* a drive not plugged in: chosen just now */
+        if (have) {
             format_bytes(pv.bytes_to_copy, a, 64);
             if (pv.files_to_copy == 0) wadd(&t, T(L"This drive is up to date: the next backup to it copies nothing."));
             else
@@ -7427,7 +7618,10 @@ static void fill_next(void)
     } else {
         bd_place_status ps;
         memset(&ps, 0, sizeof(ps));
-        if (bd_place_status_get(g_cat, g_next_media, &ps) == BD_OK) {
+        int have = fig && fig->has_ps;
+        if (have) ps = fig->ps;
+        else have = bd_place_status_get(g_cat, g_next_media, &ps) == BD_OK;
+        if (have) {
             format_bytes(ps.starred_bytes, a, 64);
             wadd(&t, L"%ls ", T(L"An extra place takes only starred files, as a second, secondary backup; its copies do not count toward "
                                L"your full copies."));
@@ -7535,9 +7729,8 @@ static void fill_local(void)
             if (d->has_hw && d->hw.temperature_c >= 0) swprintf(temp, 32, L"%d \x00B0" L"C", d->hw.temperature_c);
             if (d->copies) format_time_ms(d->oldest_check_ms, oldest, 64);
             swprintf(copies, 32, L"%lld", (long long)d->copies);
-            bd_media_status ms;
-            if (bd_media_status_get(g_cat, d->id, &ms) == BD_OK && ms.copies_bad)
-                swprintf(probs, 200, T(L"%lld missing or damaged"), (long long)ms.copies_bad);
+            const drive_fig *g = fig_of(d->id); /* read after the last job */
+            if (g && g->has_ms && g->ms.copies_bad) swprintf(probs, 200, T(L"%lld missing or damaged"), (long long)g->ms.copies_bad);
             const wchar_t *add = d->lost_ms ? (strcmp(d->lost_why, "broken") == 0 ? T(L"marked broken") : T(L"marked lost"))
                                : replace_advice(d) ? T(L"its health data warns") : d->check_due ? T(L"due for a check") : NULL;
             if (add) {
@@ -7621,7 +7814,9 @@ static void fill_starred(void)
             if (strcmp(d->kind, "drive") != 0 || !d->secondary) continue;
             bd_place_status ps;
             memset(&ps, 0, sizeof(ps));
-            bd_place_status_get(g_cat, d->id, &ps);
+            const drive_fig *g = fig_of(d->id); /* read after the last job */
+            if (g && g->has_ps) ps = g->ps;
+            else bd_place_status_get(g_cat, d->id, &ps); /* added just now */
             wchar_t name[600], limit[64], there[96], waiting[96] = L"", over[96] = L"", used[64], a[64];
             drive_name(d->label, d->location, name, 600);
             wchar_t *root = widen(d->root);
@@ -8043,7 +8238,7 @@ static int path_to_source(const char *path, int64_t *source_id, char **rel)
 /* Save after a change; say why if it could not be made. 1 if saved. */
 static int save_or_say(bd_status s, const wchar_t *what)
 {
-    if (s == BD_OK) s = bd_catalog_save(g_cat);
+    if (s == BD_OK) s = ui_save();
     if (s == BD_OK) return 1;
     wchar_t *e = widen(bd_catalog_error(g_cat)), m[1400];
     swprintf(m, 1400, L"%ls\n\n%ls", what, e && *e ? e : L"");
@@ -8971,6 +9166,16 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_INITMENUPOPUP:
         if ((HMENU)wp == g_menu_local && !g_busy) fill_storage_menus();
         return 0;
+    case WM_SETCURSOR:
+        /* Saving a change: the arrow says the window is working. */
+        if (g_busy && g_running_kind == JOB_REFRESH && LOWORD(lp) == HTCLIENT) {
+            SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_APPSTARTING));
+            return TRUE;
+        }
+        break;
+    case WM_APP_KICK:
+        start_next_job();
+        return 0;
     case WM_CONTEXTMENU:
         if (((HWND)wp == g_tree || (HWND)wp == g_list) && g_cat && !g_busy && !g_ui_depth) {
             int x = (int)(short)LOWORD(lp), y = (int)(short)HIWORD(lp);
@@ -9129,6 +9334,38 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_DONE: {
         job *j = (job *)lp;
         int stopping = g_stopping != 0;
+        if (j->figs) {
+            figures_free(g_figs);
+            g_figs = j->figs;
+            j->figs = NULL;
+        }
+        if (j->kind == JOB_REFRESH) {
+            /* A change was saved: the figures are new, the tree is as it was. */
+            InterlockedExchange(&g_busy, 0);
+            SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
+            if (g_close_after) {
+                job_free(j);
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            g_ui_depth++;
+            if (j->status != BD_OK) {
+                log_append(j->summary);
+                report_status(hwnd, j->status, 0, j->summary);
+            }
+            job_free(j);
+            g_ui_depth--;
+            if (g_close_after) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            set_busy(0);
+            update_drives_label();
+            show_detail();
+            refresh_pages();
+            start_next_job();
+            return 0;
+        }
         /* The worker has let go of the catalog. Until the prompts below are
          * answered, the buttons stay disabled and nothing new starts. */
         g_ui_depth++;
@@ -9233,6 +9470,12 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return TRUE;
     case WM_CLOSE:
+        if (g_busy && g_running_kind == JOB_REFRESH) {
+            /* A change is being saved: close once it is. */
+            g_close_after = 1;
+            SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)T(L"Closing as soon as your changes are saved..."));
+            return 0;
+        }
         if (g_busy) {
             static const wchar_t *ask[] = {N_(L"Stop looking for drives and close?"), N_(L"Stop the scan and close?"),
                                            N_(L"Stop the backup and close?"), N_(L"Stop the check and close?"),
@@ -9419,6 +9662,8 @@ static void close_database(void)
     bd_catalog_close(g_cat);
     g_cat = NULL;
     g_cat_path[0] = 0;
+    figures_free(g_figs);
+    g_figs = NULL;
     while (g_queue) {
         job *n = g_queue->next;
         job_free(g_queue);

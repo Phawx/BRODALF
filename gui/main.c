@@ -62,6 +62,7 @@ enum {
     ID_BTN_STOP,
     ID_WARN_ICON,
     ID_WARN_TEXT,
+    ID_BTN_READBACK,
     ID_TABS = 150,
     /* The controls on the tab pages. */
     ID_PAGE_FIRST = 200,
@@ -642,6 +643,13 @@ static volatile LONG g_busy;
 /* Stop pressed: the running job is asked to stop, and closes the window
  * once it has when g_close_after is set. */
 static HWND g_stop;
+/* After a backup, beside the bar for each file: reads back what it just
+ * wrote, when the person presses it (read_back_new). Nothing starts it by
+ * itself; the next job, or closing the database, takes it away. */
+static HWND g_readback;
+static int64_t g_readback_ids[16]; /* the drives the backup wrote copies to */
+static int g_n_readback;
+static wchar_t g_readback_tip[2400];
 /* Under the drives line: what needs looking at before a backup (many files
  * changed at once, too little room, a check due, a drive's health), with
  * a warning icon; shown only when there is something. A tooltip gives the
@@ -1343,6 +1351,9 @@ typedef struct job {
     int64_t in_use;     /* scan/backup: files another program had open */
     int from_shadow;    /* scan/backup: reads files in use from a shadow copy; the copy is removed after the last one */
     int compress_on;    /* compress: turn compression on (else off) */
+    int just_written;   /* verify: only the copies not read back since they were written */
+    int64_t copied, copied_to; /* backup to one drive: copies written, and to which drive */
+    int64_t many_copied[16]; /* backup: copies written to each of many[] */
     int64_t damaged;    /* scan: files changed without their size or time changing */
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
@@ -1722,6 +1733,22 @@ static void collect_conflicts(job *j)
     bd_list_restore_conflicts(g_cat, conflict_cb, j);
 }
 
+/* bd_media_verify reads back the copies not read back in max_age_days,
+ * and always the ones never read back since they were written. A max age
+ * that reaches back to the second day of 1970 leaves only those: what the
+ * last backups wrote.
+ * ENGINE: a way to ask for just those (say max_age_days -1) would say it
+ * plainly. */
+static int days_back_to_1970(void)
+{
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    /* 100 ns steps since 1601 to whole days since 1970, less one */
+    uint64_t steps = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    int64_t days = ((int64_t)(steps / 10000000) - 11644473600LL) / 86400 - 1;
+    return days < 1 ? 1 : (int)days;
+}
+
 /* Back up to several drives and extra places: all at once (each file read
  * once and written to every one) with the parallel_copies option, else
  * one after another. */
@@ -1747,6 +1774,7 @@ static bd_status run_backup_many(job *j)
     int64_t copied = 0, bytes = 0, failed = 0, no_room = 0, no_room_bytes = 0, alongside = 0;
     wchar_t name[600], size[64], line[1000];
     for (int i = 0; i < done; i++) {
+        j->many_copied[i] = bs[i].files_copied;
         copied += bs[i].files_copied;
         bytes += bs[i].bytes_copied;
         failed += bs[i].files_failed;
@@ -1854,6 +1882,8 @@ static DWORD WINAPI worker(LPVOID arg)
             /* Copies everything missing from this drive, then saves the
              * catalog and puts its newest revision on the drive. */
             s = bd_backup(g_cat, id, 0, &bs, job_log, j);
+            j->copied = bs.files_copied;
+            j->copied_to = id;
             format_bytes(bs.bytes_copied, size, 64);
             swprintf(j->summary, SUMMARY_LEN, T(L"Backup done: %lld files copied (%ls), %lld already there, %lld failed."),
                      (long long)bs.files_copied, size, (long long)bs.files_already_there, (long long)bs.files_failed);
@@ -1881,9 +1911,19 @@ static DWORD WINAPI worker(LPVOID arg)
     case JOB_VERIFY: {
         bd_check_stats cs;
         memset(&cs, 0, sizeof(cs));
-        int days = bd_option_get(g_cat, "verify_days");
+        int days = j->just_written ? days_back_to_1970() : bd_option_get(g_cat, "verify_days");
         s = bd_media_verify(g_cat, j->media_id, days, &cs, job_log, j);
-        if (cs.rehashed == 0 && s == BD_OK)
+        if (j->just_written) {
+            /* After a backup: what it wrote (read_back_new). */
+            wchar_t name[600];
+            media_name(j->media_id, name, 600);
+            if (cs.rehashed == 0 && s == BD_OK)
+                swprintf(j->summary, SUMMARY_LEN, T(L"Read back what was written to %ls: every copy on it had been read back already."), name);
+            else
+                swprintf(j->summary, SUMMARY_LEN, T(L"Read back what was written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"),
+                         name, (long long)cs.rehashed, (long long)cs.ok, (long long)cs.bad, (long long)cs.missing,
+                         cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
+        } else if (cs.rehashed == 0 && s == BD_OK)
             swprintf(j->summary, SUMMARY_LEN, T(L"Read back: every copy on the drive was read back within the last %d days."), days);
         else
             swprintf(j->summary, SUMMARY_LEN, T(L"Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls"),
@@ -2016,6 +2056,17 @@ static void hide_stop(void)
     ShowWindow(g_stop, SW_HIDE);
 }
 
+/* The offer to read back what a backup wrote: shown, or taken away. */
+static void show_read_back(int on)
+{
+    if (!g_readback) return;
+    if (!on) g_n_readback = 0;
+    int was = (GetWindowLongW(g_readback, GWL_STYLE) & WS_VISIBLE) != 0;
+    if (!on && focus_now() == g_readback) g_refocus = 1;
+    ShowWindow(g_readback, on ? SW_SHOWNA : SW_HIDE);
+    if (was != on) layout();
+}
+
 /* The buttons work only with a database open and no job running. */
 static void set_busy(int busy)
 {
@@ -2025,6 +2076,7 @@ static void set_busy(int busy)
     InterlockedExchange(&g_busy, busy);
     if (!busy && g_main) ShutdownBlockReasonDestroy(g_main);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy && g_cat);
+    if (g_readback) EnableWindow(g_readback, !busy && g_cat);
     int refresh = busy && g_running_kind == JOB_REFRESH; /* a save: it has no Stop */
     int was_shown = g_nodb_open && IsWindowVisible(g_nodb_open);
     if (g_nodb_open) {
@@ -2069,10 +2121,20 @@ static void start_next_job(void)
     InterlockedExchange(&g_stopping, 0);
     g_running_kind = j->kind;
     set_busy(1);
+    /* A job of its own ends the offer to read back the last backup; a
+     * save of a change made in the window does not. */
+    if (j->kind != JOB_REFRESH) show_read_back(0);
     const wchar_t *what = j->kind == JOB_SCAN && j->bitrot      ? T(L"Bit-rot scan: reading every file again...")
                           : j->kind == JOB_COMPRESS && !j->compress_on ? T(L"Making the copies on the drive whole again...")
                           : j->kind == JOB_REFRESH && !j->saving ? T(L"Updating the figures for your drives and files...")
                                                                   : T(g_job_doing[j->kind]);
+    wchar_t what_buf[700];
+    if (j->kind == JOB_VERIFY && j->just_written) {
+        wchar_t name[600];
+        media_name(j->media_id, name, 600); /* the worker has not started yet */
+        swprintf(what_buf, 700, T(L"Reading back what was just written to %ls..."), name);
+        what = what_buf;
+    }
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
     /* If Windows shuts down or signs out now, its list of what holds that
      * up says what BRODALF is doing (WM_ENDSESSION stops it and saves). */
@@ -2742,6 +2804,17 @@ static int add_copy_row(void *ctx, const bd_copy_info *c)
     if (!c->media_id) swprintf(buf, 512, L"");
     else if (strcmp(c->copy_state, "ok") != 0) swprintf(buf, 512, strcmp(c->copy_state, "missing") == 0 ? T(L"Missing from drive") : T(L"Damaged"));
     else if (c->media_lost) swprintf(buf, 512, T(L"Drive marked lost or broken: does not count"));
+#ifdef BD_COPY_READ_BACK_MS
+    /* ENGINE: whether the copy was read back since it was written is kept
+     * (copies.last_full_check_ms) but bd_copy_info has no field for it:
+     * last_check_ms is the later of a read-back and a quick look, and a
+     * backup sets the quick look to when it wrote the copy, so Last checked
+     * shows that time for a copy no one has read back. Give bd_copy_info
+     * an int64_t read_back_ms (0: not read back since it was written) and
+     * define BD_COPY_READ_BACK_MS in brodalf.h, and this says so. */
+    else if (!c->read_back_ms)
+        swprintf(buf, 512, c->connected ? T(L"Good, plugged in; not read back yet") : T(L"Good, drive not plugged in; not read back yet"));
+#endif
     else swprintf(buf, 512, c->connected ? T(L"Good, plugged in") : T(L"Good, drive not plugged in"));
     it.iSubItem = 2;
     it.pszText = buf;
@@ -4651,6 +4724,74 @@ static void enqueue_verify(int64_t id)
     if (!v) return;
     v->media_id = id;
     enqueue(v);
+}
+
+/* A backup that wrote copies to drives still plugged in ended: offer, with
+ * the button beside the bar, to read them back. It starts nothing. */
+static void offer_read_back(const job *j)
+{
+    g_n_readback = 0;
+    if (j->n_many) {
+        for (int i = 0; i < j->n_many && i < 16; i++)
+            if (j->many_copied[i] > 0) g_readback_ids[g_n_readback++] = j->many[i];
+    } else if (j->copied > 0 && j->copied_to)
+        g_readback_ids[g_n_readback++] = j->copied_to;
+    /* Only drives that are still plugged in and not marked lost. */
+    wtext names = {NULL, 0, 0};
+    int n = 0;
+    for (int i = 0; i < g_n_readback; i++) {
+        media_one o;
+        memset(&o, 0, sizeof(o));
+        o.id = g_readback_ids[i];
+        bd_list_media(g_cat, media_one_cb, &o);
+        if (!o.found || !o.info.connected || o.info.lost_ms) continue;
+        wchar_t name[600];
+        drive_name(o.label, o.location, name, 600);
+        wadd(&names, L"%ls%ls", n ? L", " : L"", name);
+        g_readback_ids[n++] = o.id;
+    }
+    g_n_readback = n;
+    if (n)
+        swprintf(g_readback_tip, 2400,
+                 TN(n, L"Reads back the copies on %ls that were not read back since they were written, and compares each one with its "
+                       L"checksum, to be sure they were written right. It changes nothing on the drive, and starts only when you press it.",
+                    L"Reads back the copies on %ls that were not read back since they were written, and compares each one with its "
+                    L"checksum, to be sure they were written right. It changes nothing on the drives, and starts only when you press it."),
+                 names.p ? names.p : L"");
+    free(names.p);
+    show_read_back(n > 0);
+}
+
+/* Read back was pressed: read back what the last backup wrote, one drive
+ * after another. */
+static void read_back_new(void)
+{
+    int64_t ids[16];
+    int n = g_n_readback, declined = 0, queued = 0;
+    memcpy(ids, g_readback_ids, sizeof(ids));
+    show_read_back(0);
+    for (int i = 0; i < n; i++) {
+        media_one o;
+        memset(&o, 0, sizeof(o));
+        o.id = ids[i];
+        bd_list_media(g_cat, media_one_cb, &o);
+        if (!o.found || !o.info.connected) continue;
+        /* An encrypted drive needs the passphrase: asked once. */
+        if (media_encryption(ids[i]).encrypted &&
+            (declined || !unlock_ui(T(L"This drive is encrypted. Enter the passphrase to read its copies.")))) {
+            declined = 1;
+            continue;
+        }
+        job *v = new_job(JOB_VERIFY);
+        if (!v) continue;
+        v->media_id = ids[i];
+        v->just_written = 1;
+        enqueue(v);
+        queued++;
+    }
+    if (!queued && !declined)
+        MessageBoxW(g_main, T(L"The drive is not plugged in any more. Plug it in, then press Check drive... to read back its copies."), APP_NAME,
+                    MB_ICONINFORMATION);
 }
 
 /* The user picked a plugged-in drive to check: every copy, or only the
@@ -9363,7 +9504,15 @@ static void layout(void)
     MoveWindow(g_prog_text, text_x, py, w - pad - text_x, prog_h, TRUE);
     py += prog_h + pad;
     MoveWindow(g_file_progress, pad, py, bar_w, prog_h, TRUE);
-    MoveWindow(g_file_text, text_x, py, w - pad - text_x, prog_h, TRUE);
+    /* After a backup, Read back sits beside the second bar, where nothing
+     * is being copied any more; the line beside it starts after it. */
+    int file_x = text_x;
+    if (g_readback && (GetWindowLongW(g_readback, GWL_STYLE) & WS_VISIBLE)) {
+        int rb_w = button_width(g_readback);
+        MoveWindow(g_readback, pad + bar_w + S(8), py - S(2), rb_w, prog_h + S(4), TRUE);
+        if (pad + bar_w + S(8) + rb_w + S(8) > file_x) file_x = pad + bar_w + S(8) + rb_w + S(8);
+    }
+    MoveWindow(g_file_text, file_x, py, w - pad - file_x > 0 ? w - pad - file_x : 0, prog_h, TRUE);
     MoveWindow(g_log, pad, py + prog_h + pad, w - pad * 2, log_h, TRUE);
 }
 
@@ -9514,6 +9663,8 @@ static void create_children(HWND hwnd)
     SendMessageW(g_prog_text, WM_SETFONT, (WPARAM)g_font, TRUE);
     g_stop = make_button(T(L"Sto&p"), ID_BTN_STOP);
     ShowWindow(g_stop, SW_HIDE);
+    g_readback = make_button(T(L"Read back what was just &written"), ID_BTN_READBACK);
+    ShowWindow(g_readback, SW_HIDE);
     g_file_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 0, 0, 10, 10, hwnd, NULL, g_inst, NULL);
     g_file_text = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_PATHELLIPSIS | SS_CENTERIMAGE | SS_NOPREFIX, 0, 0,
                                   10, 10, hwnd, NULL, g_inst, NULL);
@@ -9548,6 +9699,7 @@ static void create_children(HWND hwnd)
         add_tip(g_warn_icon);
         add_tip(g_warn_text);
         add_tip(g_stop);
+        add_tip(g_readback);
     }
 }
 
@@ -9906,6 +10058,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_CHECK: cmd_check(); break;
         case ID_BTN_RESTORE: cmd_restore(); break;
         case ID_BTN_SECURITY: cmd_security(); break;
+        case ID_BTN_READBACK: read_back_new(); break;
         default:
             if (LOWORD(wp) >= ID_PAGE_FIRST && LOWORD(wp) < ID_PAGE_LAST) page_command(LOWORD(wp), HIWORD(wp));
             else if (LOWORD(wp) >= ID_M_ADD_FOLDER && LOWORD(wp) < ID_MENU_OTHER) menu_command(LOWORD(wp));
@@ -9931,6 +10084,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_tip_text[0] = 0;
                 if (h == g_stop) {
                     swprintf(g_tip_text, 4096, L"%ls", T(L"Stop the running job (Esc). What was done until then is kept."));
+                } else if (h == g_readback) {
+                    swprintf(g_tip_text, 4096, L"%ls", g_readback_tip);
                 } else if (h == g_warn_text || h == g_warn_icon) {
                     int n = GetWindowTextW(g_warn_text, g_tip_text, 4000);
                     if (n > 0 && g_warn_media)
@@ -10101,7 +10256,10 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (GetWindowTextLengthW(g_search) > 0) run_search();
             if (j->kind == JOB_DRIVES) after_drives(j);
             else if (j->kind == JOB_SCAN && j->status == BD_OK) after_scan(j);
-            else if (j->kind == JOB_BACKUP && j->status == BD_OK) after_backup(j);
+            else if (j->kind == JOB_BACKUP && j->status == BD_OK) {
+                after_backup(j);
+                offer_read_back(j);
+            }
             else if (j->kind == JOB_RESTORE && j->status == BD_OK) after_restore(j);
             else if (j->kind == JOB_SHADOW && j->status == BD_OK) after_shadow(j);
             /* A scan that leads to a backup from the shadow copy waits for the backup to ask. */
@@ -10351,6 +10509,7 @@ static void close_database(void)
     refresh_pages();
     SetWindowTextW(g_main, APP_NAME);
     update_drives_label();
+    show_read_back(0);
     set_busy(0);
 }
 

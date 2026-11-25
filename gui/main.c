@@ -60,6 +60,8 @@ enum {
     ID_PROGRESS,
     ID_PROGTEXT,
     ID_BTN_STOP,
+    ID_WARN_ICON,
+    ID_WARN_TEXT,
     ID_TABS = 150,
     /* The controls on the tab pages. */
     ID_PAGE_FIRST = 200,
@@ -639,6 +641,14 @@ static volatile LONG g_busy;
 /* Stop pressed: the running job is asked to stop, and closes the window
  * once it has when g_close_after is set. */
 static HWND g_stop;
+/* Under the drives line: what needs looking at before a backup (many files
+ * changed at once, too little room, a check due, a drive's health), with
+ * a warning icon; shown only when there is something. A tooltip gives the
+ * whole text of it, of the drives line and of Stop. */
+static HWND g_warn_icon, g_warn_text, g_tip;
+static HICON g_warn_hicon;
+static int64_t g_warn_media; /* the first drive it is about: a click shows it on Next backup */
+static wchar_t g_tip_text[4096];
 static volatile LONG g_stopping;
 static int g_close_after, g_running_kind;
 /* >0 while the UI thread is in the middle of a command or of what comes
@@ -3271,22 +3281,47 @@ static void update_set_bars(void)
     }
 }
 
-/* The drives that are plugged in and what a backup to each would do now:
- * kept up to date beside the Back up button, so it needs no question
- * before it starts. */
+/* Set a control's text; 1 if it changed. */
+static int set_text_changed(HWND h, const wchar_t *text)
+{
+    wchar_t old[4096];
+    GetWindowTextW(h, old, 4096);
+    if (wcscmp(old, text) == 0) return 0;
+    SetWindowTextW(h, text);
+    return 1;
+}
+
+/* The warnings under the drives line; NULL or "" hides them. 1 if that
+ * changed what is shown. */
+static int set_warnings(const wchar_t *text)
+{
+    int show = text && *text, was = (GetWindowLongW(g_warn_text, GWL_STYLE) & WS_VISIBLE) != 0;
+    int changed = set_text_changed(g_warn_text, show ? text : L"");
+    ShowWindow(g_warn_icon, show ? SW_SHOWNA : SW_HIDE);
+    ShowWindow(g_warn_text, show ? SW_SHOWNA : SW_HIDE);
+    return changed || show != was;
+}
+
+/* The drives that are plugged in and what a backup to each would do now,
+ * on a line of their own under the buttons, so a backup needs no question
+ * before it starts; and under it, apart, what to look at first. */
 static void update_drives_label(void)
 {
     if (g_busy) return; /* the catalog belongs to the running job */
     if (!g_cat) {
-        SetWindowTextW(g_drives, T(L"No database is open. Open one or create a new one below; to start again from a backup drive, "
-                                 L"use File > Recover."));
+        int changed = set_text_changed(g_drives, T(L"No database is open. Open one or create a new one below; to start again from a "
+                                                   L"backup drive, use File > Recover."));
+        changed |= set_warnings(NULL);
+        g_warn_media = 0;
+        if (changed) layout();
         update_set_bars();
         return;
     }
     drive_list dl = load_drives();
-    wtext t = {NULL, 0, 0};
+    wtext t = {NULL, 0, 0}, warn = {NULL, 0, 0};
     int total = 0, connected = 0, places = 0;
     int64_t place_wait = 0;
+    g_warn_media = 0;
     for (int i = 0; i < dl.n; i++) {
         const drive_snap *d = &dl.items[i];
         if (strcmp(d->kind, "drive") != 0) continue; /* a cloud account from an earlier version is not a drive to plug in */
@@ -3302,34 +3337,42 @@ static void update_drives_label(void)
         total++;
         if (!d->connected) continue;
         wchar_t *l = widen(d->label), *root = widen(d->root);
-        wadd(&t, L"%ls%ls (%ls): ", connected ? L"   " : T(L"Plugged in: "), l, root);
+        wadd(&t, L"%ls%ls (%ls): ", connected ? L"   " : T(L"Plugged in: "), l ? l : L"", root ? root : L"");
         connected++;
-        free(l);
-        free(root);
+        size_t warned = warn.len;
         if (d->lost_ms) {
             wadd(&t, T(L"marked %ls."), strcmp(d->lost_why, "broken") == 0 ? T(L"broken") : T(L"lost"));
-            continue;
-        }
-        if (!g || !g->tried_pv) {
+        } else if (!g || !g->tried_pv) {
             wadd(&t, T(L"reading what a backup would copy..."));
-            continue;
-        }
-        if (!g->has_pv) {
+        } else if (!g->has_pv) {
             wadd(&t, T(L"cannot tell what a backup would copy."));
-            continue;
+        } else {
+            const bd_backup_preview_info *pv = &g->pv;
+            wchar_t size[64], shortb[64];
+            format_bytes(pv->bytes_to_copy, size, 64);
+            if (pv->files_to_copy == 0) wadd(&t, T(L"up to date."));
+            else wadd(&t, TN(pv->files_to_copy, L"%lld file (%ls) to back up.", L"%lld files (%ls) to back up."), (long long)pv->files_to_copy, size);
+            /* What to look at first goes under it, a line each. */
+            if (pv->mass_change)
+                wadd(&warn, T(L"%ls%ls: %lld of the %lld files whose copies on it were up to date changed at once. That can mean "
+                              L"ransomware: look at Files changed on it... (Next backup tab) before backing up."),
+                     warn.len ? L"\r\n" : L"", l ? l : L"", (long long)pv->held_changed, (long long)pv->files_held);
+            if (pv->files_to_copy && pv->bytes_short > 0) {
+                format_bytes(pv->bytes_short, shortb, 64);
+                wadd(&warn, T(L"%ls%ls: about %ls will not fit on it; that waits for another drive."), warn.len ? L"\r\n" : L"",
+                     l ? l : L"", shortb);
+            }
         }
-        const bd_backup_preview_info *pv = &g->pv;
-        wchar_t size[64], shortb[64];
-        format_bytes(pv->bytes_to_copy, size, 64);
-        if (pv->files_to_copy == 0) wadd(&t, T(L"up to date."));
-        else wadd(&t, TN(pv->files_to_copy, L"%lld file (%ls) to back up", L"%lld files (%ls) to back up"), (long long)pv->files_to_copy, size);
-        if (pv->files_to_copy && pv->bytes_short > 0) {
-            format_bytes(pv->bytes_short, shortb, 64);
-            wadd(&t, T(L", about %ls will not fit"), shortb);
+        if (!d->lost_ms) {
+            const wchar_t *advice = replace_advice(d);
+            if (advice) wadd(&warn, L"%ls%ls: %ls", warn.len ? L"\r\n" : L"", l ? l : L"", advice);
+            if (d->check_due)
+                wadd(&warn, T(L"%ls%ls is due for a check: Check drive... reads its copies back to find any that went bad."),
+                     warn.len ? L"\r\n" : L"", l ? l : L"");
         }
-        if (pv->files_to_copy) wadd(&t, L".");
-        if (pv->mass_change) wadd(&t, T(L" Many files changed at once: look before backing up."));
-        if (d->check_due) wadd(&t, T(L" Due for a check."));
+        if (warn.len > warned && !g_warn_media) g_warn_media = d->id;
+        free(l);
+        free(root);
     }
     if (total == 0) {
         free(t.p);
@@ -3345,15 +3388,19 @@ static void update_drives_label(void)
         wadd(&t, TN(place_wait, L"   Extra places: %lld starred file to copy.", L"   Extra places: %lld starred files to copy."), (long long)place_wait);
     else if (places)
         wadd(&t, T(L"   Extra places: up to date."));
-    SetWindowTextW(g_drives, t.p ? t.p : L"");
+    int changed = set_text_changed(g_drives, t.p ? t.p : L"");
+    changed |= set_warnings(warn.p);
     free(t.p);
+    free(warn.p);
     free(dl.items);
-    /* The button says how many files are short of the target. */
+    /* The button says how many files are short of the target; it is as
+     * wide as its text. */
     wchar_t risk[64];
     wcscpy(risk, T(L"At ris&k..."));
     if (g_figs && g_figs->has_risk && g_figs->risk.files_at_risk > 0)
         swprintf(risk, 64, T(L"At ris&k (%lld)..."), (long long)g_figs->risk.files_at_risk);
-    SetWindowTextW(g_buttons[7], risk);
+    changed |= set_text_changed(g_buttons[7], risk);
+    if (changed) layout();
     update_set_bars();
 }
 
@@ -7165,31 +7212,54 @@ static int mv(HWND h, int x, int y, int w, int hh)
     return hh;
 }
 
+static HFONT font_of(HWND h)
+{
+    HFONT f = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    return f ? f : g_font;
+}
+
+/* A button as wide as its text in the language shown (the & of its
+ * letter takes no room), with room either side; never narrower than a
+ * usual button. */
 static int button_width(HWND b)
 {
     wchar_t text[200];
     int n = GetWindowTextW(b, text, 200);
     HDC dc = GetDC(b);
-    HFONT old = (HFONT)SelectObject(dc, g_font);
-    SIZE sz = {0, 0};
-    GetTextExtentPoint32W(dc, text, n, &sz);
+    HFONT old = (HFONT)SelectObject(dc, font_of(b));
+    RECT r = {0, 0, 0, 0};
+    DrawTextW(dc, text, n, &r, DT_CALCRECT | DT_SINGLELINE);
     SelectObject(dc, old);
     ReleaseDC(b, dc);
-    return sz.cx + S(26);
+    int w = r.right + S(24);
+    return w < S(64) ? S(64) : w;
 }
 
 /* How tall a label is with its text wrapped at width w. */
 static int text_height(HWND h, int w)
 {
-    wchar_t text[1600];
-    int n = GetWindowTextW(h, text, 1600);
+    wchar_t text[4096];
+    int n = GetWindowTextW(h, text, 4096);
     RECT r = {0, 0, w, 0};
     HDC dc = GetDC(h);
-    HFONT old = (HFONT)SelectObject(dc, g_font);
+    HFONT old = (HFONT)SelectObject(dc, font_of(h));
     DrawTextW(dc, text, n, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     SelectObject(dc, old);
     ReleaseDC(h, dc);
     return r.bottom + S(2);
+}
+
+/* The height of one line of the window's text. */
+static int line_height(void)
+{
+    HDC dc = GetDC(g_main);
+    HFONT old = (HFONT)SelectObject(dc, g_font);
+    TEXTMETRICW tm;
+    memset(&tm, 0, sizeof(tm));
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(g_main, dc);
+    return tm.tmHeight > 0 ? tm.tmHeight + tm.tmExternalLeading : S(16);
 }
 
 /* Lay buttons out left to right from (x, y), within w, onto more rows as
@@ -8901,18 +8971,45 @@ static void layout(void)
     GetWindowRect(g_status, &sr);
     int status_h = sr.bottom - sr.top;
     int w = rc.right, h = rc.bottom - status_h;
-    int pad = S(8), bar = S(30), log_h = S(100);
+    int pad = S(8), gap = S(6), bar = S(30), log_h = S(100), line = line_height();
 
-    int x = pad;
-    int widths[N_BUTTONS] = {S(124), S(84), S(84), S(104), S(84), S(80), S(84), S(104)};
+    /* The buttons, each as wide as its text, onto a second row (or more)
+     * when the window is narrow. */
+    int x = pad, y = pad;
     for (int i = 0; i < N_BUTTONS; i++) {
-        MoveWindow(g_buttons[i], x, pad, widths[i], bar, TRUE);
-        x += widths[i] + S(6);
+        int bw = button_width(g_buttons[i]);
+        if (x > pad && x + bw > w - pad) {
+            x = pad;
+            y += bar + gap;
+        }
+        MoveWindow(g_buttons[i], x, y, bw, bar, TRUE);
+        x += bw + gap;
     }
-    MoveWindow(g_drives, x + S(10), pad + S(7), w - x - S(10) - pad, bar - S(7), TRUE);
+    int top = y + bar + gap;
 
-    /* One bar per full copy the user wants, under the buttons. */
-    int top = pad + bar + pad, row_h = S(18), bar_w = S(240);
+    /* What is plugged in and what a backup to each would do, on its own
+     * line: up to three when it wraps, and the tooltip has all of it. */
+    int dw = w - pad * 2, dh = text_height(g_drives, dw);
+    if (dh > line * 3) dh = line * 3;
+    if (dh < line) dh = line;
+    MoveWindow(g_drives, pad, top, dw, dh, TRUE);
+    top += dh + gap;
+
+    /* What to look at before a backup, with the warning icon: only when
+     * there is something. Up to four lines; the tooltip has all of it. */
+    if (GetWindowLongW(g_warn_text, GWL_STYLE) & WS_VISIBLE) {
+        int icon = S(16), tx = pad + icon + S(6), tw = w - tx - pad, th = text_height(g_warn_text, tw);
+        if (th > line * 4) th = line * 4;
+        if (th < line) th = line;
+        MoveWindow(g_warn_icon, pad, top + (line > icon ? (line - icon) / 2 : 0), icon, icon, TRUE);
+        MoveWindow(g_warn_text, tx, top, tw, th, TRUE);
+        top += (th > icon ? th : icon) + gap;
+    }
+
+    /* One bar per full copy the user wants. The bars take a quarter of a
+     * narrow window at most, so their text still shows. */
+    int row_h = S(18), bar_w = S(240);
+    if (bar_w > (w - pad * 2) / 4) bar_w = (w - pad * 2) / 4;
     for (int i = 0; i < MAX_SET_BARS; i++) {
         if (i >= g_set_count) continue;
         MoveWindow(g_set_bar[i], pad, top, bar_w, row_h - S(4), TRUE);
@@ -8922,14 +9019,25 @@ static void layout(void)
     if (g_set_count) top += pad - S(2);
     /* No database: Open and New, under the greyed-out buttons. */
     if (!g_cat && g_nodb_open) {
-        int bw = S(150);
+        int bw = button_width(g_nodb_open), bw2 = button_width(g_nodb_new);
+        if (bw < S(150)) bw = S(150);
+        if (bw2 < S(150)) bw2 = S(150);
         MoveWindow(g_nodb_open, pad, top, bw, bar, TRUE);
-        MoveWindow(g_nodb_new, pad + bw + S(6), top, bw, bar, TRUE);
+        MoveWindow(g_nodb_new, pad + bw + gap, top, bw2, bar, TRUE);
         top += bar + pad;
     }
 
     int prog_h = S(20);
     int body_h = h - top - log_h - prog_h * 2 - pad * 4;
+    /* A low window: the log gives up some of its height first. */
+    if (body_h < S(240)) {
+        int take = S(240) - body_h;
+        if (take > log_h - S(48)) take = log_h - S(48);
+        if (take > 0) {
+            log_h -= take;
+            body_h += take;
+        }
+    }
     /* The tabs, each page over the tab control's display area. */
     MoveWindow(g_tabs, pad, top, w - pad * 2, body_h, TRUE);
     RECT tr = {pad, top, w - pad, top + body_h};
@@ -8939,12 +9047,15 @@ static void layout(void)
     /* The job as a whole (for a backup: everything going to the plugged-in
      * drive), then the file being copied now. */
     int py = top + body_h + pad;
+    /* Stop as wide as its text; the line beside it starts after it, shown
+     * or not, so it does not jump. */
+    int stop_w = button_width(g_stop), text_x = pad + bar_w + S(8) + stop_w + S(8);
     MoveWindow(g_progress, pad, py, bar_w, prog_h, TRUE);
-    MoveWindow(g_stop, pad + bar_w + S(8), py - S(2), S(64), prog_h + S(4), TRUE);
-    MoveWindow(g_prog_text, pad + bar_w + S(80), py, w - pad * 2 - bar_w - S(80), prog_h, TRUE);
+    MoveWindow(g_stop, pad + bar_w + S(8), py - S(2), stop_w, prog_h + S(4), TRUE);
+    MoveWindow(g_prog_text, text_x, py, w - pad - text_x, prog_h, TRUE);
     py += prog_h + pad;
     MoveWindow(g_file_progress, pad, py, bar_w, prog_h, TRUE);
-    MoveWindow(g_file_text, pad + bar_w + S(80), py, w - pad * 2 - bar_w - S(80), prog_h, TRUE);
+    MoveWindow(g_file_text, text_x, py, w - pad - text_x, prog_h, TRUE);
     MoveWindow(g_log, pad, py + prog_h + pad, w - pad * 2, log_h, TRUE);
 }
 
@@ -8985,6 +9096,29 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
     return CDRF_DODEFAULT;
 }
 
+/* The warning icon at the size the window's text is shown at. */
+static void load_warn_icon(void)
+{
+    HICON old = g_warn_hicon;
+    g_warn_hicon = NULL;
+    if (FAILED(LoadIconWithScaleDown(NULL, (PCWSTR)IDI_WARNING, S(16), S(16), &g_warn_hicon))) g_warn_hicon = NULL;
+    if (g_warn_icon) SendMessageW(g_warn_icon, STM_SETICON, (WPARAM)g_warn_hicon, 0);
+    if (old) DestroyIcon(old);
+}
+
+/* A tooltip whose text is asked for when it shows (TTN_GETDISPINFOW). */
+static void add_tip(HWND h)
+{
+    TOOLINFOW ti;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    ti.hwnd = g_main;
+    ti.uId = (UINT_PTR)h;
+    ti.lpszText = LPSTR_TEXTCALLBACKW;
+    SendMessageW(g_tip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+}
+
 static HWND make_button(const wchar_t *text, int id)
 {
     HWND b = CreateWindowExW(0, WC_BUTTONW, text, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10, g_main,
@@ -9009,9 +9143,16 @@ static void create_children(HWND hwnd)
     g_nodb_open = make_button(T(L"&Open a database..."), ID_M_OPEN_DB);
     g_nodb_new = make_button(T(L"&New database..."), ID_M_NEW_DB);
 
-    g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_NOPREFIX, 0, 0, 10, 10, hwnd,
+    /* SS_NOTIFY: the tooltip needs the mouse over it. */
+    g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX | SS_NOTIFY, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
     SendMessageW(g_drives, WM_SETFONT, (WPARAM)g_font, TRUE);
+    g_warn_icon = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | SS_ICON | SS_REALSIZECONTROL | SS_NOTIFY, 0, 0, 16, 16, hwnd,
+                                  (HMENU)ID_WARN_ICON, g_inst, NULL);
+    load_warn_icon();
+    g_warn_text = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | SS_LEFT | SS_NOPREFIX | SS_NOTIFY, 0, 0, 10, 10, hwnd,
+                                  (HMENU)ID_WARN_TEXT, g_inst, NULL);
+    SendMessageW(g_warn_text, WM_SETFONT, (WPARAM)g_font, TRUE);
 
     create_pages(hwnd);
     g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
@@ -9085,6 +9226,19 @@ static void create_children(HWND hwnd)
     g_status = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, hwnd,
                                (HMENU)ID_STATUS, g_inst, NULL);
     SendMessageW(g_status, WM_SETFONT, (WPARAM)g_font, TRUE);
+
+    /* The whole text of the drives line and the warnings, which a narrow
+     * window cuts short, and what Stop does. */
+    g_tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+                            CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL, g_inst, NULL);
+    if (g_tip) {
+        SendMessageW(g_tip, TTM_SETMAXTIPWIDTH, 0, S(560));
+        SendMessageW(g_tip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000);
+        add_tip(g_drives);
+        add_tip(g_warn_icon);
+        add_tip(g_warn_text);
+        add_tip(g_stop);
+    }
 }
 
 /* Esc stops the job that is running, or leaves the search results. Enter
@@ -9192,9 +9346,11 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         layout();
         return 0;
     case WM_GETMINMAXINFO: {
+        /* The buttons go onto more rows, and the log gets lower, before
+         * anything is cut off. */
         MINMAXINFO *mm = (MINMAXINFO *)lp;
-        mm->ptMinTrackSize.x = S(860);
-        mm->ptMinTrackSize.y = S(580);
+        mm->ptMinTrackSize.x = S(600);
+        mm->ptMinTrackSize.y = S(520);
         return 0;
     }
     case WM_COMMAND:
@@ -9214,6 +9370,16 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (!lp && (LOWORD(wp) == ID_M_NEXT_TAB || LOWORD(wp) == ID_M_PREV_TAB)) {
             show_tab((g_tab + (LOWORD(wp) == ID_M_NEXT_TAB ? 1 : N_TABS - 1)) % N_TABS);
+            return 0;
+        }
+        /* The drives line and the warnings are text. A click on the
+         * warnings shows the drive they are about on Next backup. */
+        if (lp && (LOWORD(wp) == ID_DRIVES || LOWORD(wp) == ID_WARN_ICON || LOWORD(wp) == ID_WARN_TEXT)) {
+            if (LOWORD(wp) != ID_DRIVES && HIWORD(wp) == STN_CLICKED && g_warn_media && g_cat && !g_busy && !g_ui_depth) {
+                g_next_media = g_warn_media;
+                g_page_stale[TAB_NEXT] = 1;
+                show_tab(TAB_NEXT);
+            }
             return 0;
         }
         if (!lp && LOWORD(wp) == ID_M_FIND) {
@@ -9280,6 +9446,24 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_NOTIFY: {
         NMHDR *nh = (NMHDR *)lp;
+        if (g_tip && nh->hwndFrom == g_tip) {
+            if (nh->code == TTN_GETDISPINFOW) {
+                NMTTDISPINFOW *di = (NMTTDISPINFOW *)lp;
+                HWND h = (HWND)nh->idFrom;
+                g_tip_text[0] = 0;
+                if (h == g_stop) {
+                    swprintf(g_tip_text, 4096, L"%ls", T(L"Stop the running job (Esc). What was done until then is kept."));
+                } else if (h == g_warn_text || h == g_warn_icon) {
+                    int n = GetWindowTextW(g_warn_text, g_tip_text, 4000);
+                    if (n > 0 && g_warn_media)
+                        swprintf(g_tip_text + n, (size_t)(4096 - n), L"\r\n\r\n%ls", T(L"Click to see it on the Next backup tab."));
+                } else if (h == g_drives) {
+                    GetWindowTextW(g_drives, g_tip_text, 4096);
+                }
+                di->lpszText = g_tip_text;
+            }
+            return 0;
+        }
         if (page_notify(nh)) return 0;
         if (nh->idFrom == ID_RESULTS) {
             if (nh->code == LVN_ITEMCHANGED) {

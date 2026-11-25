@@ -2243,7 +2243,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             }
             if (g_table_mode == TABLE_CONFLICTS) {
                 wchar_t args[4096];
-                swprintf(args, 4096, L"/select,\\"%ls\\"", g_conflicts[row].dest ? g_conflicts[row].dest : L"");
+                swprintf(args, 4096, L"/select,\"%ls\"", g_conflicts[row].dest ? g_conflicts[row].dest : L"");
                 ShellExecuteW(dlg, NULL, L"explorer.exe", args, NULL, SW_SHOWNORMAL);
                 return TRUE;
             }
@@ -4324,6 +4324,7 @@ static void mark_lost_ui(const drive_snap *d)
     int pressed = IDCANCEL;
     if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) || (pressed != 650 && pressed != 651)) return;
     const char *why = pressed == 651 ? "broken" : "lost";
+    const wchar_t *wwhy = pressed == 651 ? L"broken" : L"lost";
     sets_snap before = read_sets();
     bd_status st = bd_media_mark_lost(g_cat, d->id, why);
     if (st != BD_OK) {
@@ -4334,7 +4335,7 @@ static void mark_lost_ui(const drive_snap *d)
     }
     sets_snap after = read_sets();
     wtext t = {NULL, 0, 0};
-    wadd(&t, L"Marking %ls %ls changes your full copies:\n\n", name, why);
+    wadd(&t, L"Marking %ls %ls changes your full copies:\n\n", name, wwhy);
     int changed = 0;
     for (int i = 0; i < before.n || i < after.n; i++) {
         int a = i < before.n ? set_percent(&before.s[i]) : 0, z = i < after.n ? set_percent(&after.s[i]) : 0;
@@ -4343,7 +4344,7 @@ static void mark_lost_ui(const drive_snap *d)
         wadd(&t, L"    Full copy %d: %d%% now, %d%% after (%lld files fewer)\n", i + 1, a, z, (long long)(fa - fz));
     }
     if (!changed) wadd(&t, L"    No change: every file it held has enough good copies elsewhere.\n");
-    wadd(&t, L"\nMark it %ls?", why);
+    wadd(&t, L"\nMark it %ls?", wwhy);
     int ok = MessageBoxW(g_main, t.p ? t.p : L"", APP_NAME, MB_ICONWARNING | MB_YESNO) == IDYES;
     free(t.p);
     if (!ok) {
@@ -4352,7 +4353,7 @@ static void mark_lost_ui(const drive_snap *d)
     }
     if (bd_catalog_save(g_cat) == BD_OK) {
         wchar_t line[800];
-        swprintf(line, 800, L"%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it.", name, why);
+        swprintf(line, 800, L"%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it.", name, wwhy);
         log_append(line);
     }
 }
@@ -4449,6 +4450,7 @@ static void drive_action(int64_t id, int action)
     free(dl.items);
 }
 
+enum { CHOICE_LAST = 100, CHOICE_OPEN, CHOICE_NEW, CHOICE_RECOVER };
 static void open_database_ui(int choice);
 static void cmd_bitrot(void);
 
@@ -5307,8 +5309,6 @@ static int save_dialog(wchar_t *out, DWORD cap, const wchar_t *title)
                     MB_ICONINFORMATION);
     }
 }
-
-enum { CHOICE_LAST = 100, CHOICE_OPEN, CHOICE_NEW, CHOICE_RECOVER };
 
 static int ask_database_choice(const wchar_t *last)
 {

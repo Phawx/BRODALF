@@ -9,8 +9,9 @@
 ; installer (default: next to this script).
 ;
 ; It installs brodalf.exe, brodalf-cli.exe and THIRD-PARTY-NOTICES.txt into
-; %LOCALAPPDATA%\Programs\BRODALF, adds a Start menu shortcut, an uninstaller
-; and an entry in Installed apps (HKCU). Catalogs, the app log and the
+; %LOCALAPPDATA%\Programs\BRODALF, adds a Start menu shortcut (and, if ticked
+; on the components page, a desktop one), an uninstaller and an entry in
+; Installed apps (HKCU). Catalogs, the app log and the
 ; settings under HKCU\Software\BRODALF belong to the user and are kept on
 ; uninstall, as are the copies on the backup drives.
 
@@ -50,6 +51,7 @@ VIAddVersionKey "LegalCopyright" "See THIRD-PARTY-NOTICES.txt for the libraries 
 !define MUI_FINISHPAGE_RUN "$INSTDIR\brodalf.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Open BRODALF now"
 
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -67,7 +69,7 @@ Function un.onInit
   SetShellVarContext current
 FunctionEnd
 
-Section "BRODALF" SecMain
+Section "BRODALF (required)" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${BINDIR}\brodalf.exe"
@@ -91,6 +93,16 @@ Section "BRODALF" SecMain
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" $0
 SectionEnd
 
+; Off unless ticked: the Start menu shortcut is always there.
+Section /o "Desktop shortcut" SecDesktop
+  CreateShortCut "$DESKTOP\BRODALF.lnk" "$INSTDIR\brodalf.exe" "" "$INSTDIR\brodalf.exe" 0
+SectionEnd
+
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "BRODALF and its Start menu shortcut."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Also put a BRODALF shortcut on the desktop."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
+
 Section "Uninstall"
   ; Only what the installer put there: never the user's catalogs or backups.
   Delete "$INSTDIR\brodalf.exe"
@@ -99,5 +111,6 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\BRODALF.lnk"
+  Delete "$DESKTOP\BRODALF.lnk"
   DeleteRegKey HKCU "${UNINST_KEY}"
 SectionEnd

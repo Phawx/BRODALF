@@ -1282,6 +1282,14 @@ typedef struct job {
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
     int problems;
+    /* What went wrong, counted as the summary counts it (files that failed
+     * or did not fit, copies missing or damaged...), and of those the ones
+     * no question after the job is about. */
+    int64_t n_problems, n_tell;
+    /* Every line the engine reported while the job ran, for "Show what
+     * went wrong". */
+    wchar_t **report;
+    int n_report, cap_report;
     bd_status status;
     wchar_t summary[SUMMARY_LEN];
     struct job *next;
@@ -1309,6 +1317,8 @@ static void job_free(job *j)
     free(j->pick_dest);
     free(j->pick_src);
     free_conflicts(j->conf, j->n_conf);
+    for (int i = 0; i < j->n_report; i++) free(j->report[i]);
+    free(j->report);
     free(j);
 }
 
@@ -1339,12 +1349,32 @@ static void post_text(UINT msg, const wchar_t *text)
     if (copy && !PostMessageW(g_main, msg, 0, (LPARAM)copy)) free(copy);
 }
 
+#define REPORT_LINES 5000
+/* A backup to several drives at once may report from more than one thread. */
+static SRWLOCK g_report_lock = SRWLOCK_INIT;
+
 static void job_log(void *ctx, const char *message)
 {
     job *j = ctx;
     j->problems++;
     wchar_t *w = widen(message);
-    if (w) { post_text(WM_APP_LOG, w); free(w); }
+    if (!w) return;
+    post_text(WM_APP_LOG, w);
+    AcquireSRWLockExclusive(&g_report_lock);
+    if (j->n_report == j->cap_report && j->n_report < REPORT_LINES) {
+        int cap = j->cap_report ? j->cap_report * 2 : 64;
+        wchar_t **grown = realloc(j->report, sizeof(wchar_t *) * (size_t)cap);
+        if (grown) {
+            j->report = grown;
+            j->cap_report = cap;
+        }
+    }
+    if (j->n_report < j->cap_report) {
+        j->report[j->n_report++] = w;
+        w = NULL;
+    }
+    ReleaseSRWLockExclusive(&g_report_lock);
+    free(w);
 }
 
 /* What the progress bars show: percent (-1: unknown, keep it moving) and a
@@ -1659,6 +1689,7 @@ static bd_status run_backup_many(job *j)
     swprintf(j->summary, SUMMARY_LEN, T(L"Backup to %ls %ls, %ls: %lld files copied (%ls) in all, %lld failed."), what,
              s == BD_ERR_CANCELLED ? T(L"stopped") : T(L"done"), parallel ? T(L"all at once") : T(L"one after another"), (long long)copied, size,
              (long long)failed);
+    j->n_problems = j->n_tell = failed + no_room;
     if (alongside)
         say(j, T(L" %lld went alongside an older copy (under .versions): nothing there was overwritten."), (long long)alongside);
     if (no_room) {
@@ -1704,6 +1735,13 @@ static DWORD WINAPI worker(LPVOID arg)
             say(j, TN(st.roots_missing, L" %lld backup root could not be found.", L" %lld backup roots could not be found."), (long long)st.roots_missing);
         if (st.roots_stopped)
             say(j, TN(st.roots_stopped, L" %lld stopped root left alone.", L" %lld stopped roots left alone."), (long long)st.roots_stopped);
+        if (st.errors)
+            say(j, TN(st.errors, L" %lld file or folder could not be read; the log says which.",
+                      L" %lld files or folders could not be read; the log says which."),
+                (long long)st.errors);
+        /* Damaged files and missing roots each get a question after the scan. */
+        j->n_problems = st.errors + st.files_damaged + st.roots_missing;
+        j->n_tell = st.errors;
         j->in_use = st.files_in_use;
         j->damaged = st.files_damaged;
         j->found_deleted = st.files_deleted;
@@ -1751,6 +1789,9 @@ static DWORD WINAPI worker(LPVOID arg)
             j->no_room = bs.files_no_room;
             j->bytes_no_room = bs.bytes_no_room;
             j->in_use = bs.files_in_use;
+            /* What did not fit gets its own question after the backup. */
+            j->n_problems = bs.files_failed + bs.files_no_room;
+            j->n_tell = bs.files_failed;
         }
         break;
     }
@@ -1766,6 +1807,7 @@ static DWORD WINAPI worker(LPVOID arg)
                      (long long)cs.rehashed, (long long)cs.ok, (long long)cs.bad, (long long)cs.missing,
                      cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
         if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
+        j->n_problems = j->n_tell = cs.bad + cs.missing;
         break;
     }
     case JOB_CHECK: {
@@ -1776,6 +1818,7 @@ static DWORD WINAPI worker(LPVOID arg)
                  (long long)cs.copies, (long long)cs.ok, (long long)cs.missing,
                  (long long)cs.bad, cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
         if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
+        j->n_problems = j->n_tell = cs.bad + cs.missing;
         break;
     }
     case JOB_SHADOW:
@@ -1793,6 +1836,7 @@ static DWORD WINAPI worker(LPVOID arg)
         if (zs.failed)
             say(j, T(L" %lld could not be changed (another program may have them open)."), (long long)zs.failed);
         if (j->compress_on) say(j, T(L" Copies made from now on are compressed too."));
+        j->n_problems = j->n_tell = zs.failed;
         break;
     }
     case JOB_RESTORE: {
@@ -1832,6 +1876,8 @@ static DWORD WINAPI worker(LPVOID arg)
             say(j, T(L" %lld left alone because another file was already there: nothing was overwritten."), (long long)rs.files_conflict);
         j->offline = rs.files_offline;
         if (rs.files_need_passphrase) say(j, T(L" %lld need the passphrase."), (long long)rs.files_need_passphrase);
+        /* Files on drives that are not plugged in wait for them: not a problem. */
+        j->n_problems = j->n_tell = rs.files_failed + rs.files_no_copy + rs.files_need_passphrase;
         break;
     }
     }
@@ -1925,6 +1971,7 @@ static void start_next_job(void)
                           : j->kind == JOB_COMPRESS && !j->compress_on ? T(L"Making the copies on the drive whole again...")
                                                                   : T(starting[j->kind]);
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
+    SendMessageW(g_progress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
     show_progress(-1, what);
     show_file_progress(-1, L"");
     HANDLE h = CreateThread(NULL, 0, worker, j, 0, NULL);
@@ -2028,6 +2075,103 @@ static void report_error(HWND owner, const wchar_t *what)
     free(path);
     free(wpath);
     free(url);
+}
+
+static void show_app_log(HWND owner)
+{
+    wchar_t *w = widen(bd_applog_path());
+    if (w) ShellExecuteW(owner, L"open", w, NULL, NULL, SW_SHOWNORMAL);
+    free(w);
+}
+
+/* What went wrong, in plain words, when it is something that happens: a
+ * drive unplugged or full, a file another program holds, a database open
+ * in another window, a wrong passphrase. Only what looks like a fault in
+ * BRODALF itself (BD_ERR_DB, BD_ERR_NOMEM, or a code it does not know)
+ * gets an error report for the developers. what is the engine's own
+ * description; drive_gone says the drive a job used went away. */
+static void report_status(HWND owner, bd_status s, int drive_gone, const wchar_t *what)
+{
+    const wchar_t *title = NULL, *advice = NULL;
+    PCWSTR icon = TD_WARNING_ICON;
+    /* ENGINE: BD_ERR_DRIVE_GONE (a drive unplugged or no longer answering
+     * during a job) is being added to brodalf.h. When it is there, add
+     *     case BD_ERR_DRIVE_GONE: drive_gone = 1; break;
+     * to this switch. Until then the window guesses it: an IO or
+     * NOT_FOUND error while the drive's folder is gone (job_drive_gone). */
+    switch (s) {
+    case BD_ERR_IO:
+        title = T(L"BRODALF could not read or write a file or a drive.");
+        advice = T(L"A drive may be full, unplugged or failing, or another program may have the file open. What was done until then "
+                   L"is kept. Check the drive and try again; the app log says more.");
+        break;
+    case BD_ERR_NOT_FOUND:
+        title = T(L"Something BRODALF needed was not there.");
+        advice = T(L"A drive may have been unplugged, or a file or folder moved or renamed. Plug the drive in, or check where it is, "
+                   L"and try again.");
+        break;
+    case BD_ERR_LOCKED:
+        title = T(L"The database is open in another BRODALF window.");
+        advice = T(L"Use that window, or close it and try again.");
+        icon = TD_INFORMATION_ICON;
+        break;
+    case BD_ERR_EXISTS:
+        title = T(L"Something with that name is already there.");
+        advice = T(L"BRODALF never overwrites anything. Choose another name or place.");
+        icon = TD_INFORMATION_ICON;
+        break;
+    case BD_ERR_FORMAT:
+        title = T(L"This is not a BRODALF database, or a newer BRODALF made it.");
+        advice = T(L"Choose a .brodalf file, or update BRODALF to open this one.");
+        break;
+    case BD_ERR_INVALID:
+        title = T(L"BRODALF could not do that with what was chosen.");
+        advice = T(L"Check what you chose and try again.");
+        break;
+    case BD_ERR_PASSPHRASE:
+        title = T(L"The passphrase is needed, or the one given is not right.");
+        advice = T(L"Enter the passphrase when BRODALF asks for it. The recovery key on your recovery sheet can be used instead.");
+        break;
+    case BD_ERR_CANCELLED:
+        title = T(L"Stopped. What was done until then is kept.");
+        icon = TD_INFORMATION_ICON;
+        break;
+    default:
+        break; /* BD_ERR_DB, BD_ERR_NOMEM and codes this window does not know: a fault */
+    }
+    if (drive_gone && (s == BD_ERR_IO || s == BD_ERR_NOT_FOUND)) {
+        title = T(L"A drive was unplugged or stopped answering during the job.");
+        advice = T(L"What was done until then is kept. Plug the drive back in and start the job again: a backup copies only what "
+                   L"the drive is still missing.");
+        icon = TD_WARNING_ICON;
+    }
+    if (!title) {
+        report_error(owner, what);
+        return;
+    }
+    char *u = narrow(what);
+    bd_applog("problem: %s", u ? u : "");
+    free(u);
+    wchar_t content[3000];
+    swprintf(content, 3000, L"%ls%ls%ls", what && *what ? what : L"", what && *what && advice ? L"\n\n" : L"", advice ? advice : L"");
+    TASKDIALOG_BUTTON b[1] = {{660, T(L"Show the app log")}};
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = owner;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = icon;
+    tc.pszMainInstruction = title;
+    tc.pszContent = content;
+    tc.cButtons = 1;
+    tc.pButtons = b;
+    tc.nDefaultButton = IDCLOSE;
+    int pressed = IDCLOSE;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) MessageBoxW(owner, content, APP_NAME, MB_ICONWARNING);
+    else if (pressed == 660) show_app_log(owner);
 }
 
 /* Last resort for a crash: record where it happened, then report it. */
@@ -3258,7 +3402,10 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
  * or Details... opens one), the largest files, the files a bit-rot scan
  * found changed by themselves (Keep as it is now records one as a new
  * version), and the files the last restore left alone. */
-enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGED };
+enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGED, TABLE_REPORT };
+/* What the engine reported during the last job that had problems. */
+static wchar_t **g_report;
+static int g_n_report;
 static int64_t g_table_media; /* changed: the drive */
 static void drive_name(const char *label, const char *location, wchar_t *out, size_t cap);
 static int g_table_mode;
@@ -3462,6 +3609,20 @@ static void table_changed(HWND lv)
                     L"do not trust them as they are: restore them from the drive."));
 }
 
+static void table_report(HWND lv)
+{
+    static const wchar_t *cols[] = {N_(L"What BRODALF reported")};
+    static const int w[] = {720};
+    lv_columns(lv, cols, w, 1);
+    for (int i = 0; i < g_n_report; i++) {
+        const wchar_t *cells[] = {g_report[i]};
+        lv_row(lv, cells, 1);
+    }
+    g_table_n = g_n_report;
+    SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
+                    T(L"Everything BRODALF reported while the job ran, in order. The app log keeps it too, with the time of each line."));
+}
+
 static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     INT_PTR themed;
@@ -3469,8 +3630,8 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_INITDIALOG: {
         static const wchar_t *titles[] = {N_(L"Status of every drive"), N_(L"Largest files"), N_(L"Damaged files"), N_(L"Left alone by the last restore"),
-                                          N_(L"Changed since the copy on the drive")};
-        static const wchar_t *buttons[] = {N_(L"Details..."), L"", N_(L"Keep as it is now"), N_(L"Open in Explorer"), L""};
+                                          N_(L"Changed since the copy on the drive"), N_(L"What went wrong")};
+        static const wchar_t *buttons[] = {N_(L"Details..."), L"", N_(L"Keep as it is now"), N_(L"Open in Explorer"), L"", N_(L"Show the app log")};
         SetWindowTextW(dlg, T(titles[g_table_mode]));
         SetDlgItemTextW(dlg, IDC_TABLE_OPEN, T(buttons[g_table_mode]));
         ShowWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), *buttons[g_table_mode] ? SW_SHOW : SW_HIDE);
@@ -3480,11 +3641,16 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         else if (g_table_mode == TABLE_LARGEST) table_largest(lv);
         else if (g_table_mode == TABLE_DAMAGED) table_damaged(lv);
         else if (g_table_mode == TABLE_CHANGED) table_changed(lv);
+        else if (g_table_mode == TABLE_REPORT) table_report(lv);
         else table_conflicts(lv);
-        EnableWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), g_table_n > 0);
+        EnableWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), g_table_n > 0 || g_table_mode == TABLE_REPORT);
         return TRUE;
     }
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_TABLE_OPEN && g_table_mode == TABLE_REPORT) {
+            show_app_log(dlg);
+            return TRUE;
+        }
         if (LOWORD(wp) == IDC_TABLE_OPEN) {
             HWND lv = GetDlgItem(dlg, IDC_TABLE_LIST);
             int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
@@ -3547,6 +3713,88 @@ static void show_changed(int64_t media_id)
 {
     g_table_media = media_id;
     cmd_table(TABLE_CHANGED);
+}
+
+/* ---- How a job ended ------------------------------------------------------ */
+
+/* The first words about a job that finished with problems. They come before
+ * its counts, so a backup where files failed does not read as a success. */
+static void job_headline(const job *j, wchar_t *out, size_t cap)
+{
+    out[0] = 0;
+    if (j->status != BD_OK || j->n_problems <= 0) return;
+    long long n = (long long)j->n_problems;
+    switch (j->kind) {
+    case JOB_BACKUP:
+        swprintf(out, cap, TN(n, L"Backup finished with %lld problem.", L"Backup finished with %lld problems."), n);
+        break;
+    case JOB_SCAN:
+        swprintf(out, cap, TN(n, L"%ls finished with %lld problem.", L"%ls finished with %lld problems."),
+                 j->bitrot ? T(L"Bit-rot scan") : T(L"Scan"), n);
+        break;
+    case JOB_CHECK:
+        swprintf(out, cap, TN(n, L"Check finished with %lld problem.", L"Check finished with %lld problems."), n);
+        break;
+    case JOB_VERIFY:
+        swprintf(out, cap, TN(n, L"Read-back finished with %lld problem.", L"Read-back finished with %lld problems."), n);
+        break;
+    case JOB_RESTORE:
+        swprintf(out, cap, TN(n, L"Restore finished with %lld problem.", L"Restore finished with %lld problems."), n);
+        break;
+    case JOB_COMPRESS:
+        swprintf(out, cap, TN(n, L"Changing the compression finished with %lld problem.",
+                              L"Changing the compression finished with %lld problems."), n);
+        break;
+    default:
+        swprintf(out, cap, TN(n, L"Finished with %lld problem.", L"Finished with %lld problems."), n);
+        break;
+    }
+}
+
+/* Did the drive the job used go away while it ran (unplugged, or no longer
+ * answering)? Its folder is gone. */
+static int job_drive_gone(const job *j)
+{
+    if (j->kind != JOB_BACKUP && j->kind != JOB_CHECK && j->kind != JOB_VERIFY && j->kind != JOB_COMPRESS) return 0;
+    int gone = 0;
+    drive_list dl = load_drives();
+    for (int i = 0; i < dl.n && !gone; i++) {
+        const drive_snap *d = &dl.items[i];
+        int used = d->id == j->media_id;
+        for (int k = 0; k < j->n_many && !used; k++) used = d->id == j->many[k];
+        if (!used || !d->root[0]) continue;
+        wchar_t *w = widen(d->root);
+        if (w && GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES) gone = 1;
+        free(w);
+    }
+    free(dl.items);
+    return gone;
+}
+
+/* A job that had problems no question after it is about: say so, with a
+ * way to see each one. */
+static void show_job_problems(const job *j, const wchar_t *headline)
+{
+    TASKDIALOG_BUTTON b[1] = {{650, T(L"Show what went wrong")}};
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_WARNING_ICON;
+    tc.pszMainInstruction = headline;
+    tc.pszContent = j->summary;
+    tc.cButtons = 1;
+    tc.pButtons = b;
+    tc.nDefaultButton = 650;
+    int pressed = IDCLOSE;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return;
+    if (pressed != 650) return;
+    if (g_n_report) cmd_table(TABLE_REPORT);
+    else show_app_log(g_main);
 }
 
 /* Every file and where it is, as a CSV file for a spreadsheet. */
@@ -3790,7 +4038,7 @@ static int set_passphrase_ui(void)
     if (s == BD_OK) s = bd_catalog_save(g_cat);
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        report_error(g_main, e && e[0] ? e : T(L"Could not set the passphrase."));
+        report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not set the passphrase."));
         free(e);
         return 0;
     }
@@ -4485,7 +4733,7 @@ static void settings_command(int cmd)
         if (s == BD_OK) s = bd_catalog_save(g_cat);
         if (s != BD_OK) {
             wchar_t *e = widen(bd_catalog_error(g_cat));
-            report_error(g_main, e && e[0] ? e : T(L"Could not change the database encryption."));
+            report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not change the database encryption."));
             free(e);
             return;
         }
@@ -4582,7 +4830,7 @@ static void cmd_sheet(int with_key)
         if (s != BD_OK) {
             SecureZeroMemory(key, sizeof(key));
             wchar_t *e = widen(bd_catalog_error(g_cat));
-            report_error(g_main, e && e[0] ? e : T(L"Could not make a recovery key."));
+            report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not make a recovery key."));
             free(e);
             return;
         }
@@ -4628,7 +4876,7 @@ static void cmd_sheet(int with_key)
     }
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
-        report_error(g_main, e && e[0] ? e : T(L"Could not write the recovery sheet."));
+        report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not write the recovery sheet."));
         free(e);
         return;
     }
@@ -8887,10 +9135,28 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         InterlockedExchange(&g_busy, 0);
         hide_stop();
         j->summary[SUMMARY_LEN - 1] = 0;
-        SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
-        show_progress(j->status == BD_OK ? 100 : 0, j->summary);
+        /* Problems first: "Backup finished with 3 problems. Backup done: ..." */
+        wchar_t headline[300], line[SUMMARY_LEN + 300];
+        job_headline(j, headline, 300);
+        swprintf(line, SUMMARY_LEN + 300, L"%ls%ls%ls", headline, headline[0] ? L" " : L"", j->summary);
+        SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)line);
+        show_progress(100, line);
+        /* The bar: green when all went well, red with problems or an error,
+         * yellow when stopped. */
+        int stopped = stopping || j->status == BD_ERR_CANCELLED;
+        SendMessageW(g_progress, PBM_SETSTATE,
+                     (WPARAM)(stopped ? PBST_PAUSED : (j->status != BD_OK || j->n_problems > 0) ? PBST_ERROR : PBST_NORMAL), 0);
         show_file_progress(-1, L"");
-        log_append(j->summary);
+        log_append(line);
+        if (j->n_report && (j->n_problems > 0 || j->status != BD_OK)) {
+            /* Kept for "Show what went wrong" until the next job with problems. */
+            for (int i = 0; i < g_n_report; i++) free(g_report[i]);
+            free(g_report);
+            g_report = j->report;
+            g_n_report = j->n_report;
+            j->report = NULL;
+            j->n_report = j->cap_report = 0;
+        }
         if (g_close_after) {
             job_free(j);
             DestroyWindow(hwnd);
@@ -8923,8 +9189,11 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     again->many_places = j->many_places;
                     enqueue(again);
                 }
-            } else if (j->status != BD_OK && j->status != BD_ERR_PASSPHRASE)
-                report_error(hwnd, j->summary);
+            } else if (j->status != BD_OK && j->status != BD_ERR_PASSPHRASE) {
+                report_status(hwnd, j->status, job_drive_gone(j), j->summary);
+            } else if (j->status == BD_OK && j->n_tell > 0) {
+                show_job_problems(j, headline);
+            }
             if (GetWindowTextLengthW(g_search) > 0) run_search();
             if (j->kind == JOB_DRIVES) after_drives(j);
             else if (j->kind == JOB_SCAN && j->status == BD_OK) after_scan(j);
@@ -9138,7 +9407,7 @@ static void show_open_error(bd_status s, const wchar_t *fallback)
      * drops it if that BRODALF crashed). */
     if (s == BD_ERR_LOCKED) MessageBoxW(g_main, why, APP_NAME, MB_ICONINFORMATION);
     else if (s == BD_ERR_FORMAT || s == BD_ERR_NOT_FOUND || s == BD_ERR_EXISTS) MessageBoxW(g_main, why, APP_NAME, MB_ICONERROR);
-    else report_error(g_main, why);
+    else report_status(g_main, s, 0, why);
     free(e);
 }
 

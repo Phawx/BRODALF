@@ -277,8 +277,6 @@ static bd_status open_db(bd_catalog *cat)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
-                     "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
-                     "CREATE TEMP TABLE IF NOT EXISTS arrived(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS replace_need(version_id INTEGER PRIMARY KEY);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
@@ -615,13 +613,10 @@ const char *bd_catalog_uuid(const bd_catalog *cat)
 /* ---- Options ------------------------------------------------------------ */
 
 static const struct { const char *name; int def, min, max; } OPTIONS[] = {
-    {"auto_backup", 1, 0, 1},
     {"check_days", 180, 0, 3650},
     {"keep_versions", 5, 0, 100000},
     {"keep_days", 365, 0, 36500},
     {"verify_days", 30, 0, 3650},
-    {"guard_percent", 25, 0, 100},
-    {"schedule", 1, 0, 7},
 };
 
 static int option_index(const char *name)

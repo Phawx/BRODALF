@@ -216,7 +216,7 @@ static void test_recovery_key(void)
     REQUIRE_OK(bd_catalog_recover(at(backup), at("rk/new.brodalf")), NULL);
     REQUIRE_OK(bd_catalog_open_with_recovery(at("rk/new.brodalf"), key, &cat), NULL);
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_connect(cat, at("rk/vault"), &vault, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("rk/vault"), &vault, quiet, NULL), cat);
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, NULL, at("rk/out"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1 && file_equals(at("rk/out/src/note.txt"), "recover me", 10));
@@ -308,7 +308,8 @@ int main(void)
     bd_catalog_close(cat);
     REQUIRE_OK(bd_catalog_open(at("c.brodalf"), &cat), NULL);
     CHECK(bd_catalog_has_passphrase(cat) && !bd_catalog_is_unlocked(cat));
-    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, vault, 0, &cs, quiet, NULL), cat);
     CHECK(cs.ok == 4);
     CHECK(state_of(cat, src, "secret.txt") == BD_STATE_AVAILABLE);
     CHECK(bd_media_check(cat, vault, 1, &cs, quiet, NULL) == BD_ERR_PASSPHRASE);
@@ -373,7 +374,7 @@ int main(void)
     bd_catalog_close(cat);
     CHECK(bd_catalog_open_with(at("c.brodalf"), PASS, &cat) == BD_ERR_PASSPHRASE);
     REQUIRE_OK(bd_catalog_open_with(at("c.brodalf"), PASS2, &cat), NULL);
-    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, quiet, NULL), cat);
     REQUIRE_OK(bd_restore(cat, 0, "secret.txt", at("restored3"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1);
     CHECK(file_equals(at("restored3/Docs/secret.txt"), "the plans moved to the safe", 27));
@@ -406,7 +407,7 @@ int main(void)
     /* Nor for a sealed copy's nonce: those copies fail and leave nothing
      * on the drive (secret.txt changed; big.bin and exact.bin were found
      * damaged above and are copied again). */
-    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("vault"), &vault, quiet, NULL), cat);
     write_file(at("src/Docs/secret.txt"), "the plans are gone");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, vault, 0, &bs, quiet, NULL), cat);

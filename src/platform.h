@@ -11,6 +11,7 @@ typedef struct {
     int is_dir;
     int is_file;
     int is_link; /* symlink or reparse point; never followed */
+    int online_only; /* Windows: a cloud file (OneDrive "online-only") whose data is not on this PC; reading it downloads it */
     int64_t size;
     int64_t mtime_ns; /* nanoseconds since the Unix epoch */
 } bd_stat_t;

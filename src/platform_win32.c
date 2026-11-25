@@ -55,6 +55,9 @@ static int64_t filetime_to_ns(FILETIME ft)
     return (t - BD_EPOCH_DIFF) * 100;
 }
 
+#define BD_RECALL_ON_OPEN 0x00040000u        /* FILE_ATTRIBUTE_RECALL_ON_OPEN */
+#define BD_RECALL_ON_DATA_ACCESS 0x00400000u /* FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS */
+
 /* Only a reparse point that stands in for another path (a symbolic link or
  * a junction: a "name surrogate") is a link to leave out of a scan. Every
  * other reparse point is an ordinary file or folder with extra plumbing
@@ -69,6 +72,8 @@ static void fill_from_attrs(DWORD attrs, DWORD reparse_tag, DWORD size_hi, DWORD
     st->is_file = !st->is_link && !st->is_dir;
     st->size = st->is_file ? (int64_t)(((uint64_t)size_hi << 32) | size_lo) : 0;
     st->mtime_ns = filetime_to_ns(mtime);
+    /* Opening one of these makes OneDrive (or another cloud app) download it. */
+    st->online_only = st->is_file && (attrs & (BD_RECALL_ON_DATA_ACCESS | BD_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)) != 0;
 }
 
 /* The reparse tag of a reparse point. GetFileAttributesEx does not report

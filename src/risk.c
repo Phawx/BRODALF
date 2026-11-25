@@ -85,6 +85,27 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
             stats->bytes_at_risk = sqlite3_column_int64(q, 3);
         }
         sqlite3_finalize(q);
+        /* Deleted files (their last version) and older versions. */
+        if (sqlite3_prepare_v2(cat->db,
+                               "WITH k AS (SELECT n.deleted AS del, v.id IS NOT n.current_version_id AS old,"
+                               "  (SELECT COUNT(DISTINCT c.media_id) FROM copies c WHERE c.version_id=v.id AND c.state='ok'"
+                               "   AND " BD_SQL_COUNTS("c") ") AS cp"
+                               "  FROM versions v JOIN nodes n ON n.id=v.node_id"
+                               "  WHERE n.is_dir=0 AND (?2=0 OR n.source_id=?2)"
+                               "  AND (v.id IS NOT n.current_version_id OR n.deleted=1))"
+                               " SELECT COALESCE(SUM(del AND NOT old AND cp>0),0), COALESCE(SUM(del AND NOT old AND cp>0 AND cp<?1),0),"
+                               " COALESCE(SUM(old AND cp>0),0), COALESCE(SUM(old AND cp>0 AND cp<?1),0) FROM k",
+                               -1, &q, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "count deleted files and old versions");
+        sqlite3_bind_int(q, 1, t.copies);
+        sqlite3_bind_int64(q, 2, source_id);
+        if (sqlite3_step(q) == SQLITE_ROW) {
+            stats->deleted_kept = sqlite3_column_int64(q, 0);
+            stats->deleted_short = sqlite3_column_int64(q, 1);
+            stats->old_versions_kept = sqlite3_column_int64(q, 2);
+            stats->old_versions_short = sqlite3_column_int64(q, 3);
+        }
+        sqlite3_finalize(q);
     }
     if (!fn) return BD_OK;
 

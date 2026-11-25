@@ -286,8 +286,7 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     return s;
 }
 
-bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id,
-                           bd_check_stats *stats, bd_log_fn log, void *log_ctx)
+bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx)
 {
     char *path;
     if (bd_media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
@@ -322,7 +321,7 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
     }
     read_hardware(cat, id, root, log, log_ctx);
     if (out_media_id) *out_media_id = id;
-    return bd_media_check(cat, id, 0, stats, log, log_ctx);
+    return BD_OK;
 }
 
 void bd_media_disconnect(bd_catalog *cat, int64_t media_id)
@@ -398,6 +397,7 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
         sqlite3_finalize(t);
     }
     bd_progress_begin(cat, due_before ? "verify" : full ? "verify" : "check", total_files, full ? total_bytes : 0);
+    int64_t job = bd_job_start(cat, due_before ? "read back" : full ? "full check" : "quick check", media_id);
 
     if (bd_exec(cat, "BEGIN") != 0) { s = bd_fail_db(cat, "begin drive check"); goto done; }
     sqlite3_bind_int64(q, 1, media_id);
@@ -482,6 +482,8 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int full, int64
     if (s == BD_OK && cancelled) s = bd_fail_cancelled(cat);
     bd_report(cat, stats->copies, NULL, 1);
     bd_progress_end(cat);
+    bd_job_finish(cat, job, s == BD_ERR_CANCELLED ? "stopped" : s != BD_OK ? "failed" : stats->bad || stats->missing ? "partial" : "done",
+                  stats->copies, stats->bad + stats->missing, 0);
 done:
     sqlite3_finalize(q);
     sqlite3_finalize(u);

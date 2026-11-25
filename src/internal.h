@@ -155,9 +155,13 @@ int bd_exec(bd_catalog *cat, const char *sql);
  * space_log with what was happening ("plugged in", "before backup"...). */
 void bd_media_note_space(bd_catalog *cat, int64_t media_id, int64_t total, int64_t free_bytes, const char *event);
 
-/* Files in use (scan.c): the staged copy to read instead of path (malloc'd),
- * or NULL; and remember a file that could not be read because it is open. */
-char *bd_substitute_for(bd_catalog *cat, const char *path);
+/* The jobs table, which the history lists: a row when a job starts, filled
+ * in when it ends ("done", "partial", "stopped", "failed"). */
+int64_t bd_job_start(bd_catalog *cat, const char *kind, int64_t media_id);
+void bd_job_finish(bd_catalog *cat, int64_t job_id, const char *status, int64_t done, int64_t failed, int64_t bytes);
+
+/* Files in use (scan.c): remember a file that could not be read because
+ * another program has it open. */
 void bd_note_in_use(bd_catalog *cat, const char *path, int64_t size);
 
 /* Progress: begin a job's phase with its totals (0 if unknown), report the
@@ -195,5 +199,7 @@ bd_status bd_sources_fix_names(bd_catalog *cat, bd_log_fn log, void *log_ctx);
 /* Tests only: hashing threads for a scan (0: the default, -1: hash on the
  * scanning thread itself). */
 extern int bd_test_scan_workers;
+/* Tests: files whose path ends with this are taken for online-only cloud files. */
+extern const char *bd_test_online_only;
 
 #endif

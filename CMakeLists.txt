@@ -97,7 +97,7 @@ add_library(brodalf_core STATIC
     src/risk.c
     src/scan.c
     src/sheet.c
-    src/shadow.c
+    src/status.c
     src/util.c)
 target_include_directories(brodalf_core PUBLIC include PRIVATE src)
 target_link_libraries(brodalf_core PUBLIC brodalf_sqlite brodalf_blake3 brodalf_zstd brodalf_monocypher)

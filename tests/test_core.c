@@ -391,11 +391,14 @@ static void test_search(void)
     CHECK(search(cat, "nothing-like-this").n == 0);
 
     /* Options. */
-    CHECK(bd_option_get(cat, "auto_backup") == 1 && bd_option_get(cat, "check_days") == 180);
+    CHECK(bd_option_get(cat, "check_days") == 180 && bd_option_get(cat, "verify_days") == 30);
     CHECK(bd_option_get(cat, "no_such_option") == -1);
-    REQUIRE_OK(bd_option_set(cat, "auto_backup", 0), cat);
+    /* The options that started things by themselves are gone. */
+    CHECK(bd_option_get(cat, "auto_backup") == -1 && bd_option_get(cat, "schedule") == -1);
+    CHECK(bd_option_get(cat, "guard_percent") == -1);
+    CHECK(bd_option_set(cat, "auto_backup", 1) == BD_ERR_INVALID);
     REQUIRE_OK(bd_option_set(cat, "check_days", 30), cat);
-    CHECK(bd_option_get(cat, "auto_backup") == 0 && bd_option_get(cat, "check_days") == 30);
+    CHECK(bd_option_get(cat, "check_days") == 30);
     CHECK(bd_option_set(cat, "check_days", -1) == BD_ERR_INVALID);
     CHECK(bd_option_set(cat, "nope", 1) == BD_ERR_INVALID);
 
@@ -414,7 +417,8 @@ static void test_search(void)
     REQUIRE_OK(bd_option_set(cat, "check_days", 30), cat);
     int64_t again;
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_connect(cat, at("find/A"), &again, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("find/A"), &again, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, a, 0, &cs, quiet, NULL), cat);
     CHECK(due_of(cat, a).due == 1); /* a quick check is not a full one */
     REQUIRE_OK(bd_media_check(cat, a, 1, &cs, quiet, NULL), cat);
     CHECK(due_of(cat, a).due == 0);
@@ -525,8 +529,7 @@ static void test_drives_and_versions(void)
 
     /* E plugged in: it comes first. Restore its part now. */
     int64_t again;
-    bd_check_stats cs;
-    REQUIRE_OK(bd_media_connect(cat, at("span/E"), &again, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("span/E"), &again, quiet, NULL), cat);
     memset(&p, 0, sizeof(p));
     REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
     CHECK(p.n == 2 && strcmp(p.labels[0], "Drive E") == 0 && p.connected[0] && !p.connected[1]);
@@ -535,7 +538,7 @@ static void test_drives_and_versions(void)
     CHECK(rs.files_restored == 1 && rs.files_offline == 2);
 
     /* Then D arrives: the rest comes back, E's file is left alone. */
-    REQUIRE_OK(bd_media_connect(cat, at("span/D"), &again, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("span/D"), &again, quiet, NULL), cat);
     memset(&p, 0, sizeof(p));
     REQUIRE_OK(bd_restore_plan(cat, src, "", at("span/out"), collect_plan, &p, &total, &none), cat);
     CHECK(total == 2 && p.n == 1 && strcmp(p.labels[0], "Drive D") == 0);
@@ -657,6 +660,19 @@ static void on_progress(void *ctx, const bd_progress *p)
     l->last.current = "";
 }
 
+typedef struct { int n; char first_kind[32]; char first_status[16]; int64_t first_media; } job_list;
+
+static int collect_job(void *ctx, const bd_job_info *j)
+{
+    job_list *l = ctx;
+    if (!l->n++) {
+        snprintf(l->first_kind, sizeof(l->first_kind), "%s", j->kind);
+        snprintf(l->first_status, sizeof(l->first_status), "%s", j->status);
+        l->first_media = j->media_id;
+    }
+    return 0;
+}
+
 typedef struct { int n; char path[1024]; } in_use_list;
 
 static int collect_in_use(void *ctx, const char *path, int64_t size)
@@ -673,8 +689,9 @@ static int first_source_path(void *ctx, const bd_source_info *info)
     return 1;
 }
 
-/* Moves, the verify pass, progress, the ransomware guard, restoring as of
- * a date, drive suggestions and files in use. */
+/* Moves, the verify pass, progress, the backup preview and its warning of
+ * mass changes, restoring as of a date, drive suggestions, online-only
+ * files and files in use. */
 static void test_moves_guard_and_progress(void)
 {
     char name[64], text[64];
@@ -709,7 +726,12 @@ static void test_moves_guard_and_progress(void)
      * drive instead of being copied again, and the guard knows a move from damage. */
     CHECK(bd_rename_noreplace(at("g/Work/old"), at("g/Work/renamed")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 20 && ss.files_deleted == 20 && !ss.guard_tripped);
+    CHECK(ss.files_new == 20 && ss.files_deleted == 20);
+    bd_backup_preview_info pv;
+    REQUIRE_OK(bd_backup_preview(cat, d1, 0, NULL, &pv), cat);
+    CHECK(pv.files_to_copy == 20 && pv.files_to_move == 20 && pv.files_new == 0 && pv.files_changed == 0);
+    CHECK(pv.files_held == 60 && pv.held_gone == 0 && !pv.mass_change); /* a move is not damage */
+    CHECK(pv.last_scan_ms > 0 && pv.free_is_current && pv.bytes_short == 0);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_moved == 20 && bs.files_copied == 0 && bs.files_failed == 0);
     char p[1200];
@@ -724,12 +746,11 @@ static void test_moves_guard_and_progress(void)
     /* Renamed back: the old entries return, the copies move back, no alarm. */
     CHECK(bd_rename_noreplace(at("g/Work/renamed"), at("g/Work/old")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 20 && ss.files_deleted == 20 && !ss.guard_tripped);
+    CHECK(ss.files_new == 20 && ss.files_deleted == 20);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_moved == 20 && bs.files_copied == 0);
     CHECK(bd_rename_noreplace(at("g/Work/old"), at("g/Work/renamed")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(!ss.guard_tripped);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_moved == 20 && bs.files_copied == 0);
     snprintf(p, sizeof(p), "g/d1/BRODALF/%s/Work/renamed/f03.txt", bd_catalog_uuid(cat));
@@ -758,19 +779,21 @@ static void test_moves_guard_and_progress(void)
     REQUIRE_OK(bd_suggest_drive(cat, &sug), cat);
     CHECK(sug.media_id == d2 && sug.fits && sug.files == 60 && sug.free_bytes > 0 && strcmp(sug.label, "Two") == 0);
 
-    /* Half the files change at once: backups pause. */
-    int64_t before_attack = 0;
+    /* Half the files change at once. Nothing pauses by itself, but the
+     * preview warns before the user starts a backup. */
+    int64_t before_attack = bd_now_ms();
+    bd_sleep_ms(5);
     for (int i = 20; i < 55; i++) {
         snprintf(name, sizeof(name), "g/Work/keep/f%02d.txt", i);
         write_file(at(name), "ENCRYPTED GARBAGE");
     }
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_changed == 35 && ss.guard_tripped);
-    bd_guard_info g;
-    REQUIRE_OK(bd_guard_get(cat, &g), cat);
-    CHECK(g.tripped && g.files_changed == 35 && g.files_total == 60 && g.before_ms > 0);
-    before_attack = g.before_ms;
-    CHECK(bd_backup(cat, d1, 0, &bs, quiet, NULL) == BD_ERR_GUARD);
+    CHECK(ss.files_changed == 35);
+    REQUIRE_OK(bd_backup_preview(cat, d1, 0, NULL, &pv), cat);
+    CHECK(pv.files_to_copy == 35 && pv.files_changed == 35 && pv.files_new == 0 && pv.files_to_move == 0);
+    CHECK(pv.files_held == 60 && pv.held_changed == 35 && pv.held_gone == 0 && pv.mass_change);
+    REQUIRE_OK(bd_backup_preview(cat, d2, 0, NULL, &pv), cat);
+    CHECK(pv.files_to_copy == 60 && pv.files_held == 0 && !pv.mass_change && !pv.free_is_current);
 
     /* Restore as the files were before. */
     bd_restore_opts ro = {before_attack, 0};
@@ -786,29 +809,81 @@ static void test_moves_guard_and_progress(void)
     REQUIRE_OK(bd_restore(cat, src, NULL, at("g/latest"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 25 && rs.files_no_copy == 35);
 
-    /* The changes were the user's: back up again. */
+    /* The changes were the user's: back up, keeping every old version
+     * this time. */
     bd_backup_opts bo;
     memset(&bo, 0, sizeof(bo));
-    bo.ignore_guard = 1;
+    bo.keep_old_versions = 1;
     REQUIRE_OK(bd_backup_ex(cat, d1, 0, &bo, &bs, quiet, NULL), cat);
-    CHECK(bs.files_copied == 35);
-    REQUIRE_OK(bd_guard_clear(cat), cat);
-    REQUIRE_OK(bd_guard_get(cat, &g), cat);
-    CHECK(!g.tripped);
+    CHECK(bs.files_copied == 35 && bs.versions_moved == 35 && bs.versions_pruned == 0);
+    REQUIRE_OK(bd_backup_preview(cat, d1, 0, NULL, &pv), cat);
+    CHECK(pv.files_to_copy == 0 && !pv.mass_change);
+
+    /* Where the drive stands, and the history. */
+    bd_media_status mst;
+    REQUIRE_OK(bd_media_status_get(cat, d1, &mst), cat);
+    CHECK(mst.files_current == 60 && mst.files_behind == 0 && mst.files_not_here == 0);
+    CHECK(mst.old_versions == 35 && mst.copies_bad == 0);
+    CHECK(mst.last_backup_ms > 0 && mst.last_backup_end_ms >= mst.last_backup_ms);
+    CHECK(strcmp(mst.last_backup_status, "done") == 0 && mst.last_backup_files == 35);
+    CHECK(strcmp(mst.last_check_kind, "read back") == 0 && mst.copies_never_read == 36); /* 35 now, and f20 written again */
+    REQUIRE_OK(bd_media_status_get(cat, d2, &mst), cat);
+    CHECK(mst.files_current == 0 && mst.files_not_here == 60 && mst.last_backup_ms == 0 && mst.last_check_ms == 0);
+    CHECK(mst.last_backup_status[0] == 0);
+    write_file(at("g/Work/keep/f56.txt"), "file 56, second version");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_status_get(cat, d1, &mst), cat);
+    CHECK(mst.files_current == 59 && mst.files_behind == 1 && mst.files_not_here == 0);
+    job_list jl;
+    memset(&jl, 0, sizeof(jl));
+    REQUIRE_OK(bd_list_jobs(cat, 0, 0, collect_job, &jl), cat);
+    CHECK(jl.n > 10 && strcmp(jl.first_kind, "scan") == 0 && strcmp(jl.first_status, "done") == 0);
+    memset(&jl, 0, sizeof(jl));
+    REQUIRE_OK(bd_list_jobs(cat, d1, 3, collect_job, &jl), cat);
+    CHECK(jl.n == 3 && strcmp(jl.first_kind, "backup") == 0 && jl.first_media == d1);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
 
-    /* A file in use is read from its staged (shadow) copy. */
+    /* At risk also counts deleted files and older versions. */
+    bd_risk_stats rk;
+    REQUIRE_OK(bd_list_at_risk(cat, 0, NULL, NULL, &rk), cat);
+    CHECK(rk.old_versions_kept == 36 && rk.old_versions_short == 36); /* one drive, target 2 */
+    CHECK(rk.deleted_kept == 0);
+
+    /* An online-only cloud file is left alone, not read (which would
+     * download it), and comes in once it is on the PC. */
     char root[1024] = "";
     bd_list_sources(cat, first_source_path, root);
-    write_file(at("g/Work/mail.pst"), "live mailbox");
-    write_file(at("g/staged-mail.bin"), "live mailbox");
     char *mail = bd_path_join(root, "mail.pst");
-    REQUIRE_OK(bd_substitute_add(cat, mail, at("g/staged-mail.bin")), cat);
+    write_file(at("g/Work/mail.pst"), "live mailbox");
+    bd_test_online_only = "mail.pst";
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 1);
+    CHECK(ss.files_online_only == 1 && ss.files_new == 0 && ss.files_deleted == 0 && ss.errors == 0);
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_failed == 0);
+    bd_test_online_only = NULL;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_online_only == 0 && ss.files_new == 1);
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
-    bd_substitutes_clear(cat);
+    /* Once known, it stays known while online-only: not marked deleted. */
+    bd_test_online_only = "mail.pst";
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_deleted == 0);
+    bd_test_online_only = NULL;
+
+    /* The whole list as CSV. */
+    int64_t rows = 0;
+    REQUIRE_OK(bd_export_csv(cat, at("g/files.csv"), &rows), cat);
+    CHECK(rows == 81); /* 60 live, 20 deleted by the rename, mail.pst */
+    FILE *csv = fopen(at("g/files.csv"), "rb");
+    char line[512] = "";
+    CHECK(csv && fgets(line, sizeof(line), csv));
+    CHECK(memcmp(line, "\xEF\xBB\xBF\"Folder\",\"File\"", 17) == 0);
+    int found_mail = 0;
+    while (csv && fgets(line, sizeof(line), csv))
+        if (strstr(line, "mail.pst\",12,") && strstr(line, "\"no\",1,\"One\",1")) found_mail = 1;
+    CHECK(found_mail);
+    if (csv) fclose(csv);
 #ifdef _WIN32
     /* Locked against reading by another program: listed as in use. */
     wchar_t wmail[1024];
@@ -1102,7 +1177,7 @@ static void test_cancel(void)
     CHECK(bd_backup(cat, drive, 0, &bs, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
     CHECK(bs.files_copied >= 10 && bs.files_copied < 40 && bs.files_failed == 0);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == bs.files_copied);
-    CHECK(count_rows(cat, "SELECT COUNT(*) FROM jobs WHERE status='stopped'") == 1);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM jobs WHERE kind='backup' AND status='stopped'") == 1);
     check_drive_consistent(cat, drive, "cx/drive");
     int64_t first = bs.files_copied;
 
@@ -1395,59 +1470,6 @@ static void test_reserved_source_names(void)
     bd_catalog_close(cat);
 }
 
-/* What the elevated shadow-copy helper accepts: only a list whose hash
- * matches, and only files inside the protected folders. */
-static void test_shadow_list(void)
-{
-    const char *folders[] = {"C:\\Users\\me\\Documents", "D:/Mail/", "E:\\"};
-    CHECK(bd_shadow_path_allowed("C:\\Users\\me\\Documents\\Outlook.pst", folders, 3));
-    CHECK(bd_shadow_path_allowed("c:/users/ME/documents/sub/a.db", folders, 3));
-    CHECK(bd_shadow_path_allowed("D:\\Mail\\x.pst", folders, 3));
-    CHECK(bd_shadow_path_allowed("E:\\anything.txt", folders, 3));
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents", folders, 3));          /* the folder itself */
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents2\\a.pst", folders, 3));  /* only a prefix */
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\..\\..\\..\\Windows\\System32\\config\\SAM", folders, 3));
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\.\\a.pst", folders, 3));
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\. .\\a.pst", folders, 3));
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\a.pst:secret", folders, 3));
-    CHECK(!bd_shadow_path_allowed("\\\\?\\C:\\Users\\me\\Documents\\a.pst", folders, 3));
-    CHECK(!bd_shadow_path_allowed("\\\\server\\share\\a.pst", folders, 3));
-    CHECK(!bd_shadow_path_allowed("Documents\\a.pst", folders, 3));
-    CHECK(!bd_shadow_path_allowed("C:\\Windows\\System32\\config\\SAM", folders, 3));
-    CHECK(!bd_shadow_path_allowed("C:\\Users\\me\\Documents\\a.pst", folders, 0));
-
-    const char *files[] = {"C:\\Users\\me\\Documents\\Outlook.pst", "C:\\Windows\\System32\\config\\SAM"};
-    char hash[65];
-    char *text = bd_shadow_list_format("S-1-5-21-1-2-3-1001", folders, 3, files, 2, hash);
-    CHECK(text != NULL && strlen(hash) == 64);
-    if (!text) return;
-    bd_shadow_list l;
-    CHECK(bd_shadow_list_parse(text, strlen(text), hash, &l) == 0);
-    CHECK(l.user_sid && strcmp(l.user_sid, "S-1-5-21-1-2-3-1001") == 0);
-    CHECK(l.n_folders == 3 && strcmp(l.folders[1], "D:/Mail/") == 0);
-    CHECK(l.n_files == 2 && strcmp(l.files[1], "C:\\Windows\\System32\\config\\SAM") == 0);
-    CHECK(bd_shadow_path_allowed(l.files[0], (const char *const *)l.folders, l.n_folders));
-    CHECK(!bd_shadow_path_allowed(l.files[1], (const char *const *)l.folders, l.n_folders));
-    bd_shadow_list_free(&l);
-    /* Changed after the hash was taken (as on the helper's command line). */
-    char *tampered = bd_strdup(text);
-    tampered[strlen(tampered) - 2] = 'X';
-    CHECK(bd_shadow_list_parse(tampered, strlen(tampered), hash, &l) == -2);
-    CHECK(bd_shadow_list_parse(text, strlen(text), "00", &l) == -2);
-    CHECK(bd_shadow_list_parse(text, strlen(text), NULL, &l) == -2);
-    free(tampered);
-    const char *bad[] = {"C:\\a\nfile\tC:\\Windows\\win.ini"};
-    CHECK(bd_shadow_list_format("S-1-5-21-1", folders, 3, bad, 1, hash) == NULL);
-    free(text);
-
-    /* The helper refuses a list whose hash does not match, before any copy. */
-    write_file(at("shadow/list.txt"), "BRODALF shadow-copy list 1\nuser\tS-1-5-21-1\nfile\tC:\\x\n");
-    char err[256];
-    CHECK(bd_shadow_helper(at("shadow/out"), at("shadow/list.txt"), hash, err, sizeof(err)) == -1);
-    CHECK(strstr(err, "changed") != NULL);
-    CHECK(!exists(at("shadow/out")));
-}
-
 typedef struct { char path[8][1024]; int64_t id[8]; int n; } source_paths;
 
 static int collect_sources(void *ctx, const bd_source_info *info)
@@ -1497,7 +1519,8 @@ static void test_recover_and_relocate(void)
     CHECK(strcmp(bd_catalog_uuid(cat), uuid) == 0);
     int64_t found = 0;
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_connect(cat, at("r/d1"), &found, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("r/d1"), &found, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, found, 0, &cs, quiet, NULL), cat);
     CHECK(found == d1 && cs.ok == 3 && cs.missing == 0);
 
     /* The user folder has another name here. Until it is pointed there a
@@ -1774,7 +1797,8 @@ int main(void)
     bd_catalog_close(cat);
     REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &cat), NULL);
     bd_check_stats cs;
-    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, drive, 0, &cs, quiet, NULL), cat);
     CHECK(cs.copies == 2 && cs.ok == 2);
     CHECK(lookup(cat, src, 0, "a.txt").state == BD_STATE_AVAILABLE);
 
@@ -1867,7 +1891,7 @@ int main(void)
     CHECK(bs.files_copied == 1);
     bd_catalog_close(cat); /* closed without saving */
     REQUIRE_OK(bd_catalog_open(at("test.brodalf"), &cat), NULL);
-    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 0);
     CHECK(bs.files_already_there == 3);
@@ -1918,7 +1942,7 @@ int main(void)
     CHECK(strcmp(media_of(cat, drive).location, "") == 0);
     REQUIRE_OK(bd_media_rename(cat, drive, "Blue WD 4TB"), cat);
     bd_media_disconnect(cat, drive);
-    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, &cs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_connect(cat, at("drive"), &drive, quiet, NULL), cat);
     char pm[1200];
     snprintf(pm, sizeof(pm), "%s/BRODALF.media", drive_dir);
     bd_media_file mfile;
@@ -1973,7 +1997,6 @@ int main(void)
 #ifndef _WIN32
     test_mtimes();
 #endif
-    test_shadow_list();
     test_recover_and_relocate();
     test_replace_drive();
     test_deleted_files();

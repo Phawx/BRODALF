@@ -316,13 +316,19 @@ int bd_skip_match(const char *patterns, const char *rel_path, int is_dir)
 #define HASH_MAX_WORKERS 8
 
 int bd_test_scan_workers = 0;
+const char *bd_test_online_only = NULL;
+
+static int bd_rel_ends_with(const char *rel, const char *tail)
+{
+    size_t a = strlen(rel), b = strlen(tail);
+    return a >= b && strcmp(rel + a - b, tail) == 0;
+}
 
 typedef struct {
     /* From the walk. */
-    char *path;     /* what to read: the file, or its staged copy */
+    char *path;     /* what to read (the file itself) */
     char *full;     /* the file itself */
     char *rel;
-    int staged;
     int is_new, was_deleted;
     int64_t node_id, old_version, size, mtime_ns;
     /* From the worker. */
@@ -352,7 +358,7 @@ typedef struct {
     bd_scan_stats *stats;
     bd_log_fn log;
     void *log_ctx;
-    sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file, *arrive;
+    sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
     sqlite3_stmt *find_case, *rename_node;
     char **failed_dirs; /* relative folders that could not be read */
@@ -413,10 +419,10 @@ static void apply_hash(scan_ctx *c, hash_job *j)
 {
     if (c->db_error) goto done;
     if (j->rc == -4) { c->cancelled = 1; goto done; } /* the scan is being stopped */
-    if (j->rc != 0 && !j->staged && j->in_use) {
+    if (j->rc != 0 && j->in_use) {
         bd_note_in_use(c->cat, j->full, j->size);
         c->stats->files_in_use++;
-        bd_logf(c->log, c->log_ctx, "in use by another program, cannot read it now: %s", j->rel);
+        bd_logf(c->log, c->log_ctx, "in use by another program, skipped: %s", j->rel);
         goto done;
     }
     if (j->rc != 0) {
@@ -440,7 +446,6 @@ static void apply_hash(scan_ctx *c, hash_job *j)
     if (j->is_new || j->was_deleted) c->stats->files_new++;
     else if (version_id != j->old_version) c->stats->files_changed++;
 done:
-    if (j->path != j->full) free(j->path);
     free(j->full);
     free(j->rel);
     j->path = j->full = j->rel = NULL;
@@ -642,17 +647,20 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         if (sqlite3_step(c->touch_node) != SQLITE_DONE) { free(key); c->db_error = 1; return 1; }
     }
     free(key);
-    /* New and returning entries are what a disappeared file may have moved to. */
-    if (old_size < 0 || was_deleted) {
-        sqlite3_reset(c->arrive);
-        sqlite3_bind_int64(c->arrive, 1, node_id);
-        sqlite3_step(c->arrive);
-    }
     if (st->is_dir) return 0;
 
-    int is_new = old_size < 0;
+    int is_new = old_size < 0 || !old_version; /* no version yet: first read now */
     if (!is_new && old_version && old_size == st->size && old_mtime == st->mtime_ns) {
         if (was_deleted) c->stats->files_new++; /* back where it once was */
+        return 0;
+    }
+    /* A cloud file that is not on this PC would be downloaded by reading
+     * it. Leave it alone: the catalog keeps what it knew, and nothing is
+     * marked deleted. */
+    if (st->online_only || (bd_test_online_only && bd_rel_ends_with(rel, bd_test_online_only))) {
+        if (!c->stats->files_online_only++)
+            bd_logf(c->log, c->log_ctx, "files that are online-only (in the cloud, not on this PC) are skipped, not downloaded");
+        bd_logf(c->log, c->log_ctx, "online-only, skipped: %s", rel);
         return 0;
     }
 
@@ -667,10 +675,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         bd_logf(c->log, c->log_ctx, "cannot read %s; keeping what the catalog already knows", rel);
         return 0;
     }
-    /* A file in use is read from its shadow copy, when one was taken. */
-    j.path = bd_substitute_for(c->cat, j.full);
-    j.staged = j.path != NULL;
-    if (!j.path) j.path = j.full;
+    j.path = j.full;
     j.is_new = is_new;
     j.was_deleted = was_deleted;
     j.node_id = node_id;
@@ -808,7 +813,6 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, hash_pool *
 
     struct { sqlite3_stmt **st; const char *sql; } stmts[] = {
         {&c.find_node, "SELECT id, size, mtime_ns, current_version_id, deleted FROM nodes WHERE source_id=? AND rel_path=?"},
-        {&c.arrive, "INSERT OR IGNORE INTO temp.arrived(node_id) VALUES(?)"},
         {&c.find_parent, "SELECT id FROM nodes WHERE source_id=? AND rel_path=?"},
         {&c.insert_node, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms,rel_fold) VALUES(?,?,?,?,?,?,?)"},
         /* The same name in other letter case, not seen yet in this scan. */
@@ -863,82 +867,6 @@ done:
     return s;
 }
 
-/* ---- The ransomware guard ---------------------------------------------- */
-
-#define GUARD_MIN_FILES 50
-
-static int64_t setting_num(bd_catalog *cat, const char *key)
-{
-    char v[32];
-    return bd_setting_get(cat, key, v, sizeof(v)) ? strtoll(v, NULL, 10) : 0;
-}
-
-static void setting_num_set(bd_catalog *cat, const char *key, int64_t n)
-{
-    char v[32];
-    snprintf(v, sizeof(v), "%lld", (long long)n);
-    bd_setting_set(cat, key, v);
-}
-
-bd_status bd_guard_get(bd_catalog *cat, bd_guard_info *out)
-{
-    memset(out, 0, sizeof(*out));
-    out->tripped_ms = setting_num(cat, "guard.tripped_ms");
-    out->tripped = out->tripped_ms > 0;
-    if (!out->tripped) return BD_OK;
-    out->before_ms = setting_num(cat, "guard.before_ms");
-    out->files_changed = setting_num(cat, "guard.changed");
-    out->files_deleted = setting_num(cat, "guard.deleted");
-    out->files_total = setting_num(cat, "guard.total");
-    return BD_OK;
-}
-
-bd_status bd_guard_clear(bd_catalog *cat)
-{
-    return bd_setting_set(cat, "guard.tripped_ms", "0") == 0 ? BD_OK : bd_fail_db(cat, "resume backups");
-}
-
-static void check_guard(bd_catalog *cat, bd_scan_stats *stats, int64_t known, int64_t scan_ms, int64_t prev_scan_ms,
-                        bd_log_fn log, void *log_ctx)
-{
-    int pct = bd_option_get(cat, "guard_percent");
-    if (pct <= 0 || known < GUARD_MIN_FILES) return;
-    /* A file that disappeared while one with the same checksum and size turned
-     * up is a move or rename, not damage: renaming a big folder is not an attack. */
-    int64_t moved = 0;
-    sqlite3_stmt *q;
-    if (stats->files_deleted > 0 &&
-        sqlite3_prepare_v2(cat->db,
-                           "SELECT COUNT(*) FROM nodes d JOIN versions dv ON dv.id=d.current_version_id"
-                           " WHERE d.deleted=1 AND d.is_dir=0 AND d.last_seen_ms>=?1 AND d.last_seen_ms<?2"
-                           " AND EXISTS(SELECT 1 FROM temp.arrived a JOIN nodes nn ON nn.id=a.node_id"
-                           "            JOIN versions nv ON nv.id=nn.current_version_id"
-                           "            WHERE nn.deleted=0 AND nv.hash=dv.hash AND nv.size=dv.size)",
-                           -1, &q, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(q, 1, prev_scan_ms);
-        sqlite3_bind_int64(q, 2, scan_ms);
-        if (sqlite3_step(q) == SQLITE_ROW) moved = sqlite3_column_int64(q, 0);
-        sqlite3_finalize(q);
-    }
-    int64_t hit = stats->files_changed + stats->files_deleted - moved;
-    if (hit * 100 < known * pct) return;
-    stats->guard_tripped = 1;
-    bd_guard_info g;
-    bd_guard_get(cat, &g);
-    if (!g.tripped) {
-        /* Keep the first trip's "before": a later scan comes after the damage. */
-        setting_num_set(cat, "guard.before_ms", prev_scan_ms);
-        setting_num_set(cat, "guard.changed", stats->files_changed);
-        setting_num_set(cat, "guard.deleted", stats->files_deleted - moved);
-        setting_num_set(cat, "guard.total", known);
-        setting_num_set(cat, "guard.tripped_ms", scan_ms);
-    }
-    bd_logf(log, log_ctx,
-            "%lld of %lld files changed or disappeared since the last scan. Backups are paused so the copies made "
-            "before stay as they are",
-            (long long)hit, (long long)known);
-}
-
 /* ---- Files in use --------------------------------------------------------- */
 
 void bd_note_in_use(bd_catalog *cat, const char *path, int64_t size)
@@ -963,34 +891,6 @@ bd_status bd_list_in_use(bd_catalog *cat, bd_in_use_fn fn, void *ctx)
     return BD_OK;
 }
 
-bd_status bd_substitute_add(bd_catalog *cat, const char *path, const char *staged)
-{
-    sqlite3_stmt *u;
-    if (sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.substitute(path, staged) VALUES(?,?)", -1, &u, NULL) != SQLITE_OK)
-        return bd_fail_db(cat, "use a shadow copy");
-    sqlite3_bind_text(u, 1, path, -1, SQLITE_STATIC);
-    sqlite3_bind_text(u, 2, staged, -1, SQLITE_STATIC);
-    int rc = sqlite3_step(u);
-    sqlite3_finalize(u);
-    return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "use a shadow copy");
-}
-
-void bd_substitutes_clear(bd_catalog *cat)
-{
-    bd_exec(cat, "DELETE FROM temp.substitute");
-}
-
-char *bd_substitute_for(bd_catalog *cat, const char *path)
-{
-    sqlite3_stmt *q;
-    char *r = NULL;
-    if (sqlite3_prepare_v2(cat->db, "SELECT staged FROM temp.substitute WHERE path=?", -1, &q, NULL) != SQLITE_OK) return NULL;
-    sqlite3_bind_text(q, 1, path, -1, SQLITE_STATIC);
-    if (sqlite3_step(q) == SQLITE_ROW) r = bd_strdup((const char *)sqlite3_column_text(q, 0));
-    sqlite3_finalize(q);
-    return r;
-}
-
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_scan_stats local;
@@ -1004,7 +904,7 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     typedef struct { int64_t id; char *path; } src;
     src *list = NULL;
     size_t len = 0;
-    int64_t scan_ms = bd_now_ms(), prev_scan_ms = 0;
+    int64_t scan_ms = bd_now_ms();
     while (sqlite3_step(q) == SQLITE_ROW) {
         src *nl = realloc(list, (len + 1) * sizeof(src));
         if (!nl) break;
@@ -1014,7 +914,6 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
         /* last_seen_ms marks what this scan saw, so it must move forward. */
         int64_t prev = sqlite3_column_int64(q, 2);
         if (scan_ms <= prev) scan_ms = prev + 1;
-        if (prev > prev_scan_ms) prev_scan_ms = prev;
         len++;
     }
     sqlite3_finalize(q);
@@ -1026,7 +925,8 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
         sqlite3_finalize(q);
     }
     bd_progress_begin(cat, "scan", expect, 0);
-    bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.arrived");
+    bd_exec(cat, "DELETE FROM temp.in_use");
+    int64_t job = bd_job_start(cat, "scan", 0);
 
     bd_status s = BD_OK;
     char *patterns = bd_skip_list_get(cat);
@@ -1042,22 +942,19 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     if (pool.workers < 1) pool.workers = 1;
     if (bd_test_scan_workers) pool.workers = bd_test_scan_workers < 0 ? 0 : bd_test_scan_workers;
     if (pool.workers > HASH_MAX_WORKERS) pool.workers = HASH_MAX_WORKERS;
-    size_t finished = 0;
     for (size_t i = 0; i < len && s == BD_OK; i++) {
         bd_logf(log, log_ctx, "scanning %s", list[i].path);
         bd_scan_stats before = *stats;
         s = scan_source(cat, &skip, &pool, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
         if (s == BD_ERR_CANCELLED) *stats = before; /* that folder was rolled back */
-        else if (s == BD_OK) finished++;
     }
     pool_stop(&pool);
     skip_free(&skip);
     for (size_t i = 0; i < len; i++) free(list[i].path);
     free(list);
-    /* The folders a stopped scan finished are recorded, so they count too. */
-    if (s == BD_OK || (s == BD_ERR_CANCELLED && finished > 0))
-        check_guard(cat, stats, expect, scan_ms, prev_scan_ms, log, log_ctx);
     bd_report(cat, stats->files_seen, NULL, 1);
     bd_progress_end(cat);
+    bd_job_finish(cat, job, s == BD_ERR_CANCELLED ? "stopped" : s != BD_OK ? "failed" : stats->errors ? "partial" : "done",
+                  stats->files_seen, stats->errors, stats->bytes_hashed);
     return s;
 }

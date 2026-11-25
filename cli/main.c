@@ -2295,6 +2295,7 @@ static int run(int argc, char **argv)
             s = bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, &rs, log_line, NULL);
         }
         if (s == BD_ERR_CANCELLED) return stopped(cat, "restore (run the same restore again to carry on)");
+        if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
         if (s != BD_OK) return die(cat, "restore failed");
         print_restore_stats(cat, &rs);
         save = 1;

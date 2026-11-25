@@ -2726,6 +2726,114 @@ static void test_drive_gone(void)
     bd_catalog_close(cat);
 }
 
+/* Keeps every log line, to look for one. */
+typedef struct {
+    char text[16384];
+    size_t len;
+} log_keep;
+
+static void keep_log(void *ctx, const char *msg)
+{
+    log_keep *k = ctx;
+    int n = snprintf(k->text + k->len, sizeof(k->text) - k->len, "%s\n", msg);
+    if (n > 0) k->len += (size_t)n < sizeof(k->text) - k->len ? (size_t)n : sizeof(k->text) - k->len - 1;
+}
+
+static int64_t copy_state_count(bd_catalog *cat, int64_t media_id, const char *name, const char *state)
+{
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM copies c JOIN versions v ON v.id=c.version_id JOIN nodes n ON n.id=v.node_id"
+             " WHERE c.media_id=%lld AND n.name='%s' AND c.state='%s'",
+             (long long)media_id, name, state);
+    return count_rows(cat, sql);
+}
+
+/* A restore reads the next good copy when the first one it tries is
+ * damaged or missing, and marks that one. */
+static void test_restore_fallback(void)
+{
+    write_file(at("rf/Src/a.txt"), "the first file");
+    write_file(at("rf/Src/b.txt"), "the second file");
+    write_file(at("rf/Src/c.txt"), "the third file");
+    write_file(at("rf/Src/d.txt"), "the fourth file");
+    bd_mkdirs(at("rf/d1"));
+    bd_mkdirs(at("rf/d2"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("rf/c.brodalf"), &cat), NULL);
+    int64_t src, d1, d2;
+    REQUIRE_OK(bd_source_add(cat, at("rf/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("rf/d1"), "Drive One", 0, &d1), cat);
+    REQUIRE_OK(bd_media_init(cat, at("rf/d2"), "Drive Two", 0, &d2), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4);
+    REQUIRE_OK(bd_backup(cat, d2, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4);
+    char dir1[1200], path[1300];
+    snprintf(dir1, sizeof(dir1), "rf/d1/BRODALF/%s/Src", bd_catalog_uuid(cat));
+
+    /* The drive read from goes halfway through: the restore stops, keeps
+     * what it restored, and marks nothing missing. */
+    vanish_at va;
+    memset(&va, 0, sizeof(va));
+    va.cat = cat;
+    va.phase = "restore";
+    va.from = at("rf/d1");
+    va.to = at("rf/d1-away");
+    va.after_files = 2;
+    bd_catalog_set_progress(cat, vanish_progress, &va);
+    bd_restore_stats rs;
+    bd_status st = bd_restore(cat, 0, NULL, at("rf/out1"), &rs, quiet, NULL);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(va.fired && va.moved);
+    CHECK(st == BD_ERR_DRIVE_GONE && strstr(bd_catalog_error(cat), "Drive One") != NULL);
+    CHECK(rs.files_restored == 2 && rs.files_failed == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+    CHECK(bd_rename_noreplace(at("rf/d1-away"), at("rf/d1")) == 0);
+
+    /* On the drive tried first, a's copy rots (same size, other bytes) and
+     * b's is lost. The restore reads them from the second drive. */
+    snprintf(path, sizeof(path), "%s/a.txt", dir1);
+    write_file(at(path), "THE first file");
+    snprintf(path, sizeof(path), "%s/b.txt", dir1);
+    CHECK(bd_remove(at(path)) == 0);
+    log_keep lk;
+    memset(&lk, 0, sizeof(lk));
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("rf/out2"), &rs, keep_log, &lk), cat);
+    CHECK(rs.files_restored == 4 && rs.files_failed == 0);
+    CHECK(file_equals(at("rf/out2/a.txt"), "the first file"));
+    CHECK(file_equals(at("rf/out2/b.txt"), "the second file"));
+    CHECK(file_equals(at("rf/out2/c.txt"), "the third file"));
+    CHECK(strstr(lk.text, "the copy on \"Drive One\" is damaged") != NULL);
+    CHECK(strstr(lk.text, "the copy on \"Drive One\" is missing") != NULL);
+    CHECK(strstr(lk.text, "from the copy on \"Drive Two\"") != NULL);
+    CHECK(copy_state_count(cat, d1, "a.txt", "bad") == 1);
+    CHECK(copy_state_count(cat, d1, "b.txt", "missing") == 1);
+    CHECK(copy_state_count(cat, d2, "a.txt", "ok") == 1 && copy_state_count(cat, d2, "b.txt", "ok") == 1);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 2);
+
+    /* One version, the same way: c's copy on the first drive rots too. */
+    snprintf(path, sizeof(path), "%s/c.txt", dir1);
+    write_file(at(path), "THE third file");
+    int64_t c_version = count_rows(cat, "SELECT current_version_id FROM nodes WHERE name='c.txt'");
+    REQUIRE_OK(bd_restore_version(cat, c_version, at("rf/out3"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && rs.files_failed == 0);
+    CHECK(file_equals(at("rf/out3/c.txt"), "the third file"));
+    CHECK(copy_state_count(cat, d1, "c.txt", "bad") == 1);
+
+    /* No good copy anywhere: not restored, nothing written. */
+    snprintf(path, sizeof(path), "rf/d2/BRODALF/%s/Src/a.txt", bd_catalog_uuid(cat));
+    write_file(at(path), "THE first file");
+    REQUIRE_OK(bd_restore(cat, 0, "a.txt", at("rf/out4"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 0 && rs.files_failed == 1);
+    CHECK(!exists(at("rf/out4/a.txt")));
+    CHECK(copy_state_count(cat, d2, "a.txt", "bad") == 1);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -3062,6 +3170,7 @@ int main(void)
     test_encrypt_folders();
     test_shadow_list();
     test_drive_gone();
+    test_restore_fallback();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

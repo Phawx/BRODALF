@@ -183,7 +183,7 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
                            "SELECT v.version_no, v.id=n.current_version_id, v.hash, v.size, v.mtime_ns, v.first_seen_ms,"
                            " COALESCE(c.media_id,0), m.label, c.path_on_media, c.state, k.media_id IS NOT NULL,"
                            " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(c.encrypted<>0 OR m.encrypted<>0,0),"
-                           " COALESCE(m.location,''), v.id, m.retired_ms IS NOT NULL"
+                           " COALESCE(m.location,''), v.id, m.retired_ms IS NOT NULL, c.last_full_check_ms IS NOT NULL"
                            " FROM versions v JOIN nodes n ON n.id=v.node_id"
                            " LEFT JOIN copies c ON c.version_id=v.id LEFT JOIN media m ON m.id=c.media_id"
                            " LEFT JOIN temp.connected k ON k.media_id=c.media_id"
@@ -209,6 +209,7 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
         info.media_location = info.media_id ? (const char *)sqlite3_column_text(q, 13) : "";
         info.version_id = sqlite3_column_int64(q, 14);
         info.media_lost = info.media_id ? sqlite3_column_int(q, 15) : 0;
+        info.read_back = info.media_id ? sqlite3_column_int(q, 16) : 0;
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
@@ -242,12 +243,17 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " m.retired_ms, COALESCE(m.lost_why,''),"
                            " (SELECT COALESCE(SUM(v.size),0) FROM copies c JOIN versions v ON v.id=c.version_id"
                            "   WHERE c.media_id=m.id AND c.state='ok'),"
-                           " m.secondary, COALESCE(m.limit_bytes,0), m.hide_names"
+                           " m.secondary, COALESCE(m.limit_bytes,0), m.hide_names,"
+                           " (SELECT MIN(c.written_ms) FROM copies c WHERE c.media_id=m.id AND c.state='ok'"
+                           "   AND c.last_full_check_ms IS NULL)"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list drives");
     int check_days = bd_option_get(cat, "check_days");
+    /* A copy never read back since it was written is due sooner: whatever
+     * went wrong in the writing shows up while the file is still on the PC. */
+    int unread_days = check_days < BD_UNREAD_CHECK_DAYS ? check_days : BD_UNREAD_CHECK_DAYS;
     int64_t reserve = bd_reserve_bytes(cat);
     int64_t now = bd_now_ms();
     while (sqlite3_step(q) == SQLITE_ROW) {
@@ -276,8 +282,10 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.secondary = sqlite3_column_int(q, 37);
         info.limit_bytes = sqlite3_column_int64(q, 38);
         info.hide_names = sqlite3_column_int(q, 39);
-        info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
-                         now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;
+        int64_t oldest_unread = col_num(q, 40);
+        info.check_due = check_days > 0 &&
+                         ((info.oldest_check_ms > 0 && now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000) ||
+                          (oldest_unread > 0 && now - oldest_unread >= (int64_t)unread_days * 24 * 3600 * 1000));
         bd_drive_hw hw;
         info.hw = NULL;
         info.hw_read_ms = 0;

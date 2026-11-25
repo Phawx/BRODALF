@@ -74,6 +74,7 @@ static void usage(void)
          "                                             short of the copies you want (first 50; --all for all)\n"
          "  check    <catalog> <root>                  read every copy on the drive back and check it\n"
          "  verify   <catalog> <root> [--days N]       read back only copies not read back in N days\n"
+         "  verify   <catalog> <root> --unread         read back only copies never read back since they were written\n"
          "  compress <catalog> <root> [on|off]        Windows' own file compression for BRODALF's folder on the drive:\n"
          "                                             say whether it is on, or turn it on or off (NTFS drives only)\n"
          "  sets     <catalog>                         progress toward each full set of backups\n"
@@ -106,7 +107,9 @@ static void usage(void)
          "                                             every version of a file and its copies\n"
          "  restore  <catalog> <dest> [--root NAME] [--path REL] [--deleted] --drive ROOT...\n"
          "                                             restore files as they are now (or, with --deleted, the\n"
-         "                                             deleted ones as last seen); nothing is overwritten\n"
+         "                                             deleted ones as last seen); a file whose newest contents\n"
+         "                                             were never backed up comes back as the newest version\n"
+         "                                             that was; nothing is overwritten\n"
          "  restore-version <catalog> <root> <path> <version> <dest folder> --drive ROOT...\n"
          "                                             restore one version of one file\n"
          "  restore-plan <catalog> [--root NAME] [--path REL] [--dest DIR] [--deleted] [--drive ROOT]...\n"
@@ -577,6 +580,21 @@ static int stopped(bd_catalog *cat, const char *what)
     return 3;
 }
 
+/* A drive was unplugged or stopped answering during a job: what the job
+ * finished is kept and nothing on the drive was taken for missing. Not a
+ * fault in BRODALF, so no error report. */
+static int drive_gone(bd_catalog *cat)
+{
+    clear_progress();
+    fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+    bd_applog("%s", bd_catalog_error(cat));
+    if (g_json) { J_OBJ(NULL); j_bool("drive_gone", 1); J_END(); }
+    g_cat = NULL;
+    if (bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
+    bd_catalog_close(cat);
+    return 1;
+}
+
 /* ---- Printing ------------------------------------------------------------ */
 
 static int print_source(void *ctx, const bd_source_info *s)
@@ -902,6 +920,7 @@ static int print_copy(void *ctx, const bd_copy_info *c)
             j_bool("connected", c->connected);
             j_bool("encrypted", c->encrypted);
             j_bool("drive_lost", c->media_lost);
+            j_bool("read_back", c->read_back);
             j_str("kept_in", c->media_location);
         }
         J_END();
@@ -909,9 +928,10 @@ static int print_copy(void *ctx, const bd_copy_info *c)
     }
     printf("v%-3d %s %12lld bytes  %.16s...", c->version_no, c->is_current ? "current" : "       ", (long long)c->size, c->hash);
     if (c->media_id)
-        printf("  on %s (%s%s%s%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
-               c->encrypted ? ", encrypted" : "", c->media_lost ? ", drive marked lost" : "",
-               c->media_location[0] ? ", kept in " : "", c->media_location, c->path_on_media);
+        printf("  on %s (%s%s%s%s%s%s%s) %s", c->media_label, c->copy_state, c->connected ? ", connected" : ", offline",
+               c->read_back || strcmp(c->copy_state, "ok") != 0 ? "" : ", not read back yet", c->encrypted ? ", encrypted" : "",
+               c->media_lost ? ", drive marked lost" : "", c->media_location[0] ? ", kept in " : "", c->media_location,
+               c->path_on_media);
     else printf("  no copy");
     printf("\n");
     return 0;
@@ -1264,6 +1284,7 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
         j_int("files_need_passphrase", rs->files_need_passphrase);
         j_int("files_failed", rs->files_failed);
         j_int("files_conflict", rs->files_conflict);
+        j_int("files_older_version", rs->files_older_version);
         J_ARR("conflicts");
         bd_list_restore_conflicts(cat, print_conflict, &conflicts);
         J_END_ARR();
@@ -1274,6 +1295,9 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
            "%lld never backed up, %lld failed\n",
            (long long)rs->files_restored, (long long)rs->bytes_restored, (long long)rs->files_already_there,
            (long long)rs->files_offline, (long long)rs->files_no_copy, (long long)rs->files_failed);
+    if (rs->files_older_version)
+        printf("%lld files came back as an older version: their newest contents were never backed up"
+               " (each is named above)\n", (long long)rs->files_older_version);
     if (rs->files_need_passphrase)
         printf("%lld files are on encrypted drives and need the passphrase\n", (long long)rs->files_need_passphrase);
     if (rs->files_offline) puts("run the same restore again with the other drives (restore-plan says which); what is there is kept");
@@ -1385,6 +1409,16 @@ static int cmd_recover(int argc, char **argv)
         if (g_json) J_END();
         return die(NULL, "the recovered catalog does not open");
     }
+    /* A catalog from a drive may hold anything: say which of its paths a
+     * restore will not write. */
+    int64_t unsafe = 0;
+    if (bd_check_stored_paths(cat, log_line, NULL, &unsafe) != BD_OK) {
+        if (g_json) J_END();
+        return die(cat, "cannot look through the recovered catalog");
+    }
+    if (unsafe && !g_json)
+        fprintf(msg_out(), "%lld paths in the recovered catalog could lead outside their folders; those files are never"
+                           " restored or backed up\n", (long long)unsafe);
     /* A scan finds which roots are where they were; a missing one is left
      * as it was, nothing in it marked deleted. */
     bd_scan_stats st;
@@ -1394,6 +1428,7 @@ static int cmd_recover(int argc, char **argv)
         j_str("catalog", dest);
         j_str("from", f.path);
         j_int("roots_missing", st.roots_missing);
+        j_int("unsafe_paths", unsafe);
         J_END();
     } else {
         printf("recovered the catalog to %s from %s\n", dest, f.path);
@@ -1994,15 +2029,20 @@ static int run(int argc, char **argv)
         if (connect_target(cat, pos[0], &media_id) != BD_OK) return die(cat, "cannot use the drive");
         if (strcmp(cmd, "check") == 0 || strcmp(cmd, "verify") == 0) {
             int verify = strcmp(cmd, "verify") == 0;
+            int unread = verify && has_flag(argc, argv, "--unread");
             const char *d = opt(argc, argv, "--days");
+            if (unread && d) return refuse(cat, "give --days or --unread, not both");
             int days = d ? atoi(d) : bd_option_get(cat, "verify_days");
             bd_check_stats cs;
-            bd_status s = verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
-                                 : bd_media_check(cat, media_id, &cs, log_line, NULL);
+            bd_status s = unread   ? bd_media_verify_unread(cat, media_id, &cs, log_line, NULL)
+                          : verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
+                                   : bd_media_check(cat, media_id, &cs, log_line, NULL);
             if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0)
-                s = verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
-                           : bd_media_check(cat, media_id, &cs, log_line, NULL);
+                s = unread   ? bd_media_verify_unread(cat, media_id, &cs, log_line, NULL)
+                    : verify ? bd_media_verify(cat, media_id, days, &cs, log_line, NULL)
+                             : bd_media_check(cat, media_id, &cs, log_line, NULL);
             if (s == BD_ERR_CANCELLED) return stopped(cat, verify ? "read-back" : "check");
+            if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
             if (s != BD_OK) return die(cat, "check failed");
             if (g_json) {
                 J_OBJ(NULL);
@@ -2053,6 +2093,7 @@ static int run(int argc, char **argv)
                 bd_catalog_copy_to_media(cat, media_id);
                 return stopped(cat, "backup");
             }
+            if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
             if (s != BD_OK) return die(cat, "backup failed");
             print_backup_result(cat, NULL, &bs);
         } else {
@@ -2071,6 +2112,7 @@ static int run(int argc, char **argv)
                     for (int i = 0; i < npos; i++) bd_catalog_copy_to_media(cat, ids[i]);
                     return stopped(cat, "backup");
                 }
+                if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
                 if (s != BD_OK) return die(cat, "backup failed");
                 if (g_json) J_ARR(NULL);
                 for (int i = 0; i < npos; i++) print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
@@ -2084,6 +2126,10 @@ static int run(int argc, char **argv)
                         bd_catalog_copy_to_media(cat, ids[i]);
                         if (g_json) J_END_ARR();
                         return stopped(cat, "backup");
+                    }
+                    if (s == BD_ERR_DRIVE_GONE) {
+                        if (g_json) J_END_ARR();
+                        return drive_gone(cat);
                     }
                     if (s != BD_OK) return die(cat, "backup failed");
                     print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
@@ -2273,6 +2319,7 @@ static int run(int argc, char **argv)
             s = bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, &rs, log_line, NULL);
         }
         if (s == BD_ERR_CANCELLED) return stopped(cat, "restore (run the same restore again to carry on)");
+        if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
         if (s != BD_OK) return die(cat, "restore failed");
         print_restore_stats(cat, &rs);
         save = 1;

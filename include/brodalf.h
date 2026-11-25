@@ -30,7 +30,10 @@ typedef enum {
     BD_ERR_INVALID,
     BD_ERR_NOMEM,
     BD_ERR_PASSPHRASE, /* a passphrase is needed, or the one given is wrong */
-    BD_ERR_CANCELLED   /* stopped by bd_catalog_cancel; what was done until then is kept */
+    BD_ERR_CANCELLED,  /* stopped by bd_catalog_cancel; what was done until then is kept */
+    BD_ERR_DRIVE_GONE  /* a drive the job was using was unplugged, stopped answering or was
+                          swapped for another: the job stopped, what it finished is kept,
+                          and nothing on that drive was marked missing or damaged */
 } bd_status;
 
 typedef void (*bd_log_fn)(void *ctx, const char *message);
@@ -57,6 +60,14 @@ bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_cata
  * which must not exist yet, then open dest_path as usual. Fails with
  * BD_ERR_FORMAT if backup_path is not a catalog; bd_open_error says why. */
 bd_status bd_catalog_recover(const char *backup_path, const char *dest_path);
+
+/* After opening a recovered catalog: look for paths in it that a restore
+ * will not write (empty parts, ".", "..", absolute paths, and on Windows
+ * ':' or '\\'), as a catalog from a drive may hold anything. Each is
+ * logged (the first 20) and counted in *unsafe. Nothing is changed; a
+ * restore never writes such a file, logs it and counts it as failed, and a
+ * backup does not copy it. */
+bd_status bd_check_stored_paths(bd_catalog *cat, bd_log_fn log, void *log_ctx, int64_t *unsafe);
 
 /* The catalogs a drive holds copies of, to recover from. dir may be the
  * drive, its BRODALF folder, or one catalog's folder on it. For each
@@ -375,15 +386,25 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
 
 /* Check every copy on a connected drive: that it is there, with the right
  * size, and that its checksum is right (every copy is read back). A copy
- * found missing or damaged stops counting until a backup writes it again.
- * An encrypted drive needs the passphrase. */
+ * found missing or damaged stops counting until a backup writes it again,
+ * or a later check finds it there again as it was. An encrypted drive
+ * needs the passphrase. A drive that stops answering or is unplugged
+ * during the check is not taken for missing copies: the check stops with
+ * BD_ERR_DRIVE_GONE, keeps the copies it found good, and marks nothing
+ * missing or damaged. */
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* Read back and hash every copy on a connected drive that has not been
  * read back in max_age_days (0: every copy). Copies never read back since
- * they were written always count. */
+ * they were written always count, and so do copies marked missing, in
+ * case they are there again. As bd_media_check for a drive that goes. */
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
                           bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+
+/* Read back only the copies on a connected drive never read back since
+ * they were written (bd_copy_info.read_back 0), such as everything the
+ * last backup wrote. As bd_media_check for a drive that goes. */
+bd_status bd_media_verify_unread(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* ---- Compressing a backup drive ----------------------------------------- */
 
@@ -547,11 +568,15 @@ typedef struct {
     int64_t bytes_restored;
     int64_t files_already_there;   /* the destination already holds this exact version */
     int64_t files_conflict;   /* another file was already at the destination: left alone, see bd_list_restore_conflicts */
+    int64_t files_older_version; /* restored as an older version: the newest was never backed up (or has no good
+                                    copy left), so the latest backed-up state came back; the log names each one */
 } bd_restore_stats;
 
-/* Restore the current version of every file in a backup root (0: every
- * root; optionally only under rel_prefix) into dest_root, from connected
- * drives. With one root (chosen, or the catalog's only one) its files go
+/* Restore the latest backed-up state of every file in a backup root (0:
+ * every root; optionally only under rel_prefix) into dest_root, from
+ * connected drives: its current version, or when that was never backed up
+ * (it changed after the last backup, say by ransomware), the newest version
+ * that was (counted in files_older_version, and logged). With one root (chosen, or the catalog's only one) its files go
  * straight into dest_root as dest_root/<path>; with several, each root's
  * into dest_root/<root name>/<path>. Folder structure is kept as it is.
  * Every restored file is checked against its checksum and gets its
@@ -674,6 +699,8 @@ typedef struct {
     int encrypted;           /* the copy is encrypted: its drive is, or its folder is set to be */
     const char *media_location; /* where that drive is kept; "" if not set */
     int media_lost;          /* that drive was marked lost or broken: the copy no longer counts */
+    int read_back;           /* the copy has been read back from the drive and its checksum found right
+                                since it was written; 0: not yet (bd_media_verify_unread reads those) */
 } bd_copy_info;
 
 /* What a drive says about itself, read whenever it is plugged in. Strings
@@ -723,7 +750,8 @@ typedef struct {
     /* The oldest good copy on it by when it was last fully checked (or
      * written, if never checked); 0 if it holds no copies. */
     int64_t oldest_check_ms;
-    int check_due;           /* older than the check_days option */
+    int check_due;           /* older than the check_days option, or it holds a good copy never
+                                read back that was written 7 days ago (check_days if less) */
     int64_t lost_ms;         /* when it was marked lost or broken; 0 if not (bd_media_mark_lost) */
     const char *lost_why;    /* "lost" or "broken"; "" if not */
     int64_t bytes_held;      /* size of the good copies on it */
@@ -914,7 +942,9 @@ void bd_format_utc(int64_t ms, char *out, size_t cap);
  * only shape what the user's own jobs do and what the app shows.
  *   "check_days"   a drive whose oldest copy was last read back this many
  *                  days ago shows as due for a check when it is plugged in
- *                  (default 180; 0: never). The app only offers a check
+ *                  (default 180; 0: never). A copy never read back since
+ *                  it was written makes it due 7 days after it was written
+ *                  (or check_days, if less). The app only offers a check
  *                  the user can dismiss.
  *   "verify_days"  "read back copies not checked lately" reads the copies
  *                  not read back in this many days (default 30; 0: all).

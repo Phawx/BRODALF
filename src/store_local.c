@@ -16,8 +16,15 @@ static char *full(bd_store *s, const char *rel)
     return bd_path_join(l->dir, rel);
 }
 
-static int ensure_parent(const char *path)
+/* Make the folders above path. Only while the catalog's own folder is
+ * still on the drive: a drive that was unplugged, or a folder standing in
+ * for one that was moved away, must not get a new tree written where it
+ * was. */
+static int ensure_parent(bd_store *s, const char *path)
 {
+    local_impl *l = s->impl;
+    bd_stat_t dst;
+    if (bd_stat(l->dir, &dst) != 0 || !dst.is_dir) return -1;
     char *p = bd_strdup(path);
     if (!p) return -1;
     char *slash = strrchr(p, '/');
@@ -29,15 +36,19 @@ static int ensure_parent(const char *path)
     return rc;
 }
 
+/* Not there (1) only when the system says so; a drive that stopped
+ * answering is -1, never taken for a missing copy. */
 static int l_stat(bd_store *s, const char *rel, bd_remote_stat *st)
 {
     char *p = full(s, rel);
     if (!p) return -1;
     bd_stat_t fs;
-    int rc = bd_stat(p, &fs);
+    int rc = bd_stat_ex(p, &fs);
+    if (rc < 0) snprintf(s->err, sizeof(s->err), "cannot look at %s", p);
     free(p);
     memset(st, 0, sizeof(*st));
-    if (rc != 0 || !fs.is_file) return 1;
+    if (rc != 0) return rc;
+    if (!fs.is_file) return 1;
     st->size = fs.size;
     st->mtime_ns = fs.mtime_ns;
     return 0;
@@ -57,7 +68,7 @@ static int l_download(bd_store *s, const char *rel, const char *dest)
 static char *l_staging_path(bd_store *s, const char *rel)
 {
     char *p = full(s, rel);
-    if (p && ensure_parent(p) != 0) {
+    if (p && ensure_parent(s, p) != 0) {
         snprintf(s->err, sizeof(s->err), "cannot create the folder for %s", p);
         free(p);
         return NULL;
@@ -71,7 +82,7 @@ static int l_upload(bd_store *s, const char *staged, const char *rel, bd_remote_
     if (!p) return -1;
     int rc = 0;
     if (strcmp(p, staged) != 0) {
-        rc = ensure_parent(p) == 0 && bd_rename_replace(staged, p) == 0 ? 0 : -1;
+        rc = ensure_parent(s, p) == 0 && bd_rename_replace(staged, p) == 0 ? 0 : -1;
         if (rc != 0) { bd_remove(staged); snprintf(s->err, sizeof(s->err), "cannot write %s", p); }
     }
     free(p);
@@ -100,7 +111,7 @@ static int l_move(bd_store *s, const char *from, const char *to, int replace)
     char *a = full(s, from), *b = full(s, to);
     int rc = -1;
     bd_stat_t st;
-    if (a && b && ensure_parent(b) == 0) {
+    if (a && b && ensure_parent(s, b) == 0) {
         if (!replace && bd_stat(b, &st) == 0) rc = 1;
         else rc = (replace ? bd_rename_replace(a, b) : bd_rename_noreplace(a, b)) == 0 ? 0 : -1;
     }
@@ -168,7 +179,9 @@ int bd_store_fetch(bd_store *s, const char *rel, char **path_out, int *is_temp)
     char *p = s->ops->local_path(s, rel);
     if (p) {
         bd_stat_t st;
-        if (bd_stat(p, &st) != 0 || !st.is_file) { free(p); return 1; }
+        int rc = bd_stat_ex(p, &st);
+        if (rc < 0) snprintf(s->err, sizeof(s->err), "cannot look at %s", p);
+        if (rc != 0 || !st.is_file) { free(p); return rc != 0 ? rc : 1; }
         *path_out = p;
         return 0;
     }

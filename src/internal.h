@@ -113,6 +113,49 @@ extern int64_t bd_test_free_bytes;
 /* 1 if the drive is marked lost or broken. */
 int bd_media_lost(bd_catalog *cat, int64_t media_id);
 
+/* A drive holding a copy never read back since it was written is due for
+ * a check this many days after that copy was written (check_days, when
+ * smaller). */
+#define BD_UNREAD_CHECK_DAYS 7
+
+/* 1 if the drive is still plugged in where it was connected and is the
+ * same drive: its BRODALF.media is there and names this catalog and this
+ * drive. 0 if it was unplugged, stopped answering or another drive took
+ * its place: then what cannot be found on it is not missing. */
+int bd_media_present(bd_catalog *cat, int64_t media_id);
+
+/* Copies a job found missing or damaged. They are recorded when the job
+ * ends, and only on drives still there then (bd_media_present), so a drive
+ * that drops out halfway gets nothing marked. */
+typedef struct {
+    int64_t copy_id, media_id;
+    int bad;       /* damaged; else missing */
+    int read_back; /* it was read to the end: its last read-back is now */
+} bd_copy_mark;
+typedef struct {
+    bd_copy_mark *v;
+    size_t n, cap;
+} bd_copy_marks;
+/* 0, or -1 when out of memory. */
+int bd_copy_marks_add(bd_copy_marks *m, int64_t copy_id, int64_t media_id, int bad, int read_back);
+/* Record them and empty the list. How many were left out because their
+ * drive is gone, or -1 on a database error. */
+int64_t bd_copy_marks_apply(bd_catalog *cat, bd_copy_marks *m);
+void bd_copy_marks_free(bd_copy_marks *m);
+
+/* 1 if a path the catalog stores (a file's path in its backup root, or a
+ * copy's on its drive; parts split by '/') stays inside the folder it is
+ * put under: not empty, not absolute, no part empty, "." or "..", and with
+ * the Windows rules also no ':' (a drive, or a stream) or '\\' in a part
+ * and no part of only dots and spaces. A catalog recovered from a drive
+ * may hold anything. bd_stored_path_safe uses the rules of the system it
+ * runs on (on POSIX ':' and '\\' are ordinary characters in a name);
+ * _as picks them, for tests. bd_stored_name_safe: one part, such as a
+ * backup root's name. (recover.c) */
+int bd_stored_path_safe(const char *rel);
+int bd_stored_path_safe_as(const char *rel, int windows);
+int bd_stored_name_safe(const char *name);
+
 /* Record that a file now has these contents, as a scan does: the version
  * with this hash (a new one if none has it) becomes the file's current
  * version. 0 with *version_id and *version_no set, -1 on a database error. */

@@ -59,8 +59,12 @@ static void usage(void)
          "Backup\n"
          "  preview  <catalog> <root>                  what a backup to the drive would do, doing none of it\n"
          "  changed  <catalog> <label>                 files whose contents changed since their copy on the drive\n"
-         "  backup   <catalog> <root>                  copy everything the drive does not hold yet; nothing on the\n"
-         "                                             drive is overwritten, moved or deleted\n"
+         "  backup   <catalog> <root>... [--parallel]  copy everything the drive does not hold yet; nothing on the\n"
+         "                                             drive is overwritten, moved or deleted. With several drives,\n"
+         "                                             one after another, or all at once with --parallel or the\n"
+         "                                             parallel_copies option (each file is read once)\n"
+         "  pending  <catalog> [label] [--all]         what the next backup copies: to that drive, or every file\n"
+         "                                             short of the copies you want (first 50; --all for all)\n"
          "  check    <catalog> <root>                  read every copy on the drive back and check it\n"
          "  verify   <catalog> <root> [--days N]       read back only copies not read back in N days\n"
          "  sets     <catalog>                         progress toward each full set of backups\n"
@@ -68,6 +72,23 @@ static void usage(void)
          "  need     <catalog>                         what needs backing up, and the drive to plug in\n"
          "  largest  <catalog> [N]                     the N largest files (default 20)\n"
          "  target   <catalog> [copies places]         show or set how many copies, in how many places\n"
+         "\n"
+         "Starred files and extra places\n"
+         "  star     <catalog> <root> [path]           star a file or folder (no path: the whole root)\n"
+         "  unstar   <catalog> <root> [path]\n"
+         "  stars    <catalog>                         the starred files and folders\n"
+         "  place    <catalog> <folder> <description> [--limit SIZE] [--encrypt]\n"
+         "                                             a folder (a Dropbox or OneDrive folder, a network share)\n"
+         "                                             that also gets the starred files; say what and where it is.\n"
+         "                                             Its copies never count toward the copies you want\n"
+         "  place-limit <catalog> <label> <SIZE|none>  copy there only up to SIZE in all (like 2GB)\n"
+         "  places   <catalog>                         each extra place and how its starred files stand\n"
+         "  (back up to an extra place with backup, like a drive)\n"
+         "\n"
+         "Encrypting chosen folders\n"
+         "  encrypt-folder <catalog> <root> [path]     encrypt that file or folder's copies on every drive\n"
+         "  plain-folder   <catalog> <root> [path]     new copies of it are plain files again\n"
+         "  encrypted-folders <catalog>                the folders set to be encrypted, and what it costs in time\n"
          "\n"
          "Finding and restoring files\n"
          "  tree     <catalog> [--drive ROOT]...       the folder tree and what is available\n"
@@ -707,6 +728,8 @@ static int print_drive(void *ctx, const bd_media_info *m)
         j_int("last_seen_ms", m->last_seen_ms);
         j_bool("connected", m->connected);
         j_bool("encrypted", m->encrypted);
+        j_bool("extra_place", m->secondary);
+        j_int("limit_bytes", m->limit_bytes);
         j_int("total_bytes", m->total_bytes);
         j_int("free_bytes", m->free_bytes);
         j_int("space_read_ms", m->space_ms);
@@ -722,6 +745,7 @@ static int print_drive(void *ctx, const bd_media_info *m)
         return 0;
     }
     printf("%s%s%s", m->label, m->connected ? "  (connected)" : "", m->encrypted ? "  [encrypted]" : "");
+    if (m->secondary) printf("  [extra place: starred files only; its copies do not count]");
     if (m->lost_ms) printf("  [marked %s: its copies do not count]", m->lost_why);
     printf("\n");
     if (m->location && *m->location) printf("  kept in:   %s\n", m->location);
@@ -1347,6 +1371,169 @@ static int cmd_recover(int argc, char **argv)
     return 0;
 }
 
+/* ---- Starred files, extra places, encrypted folders, pending ---------------- */
+
+/* "2GB", "500 MB", "1.5T", "123" (bytes). -1 if not a size. */
+static int64_t parse_size(const char *s)
+{
+    char *end;
+    double v = strtod(s, &end);
+    if (end == s || v < 0) return -1;
+    while (*end == ' ') end++;
+    double mul = 1;
+    switch (*end) {
+    case 'k': case 'K': mul = 1024.0; end++; break;
+    case 'm': case 'M': mul = 1024.0 * 1024; end++; break;
+    case 'g': case 'G': mul = 1024.0 * 1024 * 1024; end++; break;
+    case 't': case 'T': mul = 1024.0 * 1024 * 1024 * 1024; end++; break;
+    default: break;
+    }
+    if (*end == 'b' || *end == 'B') end++;
+    if (*end) return -1;
+    return (int64_t)(v * mul);
+}
+
+static int print_mark(void *ctx, const bd_mark_info *m)
+{
+    (void)ctx;
+    char size[32];
+    human_bytes(m->bytes, size, sizeof(size));
+    if (g_json) {
+        J_OBJ(NULL);
+        j_str("root", m->source_name);
+        j_str("path", m->rel_path);
+        j_bool("folder", m->is_dir);
+        j_bool("found", m->found);
+        j_int("files", m->files);
+        j_int("bytes", m->bytes);
+        J_END();
+        return 0;
+    }
+    printf("  %s/%s%s  %lld file%s (%s)%s\n", m->source_name, m->rel_path, m->is_dir && m->rel_path[0] ? "/" : "",
+           (long long)m->files, m->files == 1 ? "" : "s", size, m->found ? "" : "  [no longer in the catalog: moved or deleted]");
+    return 0;
+}
+
+typedef struct { bd_catalog *cat; int shown; } places_ctx;
+
+static int print_place(void *ctx, const bd_media_info *m)
+{
+    places_ctx *pc = ctx;
+    if (!m->secondary || m->lost_ms) return 0;
+    bd_place_status st;
+    if (bd_place_status_get(pc->cat, m->media_id, &st) != BD_OK) return 0;
+    pc->shown++;
+    if (g_json) {
+        J_OBJ(NULL);
+        j_str("place", m->label);
+        j_str("folder", m->last_root);
+        j_bool("connected", m->connected);
+        j_bool("encrypted", m->encrypted);
+        j_int("limit_bytes", st.limit_bytes);
+        j_int("used_bytes", st.used_bytes);
+        j_int("starred_files", st.starred_files);
+        j_int("have_files", st.have_files);
+        j_int("waiting_files", st.waiting_files);
+        j_int("waiting_bytes", st.waiting_bytes);
+        j_int("over_limit_files", st.over_limit_files);
+        j_int("over_limit_bytes", st.over_limit_bytes);
+        J_END();
+        return 0;
+    }
+    char a[32], b[32];
+    printf("%s%s%s\n", m->label, m->connected ? "  [connected]" : "", m->encrypted ? "  [encrypted]" : "");
+    printf("  folder:   %s\n", m->last_root && m->last_root[0] ? m->last_root : "?");
+    human_bytes(st.used_bytes, a, sizeof(a));
+    if (st.limit_bytes > 0) {
+        human_bytes(st.limit_bytes, b, sizeof(b));
+        printf("  uses:     %s of the %s you allowed\n", a, b);
+    } else {
+        printf("  uses:     %s (no limit)\n", a);
+    }
+    printf("  starred:  %lld of %lld starred files are there as they are now\n", (long long)st.have_files,
+           (long long)st.starred_files);
+    if (st.waiting_files) {
+        human_bytes(st.waiting_bytes, a, sizeof(a));
+        printf("  waiting:  %lld file%s (%s) go there at its next backup\n", (long long)st.waiting_files,
+               st.waiting_files == 1 ? "" : "s", a);
+    }
+    if (st.over_limit_files) {
+        human_bytes(st.over_limit_bytes, a, sizeof(a));
+        printf("  too big:  %lld starred file%s (%s) would go past the limit; raise it with place-limit\n",
+               (long long)st.over_limit_files, st.over_limit_files == 1 ? "" : "s", a);
+    }
+    putchar('\n');
+    return 0;
+}
+
+static int print_pending(void *ctx, const bd_pending_info *p)
+{
+    (void)ctx;
+    char size[32];
+    human_bytes(p->size, size, sizeof(size));
+    if (g_json) {
+        J_OBJ(NULL);
+        j_str("root", p->source_name);
+        j_str("path", p->rel_path);
+        j_int("size", p->size);
+        j_int("copies", p->copies);
+        j_int("places", p->places);
+        j_bool("backed_up", p->backed_up);
+        j_bool("new", p->is_new);
+        j_bool("starred", p->starred);
+        j_bool("encrypt", p->encrypt);
+        J_END();
+        return 0;
+    }
+    printf("  %s/%s  %s, %d cop%s in %d place%s%s%s\n", p->source_name, p->rel_path, size, p->copies,
+           p->copies == 1 ? "y" : "ies", p->places, p->places == 1 ? "" : "s", p->starred ? ", starred" : "",
+           p->encrypt ? ", encrypted" : "");
+    return 0;
+}
+
+/* The JSON fields or the lines for one drive's backup. */
+static void print_backup_result(bd_catalog *cat, const char *label, const bd_backup_stats *bs)
+{
+    if (g_json) {
+        J_OBJ(NULL);
+        if (label) j_str("drive", label);
+        j_int("files_copied", bs->files_copied);
+        j_int("bytes_copied", bs->bytes_copied);
+        j_int("files_already_there", bs->files_already_there);
+        j_int("files_failed", bs->files_failed);
+        j_int("files_no_room", bs->files_no_room);
+        j_int("bytes_no_room", bs->bytes_no_room);
+        j_int("copies_alongside", bs->copies_alongside);
+        j_int("files_rehashed", bs->files_rehashed);
+        j_int("files_online_only", bs->files_online_only);
+        report_in_use(cat, bs->files_in_use);
+        J_END();
+        return;
+    }
+    char size[32];
+    const char *pre = label ? label : "backup";
+    human_bytes(bs->bytes_copied, size, sizeof(size));
+    if (!bs->files_copied && !bs->files_failed && !bs->files_no_room)
+        printf("%s: nothing to back up: it holds every file as it was at the last scan\n", pre);
+    else
+        printf("%s: %lld copied (%s), %lld already there, %lld failed\n", pre, (long long)bs->files_copied, size,
+               (long long)bs->files_already_there, (long long)bs->files_failed);
+    if (bs->copies_alongside)
+        printf("%lld went alongside an older copy (under .versions), so nothing was overwritten\n",
+               (long long)bs->copies_alongside);
+    if (bs->files_rehashed)
+        printf("%lld had changed since the scan and were backed up as they are now\n", (long long)bs->files_rehashed);
+    report_in_use(cat, bs->files_in_use);
+    if (bs->files_online_only)
+        printf("%lld online-only files (not on this PC) were not copied, so as not to download them\n",
+               (long long)bs->files_online_only);
+    if (bs->files_no_room) {
+        human_bytes(bs->bytes_no_room, size, sizeof(size));
+        printf("%lld file%s (%s) did not fit (the drive is full or a place reached its limit) and wait\n",
+               (long long)bs->files_no_room, bs->files_no_room == 1 ? "" : "s", size);
+    }
+}
+
 /* ---- Commands ------------------------------------------------------------ */
 
 static int run(int argc, char **argv)
@@ -1359,8 +1546,8 @@ static int run(int argc, char **argv)
     bd_applog_open(log_path);
     free(log_path);
     bd_applog("brodalf-cli %s: %s %s", bd_version(), cmd, path);
-    const char *pos[8];
-    int npos = positional(argc, argv, pos, 8);
+    const char *pos[20];
+    int npos = positional(argc, argv, pos, 20);
 
     if (strcmp(cmd, "recover") == 0) return cmd_recover(argc, argv);
 
@@ -1546,16 +1733,19 @@ static int run(int argc, char **argv)
             if (bd_option_set(cat, pos[0], atoi(pos[1])) != BD_OK) return refuse(cat, bd_catalog_error(cat));
             save = 1;
         } else if (npos == 1) { usage(); bd_catalog_close(cat); return 1; }
-        static const char *const names[] = {"check_days", "verify_days", "reserve_mb", "low_priority"};
+        static const char *const names[] = {"check_days", "verify_days", "reserve_mb", "low_priority", "parallel_copies"};
         static const char *const help[] = {
             "offer a check of a drive whose oldest copy was last read back this many days ago (0: never)",
             "verify reads back copies not read back in this many days (0: all)",
             "space kept free on every drive so the newest catalog always fits there",
-            "1: run jobs in the background so the PC stays usable; 0: full speed"};
+            "1: run jobs in the background so the PC stays usable; 0: full speed",
+            "1: a backup to several drives writes to all at once (each file is read once, but the PC's\n"
+            "                       USB, memory and processor work harder and it goes at the slowest drive's pace);\n"
+            "                       0: one drive after another"};
         if (g_json) J_OBJ(NULL);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             if (g_json) j_int(names[i], bd_option_get(cat, names[i]));
-            else printf("%-13s %-6d %s\n", names[i], bd_option_get(cat, names[i]), help[i]);
+            else printf("%-15s %-4d %s\n", names[i], bd_option_get(cat, names[i]), help[i]);
         }
         if (g_json) J_END();
     } else if (strcmp(cmd, "search") == 0) {
@@ -1743,7 +1933,7 @@ static int run(int argc, char **argv)
             bd_backup_preview_info pv;
             if (bd_backup_preview(cat, media_id, 0, &pv) != BD_OK) return die(cat, "cannot preview the backup");
             print_preview(&pv);
-        } else {
+        } else if (npos == 1) {
             bd_backup_stats bs;
             bd_status s = bd_backup(cat, media_id, 0, &bs, log_line, NULL);
             if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup(cat, media_id, 0, &bs, log_line, NULL);
@@ -1753,44 +1943,185 @@ static int run(int argc, char **argv)
                 return stopped(cat, "backup");
             }
             if (s != BD_OK) return die(cat, "backup failed");
-            if (g_json) {
-                J_OBJ(NULL);
-                j_int("files_copied", bs.files_copied);
-                j_int("bytes_copied", bs.bytes_copied);
-                j_int("files_already_there", bs.files_already_there);
-                j_int("files_failed", bs.files_failed);
-                j_int("files_no_room", bs.files_no_room);
-                j_int("bytes_no_room", bs.bytes_no_room);
-                j_int("copies_alongside", bs.copies_alongside);
-                j_int("files_rehashed", bs.files_rehashed);
-                j_int("files_online_only", bs.files_online_only);
-                report_in_use(cat, bs.files_in_use);
-                J_END();
-            } else {
-                char size[32];
-                human_bytes(bs.bytes_copied, size, sizeof(size));
-                if (!bs.files_copied && !bs.files_failed && !bs.files_no_room)
-                    puts("nothing to back up: the drive holds every file as it was at the last scan");
-                else
-                printf("backup: %lld copied (%s), %lld already there, %lld failed\n", (long long)bs.files_copied, size,
-                       (long long)bs.files_already_there, (long long)bs.files_failed);
-                if (bs.copies_alongside)
-                    printf("%lld went alongside an older copy (under .versions), so nothing was overwritten\n",
-                           (long long)bs.copies_alongside);
-                if (bs.files_rehashed)
-                    printf("%lld had changed since the scan and were backed up as they are now\n", (long long)bs.files_rehashed);
-                report_in_use(cat, bs.files_in_use);
-                if (bs.files_online_only)
-                    printf("%lld online-only files (not on this PC) were not copied, so as not to download them\n",
-                           (long long)bs.files_online_only);
-                if (bs.files_no_room) {
-                    human_bytes(bs.bytes_no_room, size, sizeof(size));
-                    printf("the drive is full: %lld file%s (%s) did not fit and wait for another drive\n",
-                           (long long)bs.files_no_room, bs.files_no_room == 1 ? "" : "s", size);
+            print_backup_result(cat, NULL, &bs);
+        } else {
+            /* Several drives: all at once, or one after another. */
+            int64_t ids[16];
+            bd_backup_stats bs[16];
+            if (npos > 16) return refuse(cat, "back up to at most 16 drives at once");
+            ids[0] = media_id;
+            for (int i = 1; i < npos; i++)
+                if (connect_target(cat, pos[i], &ids[i]) != BD_OK) return die(cat, "cannot use the drive");
+            int parallel = has_flag(argc, argv, "--parallel") || bd_option_get(cat, "parallel_copies") == 1;
+            if (parallel) {
+                bd_status s = bd_backup_many(cat, ids, npos, 0, bs, log_line, NULL);
+                if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup_many(cat, ids, npos, 0, bs, log_line, NULL);
+                if (s == BD_ERR_CANCELLED) {
+                    for (int i = 0; i < npos; i++) bd_catalog_copy_to_media(cat, ids[i]);
+                    return stopped(cat, "backup");
                 }
+                if (s != BD_OK) return die(cat, "backup failed");
+                if (g_json) J_ARR(NULL);
+                for (int i = 0; i < npos; i++) print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
+                if (g_json) J_END_ARR();
+            } else {
+                if (g_json) J_ARR(NULL);
+                for (int i = 0; i < npos; i++) {
+                    bd_status s = bd_backup(cat, ids[i], 0, &bs[i], log_line, NULL);
+                    if (s == BD_ERR_PASSPHRASE && ensure_unlocked(cat) == 0) s = bd_backup(cat, ids[i], 0, &bs[i], log_line, NULL);
+                    if (s == BD_ERR_CANCELLED) {
+                        bd_catalog_copy_to_media(cat, ids[i]);
+                        if (g_json) J_END_ARR();
+                        return stopped(cat, "backup");
+                    }
+                    if (s != BD_OK) return die(cat, "backup failed");
+                    print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
+                }
+                if (g_json) J_END_ARR();
             }
         }
         save = 1;
+    } else if (strcmp(cmd, "star") == 0 || strcmp(cmd, "unstar") == 0 || strcmp(cmd, "encrypt-folder") == 0 ||
+               strcmp(cmd, "plain-folder") == 0) {
+        if (npos < 1) { usage(); bd_catalog_close(cat); return 1; }
+        int star = cmd[0] == 's' || cmd[0] == 'u';
+        int on = strcmp(cmd, "star") == 0 || strcmp(cmd, "encrypt-folder") == 0;
+        int64_t source_id = source_id_by_name(cat, pos[0]);
+        if (!source_id) { bd_catalog_close(cat); return 1; }
+        const char *rel = npos > 1 ? pos[1] : "";
+        if (!star && on && !bd_catalog_has_passphrase(cat)) {
+            fprintf(msg_out(), "encrypted copies are locked with a passphrase: set one now\n");
+            char pass[512];
+            if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
+            bd_status ps = bd_catalog_set_passphrase(cat, pass);
+            memset(pass, 0, sizeof(pass));
+            if (ps != BD_OK) return die(cat, "cannot set passphrase");
+        }
+        bd_status s = star ? bd_star_set(cat, source_id, rel, on) : bd_encrypt_path_set(cat, source_id, rel, on);
+        if (s == BD_ERR_NOT_FOUND || s == BD_ERR_INVALID || s == BD_ERR_PASSPHRASE) return refuse(cat, bd_catalog_error(cat));
+        if (s != BD_OK) return die(cat, "cannot change it");
+        if (g_json) {
+            J_OBJ(NULL);
+            j_str("root", pos[0]);
+            j_str("path", rel);
+            j_bool(star ? "starred" : "encrypt", on);
+            J_END();
+        } else if (star) {
+            printf("%s %s/%s\n", on ? "starred" : "no longer starred:", pos[0], rel);
+            if (on) puts("it goes to your extra places at their next backup (places lists them)");
+            else puts("copies already in your extra places stay there");
+        } else if (on) {
+            bd_encrypt_stats es;
+            char note[1024];
+            printf("%s/%s is encrypted on every drive from its next copy on; copies made before stay as they are\n", pos[0], rel);
+            if (bd_encrypt_stats_get(cat, &es) == BD_OK) {
+                bd_encrypt_cost_text(es.bytes, note, sizeof(note));
+                printf("%s\n", note);
+            }
+        } else {
+            printf("new copies of %s/%s are plain files again; encrypted copies stay as they are\n", pos[0], rel);
+        }
+        save = 1;
+    } else if (strcmp(cmd, "stars") == 0 || strcmp(cmd, "encrypted-folders") == 0) {
+        int star = strcmp(cmd, "stars") == 0;
+        if (g_json) { J_OBJ(NULL); J_ARR(star ? "stars" : "folders"); }
+        else puts(star ? "Starred:" : "Set to be encrypted:");
+        bd_status s = star ? bd_list_stars(cat, print_mark, NULL) : bd_list_encrypt_paths(cat, print_mark, NULL);
+        if (g_json) J_END_ARR();
+        if (s != BD_OK) return die(cat, "cannot list them");
+        if (star) {
+            int64_t files = 0, bytes = 0;
+            bd_starred_totals(cat, &files, &bytes);
+            char size[32];
+            human_bytes(bytes, size, sizeof(size));
+            if (g_json) { j_int("files", files); j_int("bytes", bytes); }
+            else printf("%lld starred file%s in all (%s)\n", (long long)files, files == 1 ? "" : "s", size);
+        } else {
+            bd_encrypt_stats es;
+            if (bd_encrypt_stats_get(cat, &es) != BD_OK) return die(cat, "cannot count them");
+            char note[1024], size[32];
+            bd_encrypt_cost_text(es.bytes, note, sizeof(note));
+            human_bytes(es.bytes, size, sizeof(size));
+            if (g_json) {
+                j_int("files", es.files);
+                j_int("bytes", es.bytes);
+                j_int("encrypted_copies", es.sealed_copies);
+                j_int("plain_copies", es.plain_copies);
+                j_int("files_waiting", es.files_waiting);
+                j_int("bytes_per_second", es.bytes_per_second);
+                j_str("note", note);
+            } else {
+                printf("%lld file%s (%s): %lld encrypted copies; %lld with no encrypted copy yet\n", (long long)es.files,
+                       es.files == 1 ? "" : "s", size, (long long)es.sealed_copies, (long long)es.files_waiting);
+                if (es.plain_copies)
+                    printf("%lld plain copies were made before they were set; they stay as they are\n", (long long)es.plain_copies);
+                printf("%s\n", note);
+            }
+        }
+        if (g_json) J_END();
+    } else if (strcmp(cmd, "place") == 0) {
+        if (npos < 2) { usage(); bd_catalog_close(cat); return 1; }
+        const char *lim = opt(argc, argv, "--limit");
+        int64_t limit = lim ? parse_size(lim) : 0, id;
+        if (limit < 0) return refuse(cat, "--limit takes a size like 2GB or 500MB");
+        int encrypt = has_flag(argc, argv, "--encrypt");
+        if (encrypt && !bd_catalog_has_passphrase(cat)) {
+            char pass[512];
+            if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
+            bd_status ps = bd_catalog_set_passphrase(cat, pass);
+            memset(pass, 0, sizeof(pass));
+            if (ps != BD_OK) return die(cat, "cannot set passphrase");
+        } else if (encrypt && ensure_unlocked(cat) != 0) {
+            bd_catalog_close(cat);
+            return 1;
+        }
+        bd_status s = bd_place_add(cat, pos[0], pos[1], limit, encrypt ? BD_MEDIA_ENCRYPTED : 0, &id);
+        if (s == BD_ERR_INVALID) return refuse(cat, bd_catalog_error(cat));
+        if (s != BD_OK) return die(cat, "cannot set up the place");
+        if (g_json) { J_OBJ(NULL); j_int("id", id); j_str("label", pos[1]); j_int("limit_bytes", limit); J_END(); }
+        else {
+            printf("set up %s as an extra place, \"%s\"%s\n", pos[0], pos[1], encrypt ? ", encrypted" : "");
+            puts("it gets a second copy of your starred files (star adds them) when you back up to it;");
+            puts("its copies never count toward the copies you want, since a synced folder is not a backup drive");
+        }
+        save = 1;
+    } else if (strcmp(cmd, "place-limit") == 0) {
+        if (npos < 2) { usage(); bd_catalog_close(cat); return 1; }
+        int64_t id = media_id_by_label(cat, pos[0]);
+        if (!id) { bd_catalog_close(cat); return 1; }
+        int64_t limit = strcmp(pos[1], "none") == 0 ? 0 : parse_size(pos[1]);
+        if (limit < 0) return refuse(cat, "give a size like 2GB, or none");
+        if (bd_place_set_limit(cat, id, limit) != BD_OK) return refuse(cat, bd_catalog_error(cat));
+        if (g_json) { J_OBJ(NULL); j_str("place", pos[0]); j_int("limit_bytes", limit); J_END(); }
+        else if (limit) {
+            char size[32];
+            human_bytes(limit, size, sizeof(size));
+            printf("\"%s\" gets starred files up to %s in all\n", pos[0], size);
+        } else printf("\"%s\" has no limit now\n", pos[0]);
+        save = 1;
+    } else if (strcmp(cmd, "places") == 0) {
+        places_ctx pc = {cat, 0};
+        if (g_json) J_ARR(NULL);
+        bd_list_media(cat, print_place, &pc);
+        if (g_json) J_END_ARR();
+        else if (!pc.shown) puts("no extra places yet: add one with place, then star files with star");
+    } else if (strcmp(cmd, "pending") == 0) {
+        int64_t media_id = 0, total = 0;
+        if (npos >= 1) {
+            media_id = media_id_by_label(cat, pos[0]);
+            if (!media_id) { bd_catalog_close(cat); return 1; }
+        }
+        int all = has_flag(argc, argv, "--all");
+        if (g_json) { J_OBJ(NULL); J_ARR("files"); }
+        else if (media_id) printf("The next backup to \"%s\" copies:\n", pos[0]);
+        else puts("Files short of the copies you want:");
+        bd_status s = bd_list_pending(cat, media_id, all ? 2000000000 : 50, print_pending, NULL, &total);
+        if (g_json) { J_END_ARR(); j_int("total", total); J_END(); }
+        if (s != BD_OK) return die(cat, "cannot list what to back up");
+        if (!g_json) {
+            if (!total) puts("  nothing");
+            else if (!all && total > 50) printf("  ... and %lld more (--all lists them all)\n", (long long)(total - 50));
+        }
     } else if (strcmp(cmd, "tree") == 0) {
         if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
         if (g_json) J_ARR(NULL);

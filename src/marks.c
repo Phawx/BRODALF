@@ -5,6 +5,7 @@
 #include "store.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -197,6 +198,62 @@ bd_status bd_encrypt_stats_get(bd_catalog *cat, bd_encrypt_stats *out)
     }
     out->bytes_per_second = bd_crypto_speed();
     return BD_OK;
+}
+
+static void cost_size(int64_t n, char *out, size_t cap)
+{
+    const char *u[] = {"bytes", "KB", "MB", "GB", "TB"};
+    double v = (double)n;
+    int i = 0;
+    while (v >= 1024.0 && i < 4) { v /= 1024.0; i++; }
+    if (i == 0) snprintf(out, cap, "%lld bytes", (long long)n);
+    else snprintf(out, cap, v < 10 ? "%.1f %s" : "%.0f %s", v, u[i]);
+}
+
+static void cost_time(double s, char *out, size_t cap)
+{
+    if (s < 1) snprintf(out, cap, "under a second");
+    else if (s < 90) snprintf(out, cap, "about %.0f seconds", s);
+    else if (s < 90 * 60) snprintf(out, cap, "about %.0f minutes", s / 60);
+    else snprintf(out, cap, "about %.1f hours", s / 3600);
+}
+
+void bd_encrypt_cost_text(int64_t bytes, char *out, size_t cap)
+{
+    int64_t bps = bd_crypto_speed();
+    char speed[32], size[32], work[48], extra[48];
+    if (!cap) return;
+    if (bps <= 0) {
+        snprintf(out, cap, "Encrypting takes some extra time while each copy is written, and checking or restoring "
+                           "an encrypted copy takes the same again. Encrypted copies need the passphrase to restore.");
+        return;
+    }
+    /* The copy is sealed on its way to the drive, so the two overlap: a
+     * backup takes about as long as the slower of writing and encrypting.
+     * drive is a typical USB hard drive. */
+    const double drive = 120e6;
+    double crypt_s = (double)bytes / (double)bps, write_s = (double)bytes / drive;
+    cost_size(bps, speed, sizeof(speed));
+    cost_size(bytes, size, sizeof(size));
+    cost_time(crypt_s, work, sizeof(work));
+    if (bytes <= 0) {
+        snprintf(out, cap, "This PC encrypts about %s a second. Encrypting runs while each copy is written, so on a "
+                           "USB hard drive a backup takes about as long as before. Checking and restoring an encrypted "
+                           "copy decrypt it at about the same speed. Encrypted copies take about 0.1%% more space and "
+                           "need the passphrase to restore.", speed);
+    } else if (crypt_s <= write_s) {
+        snprintf(out, cap, "This PC encrypts about %s a second, so the %s you picked take %s of extra work, done while "
+                           "each copy is written. On a USB hard drive a backup takes about as long as before; on a fast "
+                           "SSD it can take up to %s longer. Checking and restoring them decrypt at about the same "
+                           "speed. Encrypted copies take about 0.1%% more space and need the passphrase to restore.",
+                 speed, size, work, work);
+    } else {
+        cost_time(crypt_s - write_s, extra, sizeof(extra));
+        snprintf(out, cap, "This PC encrypts about %s a second, slower than a USB hard drive writes, so the %s you picked "
+                           "add %s to a full backup of them (%s of work in all). Checking and restoring them decrypt at "
+                           "about the same speed. Encrypted copies take about 0.1%% more space and need the passphrase "
+                           "to restore.", speed, size, extra, work);
+    }
 }
 
 /* ---- Extra places -------------------------------------------------------- */

@@ -772,6 +772,9 @@ bd_status bd_encrypt_stats_get(bd_catalog *cat, bd_encrypt_stats *out);
  * writes to the drive, so it costs at most this; reading back to check
  * and restoring decrypt at about the same speed. 0 if unknown. */
 int64_t bd_crypto_speed(void);
+/* What encrypting bytes worth of files means for time and space on this
+ * PC, as a few sentences for the app to show beside the choice. */
+void bd_encrypt_cost_text(int64_t bytes, char *out, size_t cap);
 
 /* ---- Drive status ---------------------------------------------------- */
 

@@ -2593,6 +2593,19 @@ static void test_shadow_list(void)
     CHECK(!exists(at("shadow/out")));
 }
 
+/* Keeps every log line, to look for one. */
+typedef struct {
+    char text[16384];
+    size_t len;
+} log_keep;
+
+static void keep_log(void *ctx, const char *msg)
+{
+    log_keep *k = ctx;
+    int n = snprintf(k->text + k->len, sizeof(k->text) - k->len, "%s\n", msg);
+    if (n > 0) k->len += (size_t)n < sizeof(k->text) - k->len ? (size_t)n : sizeof(k->text) - k->len - 1;
+}
+
 /* Takes the drive away (renames its folder) from the progress callback,
  * as if it were unplugged halfway through a job. */
 typedef struct {
@@ -2725,20 +2738,28 @@ static void test_drive_gone(void)
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == 24);
     check_drive_consistent(cat, drive, "dg/drive");
+
+    /* An older version's copy comes back while the file has changed: the
+     * new version goes alongside and the old copy counts again. */
+    write_file(at("dg/Src/g.txt"), "g, version one");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    snprintf(path, sizeof(path), "%s/Src/g.txt", dir);
+    CHECK(bd_rename_noreplace(at(path), at("dg/g.keep")) == 0);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.missing == 1);
+    CHECK(bd_rename_noreplace(at("dg/g.keep"), at(path)) == 0);
+    write_file(at("dg/Src/g.txt"), "g, version two");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    log_keep lk;
+    memset(&lk, 0, sizeof(lk));
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, keep_log, &lk), cat);
+    CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
+    CHECK(strstr(lk.text, "counts again: Src/g.txt") != NULL);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE state<>'ok'") == 0);
+    check_drive_consistent(cat, drive, "dg/drive");
     bd_catalog_close(cat);
-}
-
-/* Keeps every log line, to look for one. */
-typedef struct {
-    char text[16384];
-    size_t len;
-} log_keep;
-
-static void keep_log(void *ctx, const char *msg)
-{
-    log_keep *k = ctx;
-    int n = snprintf(k->text + k->len, sizeof(k->text) - k->len, "%s\n", msg);
-    if (n > 0) k->len += (size_t)n < sizeof(k->text) - k->len ? (size_t)n : sizeof(k->text) - k->len - 1;
 }
 
 static int64_t copy_state_count(bd_catalog *cat, int64_t media_id, const char *name, const char *state)

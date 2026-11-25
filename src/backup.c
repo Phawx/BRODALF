@@ -361,15 +361,46 @@ static int has_good_copy(bd_catalog *cat, int64_t version_id, int64_t media_id)
     return there;
 }
 
+/* A copy marked missing is at rel again with its recorded size: if it
+ * reads back as the version it holds (expected), it counts again. 1 if so. */
+static int revive_copy(bd_catalog *cat, bd_store *store, int64_t copy_id, const char *rel, int64_t size, int sealed,
+                       const char *expected, const char *shown, bd_log_fn log, void *log_ctx)
+{
+    if (sealed && !cat->have_key) return 0;
+    bd_remote_stat st;
+    if (store->ops->stat(store, rel, &st) != 0 || st.size != size) return 0;
+    char hash[BD_HASH_HEX_LEN + 1];
+    char *local = NULL;
+    int is_temp = 0;
+    int same = bd_store_fetch(store, rel, &local, &is_temp) == 0 &&
+               bd_hash_copy(local, sealed ? cat->key : NULL, NULL, NULL, hash, NULL) == 0 && strcmp(hash, expected) == 0;
+    bd_store_release(local, is_temp);
+    if (!same) return 0;
+    sqlite3_stmt *u;
+    int64_t now = bd_now_ms();
+    int back = 0;
+    if (sqlite3_prepare_v2(cat->db,
+                           "UPDATE copies SET state='ok', stored_mtime_ns=?, last_quick_check_ms=?, last_full_check_ms=?"
+                           " WHERE id=? AND state='missing'",
+                           -1, &u, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(u, 1, st.mtime_ns);
+        sqlite3_bind_int64(u, 2, now);
+        sqlite3_bind_int64(u, 3, now);
+        sqlite3_bind_int64(u, 4, copy_id);
+        back = sqlite3_step(u) == SQLITE_DONE && sqlite3_changes(cat->db) > 0;
+        sqlite3_finalize(u);
+    }
+    if (back) bd_logf(log, log_ctx, "the copy is there again as it was, so it counts again: %s", shown);
+    return back;
+}
+
 /* This version's copy on this drive was marked missing. If it is there
  * again as it was (the drive was unplugged, a folder was put back), it
  * counts again and no second copy is written. 1 if so. */
 static int missing_copy_back(bd_catalog *cat, bd_store *store, const backup_item *it, bd_log_fn log, void *log_ctx)
 {
     sqlite3_stmt *q;
-    int64_t copy_id = 0, size = 0;
-    int sealed = 0;
-    char *rel = NULL;
+    int back = 0;
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT id, path_on_media, stored_size, encrypted FROM copies"
                            " WHERE version_id=? AND media_id=? AND state='missing'",
@@ -378,42 +409,11 @@ static int missing_copy_back(bd_catalog *cat, bd_store *store, const backup_item
     sqlite3_bind_int64(q, 1, it->version_id);
     sqlite3_bind_int64(q, 2, store->media_id);
     if (sqlite3_step(q) == SQLITE_ROW) {
-        copy_id = sqlite3_column_int64(q, 0);
-        rel = bd_strdup((const char *)sqlite3_column_text(q, 1));
-        size = sqlite3_column_int64(q, 2);
-        sealed = sqlite3_column_int(q, 3);
+        const char *rel = (const char *)sqlite3_column_text(q, 1);
+        back = rel && revive_copy(cat, store, sqlite3_column_int64(q, 0), rel, sqlite3_column_int64(q, 2),
+                                  sqlite3_column_int(q, 3), it->hash, store->hide_names ? it->orig : rel, log, log_ctx);
     }
     sqlite3_finalize(q);
-    if (!rel || (sealed && !cat->have_key)) { free(rel); return 0; }
-    bd_remote_stat st;
-    int back = 0;
-    if (store->ops->stat(store, rel, &st) == 0 && st.size == size) {
-        char hash[BD_HASH_HEX_LEN + 1];
-        char *local = NULL;
-        int is_temp = 0;
-        back = bd_store_fetch(store, rel, &local, &is_temp) == 0 &&
-               bd_hash_copy(local, sealed ? cat->key : NULL, NULL, NULL, hash, NULL) == 0 && strcmp(hash, it->hash) == 0;
-        bd_store_release(local, is_temp);
-    }
-    if (back) {
-        sqlite3_stmt *u;
-        int64_t now = bd_now_ms();
-        back = 0;
-        if (sqlite3_prepare_v2(cat->db,
-                               "UPDATE copies SET state='ok', stored_mtime_ns=?, last_quick_check_ms=?, last_full_check_ms=?"
-                               " WHERE id=? AND state='missing'",
-                               -1, &u, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(u, 1, st.mtime_ns);
-            sqlite3_bind_int64(u, 2, now);
-            sqlite3_bind_int64(u, 3, now);
-            sqlite3_bind_int64(u, 4, copy_id);
-            back = sqlite3_step(u) == SQLITE_DONE && sqlite3_changes(cat->db) > 0;
-            sqlite3_finalize(u);
-        }
-        if (back) bd_logf(log, log_ctx, "the copy is there again as it was, so it counts again: %s",
-                          store->hide_names ? it->orig : rel);
-    }
-    free(rel);
     return back;
 }
 
@@ -449,10 +449,13 @@ static int dest_prepare(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
         free(main_disk);
         goto drop;
     }
-    int64_t row_copy = 0, row_version = 0;
-    int row_missing = 0;
+    int64_t row_copy = 0, row_version = 0, row_size = 0;
+    int row_missing = 0, row_sealed = 0;
+    char row_hash[BD_HASH_HEX_LEN + 1] = "";
     sqlite3_stmt *q;
-    if (sqlite3_prepare_v2(cat->db, "SELECT id, version_id, state='missing' FROM copies WHERE media_id=? AND path_on_media=?",
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT c.id, c.version_id, c.state='missing', c.stored_size, c.encrypted, v.hash FROM copies c"
+                           " JOIN versions v ON v.id=c.version_id WHERE c.media_id=? AND c.path_on_media=?",
                            -1, &q, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(q, 1, media_id);
         sqlite3_bind_text(q, 2, main_disk, -1, SQLITE_STATIC);
@@ -460,9 +463,16 @@ static int dest_prepare(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
             row_copy = sqlite3_column_int64(q, 0);
             row_version = sqlite3_column_int64(q, 1);
             row_missing = sqlite3_column_int(q, 2);
+            row_size = sqlite3_column_int64(q, 3);
+            row_sealed = sqlite3_column_int(q, 4);
+            snprintf(row_hash, sizeof(row_hash), "%s", (const char *)sqlite3_column_text(q, 5));
         }
         sqlite3_finalize(q);
     }
+    /* An older version's copy marked missing is back at its place: it
+     * counts again (this version still goes alongside it). */
+    if (found == 0 && row_copy && row_missing && row_version != it->version_id)
+        revive_copy(cat, store, row_copy, main_disk, row_size, row_sealed, row_hash, main_rel, log, log_ctx);
 
     int use_main = 0;
     if (found == 1) {

@@ -1279,6 +1279,7 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
         j_int("files_need_passphrase", rs->files_need_passphrase);
         j_int("files_failed", rs->files_failed);
         j_int("files_conflict", rs->files_conflict);
+        j_int("files_older_version", rs->files_older_version);
         J_ARR("conflicts");
         bd_list_restore_conflicts(cat, print_conflict, &conflicts);
         J_END_ARR();
@@ -1289,6 +1290,9 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
            "%lld never backed up, %lld failed\n",
            (long long)rs->files_restored, (long long)rs->bytes_restored, (long long)rs->files_already_there,
            (long long)rs->files_offline, (long long)rs->files_no_copy, (long long)rs->files_failed);
+    if (rs->files_older_version)
+        printf("%lld files came back as an older version: their newest contents were never backed up"
+               " (each is named above)\n", (long long)rs->files_older_version);
     if (rs->files_need_passphrase)
         printf("%lld files are on encrypted drives and need the passphrase\n", (long long)rs->files_need_passphrase);
     if (rs->files_offline) puts("run the same restore again with the other drives (restore-plan says which); what is there is kept");

@@ -1318,6 +1318,28 @@ bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix,
     " (CASE WHEN ?4<>0 THEN n.deleted<>0 ELSE n.deleted=0 END)"                                             \
     " AND (?1=0 OR n.source_id=?1) AND (?2='' OR n.rel_path=?2 OR substr(n.rel_path,1,length(?2)+1)=?2||'/')"
 
+/* SQL: version vid can be restored from: it has a good copy on a drive not
+ * marked lost or broken, or on one plugged in now. */
+#define RESTORABLE(vid)                                                                                 \
+    "EXISTS(SELECT 1 FROM copies rc WHERE rc.version_id=" vid " AND rc.state='ok' AND (" BD_SQL_USABLE("rc") \
+    " OR EXISTS(SELECT 1 FROM temp.connected rk WHERE rk.media_id=rc.media_id)))"
+
+/* SQL: the version of node n a restore brings back, the latest backed-up
+ * state: the current version if it can be restored from, else the newest
+ * other version that can (its newest contents were never backed up, as
+ * when ransomware or a bad edit changed it after the last backup), else
+ * the current version. */
+#define RESTORE_VERSION                                                                                 \
+    "(CASE WHEN " RESTORABLE("n.current_version_id") " THEN n.current_version_id ELSE"                  \
+    " COALESCE((SELECT ov.id FROM versions ov WHERE ov.node_id=n.id AND " RESTORABLE("ov.id")            \
+    "  ORDER BY ov.version_no DESC LIMIT 1), n.current_version_id) END)"
+
+/* Is there a good copy of the version (?1), or of any version of the file
+ * (?2), anywhere: then it is on drives not plugged in. */
+#define ANY_COPY_SQL                                                                                    \
+    "SELECT 1 FROM copies c JOIN versions v ON v.id=c.version_id WHERE c.state='ok' AND (c.version_id=?1 OR v.node_id=?2)" \
+    " LIMIT 1"
+
 /* One backup root (chosen, or the only one): its files go straight into
  * the folder chosen. Several: each into a folder named after its root. */
 static int restore_flat(bd_catalog *cat, int64_t source_id)
@@ -1363,6 +1385,7 @@ static void note_conflict(bd_catalog *cat, const char *source_name, const char *
 typedef struct {
     int64_t version_id, size, mtime, btime;
     const char *hash, *source_name, *rel;
+    int64_t node_id; /* 0: only this version counts in telling offline from never backed up */
 } restore_file_item;
 
 /* What one restore job keeps between files. */
@@ -1430,6 +1453,7 @@ static int restore_file(bd_catalog *cat, restore_run *r, const restore_file_item
     if (nc == 0 && !nomem) {
         sqlite3_reset(r->any);
         sqlite3_bind_int64(r->any, 1, it->version_id);
+        sqlite3_bind_int64(r->any, 2, it->node_id);
         if (sqlite3_step(r->any) == SQLITE_ROW) stats->files_offline++;
         else stats->files_no_copy++;
         sqlite3_reset(r->any);
@@ -1527,8 +1551,7 @@ static bd_status restore_run_begin(bd_catalog *cat, restore_run *r)
 {
     memset(r, 0, sizeof(*r));
     if (sqlite3_prepare_v2(cat->db, FIND_COPY_SQL, -1, &r->find, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(cat->db, "SELECT 1 FROM copies WHERE version_id=? AND state='ok' LIMIT 1", -1, &r->any, NULL) !=
-            SQLITE_OK)
+        sqlite3_prepare_v2(cat->db, ANY_COPY_SQL, -1, &r->any, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "prepare restore");
     return BD_OK;
 }
@@ -1582,8 +1605,12 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
     if (s != BD_OK) goto done;
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT n.id, n.rel_path, n.is_dir, s.name, v.id, v.hash, v.size,"
-                           " CASE WHEN n.deleted=0 THEN n.mtime_ns ELSE v.mtime_ns END, n.btime_ns FROM nodes n"
-                           " JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=n.current_version_id"
+                           " CASE WHEN n.deleted=0 AND v.id=n.current_version_id THEN n.mtime_ns ELSE v.mtime_ns END,"
+                           " n.btime_ns, v.id<>n.current_version_id,"
+                           " EXISTS(SELECT 1 FROM copies xc WHERE xc.version_id=n.current_version_id),"
+                           " strftime('%Y-%m-%d %H:%M', CASE WHEN v.mtime_ns>0 THEN v.mtime_ns/1000000000"
+                           "  ELSE v.first_seen_ms/1000 END, 'unixepoch', 'localtime') FROM nodes n"
+                           " JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=" RESTORE_VERSION
                            " WHERE" RESTORE_WHERE " AND n.id>?3 ORDER BY n.id LIMIT 256",
                            -1, &q, NULL) != SQLITE_OK) {
         s = bd_fail_db(cat, "prepare restore");
@@ -1594,7 +1621,7 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
     sqlite3_stmt *t;
     int64_t total_files = 0, total_bytes = 0;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT COUNT(*), COALESCE(SUM(v.size),0) FROM nodes n JOIN versions v ON v.id=n.current_version_id"
+                           "SELECT COUNT(*), COALESCE(SUM(v.size),0) FROM nodes n JOIN versions v ON v.id=" RESTORE_VERSION
                            " WHERE n.is_dir=0 AND" RESTORE_WHERE " AND ?3=?3",
                            -1, &t, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(t, 1, source_id);
@@ -1611,7 +1638,11 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
     int64_t files_seen = 0;
     int64_t job = bd_job_start(cat, "restore", 0);
 
-    typedef struct { int64_t id, version_id, size, mtime, btime; int is_dir; char *rel, *source_name, *hash; } item;
+    typedef struct {
+        int64_t id, version_id, size, mtime, btime;
+        int is_dir, older, newer_had_copies;
+        char *rel, *source_name, *hash, *when;
+    } item;
     item items[BATCH];
     int64_t last_id = 0;
     int cancelled = 0, gone = 0;
@@ -1633,6 +1664,9 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
             it->size = sqlite3_column_int64(q, 6);
             it->mtime = sqlite3_column_int64(q, 7);
             it->btime = sqlite3_column_int64(q, 8);
+            it->older = sqlite3_column_int(q, 9);
+            it->newer_had_copies = sqlite3_column_int(q, 10);
+            it->when = sqlite3_column_type(q, 11) == SQLITE_NULL ? NULL : bd_strdup((const char *)sqlite3_column_text(q, 11));
         }
         sqlite3_reset(q);
         if (n == 0) break;
@@ -1649,16 +1683,23 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
             }
             bd_report_file(cat, files_seen++, it->rel, it->size);
             if (!it->version_id || !it->hash) { stats->files_no_copy++; free(dest); continue; }
-            restore_file_item rf = {it->version_id, it->size, it->mtime, it->btime, it->hash, it->source_name, it->rel};
+            restore_file_item rf = {it->version_id, it->size, it->mtime, it->btime, it->hash, it->source_name, it->rel, it->id};
+            int64_t restored_before = stats->files_restored;
             int r = restore_file(cat, &run, &rf, dest, stats, log, log_ctx);
             if (r == 1) cancelled = 1;
             else if (r == 2) gone = 1;
+            if (it->older && stats->files_restored > restored_before) {
+                stats->files_older_version++;
+                bd_logf(log, log_ctx, "%s: restored the version from %s; the newer one %s", dest, it->when ? it->when : "before",
+                        it->newer_had_copies ? "has no good copy to restore from" : "was never backed up");
+            }
             free(dest);
         }
         for (size_t i = 0; i < n; i++) {
             free(items[i].rel);
             free(items[i].source_name);
             free(items[i].hash);
+            free(items[i].when);
         }
     }
     if (stats->files_conflict)
@@ -1708,6 +1749,7 @@ bd_status bd_restore_version(bd_catalog *cat, int64_t version_id, const char *de
     rf.btime = sqlite3_column_int64(q, 3);
     rf.rel = (const char *)sqlite3_column_text(q, 4);
     rf.source_name = (const char *)sqlite3_column_text(q, 5);
+    rf.node_id = 0;
     char *dest = bd_path_join(dest_folder, bd_rel_basename(rf.rel));
     if (!dest) { s = BD_ERR_NOMEM; goto done; }
     bd_mkdirs(dest_folder);
@@ -1798,7 +1840,7 @@ bd_status bd_restore_plan_ex(bd_catalog *cat, int64_t source_id, const char *rel
                            -1, &mq, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
                            "SELECT n.id, n.rel_path, s.name, v.size, v.id FROM nodes n JOIN sources s ON s.id=n.source_id"
-                           " JOIN versions v ON v.id=n.current_version_id"
+                           " JOIN versions v ON v.id=" RESTORE_VERSION
                            " WHERE n.is_dir=0 AND" RESTORE_WHERE " AND ?3=?3 ORDER BY n.id",
                            -1, &fq, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db, "SELECT DISTINCT media_id FROM copies WHERE version_id=? AND state='ok'", -1, &cq, NULL) !=

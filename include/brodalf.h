@@ -560,11 +560,15 @@ typedef struct {
     int64_t bytes_restored;
     int64_t files_already_there;   /* the destination already holds this exact version */
     int64_t files_conflict;   /* another file was already at the destination: left alone, see bd_list_restore_conflicts */
+    int64_t files_older_version; /* restored as an older version: the newest was never backed up (or has no good
+                                    copy left), so the latest backed-up state came back; the log names each one */
 } bd_restore_stats;
 
-/* Restore the current version of every file in a backup root (0: every
- * root; optionally only under rel_prefix) into dest_root, from connected
- * drives. With one root (chosen, or the catalog's only one) its files go
+/* Restore the latest backed-up state of every file in a backup root (0:
+ * every root; optionally only under rel_prefix) into dest_root, from
+ * connected drives: its current version, or when that was never backed up
+ * (it changed after the last backup, say by ransomware), the newest version
+ * that was (counted in files_older_version, and logged). With one root (chosen, or the catalog's only one) its files go
  * straight into dest_root as dest_root/<path>; with several, each root's
  * into dest_root/<root name>/<path>. Folder structure is kept as it is.
  * Every restored file is checked against its checksum and gets its

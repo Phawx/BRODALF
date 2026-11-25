@@ -838,10 +838,12 @@ static void test_moves_guard_and_progress(void)
     REQUIRE_OK(bd_backup_preview(cat, d2, 0, &pv), cat);
     CHECK(pv.files_to_copy == 60 && pv.files_held == 0 && !pv.mass_change && !pv.free_is_current);
 
-    /* The latest versions were never backed up. */
+    /* The latest versions were never backed up: a restore brings back the
+     * versions that were. */
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, NULL, at("g/latest"), &rs, quiet, NULL), cat);
-    CHECK(rs.files_restored == 25 && rs.files_no_copy == 35);
+    CHECK(rs.files_restored == 60 && rs.files_older_version == 35 && rs.files_no_copy == 0);
+    CHECK(file_equals(at("g/latest/keep/f20.txt"), "file 20, first version"));
 
     /* The changes were the user's: back up. Every old version stays. */
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
@@ -2834,6 +2836,68 @@ static void test_restore_fallback(void)
     bd_catalog_close(cat);
 }
 
+/* Ransomware: every file is overwritten after the backup and the scan
+ * records the new contents. The restore brings back what was backed up. */
+static void test_restore_older_version(void)
+{
+    char name[64], text[64];
+    for (int i = 0; i < 5; i++) {
+        snprintf(name, sizeof(name), "ro/Src/f%d.txt", i);
+        snprintf(text, sizeof(text), "my file %d", i);
+        write_file(at(name), text);
+    }
+    bd_mkdirs(at("ro/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("ro/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("ro/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("ro/drive"), "Safe", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 5);
+
+    for (int i = 0; i < 5; i++) {
+        snprintf(name, sizeof(name), "ro/Src/f%d.txt", i);
+        snprintf(text, sizeof(text), "ENCRYPTED GARBAGE %d", i);
+        write_file(at(name), text);
+    }
+    write_file(at("ro/Src/new.txt"), "made after the backup");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 5 && ss.files_new == 1);
+
+    /* The plan asks for the drive with the old versions. */
+    int64_t plan_total = 0, plan_no_copy = 0;
+    REQUIRE_OK(bd_restore_plan(cat, 0, NULL, NULL, NULL, NULL, &plan_total, &plan_no_copy), cat);
+    CHECK(plan_total == 6 && plan_no_copy == 1);
+
+    log_keep lk;
+    memset(&lk, 0, sizeof(lk));
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("ro/out"), &rs, keep_log, &lk), cat);
+    CHECK(rs.files_restored == 5 && rs.files_older_version == 5);
+    CHECK(rs.files_no_copy == 1 && rs.files_failed == 0 && rs.files_offline == 0);
+    for (int i = 0; i < 5; i++) {
+        snprintf(name, sizeof(name), "ro/out/f%d.txt", i);
+        snprintf(text, sizeof(text), "my file %d", i);
+        CHECK(file_equals(at(name), text));
+    }
+    CHECK(!exists(at("ro/out/new.txt")));
+    CHECK(strstr(lk.text, "f3.txt: restored the version from ") != NULL);
+    CHECK(strstr(lk.text, "the newer one was never backed up") != NULL);
+    /* Again: already there, not counted again. */
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("ro/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 0 && rs.files_already_there == 5 && rs.files_older_version == 0);
+
+    /* Unplugged, the old versions are on a drive that is not connected,
+     * not never backed up. */
+    bd_media_disconnect(cat, drive);
+    REQUIRE_OK(bd_restore(cat, 0, NULL, at("ro/out-offline"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_offline == 5 && rs.files_no_copy == 1 && rs.files_restored == 0);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -3171,6 +3235,7 @@ int main(void)
     test_shadow_list();
     test_drive_gone();
     test_restore_fallback();
+    test_restore_older_version();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

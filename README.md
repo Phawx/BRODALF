@@ -19,10 +19,9 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.7.0** is built and tested on the `reconcile-answers` branch and
-**not released**. It reworks BRODALF to match the owner's answers to 178
-yes/no questions about what it should do (2026-11-25); see
-[History](#history). The latest release is **0.6.0** (2026-11-25), on the
+Version **0.7.0**, released 2026-11-25. It reworks BRODALF to match the
+owner's answers to 178 yes/no questions about what it should do; see
+[History](#history). Builds are on the
 [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
@@ -451,7 +450,7 @@ on a local machine needs to pick the work up without the chat history.
   (with a warning, and old versions kept, when many files changed at once),
   where each drive stands, a job history, a CSV export of the file list,
   online-only cloud files left alone, Ctrl+C in the command line.
-- 0.7.0 (built 2026-11-25 on the `reconcile-answers` branch, not released):
+- v0.7.0 (2026-11-25, built on the `reconcile-answers` branch first):
   the owner answered 178 yes/no questions about what BRODALF should do, and
   the build was reworked to match. Nothing on a drive is ever overwritten,
   moved or deleted (no pruning of old versions, no moves on the drive, no

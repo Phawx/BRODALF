@@ -20,8 +20,11 @@
 /* 100ns intervals between 1601-01-01 and 1970-01-01. */
 #define BD_EPOCH_DIFF 116444736000000000LL
 
-/* UTF-8 -> UTF-16 with '\\' separators. Absolute drive paths get the
- * \\?\ prefix so paths longer than MAX_PATH work. Caller frees. */
+/* UTF-8 -> UTF-16 with '\\' separators. Absolute paths get the long-path
+ * prefix so paths longer than MAX_PATH work: \\?\ for a drive path
+ * (C:\x becomes \\?\C:\x), \\?\UNC\ for a network path (\\server\share\x
+ * becomes \\?\UNC\server\share\x). A path that already starts with \\?\ or
+ * \\.\ is left as it is, and so is a relative one. Caller frees. */
 static wchar_t *to_wide(const char *path)
 {
     size_t len = strlen(path);
@@ -29,15 +32,35 @@ static wchar_t *to_wide(const char *path)
     if (!tmp) return NULL;
     for (size_t i = 0; i <= len; i++) tmp[i] = path[i] == '/' ? '\\' : path[i];
 
-    int prefix = (len >= 3 && tmp[1] == ':' && tmp[2] == '\\');
-    int n = MultiByteToWideChar(CP_UTF8, 0, tmp, -1, NULL, 0);
+    const char *from = tmp;
+    const wchar_t *prefix = NULL;
+    if (len >= 3 && tmp[1] == ':' && tmp[2] == '\\') {
+        prefix = L"\\\\?\\";
+    } else if (len >= 3 && tmp[0] == '\\' && tmp[1] == '\\' && tmp[2] != '\\' &&
+               !((tmp[2] == '?' || tmp[2] == '.') && tmp[3] == '\\')) {
+        prefix = L"\\\\?\\UNC\\";
+        from = tmp + 2; /* \\server\share -> \\?\UNC\server\share */
+    }
+    size_t plen = prefix ? wcslen(prefix) : 0;
+    int n = MultiByteToWideChar(CP_UTF8, 0, from, -1, NULL, 0);
     if (n <= 0) { free(tmp); return NULL; }
-    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n + (prefix ? 4 : 0)));
+    wchar_t *w = malloc(sizeof(wchar_t) * ((size_t)n + plen));
     if (!w) { free(tmp); return NULL; }
-    wchar_t *dst = w;
-    if (prefix) { wcscpy(w, L"\\\\?\\"); dst = w + 4; }
-    MultiByteToWideChar(CP_UTF8, 0, tmp, -1, dst, n);
+    if (prefix) wcscpy(w, prefix);
+    MultiByteToWideChar(CP_UTF8, 0, from, -1, w + plen, n);
     free(tmp);
+    return w;
+}
+
+/* A network path as 0.9.0 gave it, without the \\?\UNC\ prefix
+ * (\\server\share\x), in place: for the volume queries, which only need
+ * the share and are not documented for the prefixed form. */
+static wchar_t *unprefix_unc(wchar_t *w)
+{
+    if (w && _wcsnicmp(w, L"\\\\?\\UNC\\", 8) == 0) {
+        w[1] = L'\\';
+        memmove(w + 2, w + 8, sizeof(wchar_t) * (wcslen(w + 8) + 1));
+    }
     return w;
 }
 
@@ -566,7 +589,7 @@ int bd_temp_dir(char *out, size_t out_len)
 
 int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 {
-    wchar_t *w = to_wide(path);
+    wchar_t *w = unprefix_unc(to_wide(path));
     if (!w) return -1;
     ULARGE_INTEGER avail, total, freeb;
     BOOL ok = GetDiskFreeSpaceExW(w, &avail, &total, &freeb);
@@ -581,7 +604,7 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
 
 int bd_fs_can_compress(const char *path)
 {
-    wchar_t *w = to_wide(path), vol[MAX_PATH + 8];
+    wchar_t *w = unprefix_unc(to_wide(path)), vol[MAX_PATH + 8];
     if (!w) return 0;
     BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
     free(w);
@@ -593,7 +616,7 @@ int bd_fs_can_compress(const char *path)
 int bd_fs_name(const char *path, char *out, size_t cap)
 {
     if (cap) out[0] = '\0';
-    wchar_t *w = to_wide(path), vol[MAX_PATH + 8], fs[MAX_PATH + 1];
+    wchar_t *w = unprefix_unc(to_wide(path)), vol[MAX_PATH + 8], fs[MAX_PATH + 1];
     if (!w) return -1;
     BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
     free(w);
@@ -737,8 +760,9 @@ int bd_cpu_count(void)
  * the path was written (relative or not, short 8.3 names, case, / or \). */
 static int catalog_mutex_name(const char *catalog_path, wchar_t *name, size_t cap)
 {
-    /* to_wide gives drive paths the \\?\ prefix and leaves relative and UNC
-     * paths alone; GetFullPathNameW keeps a prefix it is given. */
+    /* to_wide gives drive paths the \\?\ prefix and network paths the
+     * \\?\UNC\ prefix, and leaves relative paths alone; GetFullPathNameW
+     * keeps a prefix it is given. */
     wchar_t *w = to_wide(catalog_path);
     if (!w) return -1;
     DWORD n = GetFullPathNameW(w, 0, NULL, NULL);
@@ -750,7 +774,16 @@ static int catalog_mutex_name(const char *catalog_path, wchar_t *name, size_t ca
     wchar_t *lng = ln ? malloc(sizeof(wchar_t) * ln) : NULL;
     if (lng && (got = GetLongPathNameW(full, lng, ln)) > 0 && got < ln) { free(full); full = lng; }
     else free(lng);
-    wchar_t *p = wcsncmp(full, L"\\\\?\\", 4) == 0 ? full + 4 : full;
+    /* The name is of the path without its prefix, as 0.9.0 made it (it
+     * gave network paths none), so that both keep each other out of the
+     * same catalog: \\?\C:\x is C:\x, \\?\UNC\server\x is \\server\x. */
+    wchar_t *p = full;
+    if (_wcsnicmp(full, L"\\\\?\\UNC\\", 8) == 0) {
+        p = full + 6;
+        p[0] = L'\\';
+    } else if (wcsncmp(full, L"\\\\?\\", 4) == 0) {
+        p = full + 4;
+    }
     CharUpperBuffW(p, (DWORD)wcslen(p));
     char *u = to_utf8(p);
     free(full);

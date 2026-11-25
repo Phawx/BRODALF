@@ -24,30 +24,35 @@ bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status
     sqlite3_finalize(q);
     if (!found) return bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
 
-    /* Live files: the file as it is now is here, only an older version
-     * is, or nothing of it is. */
+    /* Live files: the file as it is now is here (2), only an older version
+     * is (1), or nothing of it is (0). Each file is put in one of the three
+     * once; the look for an older version runs only when the current one
+     * is not here, and goes from the file's own versions to their copies on
+     * this drive through the (version_id, media_id) index, so the time
+     * grows with the number of files, not with files times copies. */
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT COALESCE(SUM(cur),0), COALESCE(SUM(CASE WHEN cur THEN size END),0),"
-                           " COALESCE(SUM(NOT cur AND old),0), COALESCE(SUM(CASE WHEN NOT cur AND old THEN size END),0),"
-                           " COALESCE(SUM(NOT cur AND NOT old),0), COALESCE(SUM(CASE WHEN NOT cur AND NOT old THEN size END),0)"
-                           " FROM (SELECT n.size,"
-                           "  EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id"
-                           "   AND c.media_id=?1 AND c.state='ok') AS cur,"
-                           "  EXISTS(SELECT 1 FROM versions v JOIN copies c ON c.version_id=v.id"
-                           "   WHERE v.node_id=n.id AND c.media_id=?1 AND c.state='ok') AS old"
-                           "  FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND n.current_version_id IS NOT NULL)",
+                           "SELECT st, COUNT(*), COALESCE(SUM(size),0) FROM (SELECT n.size,"
+                           "  CASE WHEN EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id"
+                           "    AND c.media_id=?1 AND c.state='ok') THEN 2"
+                           "   WHEN EXISTS(SELECT 1 FROM versions v WHERE v.node_id=n.id AND EXISTS("
+                           "    SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=?1 AND c.state='ok')) THEN 1"
+                           "   ELSE 0 END AS st"
+                           "  FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND n.current_version_id IS NOT NULL)"
+                           " GROUP BY st",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "count the files on the drive");
     sqlite3_bind_int64(q, 1, media_id);
-    if (sqlite3_step(q) == SQLITE_ROW) {
-        out->files_current = sqlite3_column_int64(q, 0);
-        out->bytes_current = sqlite3_column_int64(q, 1);
-        out->files_behind = sqlite3_column_int64(q, 2);
-        out->bytes_behind = sqlite3_column_int64(q, 3);
-        out->files_not_here = sqlite3_column_int64(q, 4);
-        out->bytes_not_here = sqlite3_column_int64(q, 5);
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
+        int64_t files = sqlite3_column_int64(q, 1), bytes = sqlite3_column_int64(q, 2);
+        switch (sqlite3_column_int(q, 0)) {
+        case 2: out->files_current = files; out->bytes_current = bytes; break;
+        case 1: out->files_behind = files; out->bytes_behind = bytes; break;
+        default: out->files_not_here = files; out->bytes_not_here = bytes; break;
+        }
     }
     sqlite3_finalize(q);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "count the files on the drive");
 
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT (SELECT COUNT(*) FROM nodes n WHERE n.is_dir=0 AND n.deleted=1 AND EXISTS("

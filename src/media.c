@@ -25,6 +25,7 @@ int bd_media_file_read(const char *path, bd_media_file *mf)
         else if (strcmp(line, "catalog_uuid") == 0) snprintf(mf->catalog_uuid, sizeof(mf->catalog_uuid), "%s", v);
         else if (strcmp(line, "label") == 0) snprintf(mf->label, sizeof(mf->label), "%s", v);
         else if (strcmp(line, "encrypted") == 0) mf->encrypted = strcmp(v, "1") == 0;
+        else if (strcmp(line, "secondary") == 0) mf->secondary = strcmp(v, "1") == 0;
     }
     fclose(f);
     return (magic && strlen(mf->media_uuid) == 36) ? 0 : -1;
@@ -42,9 +43,11 @@ static int media_file_put(const char *path, const bd_media_file *mf, int replace
             "catalog_uuid=%s\n"
             "label=%s\n"
             "encrypted=%d\n"
+            "%s"
             "created_ms=%lld\n"
             "# This drive holds BRODALF backups. Do not delete this file.\n",
-            mf->media_uuid, mf->catalog_uuid, mf->label, mf->encrypted, (long long)bd_now_ms());
+            mf->media_uuid, mf->catalog_uuid, mf->label, mf->encrypted, mf->secondary ? "secondary=1\n" : "",
+            (long long)bd_now_ms());
     int rc = bd_fsync(f);
     if (fclose(f) != 0) rc = -1;
     if (rc == 0) rc = replace ? bd_rename_replace(tmp, path) : bd_rename_noreplace(tmp, path);
@@ -145,6 +148,15 @@ int64_t bd_media_insert(bd_catalog *cat, const char *uuid, const char *kind, con
     return id;
 }
 
+static void media_set_secondary(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *u;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET secondary=1 WHERE id=?", -1, &u, NULL) != SQLITE_OK) return;
+    sqlite3_bind_int64(u, 1, media_id);
+    sqlite3_step(u);
+    sqlite3_finalize(u);
+}
+
 static void text_or_null(sqlite3_stmt *st, int col, const char *s)
 {
     if (s && *s) sqlite3_bind_text(st, col, s, -1, SQLITE_TRANSIENT);
@@ -236,7 +248,7 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label)
 
 bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, unsigned flags, int64_t *out_media_id)
 {
-    int encrypted = (flags & BD_MEDIA_ENCRYPTED) != 0;
+    int encrypted = (flags & BD_MEDIA_ENCRYPTED) != 0, secondary = (flags & BD_MEDIA_SECONDARY) != 0;
     if (encrypted && !cat->have_key)
         return bd_fail(cat, BD_ERR_PASSPHRASE, bd_catalog_has_passphrase(cat) ? "enter the passphrase to set up an encrypted drive"
                                                                                : "set a passphrase to set up an encrypted drive");
@@ -266,9 +278,11 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     snprintf(mf.label, sizeof(mf.label), "%s", label);
     for (char *p = mf.label; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
     mf.encrypted = encrypted;
+    mf.secondary = secondary;
 
     int64_t id = bd_media_insert(cat, mf.media_uuid, "drive", mf.label, encrypted);
     if (!id) { free(path); return bd_fail_db(cat, "add drive"); }
+    if (secondary) media_set_secondary(cat, id);
     if (bd_media_file_write(path, &mf) != 0) {
         free(path);
         sqlite3_stmt *d;
@@ -347,6 +361,7 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
          * example after restoring an older catalog backup. Re-register it. */
         id = bd_media_insert(cat, mf.media_uuid, "drive", mf.label[0] ? mf.label : "Recovered drive", mf.encrypted);
         if (!id) return bd_fail_db(cat, "re-register drive");
+        if (mf.secondary) media_set_secondary(cat, id);
         bd_logf(log, log_ctx, "re-registered drive \"%s\"", mf.label);
     }
     bd_status s = bd_media_record_connected(cat, id, root);
@@ -405,7 +420,6 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
     memset(stats, 0, sizeof(*stats));
 
     int encrypted = bd_media_encrypted(cat, media_id);
-    const uint8_t *key = encrypted ? cat->key : NULL;
     if (encrypted && !cat->have_key)
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to check an encrypted drive");
     bd_store *store = bd_store_open(cat, media_id);
@@ -414,7 +428,7 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
     sqlite3_stmt *q = NULL, *u = NULL;
     bd_status s = BD_OK;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, c.state"
+                           "SELECT c.id, c.path_on_media, c.stored_size, c.stored_mtime_ns, v.hash, c.state, c.encrypted"
                            " FROM copies c JOIN versions v ON v.id=c.version_id WHERE c.media_id=?1"
                            " AND (?2=0 OR (c.state<>'missing' AND COALESCE(c.last_full_check_ms,0)<?2)) ORDER BY c.path_on_media",
                            -1, &q, NULL) != SQLITE_OK ||
@@ -455,6 +469,17 @@ static bd_status check_copies(bd_catalog *cat, int64_t media_id, int64_t due_bef
         int64_t stored_size = sqlite3_column_int64(q, 2);
         int64_t stored_mtime = sqlite3_column_int64(q, 3);
         const char *expected = (const char *)sqlite3_column_text(q, 4);
+        /* On a plain drive, copies of folders set to be encrypted are
+         * sealed one by one. Without the passphrase they are left as they
+         * were and counted as skipped. */
+        int sealed = encrypted || sqlite3_column_int(q, 6);
+        const uint8_t *key = sealed ? cat->key : NULL;
+        if (sealed && !cat->have_key) {
+            stats->copies++;
+            stats->skipped++;
+            if (stats->skipped == 1) bd_logf(log, log_ctx, "encrypted copies are skipped: enter the passphrase to check them too");
+            continue;
+        }
         stats->copies++;
         bd_report_file(cat, stats->copies, rel, stored_size);
 

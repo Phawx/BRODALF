@@ -60,6 +60,15 @@ int bd_hash_file(const char *path, FILE *copy_to, char hex_out[BD_HASH_HEX_LEN +
 int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const uint8_t *dst_key,
                  char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out);
 
+/* Read a plain file once and write it to n copies at the same time (one
+ * writer thread each for a big file), sealing copy i when dst_keys[i] is
+ * set. The hash is of the file. A copy that cannot be written gets
+ * failed[i] = 1 and the others carry on; sizes[i] is what copy i got.
+ * 0 when the file was read to the end (check failed[]), -1 read error,
+ * -2 every copy failed, -4 cancelled. */
+int bd_hash_copy_multi(const char *path, FILE *const *copy_to, const uint8_t *const *dst_keys, int n,
+                       char hex_out[BD_HASH_HEX_LEN + 1], int64_t *sizes, int *failed);
+
 /* Streaming encryption (see crypto.c for the format). */
 typedef struct bd_sealer bd_sealer;
 typedef struct bd_opener bd_opener;
@@ -84,9 +93,20 @@ extern int64_t bd_test_free_bytes;
  * of its own, so the copies it holds still count the way they did. */
 #define BD_SQL_PLACE(m) "(CASE WHEN " m ".kind<>'drive' THEN 'cloud:'||" m ".id ELSE lower(trim(COALESCE(" m ".location,''))) END)"
 /* SQL: a copy counts toward the copies you want, unless its drive is
- * marked lost or broken (bd_media_mark_lost). */
+ * marked lost or broken (bd_media_mark_lost) or is an extra place for
+ * starred files (a Dropbox folder, a share): those are a second line, not
+ * one of the N full sets. */
 #define BD_SQL_COUNTS(c) \
+    "NOT EXISTS(SELECT 1 FROM media rm WHERE rm.id=" c ".media_id AND (rm.retired_ms IS NOT NULL OR rm.secondary<>0))"
+/* SQL: a copy can still be restored from (its drive is not lost or broken),
+ * extra places included. */
+#define BD_SQL_USABLE(c) \
     "NOT EXISTS(SELECT 1 FROM media rm WHERE rm.id=" c ".media_id AND rm.retired_ms IS NOT NULL)"
+/* SQL: the node n is starred, or is in a starred folder (tbl "stars"), or
+ * set to be encrypted (tbl "encrypt_paths"). */
+#define BD_SQL_MARKED(tbl, n)                                                                           \
+    "EXISTS(SELECT 1 FROM " tbl " mk WHERE mk.source_id=" n ".source_id AND (mk.rel_path='' OR mk.rel_path=" n \
+    ".rel_path OR substr(" n ".rel_path,1,length(mk.rel_path)+1)=mk.rel_path||'/'))"
 /* SQL: the node's backup root is still backed up (bd_source_set_active). */
 #define BD_SQL_ACTIVE(n) "NOT EXISTS(SELECT 1 FROM sources xs WHERE xs.id=" n ".source_id AND xs.active=0)"
 
@@ -140,6 +160,7 @@ typedef struct {
     char catalog_uuid[37];
     char label[256];
     int encrypted;
+    int secondary; /* an extra place for starred files */
 } bd_media_file;
 int bd_media_file_read(const char *path, bd_media_file *mf);
 int bd_media_file_write(const char *path, const bd_media_file *mf);

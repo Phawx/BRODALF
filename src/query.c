@@ -182,7 +182,7 @@ bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT v.version_no, v.id=n.current_version_id, v.hash, v.size, v.mtime_ns, v.first_seen_ms,"
                            " COALESCE(c.media_id,0), m.label, c.path_on_media, c.state, k.media_id IS NOT NULL,"
-                           " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(m.encrypted,0),"
+                           " MAX(COALESCE(c.last_full_check_ms,0), COALESCE(c.last_quick_check_ms,0)), COALESCE(c.encrypted<>0 OR m.encrypted<>0,0),"
                            " COALESCE(m.location,''), v.id, m.retired_ms IS NOT NULL"
                            " FROM versions v JOIN nodes n ON n.id=v.node_id"
                            " LEFT JOIN copies c ON c.version_id=v.id LEFT JOIN media m ON m.id=c.media_id"
@@ -241,7 +241,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id),"
                            " m.retired_ms, COALESCE(m.lost_why,''),"
                            " (SELECT COALESCE(SUM(v.size),0) FROM copies c JOIN versions v ON v.id=c.version_id"
-                           "   WHERE c.media_id=m.id AND c.state='ok')"
+                           "   WHERE c.media_id=m.id AND c.state='ok'),"
+                           " m.secondary, COALESCE(m.limit_bytes,0)"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -272,6 +273,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         if (info.lost_ms && !info.lost_why[0]) info.lost_why = "lost";
         info.bytes_held = sqlite3_column_int64(q, 36);
         info.reserve_bytes = reserve;
+        info.secondary = sqlite3_column_int(q, 37);
+        info.limit_bytes = sqlite3_column_int64(q, 38);
         info.check_due = check_days > 0 && info.oldest_check_ms > 0 &&
                          now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000;
         bd_drive_hw hw;
@@ -453,7 +456,7 @@ bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, int new_only, bd_d
                            "   WHERE c.version_id=v.id AND c.state='ok' ORDER BY m.label)),"
                            " EXISTS(SELECT 1 FROM copies c JOIN temp.connected k ON k.media_id=c.media_id"
                            "   WHERE c.version_id=v.id AND c.state='ok'),"
-                           " EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") "),"
+                           " EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_USABLE("c") "),"
                            " n.deleted_ack"
                            " FROM nodes n JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=n.current_version_id"
                            DELETED_WHERE

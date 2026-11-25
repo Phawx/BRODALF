@@ -1400,7 +1400,7 @@ static void test_case_rename(void)
     bd_test_fold_case = 1;
     REQUIRE_OK(bd_catalog_open(at("mg/c.brodalf"), &cat), NULL);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE rel_fold IS NULL") == 0);
-    CHECK(count_rows(cat, "SELECT value FROM meta WHERE key='schema_version'") == 7);
+    CHECK(count_rows(cat, "SELECT value FROM meta WHERE key='schema_version'") == 8);
     CHECK(rename(at("mg/Src/Notes.TXT"), at("mg/Src/notes.txt")) == 0);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_new == 0 && ss.files_deleted == 0);
@@ -1965,6 +1965,430 @@ static int count_catalog_copies(const char *dir)
     return n;
 }
 
+/* ---- 0.8.0: several drives at once, starred files, encrypted folders ---- */
+
+typedef struct { int n; int64_t files; char rel[256]; } mark_list_t;
+
+static int collect_mark(void *ctx, const bd_mark_info *m)
+{
+    mark_list_t *l = ctx;
+    l->n++;
+    l->files += m->files;
+    snprintf(l->rel, sizeof(l->rel), "%s", m->rel_path);
+    return 0;
+}
+
+typedef struct { int n; int starred, encrypt, backed_up, max_copies; } pending_list_t;
+
+static int collect_pending(void *ctx, const bd_pending_info *p)
+{
+    pending_list_t *l = ctx;
+    l->n++;
+    l->starred += p->starred;
+    l->encrypt += p->encrypt;
+    l->backed_up += p->backed_up;
+    if (p->copies > l->max_copies) l->max_copies = p->copies;
+    return 0;
+}
+
+static int64_t pending_total(bd_catalog *cat, int64_t media_id, pending_list_t *l)
+{
+    int64_t total = -1;
+    pending_list_t local;
+    if (!l) l = &local;
+    memset(l, 0, sizeof(*l));
+    CHECK(bd_list_pending(cat, media_id, 0, collect_pending, l, &total) == BD_OK);
+    CHECK(total == l->n);
+    return total;
+}
+
+typedef struct { int64_t id; int secondary; int64_t limit; } place_snap;
+
+static int snap_place(void *ctx, const bd_media_info *m)
+{
+    place_snap *p = ctx;
+    if (m->media_id != p->id) return 0;
+    p->secondary = m->secondary;
+    p->limit = m->limit_bytes;
+    return 1;
+}
+
+typedef struct { int sealed, plain; } sealed_count;
+
+static int count_sealed(void *ctx, const bd_copy_info *c)
+{
+    sealed_count *s = ctx;
+    if (!c->media_id || strcmp(c->copy_state, "ok") != 0) return 0;
+    if (c->encrypted) s->sealed++;
+    else s->plain++;
+    return 0;
+}
+
+static sealed_count sealed_of(bd_catalog *cat, int64_t src, const char *rel)
+{
+    sealed_count s = {0, 0};
+    int64_t node = 0;
+    CHECK(bd_find_node(cat, src, rel, &node) == BD_OK);
+    if (node) CHECK(bd_list_copies(cat, node, count_sealed, &s) == BD_OK);
+    return s;
+}
+
+static void test_multi_copy(void)
+{
+    size_t len = (size_t)6 * 1024 * 1024 + 777;
+    unsigned char *data = malloc(len);
+    CHECK(data != NULL);
+    if (!data) return;
+    for (size_t i = 0; i < len; i++) data[i] = (unsigned char)((i * 2246822519u) >> 11);
+    bd_mkdirs(at("multi"));
+    FILE *f = bd_fopen(at("multi/src.bin"), "wb");
+    CHECK(f && fwrite(data, 1, len, f) == len);
+    if (f) fclose(f);
+    free(data);
+    char want[BD_HASH_HEX_LEN + 1], got[BD_HASH_HEX_LEN + 1], back[BD_HASH_HEX_LEN + 1];
+    CHECK(bd_hash_file(at("multi/src.bin"), NULL, want, NULL) == 0);
+    uint8_t key[32];
+    CHECK(bd_random_bytes(key, sizeof(key)) == 0);
+
+    /* Big enough for the writer threads: three copies, the middle one sealed. */
+    write_file(at("multi/ro.bin"), "");
+    FILE *outs[3] = {bd_fopen(at("multi/a.bin"), "wb"), bd_fopen(at("multi/b.bdenc"), "wb"), bd_fopen(at("multi/c.bin"), "wb")};
+    const uint8_t *keys[3] = {NULL, key, NULL};
+    int64_t sizes[3];
+    int failed[3];
+    CHECK(outs[0] && outs[1] && outs[2]);
+    CHECK(bd_hash_copy_multi(at("multi/src.bin"), outs, keys, 3, got, sizes, failed) == 0);
+    for (int i = 0; i < 3; i++) if (outs[i]) fclose(outs[i]);
+    CHECK(strcmp(got, want) == 0);
+    CHECK(!failed[0] && !failed[1] && !failed[2] && sizes[0] == (int64_t)len && sizes[2] == (int64_t)len);
+    CHECK(bd_hash_file(at("multi/a.bin"), NULL, back, NULL) == 0 && strcmp(back, want) == 0);
+    CHECK(bd_hash_file(at("multi/c.bin"), NULL, back, NULL) == 0 && strcmp(back, want) == 0);
+    CHECK(bd_hash_copy(at("multi/b.bdenc"), key, NULL, NULL, back, NULL) == 0 && strcmp(back, want) == 0);
+
+    /* A copy that cannot be written (opened for reading only) fails alone. */
+    FILE *bad[2] = {bd_fopen(at("multi/d.bin"), "wb"), bd_fopen(at("multi/ro.bin"), "rb")};
+    const uint8_t *nokeys[2] = {NULL, NULL};
+    CHECK(bad[0] && bad[1]);
+    CHECK(bd_hash_copy_multi(at("multi/src.bin"), bad, nokeys, 2, got, sizes, failed) == 0);
+    for (int i = 0; i < 2; i++) if (bad[i]) fclose(bad[i]);
+    CHECK(!failed[0] && failed[1]);
+    CHECK(bd_hash_file(at("multi/d.bin"), NULL, back, NULL) == 0 && strcmp(back, want) == 0);
+    /* All fail: -2. A missing file: -1. */
+    FILE *both[2] = {bd_fopen(at("multi/ro.bin"), "rb"), bd_fopen(at("multi/ro.bin"), "rb")};
+    CHECK(bd_hash_copy_multi(at("multi/src.bin"), both, nokeys, 2, got, sizes, failed) == -2);
+    for (int i = 0; i < 2; i++) if (both[i]) fclose(both[i]);
+    FILE *more[2] = {bd_fopen(at("multi/e.bin"), "wb"), bd_fopen(at("multi/f.bin"), "wb")};
+    CHECK(bd_hash_copy_multi(at("multi/none.bin"), more, nokeys, 2, got, sizes, failed) == -1);
+    for (int i = 0; i < 2; i++) if (more[i]) fclose(more[i]);
+    CHECK(bd_crypto_speed() > 0);
+}
+
+static void test_backup_many(void)
+{
+    bd_mkdirs(at("bm/d1"));
+    bd_mkdirs(at("bm/d2"));
+    write_file(at("bm/src/a.txt"), "alpha");
+    write_file(at("bm/src/sub/b.txt"), "bravo");
+    /* One big file, so the copy runs on writer threads. */
+    size_t len = (size_t)5 * 1024 * 1024 + 99;
+    char *big = malloc(len + 1);
+    CHECK(big != NULL);
+    if (!big) return;
+    for (size_t i = 0; i < len; i++) big[i] = (char)('a' + (i * 7919) % 26);
+    big[len] = '\0';
+    write_file(at("bm/src/big.dat"), big);
+    free(big);
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("bm/c.brodalf"), &cat), NULL);
+    int64_t src, d1, d2;
+    REQUIRE_OK(bd_source_add(cat, at("bm/src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("bm/d1"), "Drive one", 0, &d1), cat);
+    REQUIRE_OK(bd_media_init(cat, at("bm/d2"), "Drive two", 0, &d2), cat);
+    CHECK(bd_option_get(cat, "parallel_copies") == 0);
+    REQUIRE_OK(bd_option_set(cat, "parallel_copies", 1), cat);
+    CHECK(bd_option_get(cat, "parallel_copies") == 1);
+
+    int64_t both[2] = {d1, d2}, twice[2] = {d1, d1};
+    bd_backup_stats bs[2];
+    CHECK(bd_backup_many(cat, twice, 2, 0, bs, quiet, NULL) == BD_ERR_INVALID);
+    REQUIRE_OK(bd_backup_many(cat, both, 2, 0, bs, quiet, NULL), cat);
+    CHECK(bs[0].files_copied == 3 && bs[1].files_copied == 3);
+    CHECK(bs[0].files_failed == 0 && bs[1].files_failed == 0);
+    CHECK(bs[0].bytes_copied == bs[1].bytes_copied && bs[0].bytes_copied == (int64_t)len + 10);
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, d1, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 3 && cs.ok == 3);
+    REQUIRE_OK(bd_media_check(cat, d2, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 3 && cs.ok == 3);
+    /* Each drive got the catalog too. */
+    for (int k = 0; k < 2; k++) {
+        found_copy fc;
+        memset(&fc, 0, sizeof(fc));
+        CHECK(bd_find_catalog_copies(at(k ? "bm/d2" : "bm/d1"), found_copy_cb, &fc) == BD_OK && fc.n >= 1);
+    }
+
+    /* One new file; a drive that has everything else only gets it. */
+    write_file(at("bm/src/c.txt"), "charlie");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    bd_mkdirs(at("bm/d3"));
+    int64_t d3;
+    REQUIRE_OK(bd_media_init(cat, at("bm/d3"), "Drive three", 0, &d3), cat);
+    int64_t three[3] = {d1, d2, d3};
+    bd_backup_stats b3[3];
+    REQUIRE_OK(bd_backup_many(cat, three, 3, 0, b3, quiet, NULL), cat);
+    CHECK(b3[0].files_copied == 1 && b3[1].files_copied == 1 && b3[2].files_copied == 4);
+    CHECK(b3[0].files_considered == 1 && b3[2].files_considered == 4);
+
+    /* Every file now has three copies: the target is met. */
+    bd_target t = {3, 1};
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    CHECK(pending_total(cat, 0, NULL) == 0);
+    t.copies = 4;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    pending_list_t pl;
+    CHECK(pending_total(cat, 0, &pl) == 4 && pl.max_copies == 3 && pl.backed_up == 0);
+    CHECK(pending_total(cat, d1, NULL) == 0);
+
+    /* A drive that is not plugged in stops the whole job before it starts. */
+    bd_media_disconnect(cat, d2);
+    write_file(at("bm/src/d.txt"), "delta");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(bd_backup_many(cat, both, 2, 0, bs, quiet, NULL) != BD_OK);
+    REQUIRE_OK(bd_media_check(cat, d1, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 4);
+    bd_catalog_close(cat);
+}
+
+static void test_stars_and_places(void)
+{
+    write_file(at("st/src/docs/a.txt"), "twenty bytes of text");
+    write_file(at("st/src/docs/sub/b.txt"), "twenty more bytes ok");
+    write_file(at("st/src/photos/p.jpg"), "a photo that is not starred");
+    write_file(at("st/src/notes.txt"), "notes");
+    bd_mkdirs(at("st/drive"));
+    bd_mkdirs(at("st/Dropbox"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("st/c.brodalf"), &cat), NULL);
+    int64_t src, drive, place;
+    REQUIRE_OK(bd_source_add(cat, at("st/src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("st/drive"), "Main drive", 0, &drive), cat);
+
+    /* A place needs a real description. */
+    CHECK(bd_place_add(cat, at("st/Dropbox"), "Dropbox", 0, 0, NULL) == BD_ERR_INVALID);
+    CHECK(bd_place_add(cat, at("st/Dropbox"), "my files", 0, 0, NULL) == BD_ERR_INVALID);
+    CHECK(bd_place_add(cat, at("st/Dropbox"), "Dropbox folder on the laptop", -1, 0, NULL) == BD_ERR_INVALID);
+    REQUIRE_OK(bd_place_add(cat, at("st/Dropbox"), "Dropbox folder on the laptop", 30, 0, &place), cat);
+    place_snap ps = {place, 0, 0};
+    bd_list_media(cat, snap_place, &ps);
+    CHECK(ps.secondary == 1 && ps.limit == 30);
+    CHECK(bd_place_set_limit(cat, drive, 10) == BD_ERR_INVALID); /* a drive is not a place */
+    char mf_path[1200];
+    snprintf(mf_path, sizeof(mf_path), "st/Dropbox/BRODALF/%s/BRODALF.media", bd_catalog_uuid(cat));
+    bd_media_file mf;
+    CHECK(bd_media_file_read(at(mf_path), &mf) == 0 && mf.secondary == 1);
+
+    /* Nothing starred: nothing goes there. */
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, place, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_considered == 0);
+
+    CHECK(bd_star_set(cat, src, "nope", 1) == BD_ERR_NOT_FOUND);
+    REQUIRE_OK(bd_star_set(cat, src, "docs/", 1), cat);
+    REQUIRE_OK(bd_star_set(cat, src, "docs", 1), cat); /* twice is fine */
+    CHECK(bd_starred(cat, src, "docs") == 1);
+    CHECK(bd_starred(cat, src, "docs/sub/b.txt") == 2);
+    CHECK(bd_starred(cat, src, "docsx/a.txt") == 0);
+    CHECK(bd_starred(cat, src, "notes.txt") == 0);
+    mark_list_t ml;
+    memset(&ml, 0, sizeof(ml));
+    REQUIRE_OK(bd_list_stars(cat, collect_mark, &ml), cat);
+    CHECK(ml.n == 1 && ml.files == 2 && strcmp(ml.rel, "docs") == 0);
+    int64_t sf = 0, sb = 0;
+    REQUIRE_OK(bd_starred_totals(cat, &sf, &sb), cat);
+    CHECK(sf == 2 && sb == 40);
+
+    /* The limit lets one of the two starred files in. */
+    bd_place_status pst;
+    REQUIRE_OK(bd_place_status_get(cat, place, &pst), cat);
+    CHECK(pst.starred_files == 2 && pst.waiting_files == 1 && pst.over_limit_files == 1 && pst.have_files == 0);
+    pending_list_t pl;
+    CHECK(pending_total(cat, place, &pl) == 2 && pl.starred == 2);
+    bd_backup_preview_info pv;
+    REQUIRE_OK(bd_backup_preview(cat, place, 0, &pv), cat);
+    CHECK(pv.files_to_copy == 2);
+    REQUIRE_OK(bd_backup(cat, place, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.files_no_room == 1 && bs.files_considered == 2);
+    char p1[1200];
+    snprintf(p1, sizeof(p1), "st/Dropbox/BRODALF/%s/src/docs/a.txt", bd_catalog_uuid(cat));
+    CHECK(file_equals(at(p1), "twenty bytes of text"));
+    REQUIRE_OK(bd_place_status_get(cat, place, &pst), cat);
+    CHECK(pst.have_files == 1 && pst.used_bytes == 20 && pst.over_limit_files == 1 && pst.waiting_files == 0);
+
+    /* Copies in a place never count toward the copies you want. */
+    bd_target t = {1, 1};
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    CHECK(pending_total(cat, 0, NULL) == 4);
+    bd_set_progress sp[2];
+    int sets = 0;
+    REQUIRE_OK(bd_backup_sets(cat, sp, 2, &sets), cat);
+    CHECK(sets == 1 && sp[0].files_done == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4);
+    CHECK(pending_total(cat, 0, NULL) == 0);
+    REQUIRE_OK(bd_backup_sets(cat, sp, 2, &sets), cat);
+    CHECK(sp[0].files_done == 4);
+    /* And no drive suggestion points at the place. */
+    help_list hl = help_of(cat);
+    for (int i = 0; i < hl.n; i++) CHECK(strcmp(hl.labels[i], "Dropbox folder on the laptop") != 0);
+
+    /* With the drive away, the starred file comes back from the place. */
+    bd_media_disconnect(cat, drive);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, "docs", at("st/out"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && rs.files_offline == 1);
+    CHECK(file_equals(at("st/out/docs/a.txt"), "twenty bytes of text"));
+    REQUIRE_OK(bd_media_connect(cat, at("st/drive"), &drive, quiet, NULL), cat);
+
+    /* No limit: the other one goes too. */
+    REQUIRE_OK(bd_place_set_limit(cat, place, 0), cat);
+    REQUIRE_OK(bd_backup(cat, place, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1 && bs.files_no_room == 0);
+
+    /* A star on a file moves with it when it is renamed. */
+    REQUIRE_OK(bd_star_set(cat, src, "notes.txt", 1), cat);
+    CHECK(rename(at("st/src/notes.txt"), at("st/src/notes-renamed.txt")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_moved == 1);
+    CHECK(bd_starred(cat, src, "notes-renamed.txt") == 1 && bd_starred(cat, src, "notes.txt") == 0);
+    REQUIRE_OK(bd_backup(cat, place, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    /* Unstarred files stay where they are, and nothing new goes there. */
+    REQUIRE_OK(bd_star_set(cat, src, "docs", 0), cat);
+    write_file(at("st/src/docs/new.txt"), "new");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, place, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    CHECK(file_equals(at(p1), "twenty bytes of text"));
+
+    /* The place survives a save and reopen as a place. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("st/c.brodalf"), &cat), NULL);
+    ps.secondary = 0;
+    bd_list_media(cat, snap_place, &ps);
+    CHECK(ps.secondary == 1 && ps.limit == 0);
+    /* A catalog that lost the place (an older copy of it) finds it again
+     * as a place. */
+    CHECK(bd_exec(cat, "DELETE FROM copies WHERE media_id IN (SELECT id FROM media WHERE secondary<>0);"
+                       " DELETE FROM media WHERE secondary<>0") == 0);
+    int64_t again = 0;
+    REQUIRE_OK(bd_media_connect(cat, at("st/Dropbox"), &again, quiet, NULL), cat);
+    ps.id = again;
+    ps.secondary = 0;
+    bd_list_media(cat, snap_place, &ps);
+    CHECK(ps.secondary == 1);
+    bd_catalog_close(cat);
+}
+
+static void test_encrypt_folders(void)
+{
+    write_file(at("en/src/secret/a.txt"), "the secret text");
+    write_file(at("en/src/open/b.txt"), "open text");
+    bd_mkdirs(at("en/drive"));
+
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("en/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("en/src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("en/drive"), "Plain drive", 0, &drive), cat);
+
+    CHECK(bd_encrypt_path_set(cat, src, "secret", 1) == BD_ERR_PASSPHRASE);
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, "a passphrase for the test"), cat);
+    REQUIRE_OK(bd_encrypt_path_set(cat, src, "secret", 1), cat);
+    CHECK(bd_encrypt_marked(cat, src, "secret/a.txt") == 2 && bd_encrypt_marked(cat, src, "open/b.txt") == 0);
+    mark_list_t ml;
+    memset(&ml, 0, sizeof(ml));
+    REQUIRE_OK(bd_list_encrypt_paths(cat, collect_mark, &ml), cat);
+    CHECK(ml.n == 1 && ml.files == 1);
+    bd_encrypt_stats es;
+    REQUIRE_OK(bd_encrypt_stats_get(cat, &es), cat);
+    CHECK(es.files == 1 && es.files_waiting == 1 && es.sealed_copies == 0 && es.bytes_per_second > 0);
+    pending_list_t pl;
+    CHECK(pending_total(cat, drive, &pl) == 2 && pl.encrypt == 1);
+
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2 && bs.files_failed == 0);
+    char sealed_path[1200], plain_path[1200];
+    snprintf(sealed_path, sizeof(sealed_path), "en/drive/BRODALF/%s/src/secret/a.txt" BD_SEALED_SUFFIX, bd_catalog_uuid(cat));
+    snprintf(plain_path, sizeof(plain_path), "en/drive/BRODALF/%s/src/open/b.txt", bd_catalog_uuid(cat));
+    CHECK(exists(at(sealed_path)) && !file_equals(at(sealed_path), "the secret text"));
+    CHECK(file_equals(at(plain_path), "open text"));
+    sealed_count sc = sealed_of(cat, src, "secret/a.txt");
+    CHECK(sc.sealed == 1 && sc.plain == 0);
+    sc = sealed_of(cat, src, "open/b.txt");
+    CHECK(sc.sealed == 0 && sc.plain == 1);
+    REQUIRE_OK(bd_encrypt_stats_get(cat, &es), cat);
+    CHECK(es.sealed_copies == 1 && es.files_waiting == 0 && es.plain_copies == 0);
+
+    /* Locked: the plain copy is checked, the sealed one skipped. */
+    bd_catalog_lock_key(cat);
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 2 && cs.ok == 1 && cs.skipped == 1);
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, "", at("en/out1"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && rs.files_need_passphrase == 1);
+    /* A new file outside the encrypted folder backs up while locked; one
+     * inside needs the passphrase. */
+    write_file(at("en/src/open/c.txt"), "more open text");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    write_file(at("en/src/secret/d.txt"), "another secret");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(bd_backup(cat, drive, 0, &bs, quiet, NULL) == BD_ERR_PASSPHRASE);
+
+    REQUIRE_OK(bd_catalog_unlock(cat, "a passphrase for the test"), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.copies == 4 && cs.ok == 4 && cs.skipped == 0);
+    REQUIRE_OK(bd_restore(cat, src, "secret", at("en/out2"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 2);
+    CHECK(file_equals(at("en/out2/secret/a.txt"), "the secret text"));
+
+    /* A folder set later keeps its plain copies; its next version is sealed. */
+    REQUIRE_OK(bd_encrypt_path_set(cat, src, "open", 1), cat);
+    REQUIRE_OK(bd_encrypt_stats_get(cat, &es), cat);
+    CHECK(es.files == 4 && es.plain_copies == 2 && es.files_waiting == 2);
+    write_file(at("en/src/open/b.txt"), "open text, changed");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    CHECK(file_equals(at(plain_path), "open text"));
+    sc = sealed_of(cat, src, "open/b.txt");
+    CHECK(sc.sealed == 1);
+    REQUIRE_OK(bd_encrypt_path_set(cat, src, "open", 0), cat);
+    CHECK(bd_encrypt_marked(cat, src, "open/b.txt") == 0);
+
+    /* An older catalog's copies on an encrypted drive are marked sealed on opening. */
+    CHECK(bd_exec(cat, "UPDATE media SET encrypted=1; UPDATE copies SET encrypted=0") == 0);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open_with(at("en/c.brodalf"), "a passphrase for the test", &cat), NULL);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies WHERE encrypted=0") == 0);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -2294,6 +2718,10 @@ int main(void)
     test_lost_drive();
     test_deleted_files();
     test_bitrot_and_sizes();
+    test_multi_copy();
+    test_backup_many();
+    test_stars_and_places();
+    test_encrypt_folders();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

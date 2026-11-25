@@ -24,7 +24,7 @@
 
 #define BD_MAGIC "BRODALF\x1a"
 #define BD_FORMAT_VERSION 1u
-#define BD_SCHEMA_VERSION 7
+#define BD_SCHEMA_VERSION 8
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
 
@@ -79,7 +79,9 @@ static const char *SCHEMA_SQL =
     "  location TEXT,"
     "  retired_ms INTEGER,"              /* marked lost or broken: its copies no longer count */
     "  replaced_by INTEGER,"             /* 0.5.0 and 0.6.0 only (Replace drive); unused */
-    "  lost_why TEXT);"                  /* "lost" or "broken" */
+    "  lost_why TEXT,"                   /* "lost" or "broken" */
+    "  secondary INTEGER NOT NULL DEFAULT 0," /* an extra place for starred files (Dropbox folder, share): not one of the N copies */
+    "  limit_bytes INTEGER);"            /* an extra place: at most this much of starred files; NULL no limit */
     "CREATE TABLE IF NOT EXISTS media_hardware("  /* last reading when plugged in */
     "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
     "  read_ms INTEGER NOT NULL,"
@@ -119,7 +121,21 @@ static const char *SCHEMA_SQL =
     "  files_done INTEGER NOT NULL DEFAULT 0,"
     "  files_failed INTEGER NOT NULL DEFAULT 0,"
     "  bytes_done INTEGER NOT NULL DEFAULT 0,"
-    "  note TEXT);";
+    "  note TEXT);"
+    /* Files and folders the user starred: they also go to the extra
+     * places. rel_path '' is the whole backup root; a folder covers
+     * everything under it. */
+    "CREATE TABLE IF NOT EXISTS stars("
+    "  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,"
+    "  rel_path TEXT NOT NULL,"
+    "  added_ms INTEGER NOT NULL,"
+    "  PRIMARY KEY(source_id, rel_path));"
+    /* Files and folders whose copies are encrypted on every drive. */
+    "CREATE TABLE IF NOT EXISTS encrypt_paths("
+    "  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,"
+    "  rel_path TEXT NOT NULL,"
+    "  added_ms INTEGER NOT NULL,"
+    "  PRIMARY KEY(source_id, rel_path));";
 
 static void put_u32(unsigned char *p, uint32_t v)
 {
@@ -287,6 +303,9 @@ static bd_status open_db(bd_catalog *cat)
         {"SELECT moved_from FROM nodes LIMIT 0", "ALTER TABLE nodes ADD COLUMN moved_from TEXT"},
         {"SELECT btime_ns FROM nodes LIMIT 0", "ALTER TABLE nodes ADD COLUMN btime_ns INTEGER NOT NULL DEFAULT 0"},
         {"SELECT lost_why FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN lost_why TEXT"},
+        /* Schema 7 (0.7.0) lacks these. */
+        {"SELECT secondary FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN secondary INTEGER NOT NULL DEFAULT 0"},
+        {"SELECT limit_bytes FROM media LIMIT 0", "ALTER TABLE media ADD COLUMN limit_bytes INTEGER"},
     };
     for (size_t i = 0; i < sizeof(ADD) / sizeof(ADD[0]); i++) {
         if (sqlite3_prepare_v2(cat->db, ADD[i].probe, -1, &probe, NULL) == SQLITE_OK) sqlite3_finalize(probe);
@@ -295,6 +314,10 @@ static bd_status open_db(bd_catalog *cat)
     /* A drive retired to be replaced (0.5.0, 0.6.0) was taken out of use
      * for good: it is lost or broken now. */
     if (bd_exec(cat, "UPDATE media SET lost_why='broken' WHERE retired_ms IS NOT NULL AND lost_why IS NULL") != 0)
+        return bd_fail_db(cat, "cannot upgrade catalog");
+    /* Before 0.8.0 only whole drives were encrypted and copies.encrypted
+     * was never set: every copy on an encrypted drive is sealed. */
+    if (bd_exec(cat, "UPDATE copies SET encrypted=1 WHERE encrypted=0 AND media_id IN (SELECT id FROM media WHERE encrypted<>0)") != 0)
         return bd_fail_db(cat, "cannot upgrade catalog");
     if (bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS connected(media_id INTEGER PRIMARY KEY, root TEXT NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS in_use(path TEXT PRIMARY KEY, size INTEGER NOT NULL);"
@@ -314,7 +337,9 @@ static bd_status open_db(bd_catalog *cat)
                      /* The last restore: files it left alone because something else was there. */
                      "CREATE TEMP TABLE IF NOT EXISTS restore_conflicts(id INTEGER PRIMARY KEY, source_name TEXT NOT NULL,"
                      " rel_path TEXT NOT NULL, dest TEXT NOT NULL, want_size INTEGER NOT NULL, want_mtime_ns INTEGER NOT NULL,"
-                     " have_size INTEGER NOT NULL, have_mtime_ns INTEGER NOT NULL);") != 0)
+                     " have_size INTEGER NOT NULL, have_mtime_ns INTEGER NOT NULL);"
+                     /* During a backup: the drives it writes to. */
+                     "CREATE TEMP TABLE IF NOT EXISTS bk_dests(media_id INTEGER PRIMARY KEY, secondary INTEGER NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
     return BD_OK;
 }
@@ -665,6 +690,7 @@ static const struct { const char *name; int def, min, max; } OPTIONS[] = {
     {"verify_days", 30, 0, 3650},
     {"reserve_mb", 512, 0, 1048576},
     {"low_priority", 1, 0, 1},
+    {"parallel_copies", 0, 0, 1},
 };
 
 static int option_index(const char *name)

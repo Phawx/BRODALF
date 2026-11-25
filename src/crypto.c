@@ -376,6 +376,227 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
     return 0;
 }
 
+/* ---- One read, several copies ------------------------------------------- */
+
+enum { MULTI_MAX = 16 };
+
+/* Like copy_pipe, with one writer thread per copy. A block's buffer is
+ * reused only once every copy still being written has written it. */
+typedef struct multi_pipe multi_pipe;
+typedef struct {
+    multi_pipe *p;
+    int index;
+} multi_writer;
+
+struct multi_pipe {
+    bd_sink *dst;
+    int n;
+    unsigned char *buf[COPY_RING];
+    size_t len[COPY_RING];
+    int64_t produced;
+    int64_t consumed[MULTI_MAX];
+    int err[MULTI_MAX];
+    int eof;
+    bd_mutex *m;
+    bd_cond *cv;
+    bd_thread *thread[MULTI_MAX];
+    multi_writer w[MULTI_MAX];
+};
+
+static void multi_writer_run(void *arg)
+{
+    multi_writer *w = arg;
+    multi_pipe *p = w->p;
+    int i = w->index;
+    bd_mutex_lock(p->m);
+    for (;;) {
+        while (p->consumed[i] == p->produced && !p->eof) bd_cond_wait(p->cv, p->m);
+        if (p->consumed[i] == p->produced) break;
+        int slot = (int)(p->consumed[i] % COPY_RING);
+        bd_mutex_unlock(p->m);
+        int rc = bd_sink_write(&p->dst[i], p->buf[slot], p->len[slot]);
+        bd_mutex_lock(p->m);
+        if (rc != 0) p->err[i] = 1;
+        else p->consumed[i]++;
+        bd_cond_broadcast(p->cv);
+        if (p->err[i]) break;
+    }
+    bd_mutex_unlock(p->m);
+}
+
+/* Blocks every copy still being written has written; -1 if none is left. */
+static int64_t multi_low(const multi_pipe *p)
+{
+    int64_t low = -1;
+    for (int i = 0; i < p->n; i++)
+        if (!p->err[i] && (low < 0 || p->consumed[i] < low)) low = p->consumed[i];
+    return low;
+}
+
+static void multi_free(multi_pipe *p)
+{
+    for (int i = 0; i < COPY_RING; i++)
+        if (p->buf[i]) { crypto_wipe(p->buf[i], COPY_BUF); free(p->buf[i]); }
+    bd_cond_free(p->cv);
+    bd_mutex_free(p->m);
+}
+
+/* Let the writers finish; their failures land in failed[]. */
+static void multi_finish(multi_pipe *p, int *failed)
+{
+    bd_mutex_lock(p->m);
+    p->eof = 1;
+    bd_cond_broadcast(p->cv);
+    bd_mutex_unlock(p->m);
+    for (int i = 0; i < p->n; i++)
+        if (p->thread[i]) bd_thread_join(p->thread[i]);
+    for (int i = 0; i < p->n; i++)
+        if (p->err[i]) failed[i] = 1;
+    multi_free(p);
+}
+
+/* Copies that already failed get no writer. */
+static int multi_start(multi_pipe *p, bd_sink *dst, int n, const int *failed)
+{
+    memset(p, 0, sizeof(*p));
+    p->dst = dst;
+    p->n = n;
+    int ok = (p->m = bd_mutex_new()) != NULL && (p->cv = bd_cond_new()) != NULL;
+    for (int i = 0; ok && i < COPY_RING; i++) ok = (p->buf[i] = malloc(COPY_BUF)) != NULL;
+    if (!ok) { multi_free(p); return -1; }
+    for (int i = 0; i < n; i++) {
+        p->w[i].p = p;
+        p->w[i].index = i;
+        if (failed[i]) { p->err[i] = 1; continue; }
+        if (!(p->thread[i] = bd_thread_start(multi_writer_run, &p->w[i]))) {
+            /* Stop the ones that started; the copy carries on without threads. */
+            int none[MULTI_MAX] = {0};
+            multi_finish(p, none);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static unsigned char *multi_slot(multi_pipe *p)
+{
+    bd_mutex_lock(p->m);
+    int64_t low;
+    while ((low = multi_low(p)) >= 0 && p->produced - low == COPY_RING) bd_cond_wait(p->cv, p->m);
+    unsigned char *b = low < 0 ? NULL : p->buf[p->produced % COPY_RING];
+    bd_mutex_unlock(p->m);
+    return b;
+}
+
+static void multi_push(multi_pipe *p, size_t n)
+{
+    bd_mutex_lock(p->m);
+    p->len[p->produced % COPY_RING] = n;
+    p->produced++;
+    bd_cond_broadcast(p->cv);
+    bd_mutex_unlock(p->m);
+}
+
+int bd_hash_copy_multi(const char *path, FILE *const *copy_to, const uint8_t *const *dst_keys, int n,
+                       char hex_out[BD_HASH_HEX_LEN + 1], int64_t *sizes, int *failed)
+{
+    if (n < 1 || n > MULTI_MAX) return -1;
+    for (int i = 0; i < n; i++) { failed[i] = 0; sizes[i] = 0; }
+    if (n == 1) {
+        int rc = bd_hash_copy(path, NULL, copy_to[0], dst_keys[0], hex_out, &sizes[0]);
+        if (rc == -2) { failed[0] = 1; return -2; }
+        return rc;
+    }
+    FILE *f = bd_fopen(path, "rb");
+    if (!f) return -1;
+    unsigned char *buf = malloc(COPY_BUF);
+    bd_sink dst[MULTI_MAX];
+    bd_source src = {f, NULL};
+    int rc = buf ? 0 : -1;
+    for (int i = 0; i < n; i++) {
+        dst[i].file = copy_to[i];
+        dst[i].sealer = NULL;
+        if (!rc && dst_keys[i] && !(dst[i].sealer = bd_seal_begin(copy_to[i], dst_keys[i]))) failed[i] = 1;
+    }
+    blake3_hasher h;
+    blake3_hasher_init(&h);
+    int64_t total = 0;
+    size_t high = 0;
+    int blocks = 0, piped = 0;
+    multi_pipe pipe;
+    while (!rc) {
+        if (bd_cancel_pending()) { rc = -4; break; }
+        unsigned char *b = piped ? multi_slot(&pipe) : buf;
+        if (!b) break; /* every writer failed */
+        long got = read_block(&src, b, COPY_BUF);
+        if (got < 0) { rc = (int)got; break; }
+        if (got == 0) break;
+        if (b == buf && (size_t)got > high) high = (size_t)got;
+        blake3_hasher_update(&h, b, (size_t)got);
+        total += got;
+        bd_io_tick(got);
+        if (piped) { multi_push(&pipe, (size_t)got); continue; }
+        int left = 0;
+        for (int i = 0; i < n; i++) {
+            if (failed[i]) continue;
+            if (bd_sink_write(&dst[i], b, (size_t)got) != 0) failed[i] = 1;
+            else left++;
+        }
+        if (!left) break;
+        if (++blocks == COPY_THREAD_AFTER && got == COPY_BUF && multi_start(&pipe, dst, n, failed) == 0) piped = 1;
+    }
+    if (piped) multi_finish(&pipe, failed);
+    int left = 0;
+    for (int i = 0; i < n; i++) {
+        if (dst[i].sealer && bd_seal_end(dst[i].sealer) != 0) failed[i] = 1;
+        if (!failed[i]) { sizes[i] = total; left++; }
+    }
+    if (buf) { crypto_wipe(buf, high); free(buf); }
+    fclose(f);
+    if (rc != 0) return rc;
+    if (!left) return -2;
+
+    uint8_t out[BLAKE3_OUT_LEN];
+    blake3_hasher_finalize(&h, out, BLAKE3_OUT_LEN);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < BLAKE3_OUT_LEN; i++) {
+        hex_out[i * 2] = hex[out[i] >> 4];
+        hex_out[i * 2 + 1] = hex[out[i] & 15];
+    }
+    hex_out[BD_HASH_HEX_LEN] = '\0';
+    return 0;
+}
+
+/* ---- How fast this PC encrypts ------------------------------------------- */
+
+int64_t bd_crypto_speed(void)
+{
+    static int64_t measured = 0;
+    if (measured > 0) return measured;
+    enum { SAMPLE = 4 << 20 };
+    uint8_t key[32], nonce[24], mac[16], ad[8] = {0};
+    unsigned char *buf = malloc(SAMPLE);
+    if (!buf) return 0;
+    memset(buf, 0x5a, SAMPLE);
+    memset(key, 7, sizeof(key));
+    memset(nonce, 9, sizeof(nonce));
+    int64_t start = bd_now_ms(), bytes = 0, now;
+    /* About a quarter of a second of sealing in 64 KiB chunks, the size
+     * the copy format uses. */
+    do {
+        for (size_t off = 0; off < SAMPLE; off += 65536)
+            crypto_aead_lock(buf + off, mac, key, nonce, ad, sizeof(ad), buf + off, 65536);
+        bytes += SAMPLE;
+        now = bd_now_ms();
+    } while (now - start < 250 && bytes < ((int64_t)4 << 30));
+    free(buf);
+    crypto_wipe(key, sizeof(key));
+    int64_t ms = now - start;
+    if (ms < 1) ms = 1;
+    measured = bytes * 1000 / ms;
+    return measured;
+}
+
 /* ---- Keys ---------------------------------------------------------------- */
 
 /* 0, -1 out of memory, -2 settings out of range. */

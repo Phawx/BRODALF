@@ -25,12 +25,14 @@ int64_t bd_test_free_bytes = -1;
 typedef struct {
     int64_t node_id, node_size, node_mtime;
     int64_t version_id, version_no, version_size;
-    char *rel, *source_path, *source_name, *hash;
+    char *rel, *source_path, *source_name, *hash, *orig;
+    int starred, encrypt;
 } backup_item;
 
 static void free_items(backup_item *items, size_t n)
 {
     for (size_t i = 0; i < n; i++) {
+        free(items[i].orig);
         free(items[i].rel);
         free(items[i].source_path);
         free(items[i].source_name);
@@ -117,16 +119,17 @@ static char *alongside_path(bd_catalog *cat, bd_store *store, const char *dest_r
     return NULL;
 }
 
-static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, const char *rel, const bd_remote_stat *st)
+static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, const char *rel, const bd_remote_stat *st,
+                       int sealed)
 {
     sqlite3_stmt *u;
     if (sqlite3_prepare_v2(cat->db,
                            "INSERT INTO copies(version_id, media_id, path_on_media, stored_size, stored_mtime_ns,"
-                           " written_ms, last_quick_check_ms, state) VALUES(?,?,?,?,?,?,?,'ok')"
+                           " written_ms, last_quick_check_ms, state, encrypted) VALUES(?,?,?,?,?,?,?,'ok',?)"
                            " ON CONFLICT(version_id, media_id) DO UPDATE SET path_on_media=excluded.path_on_media,"
                            " stored_size=excluded.stored_size, stored_mtime_ns=excluded.stored_mtime_ns,"
                            " written_ms=excluded.written_ms, last_full_check_ms=NULL,"
-                           " last_quick_check_ms=excluded.last_quick_check_ms, state='ok'",
+                           " last_quick_check_ms=excluded.last_quick_check_ms, state='ok', encrypted=excluded.encrypted",
                            -1, &u, NULL) != SQLITE_OK)
         return -1;
     int64_t now = bd_now_ms();
@@ -137,6 +140,7 @@ static int record_copy(bd_catalog *cat, int64_t version_id, int64_t media_id, co
     sqlite3_bind_int64(u, 5, st->mtime_ns);
     sqlite3_bind_int64(u, 6, now);
     sqlite3_bind_int64(u, 7, now);
+    sqlite3_bind_int(u, 8, sealed ? 1 : 0);
     int rc = sqlite3_step(u) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(u);
     return rc;
@@ -166,33 +170,6 @@ static int copy_verified(const char *src, const uint8_t *src_key, const char *de
     if (rc == 0 && strcmp(hash, expected) != 0) rc = 1;
     if (rc != 0) { bd_remove(tmp); free(tmp); return rc; }
     *tmp_out = tmp;
-    return 0;
-}
-
-/* Write src into the store's staging file for rel, hashing as it goes, and
- * keep it only if the hash matches. It gets the source's modified time
- * (mtime_ns > 0). The file is not synced yet: that is done for a group of
- * copies at once (sync_group). 0 on success with the
- * staged local path in *staged_out, 1 on hash mismatch, 2 if the job was
- * stopped, -1 on error. */
-static int stage_verified(bd_store *store, const char *src, const uint8_t *key, const char *rel, const char *expected,
-                          int64_t mtime_ns, char **staged_out, int64_t *bytes)
-{
-    *staged_out = NULL;
-    char *staged = store->ops->staging_path(store, rel);
-    if (!staged) return -1;
-    FILE *out = bd_fopen(staged, "wb");
-    if (!out) { free(staged); return -1; }
-    char hash[BD_HASH_HEX_LEN + 1];
-    int rc = bd_hash_copy(src, NULL, out, key, hash, bytes);
-    /* After the last write. The copy's own time on the drive is recorded
-     * after the rename (record_copy), so the quick check compares like with
-     * like whether this worked or not. */
-    if (rc == 0 && mtime_ns > 0) bd_set_mtime(out, mtime_ns);
-    if (fclose(out) != 0 && rc == 0) rc = -1;
-    if (rc == 0 && strcmp(hash, expected) != 0) rc = 1;
-    if (rc != 0) { bd_remove(staged); free(staged); return rc == -4 ? 2 : rc > 0 ? 1 : -1; }
-    *staged_out = staged;
     return 0;
 }
 
@@ -240,14 +217,16 @@ void bd_job_finish(bd_catalog *cat, int64_t job_id, const char *status, int64_t 
  * is renamed into place and recorded. */
 typedef struct {
     backup_item *it;
-    char *orig, *dest_rel, *tmp_rel, *local_tmp;
-    int failed, alongside;
+    char *dest_rel, *tmp_rel, *local_tmp;
+    const char *orig;
+    FILE *out;  /* open while the copy is written */
+    int failed, alongside, sealed;
     int64_t bytes;
 } pending_copy;
 
 static void pending_free(pending_copy *p)
 {
-    free(p->orig);
+    if (p->out) fclose(p->out);
     free(p->dest_rel);
     free(p->tmp_rel);
     free(p->local_tmp);
@@ -324,44 +303,63 @@ static int rehash_changed(bd_catalog *cat, int64_t media_id, backup_item *it, co
     return there ? 1 : 0;
 }
 
-/* Check the file and write its copy to <dest>.brodalf-tmp. 1 if *p now
- * holds a copy to finish; 0 if the file is done with (failed, or already
- * on the drive). */
-static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, backup_item *it, pending_copy *p,
-                        int64_t files_done, bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
+/* What happened to the file itself, before any drive. */
+enum { PREP_OK, PREP_MISSING, PREP_ONLINE, PREP_FAILED, PREP_IN_USE };
+
+/* Look at the file in its folder; read it again if it changed since the
+ * scan (it->version_* then describe it as it is now). */
+static int item_prepare(bd_catalog *cat, backup_item *it, int *rehashed, bd_log_fn log, void *log_ctx)
+{
+    *rehashed = 0;
+    it->orig = bd_path_join(it->source_path, it->rel);
+    if (!it->orig) return PREP_FAILED;
+    bd_stat_t sst;
+    if (bd_stat(it->orig, &sst) != 0 || !sst.is_file) {
+        bd_logf(log, log_ctx, "source file missing, scan again: %s", it->orig);
+        return PREP_MISSING;
+    }
+    /* Reading a cloud file that is not on this PC would download it. */
+    if (sst.online_only) {
+        bd_logf(log, log_ctx, "online-only (not on this PC), not copied: %s", it->orig);
+        return PREP_ONLINE;
+    }
+    if (sst.size != it->node_size || sst.mtime_ns != it->node_mtime) {
+        bd_backup_stats scratch;
+        memset(&scratch, 0, sizeof(scratch));
+        int r = rehash_changed(cat, 0, it, it->orig, &sst, &scratch, log, log_ctx);
+        if (r < 0) return scratch.files_in_use ? PREP_IN_USE : PREP_FAILED;
+        *rehashed = 1;
+    }
+    return PREP_OK;
+}
+
+static int has_good_copy(bd_catalog *cat, int64_t version_id, int64_t media_id)
+{
+    sqlite3_stmt *q;
+    int there = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM copies WHERE version_id=? AND media_id=? AND state='ok'", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, version_id);
+        sqlite3_bind_int64(q, 2, media_id);
+        there = sqlite3_step(q) == SQLITE_ROW;
+        sqlite3_finalize(q);
+    }
+    return there;
+}
+
+/* Work out where the copy goes on this drive and open its temp file
+ * (<dest>.brodalf-tmp) for writing. 1 if *p is ready to be written; 0 if
+ * the file is done with on this drive (failed, or already there). */
+static int dest_prepare(bd_catalog *cat, bd_store *store, const uint8_t *key, backup_item *it, pending_copy *p,
+                        bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
     int64_t media_id = store->media_id;
     memset(p, 0, sizeof(*p));
     p->it = it;
-    p->orig = bd_path_join(it->source_path, it->rel);
-    const char *src = p->orig;
+    p->orig = it->orig;
+    p->sealed = key != NULL;
+    const char *src = it->orig;
     char *main_rel = bd_sprintf("%s/%s%s", it->source_name, it->rel, key ? BD_SEALED_SUFFIX : "");
-    if (!src || !main_rel) { free(main_rel); stats->files_failed++; goto drop; }
-
-    bd_stat_t sst;
-    if (bd_stat(src, &sst) != 0 || !sst.is_file) {
-        free(main_rel);
-        stats->files_failed++;
-        bd_logf(log, log_ctx, "source file missing, scan again: %s", src);
-        goto drop;
-    }
-    /* Reading a cloud file that is not on this PC would download it. */
-    if (sst.online_only) {
-        free(main_rel);
-        stats->files_online_only++;
-        bd_logf(log, log_ctx, "online-only (not on this PC), not copied: %s", src);
-        goto drop;
-    }
-    if (sst.size != it->node_size || sst.mtime_ns != it->node_mtime) {
-        int r = rehash_changed(cat, media_id, it, src, &sst, stats, log, log_ctx);
-        if (r != 0) {
-            free(main_rel);
-            if (r > 0) stats->files_already_there++;
-            else stats->files_failed++;
-            goto drop;
-        }
-    }
-    bd_report_file(cat, files_done, it->rel, it->version_size);
+    if (!main_rel) { stats->files_failed++; goto drop; }
 
     /* What is at the usual place now, and what the catalog says is there. */
     bd_remote_stat dst_st;
@@ -411,7 +409,7 @@ static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
                    bd_hash_copy(local, key, NULL, NULL, hash, NULL) == 0 && strcmp(hash, it->hash) == 0;
         bd_store_release(local, is_temp);
         if (same) {
-            if (record_copy(cat, it->version_id, media_id, main_rel, &dst_st) == 0) stats->files_already_there++;
+            if (record_copy(cat, it->version_id, media_id, main_rel, &dst_st, key != NULL) == 0) stats->files_already_there++;
             else stats->files_failed++;
             free(main_rel);
             goto drop;
@@ -431,26 +429,10 @@ static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
         }
     }
     p->tmp_rel = bd_sprintf("%s" BD_TMP_MARKER, p->dest_rel);
-    if (!p->tmp_rel) { stats->files_failed++; goto drop; }
-
-    /* The new copy goes to <dest>.brodalf-tmp first. */
-    int rc = stage_verified(store, src, key, p->tmp_rel, it->hash, it->node_mtime, &p->local_tmp, &p->bytes);
-    if (rc == 2) goto drop; /* stopped halfway: the partial copy is gone */
-    if (rc == 1) {
+    if (!p->tmp_rel || !(p->local_tmp = store->ops->staging_path(store, p->tmp_rel)) ||
+        !(p->out = bd_fopen(p->local_tmp, "wb"))) {
         stats->files_failed++;
-        bd_logf(log, log_ctx, "changed while copying, scan again: %s", src);
-        goto drop;
-    }
-    if (rc != 0) {
-        stats->files_failed++;
-        if (bd_open_was_in_use()) {
-            stats->files_in_use++;
-            bd_note_in_use(cat, p->orig, it->node_size);
-            bd_logf(log, log_ctx, "in use by another program, skipped: %s", src);
-        } else {
-            bd_logf(log, log_ctx, "cannot copy %s to the drive%s%s", src, store->err[0] ? ": " : "", store->err);
-        }
-        store->ops->remove(store, p->tmp_rel); /* only its own half-written temp file */
+        bd_logf(log, log_ctx, "cannot copy %s to the drive%s%s", src, store->err[0] ? ": " : "", store->err);
         goto drop;
     }
     return 1;
@@ -458,6 +440,54 @@ static int backup_start(bd_catalog *cat, bd_store *store, const uint8_t *key, ba
 drop:
     pending_free(p);
     return 0;
+}
+
+/* The copy is written (rc and failed from bd_hash_copy_multi): give it the
+ * file's modified time and close it, and keep it only if what was read
+ * is the version being backed up. 1 if it waits to be synced, 0 dropped,
+ * 2 dropped because the job was stopped. */
+static int dest_written(bd_store *store, pending_copy *p, int rc, int failed, int64_t bytes, const char *hash,
+                        bd_backup_stats *stats, int *in_use_noted, bd_catalog *cat, bd_log_fn log, void *log_ctx)
+{
+    const backup_item *it = p->it;
+    /* After the last write. The copy's own time on the drive is recorded
+     * after the rename (record_copy), so the quick check compares like with
+     * like whether this worked or not. */
+    if (rc == 0 && !failed && it->node_mtime > 0) bd_set_mtime(p->out, it->node_mtime);
+    int closed = fclose(p->out) == 0;
+    p->out = NULL;
+    int keep = 0;
+    if (rc == -4) {
+        /* Stopped halfway: the partial copy is removed below. */
+    } else if (rc == -1) {
+        stats->files_failed++;
+        if (bd_open_was_in_use()) {
+            stats->files_in_use++;
+            if (!*in_use_noted) {
+                bd_note_in_use(cat, p->orig, it->node_size);
+                bd_logf(log, log_ctx, "in use by another program, skipped: %s", p->orig);
+                *in_use_noted = 1;
+            }
+        } else {
+            bd_logf(log, log_ctx, "cannot read %s", p->orig);
+        }
+    } else if (failed || !closed) {
+        stats->files_failed++;
+        bd_logf(log, log_ctx, "cannot copy %s to the drive%s%s", p->orig, store->err[0] ? ": " : "", store->err);
+    } else if (strcmp(hash, it->hash) != 0) {
+        stats->files_failed++;
+        bd_logf(log, log_ctx, "changed while copying, scan again: %s", p->orig);
+    } else {
+        keep = 1;
+    }
+    if (!keep) {
+        bd_remove(p->local_tmp);
+        store->ops->remove(store, p->tmp_rel); /* only its own half-written temp file */
+        pending_free(p);
+        return rc == -4 ? 2 : 0;
+    }
+    p->bytes = bytes;
+    return 1;
 }
 
 /* The copy's data is on the drive: give it its name and record it. */
@@ -490,7 +520,7 @@ static void backup_finish(bd_catalog *cat, bd_store *store, pending_copy *p, bd_
         return;
     }
     if (store->ops->stat(store, dest_rel, &new_st) != 0 ||
-        record_copy(cat, it->version_id, store->media_id, dest_rel, &new_st) != 0) {
+        record_copy(cat, it->version_id, store->media_id, dest_rel, &new_st, p->sealed) != 0) {
         stats->files_failed++;
         bd_logf(log, log_ctx, "copied %s but could not record it: %s", dest_rel, sqlite3_errmsg(cat->db));
         return;
@@ -531,72 +561,202 @@ static void sync_group(bd_catalog *cat, bd_store *store, pending_copy *group, si
     free(last_dir);
 }
 
-/* The files a backup copies (nodes n, their current versions v): no good
- * copy on this drive (?1). ?2 backup root (0: all), ?3 after this node id.
- * Roots no longer backed up are left out. */
+/* The files a backup to one drive copies (nodes n, their current versions
+ * v): no good copy on this drive (?1), and for an extra place only starred
+ * files. ?2 backup root (0: all), ?3 after this node id. Roots no longer
+ * backed up are left out. */
 #define TODO_WHERE                                                                                      \
     " n.is_dir=0 AND n.deleted=0 AND (?2=0 OR n.source_id=?2) AND n.id>?3 AND " BD_SQL_ACTIVE("n")      \
-    " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=?1 AND c.state='ok')"
+    " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=?1 AND c.state='ok')" \
+    " AND (NOT EXISTS(SELECT 1 FROM media sm WHERE sm.id=?1 AND sm.secondary<>0) OR " BD_SQL_MARKED("stars", "n") ")"
+
+/* The same for the drives in temp.bk_dests: what at least one of them
+ * needs. ?1 backup root, ?2 after this node id. */
+#define TODO_MANY_WHERE                                                                                 \
+    " n.is_dir=0 AND n.deleted=0 AND (?1=0 OR n.source_id=?1) AND n.id>?2 AND " BD_SQL_ACTIVE("n")      \
+    " AND EXISTS(SELECT 1 FROM temp.bk_dests d WHERE (d.secondary=0 OR " BD_SQL_MARKED("stars", "n") ")" \
+    "  AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=d.media_id AND c.state='ok'))"
 
 int64_t bd_reserve_bytes(bd_catalog *cat)
 {
     return (int64_t)bd_option_get(cat, "reserve_mb") * 1024 * 1024;
 }
 
+enum { MAX_DESTS = 16 };
+
+/* One drive a backup writes to. */
+typedef struct {
+    int64_t media_id;
+    bd_store *store;
+    int encrypted, secondary;
+    char label[128];
+    int64_t space_free, reserve; /* free space -1: unknown, no limit */
+    int64_t budget;              /* an extra place's limit left; -1: none */
+    bd_backup_stats *stats;
+    pending_copy group[BATCH];
+    size_t ng;
+    int64_t group_bytes;
+    int64_t job;
+} backup_dest;
+
+static void dest_flush(bd_catalog *cat, backup_dest *d, bd_log_fn log, void *log_ctx)
+{
+    sync_group(cat, d->store, d->group, d->ng, d->stats, log, log_ctx);
+    d->ng = 0;
+    d->group_bytes = 0;
+}
+
+static void dest_close(backup_dest *d)
+{
+    for (size_t i = 0; i < d->ng; i++) pending_free(&d->group[i]);
+    bd_store_close(d->store);
+}
+
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                     bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
 {
+    return bd_backup_many(cat, &media_id, 1, source_id, stats, log, log_ctx);
+}
+
+bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64_t source_id,
+                         bd_backup_stats *stats, bd_log_fn log, void *log_ctx)
+{
     bd_backup_stats local;
-    if (!stats) stats = &local;
-    memset(stats, 0, sizeof(*stats));
+    if (n < 1 || n > MAX_DESTS) return bd_fail(cat, BD_ERR_INVALID, "back up to 1 to %d drives at once", MAX_DESTS);
+    if (!stats) {
+        if (n != 1) return bd_fail(cat, BD_ERR_INVALID, "give room for each drive's results");
+        stats = &local;
+    }
+    for (int i = 0; i < n; i++) memset(&stats[i], 0, sizeof(stats[i]));
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < i; k++)
+            if (media_ids[i] == media_ids[k]) return bd_fail(cat, BD_ERR_INVALID, "the same drive is listed twice");
     bd_cancel_reset(cat);
 
-    if (bd_media_lost(cat, media_id))
-        return bd_fail(cat, BD_ERR_INVALID, "this drive is marked lost or broken, so nothing is backed up to it");
-
-    const uint8_t *key = NULL;
-    if (bd_media_encrypted(cat, media_id)) {
-        if (!cat->have_key) return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to back up to an encrypted drive");
-        key = cat->key;
+    backup_dest *dests = calloc((size_t)n, sizeof(*dests));
+    if (!dests) return BD_ERR_NOMEM;
+    bd_status s = BD_OK;
+    int need_key = 0;
+    for (int i = 0; i < n && s == BD_OK; i++) {
+        backup_dest *d = &dests[i];
+        d->media_id = media_ids[i];
+        d->stats = &stats[i];
+        d->space_free = -1;
+        d->budget = -1;
+        sqlite3_stmt *q;
+        int known = 0;
+        if (sqlite3_prepare_v2(cat->db,
+                               "SELECT label, encrypted, secondary, COALESCE(limit_bytes,0), retired_ms IS NOT NULL,"
+                               " (SELECT COALESCE(SUM(stored_size),0) FROM copies WHERE media_id=media.id AND state='ok')"
+                               " FROM media WHERE id=?",
+                               -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, d->media_id);
+            if (sqlite3_step(q) == SQLITE_ROW) {
+                known = 1;
+                snprintf(d->label, sizeof(d->label), "%s", (const char *)sqlite3_column_text(q, 0));
+                d->encrypted = sqlite3_column_int(q, 1);
+                d->secondary = sqlite3_column_int(q, 2);
+                int64_t limit = sqlite3_column_int64(q, 3);
+                if (sqlite3_column_int(q, 4)) known = -1;
+                if (d->secondary && limit > 0) {
+                    d->budget = limit - sqlite3_column_int64(q, 5);
+                    if (d->budget < 0) d->budget = 0;
+                }
+            }
+            sqlite3_finalize(q);
+        }
+        if (known == 0) s = bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
+        else if (known < 0)
+            s = n == 1 ? bd_fail(cat, BD_ERR_INVALID, "this drive is marked lost or broken, so nothing is backed up to it")
+                       : bd_fail(cat, BD_ERR_INVALID, "\"%s\" is marked lost or broken, so nothing is backed up to it", d->label);
+        else if (d->encrypted) need_key = 1;
     }
+    if (s == BD_OK && need_key && !cat->have_key)
+        s = bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to back up to an encrypted drive");
+    if (s != BD_OK) { free(dests); return s; }
+
+    /* The drives this job writes to, for the query of what to copy. */
+    sqlite3_stmt *ins;
+    if (bd_exec(cat, "DELETE FROM temp.bk_dests") != 0 ||
+        sqlite3_prepare_v2(cat->db, "INSERT INTO temp.bk_dests(media_id, secondary) VALUES(?,?)", -1, &ins, NULL) != SQLITE_OK) {
+        free(dests);
+        return bd_fail_db(cat, "list the drives to back up to");
+    }
+    for (int i = 0; i < n; i++) {
+        sqlite3_reset(ins);
+        sqlite3_bind_int64(ins, 1, dests[i].media_id);
+        sqlite3_bind_int(ins, 2, dests[i].secondary);
+        sqlite3_step(ins);
+    }
+    sqlite3_finalize(ins);
+
+    /* Folders set to be encrypted need the key even on a plain drive. */
+    if (!cat->have_key) {
+        sqlite3_stmt *q;
+        int sealed_todo = 0;
+        if (sqlite3_prepare_v2(cat->db,
+                               "SELECT 1 FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE" TODO_MANY_WHERE
+                               " AND " BD_SQL_MARKED("encrypt_paths", "n") " LIMIT 1",
+                               -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, source_id);
+            sqlite3_bind_int64(q, 2, 0);
+            sealed_todo = sqlite3_step(q) == SQLITE_ROW;
+            sqlite3_finalize(q);
+        }
+        if (sealed_todo) {
+            free(dests);
+            return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase: some files to back up are in folders set to be encrypted");
+        }
+    }
+
     /* A root called .versions would land in the versions tree. */
     bd_status fs = bd_sources_fix_names(cat, log, log_ctx);
-    if (fs != BD_OK) return fs;
-    bd_store *store = bd_store_open(cat, media_id);
-    if (!store) return BD_ERR_NOT_FOUND;
-
-    /* How much fits, leaving the reserve free for the catalog's copies.
-     * Unknown space means no limit. */
-    int64_t space_total = 0, space_free = -1, reserve = 0;
-    if (bd_test_free_bytes >= 0) space_free = bd_test_free_bytes;
-    else if (store->ops->space(store, &space_total, &space_free) != 0) space_free = -1;
-    else {
-        reserve = bd_reserve_bytes(cat);
-        bd_media_note_space(cat, media_id, space_total, space_free, "before backup");
+    if (fs != BD_OK) { free(dests); return fs; }
+    for (int i = 0; i < n; i++) {
+        backup_dest *d = &dests[i];
+        if (!(d->store = bd_store_open(cat, d->media_id))) {
+            if (n > 1) bd_fail(cat, BD_ERR_NOT_FOUND, "\"%s\" is not plugged in", d->label);
+            for (int k = 0; k < i; k++) bd_store_close(dests[k].store);
+            free(dests);
+            return BD_ERR_NOT_FOUND;
+        }
+        /* How much fits, leaving the reserve free for the catalog's copies.
+         * Unknown space means no limit. */
+        int64_t space_total = 0;
+        if (bd_test_free_bytes >= 0) d->space_free = bd_test_free_bytes;
+        else if (d->store->ops->space(d->store, &space_total, &d->space_free) != 0) d->space_free = -1;
+        else {
+            d->reserve = bd_reserve_bytes(cat);
+            bd_media_note_space(cat, d->media_id, space_total, d->space_free, "before backup");
+        }
     }
+    if (n > 1) bd_logf(log, log_ctx, "backing up to %d drives at once: each file is read once and written to all of them", n);
 
-    int64_t job = bd_job_start(cat, "backup", media_id);
-    sqlite3_stmt *q;
+    for (int i = 0; i < n; i++) dests[i].job = bd_job_start(cat, "backup", dests[i].media_id);
+    sqlite3_stmt *q, *have = NULL;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.rel_path, n.size, n.mtime_ns, s.path, s.name, v.id, v.hash, v.version_no, v.size"
+                           "SELECT n.id, n.rel_path, n.size, n.mtime_ns, s.path, s.name, v.id, v.hash, v.version_no, v.size,"
+                           " " BD_SQL_MARKED("stars", "n") ", " BD_SQL_MARKED("encrypt_paths", "n")
                            " FROM nodes n JOIN sources s ON s.id=n.source_id JOIN versions v ON v.id=n.current_version_id"
-                           " WHERE" TODO_WHERE " ORDER BY n.id LIMIT 256",
-                           -1, &q, NULL) != SQLITE_OK) {
-        bd_job_finish(cat, job, "failed", 0, 0, 0);
-        bd_store_close(store);
+                           " WHERE" TODO_MANY_WHERE " ORDER BY n.id LIMIT 256",
+                           -1, &q, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(cat->db, "SELECT 1 FROM copies WHERE version_id=? AND media_id=? AND state='ok'", -1, &have, NULL) != SQLITE_OK) {
+        for (int i = 0; i < n; i++) { bd_job_finish(cat, dests[i].job, "failed", 0, 0, 0); dest_close(&dests[i]); }
+        sqlite3_finalize(have);
+        free(dests);
         return bd_fail_db(cat, "list files to back up");
     }
 
-    /* Totals for the progress bar: what this drive does not hold yet. */
+    /* Totals for the progress bar: each file is read once, whatever the
+     * number of drives. */
     sqlite3_stmt *t;
     int64_t todo_files = 0, todo_bytes = 0;
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT COUNT(*), COALESCE(SUM(v.size),0) FROM nodes n JOIN versions v ON v.id=n.current_version_id"
-                           " WHERE" TODO_WHERE,
+                           " WHERE" TODO_MANY_WHERE,
                            -1, &t, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(t, 1, media_id);
-        sqlite3_bind_int64(t, 2, source_id);
-        sqlite3_bind_int64(t, 3, 0);
+        sqlite3_bind_int64(t, 1, source_id);
+        sqlite3_bind_int64(t, 2, 0);
         if (sqlite3_step(t) == SQLITE_ROW) {
             todo_files = sqlite3_column_int64(t, 0);
             todo_bytes = sqlite3_column_int64(t, 1);
@@ -606,19 +766,18 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
     bd_progress_begin(cat, "backup", todo_files, todo_bytes);
 
     backup_item items[BATCH];
-    pending_copy group[BATCH];
-    int64_t last_id = 0;
+    int64_t last_id = 0, items_done = 0, rehashed_total = 0;
     int cancelled = 0;
+    int full_said[MAX_DESTS] = {0}, limit_said[MAX_DESTS] = {0};
     while (!cancelled) {
-        size_t n = 0;
+        size_t ni = 0;
         sqlite3_reset(q);
-        sqlite3_bind_int64(q, 1, media_id);
-        sqlite3_bind_int64(q, 2, source_id);
-        sqlite3_bind_int64(q, 3, last_id);
+        sqlite3_bind_int64(q, 1, source_id);
+        sqlite3_bind_int64(q, 2, last_id);
         while (sqlite3_step(q) == SQLITE_ROW) {
             last_id = sqlite3_column_int64(q, 0);
-            stats->files_considered++;
-            backup_item *it = &items[n++];
+            backup_item *it = &items[ni++];
+            memset(it, 0, sizeof(*it));
             it->node_id = last_id;
             it->rel = bd_strdup((const char *)sqlite3_column_text(q, 1));
             it->node_size = sqlite3_column_int64(q, 2);
@@ -629,64 +788,155 @@ bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
             it->hash = bd_strdup((const char *)sqlite3_column_text(q, 7));
             it->version_no = sqlite3_column_int64(q, 8);
             it->version_size = sqlite3_column_int64(q, 9);
+            it->starred = sqlite3_column_int(q, 10);
+            it->encrypt = sqlite3_column_int(q, 11);
         }
         sqlite3_reset(q);
-        if (n == 0) break;
-        /* One catalog transaction per batch; copies are synced in groups
-         * (at most SYNC_BYTES of data) before they are renamed and recorded. */
+        if (ni == 0) break;
+        /* One catalog transaction per batch; each drive's copies are synced
+         * in groups (at most SYNC_BYTES of data) before they are renamed and
+         * recorded. */
         int in_txn = bd_exec(cat, "BEGIN") == 0;
-        size_t ng = 0;
-        int64_t group_bytes = 0;
-        for (size_t i = 0; i < n; i++) {
+        for (size_t i = 0; i < ni; i++) {
             /* Stopping: what is written so far is still finished below. */
             if (bd_cancelled(cat)) { cancelled = 1; break; }
-            if (space_free >= 0) {
-                /* Sealed copies are a little bigger than the file. */
-                int64_t need = items[i].version_size + (key ? items[i].version_size / 1024 + 4096 : 0);
-                if (need > space_free - reserve) {
-                    if (!stats->files_no_room)
-                        bd_logf(log, log_ctx, "the drive is full; files that do not fit wait for another drive");
-                    stats->files_no_room++;
-                    stats->bytes_no_room += items[i].version_size;
-                    continue;
+            backup_item *it = &items[i];
+            items_done++;
+            if (!it->rel || !it->source_path || !it->source_name || !it->hash) {
+                for (int k = 0; k < n; k++) stats[k].files_failed++;
+                continue;
+            }
+            /* Which drives still need it. */
+            int want[MAX_DESTS], nw = 0;
+            for (int k = 0; k < n; k++) {
+                want[k] = !dests[k].secondary || it->starred;
+                if (want[k] && n > 1) {
+                    sqlite3_reset(have);
+                    sqlite3_bind_int64(have, 1, it->version_id);
+                    sqlite3_bind_int64(have, 2, dests[k].media_id);
+                    if (sqlite3_step(have) == SQLITE_ROW) want[k] = 0;
+                    sqlite3_reset(have);
+                }
+                if (want[k]) { nw++; stats[k].files_considered++; }
+            }
+            if (!nw) continue;
+            int rehashed = 0;
+            int prep = item_prepare(cat, it, &rehashed, log, log_ctx);
+            if (prep != PREP_OK) {
+                for (int k = 0; k < n; k++) {
+                    if (!want[k]) continue;
+                    if (prep == PREP_ONLINE) stats[k].files_online_only++;
+                    else stats[k].files_failed++;
+                    if (prep == PREP_IN_USE) stats[k].files_in_use++;
+                }
+                continue;
+            }
+            if (rehashed) {
+                if (++rehashed_total == 1)
+                    bd_logf(log, log_ctx, "files changed since the scan are read again and backed up as they are now");
+                for (int k = 0; k < n; k++) {
+                    if (!want[k]) continue;
+                    stats[k].files_rehashed++;
+                    /* As it is now, it may be on this drive already. */
+                    if (has_good_copy(cat, it->version_id, dests[k].media_id)) {
+                        stats[k].files_already_there++;
+                        want[k] = 0;
+                    }
                 }
             }
-            /* Copies waiting in the group count as done for the progress bar. */
-            int64_t done = stats->files_copied + stats->files_failed + stats->files_no_room + (int64_t)ng;
-            if (!backup_start(cat, store, key, &items[i], &group[ng], done, stats, log, log_ctx)) continue;
-            if (space_free >= 0) space_free -= group[ng].bytes;
-            group_bytes += group[ng].bytes;
-            ng++;
-            if (group_bytes >= SYNC_BYTES) {
-                sync_group(cat, store, group, ng, stats, log, log_ctx);
-                ng = 0;
-                group_bytes = 0;
+            bd_report_file(cat, items_done - 1, it->rel, it->version_size);
+
+            /* Room on each drive, then where the copy goes there. */
+            FILE *outs[MAX_DESTS];
+            const uint8_t *keys[MAX_DESTS];
+            pending_copy *ps[MAX_DESTS];
+            int which[MAX_DESTS], nr = 0;
+            for (int k = 0; k < n; k++) {
+                if (!want[k]) continue;
+                backup_dest *d = &dests[k];
+                const uint8_t *key = (d->encrypted || it->encrypt) ? cat->key : NULL;
+                /* Sealed copies are a little bigger than the file. */
+                int64_t need = it->version_size + (key ? it->version_size / 1024 + 4096 : 0);
+                if (d->space_free >= 0 && need > d->space_free - d->reserve) {
+                    if (!full_said[k]++) {
+                        if (n > 1) bd_logf(log, log_ctx, "\"%s\" is full; files that do not fit wait for another drive", d->label);
+                        else bd_logf(log, log_ctx, "the drive is full; files that do not fit wait for another drive");
+                    }
+                    stats[k].files_no_room++;
+                    stats[k].bytes_no_room += it->version_size;
+                    continue;
+                }
+                if (d->budget >= 0 && need > d->budget) {
+                    if (!limit_said[k]++)
+                        bd_logf(log, log_ctx, "\"%s\" has reached the size you set for it; starred files over it are not copied there",
+                                d->label);
+                    stats[k].files_no_room++;
+                    stats[k].bytes_no_room += it->version_size;
+                    continue;
+                }
+                pending_copy *p = &d->group[d->ng];
+                if (!dest_prepare(cat, d->store, key, it, p, &stats[k], log, log_ctx)) continue;
+                outs[nr] = p->out;
+                keys[nr] = key;
+                ps[nr] = p;
+                which[nr] = k;
+                nr++;
             }
+            if (!nr) continue;
+            char hash[BD_HASH_HEX_LEN + 1] = "";
+            int64_t sizes[MAX_DESTS];
+            int failed[MAX_DESTS];
+            int rc = bd_hash_copy_multi(it->orig, outs, keys, nr, hash, sizes, failed);
+            if (rc == -2) rc = 0; /* every copy failed: failed[] says so */
+            int in_use_noted = 0;
+            for (int j = 0; j < nr; j++) {
+                backup_dest *d = &dests[which[j]];
+                int r = dest_written(d->store, ps[j], rc, failed[j], sizes[j], hash, d->stats, &in_use_noted, cat, log, log_ctx);
+                if (r == 2) cancelled = 1;
+                if (r != 1) continue;
+                pending_copy *p = ps[j];
+                if (d->space_free >= 0) d->space_free -= p->bytes;
+                if (d->budget >= 0) d->budget -= p->bytes + (p->sealed ? p->bytes / 1024 + 4096 : 0);
+                d->group_bytes += p->bytes;
+                d->ng++;
+                if (d->group_bytes >= SYNC_BYTES || d->ng == BATCH) dest_flush(cat, d, log, log_ctx);
+            }
+            if (cancelled) break;
         }
         /* A stop during the batch's last copy is still a stop. */
         if (!cancelled && bd_cancelled(cat)) cancelled = 1;
-        sync_group(cat, store, group, ng, stats, log, log_ctx);
+        for (int k = 0; k < n; k++) dest_flush(cat, &dests[k], log, log_ctx);
         if (in_txn && bd_exec(cat, "COMMIT") != 0) {
             bd_logf(log, log_ctx, "cannot record the copies: %s", sqlite3_errmsg(cat->db));
             bd_exec(cat, "ROLLBACK");
         }
-        free_items(items, n);
+        free_items(items, ni);
     }
     sqlite3_finalize(q);
+    sqlite3_finalize(have);
 
-    int64_t total_bytes = 0, free_bytes = 0;
-    if (store->ops->space(store, &total_bytes, &free_bytes) == 0)
-        bd_media_note_space(cat, media_id, total_bytes, free_bytes, "after backup");
-    bd_store_close(store);
-    bd_report(cat, stats->files_copied, NULL, 1);
+    for (int k = 0; k < n; k++) {
+        backup_dest *d = &dests[k];
+        int64_t total_bytes = 0, free_bytes = 0;
+        if (d->store->ops->space(d->store, &total_bytes, &free_bytes) == 0)
+            bd_media_note_space(cat, d->media_id, total_bytes, free_bytes, "after backup");
+        dest_close(d);
+    }
+    bd_report(cat, n == 1 ? stats[0].files_copied : items_done, NULL, 1);
     bd_progress_end(cat);
-    bd_job_finish(cat, job, cancelled ? "stopped" : stats->files_failed ? "partial" : "done", stats->files_copied,
-               stats->files_failed, stats->bytes_copied);
-    if (cancelled) return bd_fail_cancelled(cat);
-    /* The drive gets the catalog as it is now, under a new name: what it
+    for (int k = 0; k < n; k++)
+        bd_job_finish(cat, dests[k].job, cancelled ? "stopped" : stats[k].files_failed ? "partial" : "done",
+                      stats[k].files_copied, stats[k].files_failed, stats[k].bytes_copied);
+    bd_exec(cat, "DELETE FROM temp.bk_dests");
+    if (cancelled) { free(dests); return bd_fail_cancelled(cat); }
+    /* Each drive gets the catalog as it is now, under a new name: what it
      * holds can be found from the drive alone. */
-    if (bd_catalog_copy_to_media(cat, media_id) != BD_OK)
-        bd_logf(log, log_ctx, "the catalog could not be copied to the drive: %s", bd_catalog_error(cat));
+    for (int k = 0; k < n; k++)
+        if (bd_catalog_copy_to_media(cat, dests[k].media_id) != BD_OK) {
+            if (n > 1) bd_logf(log, log_ctx, "the catalog could not be copied to \"%s\": %s", dests[k].label, bd_catalog_error(cat));
+            else bd_logf(log, log_ctx, "the catalog could not be copied to the drive: %s", bd_catalog_error(cat));
+        }
+    free(dests);
     return BD_OK;
 }
 
@@ -710,20 +960,25 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     /* What it copies, and of that what is changed: an older version of the
      * file is on the drive, so the new one goes alongside it. */
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT COUNT(*), COALESCE(SUM(t.size),0), COALESCE(SUM(t.older),0) FROM (SELECT v.size AS size,"
+                           "SELECT COUNT(*), COALESCE(SUM(t.size),0), COALESCE(SUM(t.older),0),"
+                           " COALESCE(SUM(t.enc),0), COALESCE(SUM(t.enc*t.size),0) FROM (SELECT v.size AS size,"
                            " EXISTS(SELECT 1 FROM copies oc JOIN versions ov ON ov.id=oc.version_id"
-                           "   WHERE ov.node_id=n.id AND oc.media_id=?1) AS older"
+                           "   WHERE ov.node_id=n.id AND oc.media_id=?1) AS older,"
+                           " " BD_SQL_MARKED("encrypt_paths", "n") " AS enc"
                            " FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE" TODO_WHERE ") t",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "work out what the backup would copy");
     sqlite3_bind_int64(q, 1, media_id);
     sqlite3_bind_int64(q, 2, source_id);
     sqlite3_bind_int64(q, 3, 0);
+    int64_t sealed_files = 0, sealed_bytes = 0;
     if (sqlite3_step(q) == SQLITE_ROW) {
         out->files_to_copy = sqlite3_column_int64(q, 0);
         out->bytes_to_copy = sqlite3_column_int64(q, 1);
         out->files_changed = sqlite3_column_int64(q, 2);
         out->files_new = out->files_to_copy - out->files_changed;
+        sealed_files = sqlite3_column_int64(q, 3);
+        sealed_bytes = sqlite3_column_int64(q, 4);
     }
     sqlite3_finalize(q);
 
@@ -777,7 +1032,9 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     out->reserve_bytes = bd_test_free_bytes >= 0 ? 0 : bd_reserve_bytes(cat);
     if (free_bytes >= 0) {
         int64_t need = out->bytes_to_copy;
+        /* Sealed copies are a little bigger than the file. */
         if (bd_media_encrypted(cat, media_id)) need += need / 1024 + out->files_to_copy * 4096;
+        else need += sealed_bytes / 1024 + sealed_files * 4096;
         int64_t room = free_bytes - out->reserve_bytes;
         out->bytes_short = need > room ? need - room : 0;
     }
@@ -811,6 +1068,68 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
         if (fn(ctx, &c) != 0) break;
     }
     sqlite3_finalize(q);
+    return BD_OK;
+}
+
+/* ---- The Next backup list ------------------------------------------------ */
+
+#define PENDING_SELECT                                                                                  \
+    "SELECT n.id AS id, n.source_id AS sid, s.name AS sname, n.rel_path AS rel, v.size AS size, n.mtime_ns AS mt," \
+    " (SELECT COUNT(DISTINCT c.media_id) FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp," \
+    " (SELECT COUNT(DISTINCT " BD_SQL_PLACE("m") ") FROM copies c JOIN media m ON m.id=c.media_id"      \
+    "   WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl,"                     \
+    " NOT EXISTS(SELECT 1 FROM copies oc JOIN versions ov ON ov.id=oc.version_id"                       \
+    "   WHERE ov.node_id=n.id AND oc.media_id=?1) AS is_new,"                                           \
+    " " BD_SQL_MARKED("stars", "n") " AS st, " BD_SQL_MARKED("encrypt_paths", "n") " AS en"             \
+    " FROM nodes n JOIN sources s ON s.id=n.source_id JOIN versions v ON v.id=n.current_version_id"
+
+bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pending_fn fn, void *ctx, int64_t *total)
+{
+    if (limit <= 0) limit = 5000;
+    bd_target target;
+    if (bd_target_get(cat, &target) != BD_OK) return BD_ERR_DB;
+    const char *inner = media_id > 0 ? PENDING_SELECT " WHERE" TODO_WHERE
+                                     : PENDING_SELECT " WHERE n.is_dir=0 AND n.deleted=0 AND " BD_SQL_ACTIVE("n");
+    const char *outer_where = " WHERE (?1<>0 OR cp<?4 OR pl<?5)";
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 0 && !total) continue;
+        char *sql = pass == 0 ? bd_sprintf("SELECT COUNT(*) FROM (%s)%s", inner, outer_where)
+                              : bd_sprintf("SELECT * FROM (%s)%s ORDER BY sname COLLATE NOCASE, rel COLLATE NOCASE LIMIT ?6", inner,
+                                           outer_where);
+        if (!sql) return BD_ERR_NOMEM;
+        sqlite3_stmt *q;
+        int rc = sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL);
+        free(sql);
+        if (rc != SQLITE_OK) return bd_fail_db(cat, "list the files the next backup copies");
+        sqlite3_bind_int64(q, 1, media_id > 0 ? media_id : 0);
+        sqlite3_bind_int64(q, 2, 0);
+        sqlite3_bind_int64(q, 3, 0);
+        sqlite3_bind_int(q, 4, target.copies);
+        sqlite3_bind_int(q, 5, target.places);
+        sqlite3_bind_int(q, 6, limit);
+        if (pass == 0) {
+            *total = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : 0;
+            sqlite3_finalize(q);
+            continue;
+        }
+        while (fn && sqlite3_step(q) == SQLITE_ROW) {
+            bd_pending_info p;
+            p.node_id = sqlite3_column_int64(q, 0);
+            p.source_id = sqlite3_column_int64(q, 1);
+            p.source_name = (const char *)sqlite3_column_text(q, 2);
+            p.rel_path = (const char *)sqlite3_column_text(q, 3);
+            p.size = sqlite3_column_int64(q, 4);
+            p.mtime_ns = sqlite3_column_int64(q, 5);
+            p.copies = sqlite3_column_int(q, 6);
+            p.places = sqlite3_column_int(q, 7);
+            p.is_new = media_id > 0 ? sqlite3_column_int(q, 8) : 0;
+            p.starred = sqlite3_column_int(q, 9);
+            p.encrypt = sqlite3_column_int(q, 10);
+            p.backed_up = p.copies >= target.copies && p.places >= target.places;
+            if (fn(ctx, &p)) break;
+        }
+        sqlite3_finalize(q);
+    }
     return BD_OK;
 }
 
@@ -957,10 +1276,13 @@ static int restore_file(bd_catalog *cat, bd_store **store, sqlite3_stmt *find, s
     return stopped;
 }
 
+/* A plain copy before an encrypted one (it needs no passphrase), and one on
+ * a drive before one in an extra place. */
 #define FIND_COPY_SQL                                                                                   \
-    "SELECT c.path_on_media, c.media_id, m.encrypted FROM copies c JOIN temp.connected k ON k.media_id=c.media_id" \
+    "SELECT c.path_on_media, c.media_id, (c.encrypted<>0 OR m.encrypted<>0) AS sealed FROM copies c"     \
+    " JOIN temp.connected k ON k.media_id=c.media_id"                                                   \
     " JOIN media m ON m.id=c.media_id WHERE c.version_id=? AND c.state='ok'"                            \
-    " ORDER BY m.encrypted, m.kind='drive' DESC LIMIT 1"
+    " ORDER BY sealed, m.kind='drive' DESC, m.secondary LIMIT 1"
 
 bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                         const bd_restore_opts *opts, bd_restore_stats *stats, bd_log_fn log, void *log_ctx)

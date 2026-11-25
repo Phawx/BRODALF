@@ -277,6 +277,9 @@ bd_status bd_list_in_use(bd_catalog *cat, bd_in_use_fn fn, void *ctx);
  * BD_MEDIA_ENCRYPTED makes every copy on it encrypted (the catalog must
  * have a passphrase and be unlocked); this cannot be changed later. */
 #define BD_MEDIA_ENCRYPTED 1u
+/* An extra place for starred files rather than one of the N copies (see
+ * bd_place_add, which sets this). */
+#define BD_MEDIA_SECONDARY 2u
 bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, unsigned flags, int64_t *out_media_id);
 
 /* Tell BRODALF a known drive is connected at root. Identifies it by its
@@ -351,6 +354,19 @@ typedef struct {
 bd_status bd_backup(bd_catalog *cat, int64_t media_id, int64_t source_id,
                     bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
 
+/* Back up to several connected drives (at most 16) in one pass: each file
+ * is read from its folder once and written to every drive that needs it at
+ * the same time. Everything else is as bd_backup, drive by drive: stats
+ * gets one entry per drive, in the order of media_ids. A drive that fails
+ * to write a file does not stop the others. This reads the backup roots
+ * once instead of once per drive, but writes to the drives at once, which
+ * loads the PC (its USB bus, memory and processor) more while it runs, and
+ * runs at the pace of the slowest drive. The app does this only when the
+ * "parallel_copies" option is on; otherwise it backs up one drive after
+ * another. */
+bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64_t source_id,
+                         bd_backup_stats *stats, bd_log_fn log, void *log_ctx);
+
 /* What a backup to this drive would do, without doing any of it: shown
  * all the time beside the Backup button. Reads only the catalog, and the
  * drive's free space when it is plugged in. */
@@ -374,6 +390,29 @@ typedef struct {
 } bd_backup_preview_info;
 
 bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out);
+
+/* The files a backup would copy, one by one, for the Next backup tab.
+ * media_id > 0: what the next backup to that drive copies. media_id 0:
+ * every live file that does not yet have the copies you want. For each:
+ * how many good copies of the file as it is now count toward the target
+ * (set k has the file when copies >= k). At most limit rows (0: 5000), by
+ * root and path; *total (may be NULL) gets how many there are in all. */
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t size;
+    int64_t mtime_ns;
+    int copies;              /* good copies of the file as it is now that count */
+    int places;              /* different places they are in */
+    int backed_up;           /* copies and places meet the target */
+    int is_new;              /* no version of it is on that drive yet (media_id > 0) */
+    int starred;
+    int encrypt;             /* in a folder set to be encrypted */
+} bd_pending_info;
+typedef int (*bd_pending_fn)(void *ctx, const bd_pending_info *info);
+bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pending_fn fn, void *ctx, int64_t *total);
 
 /* The files counted in held_changed: the drive holds an older version
  * than the file's contents now. */
@@ -538,7 +577,7 @@ typedef struct {
     const char *copy_state;  /* "ok", "missing", "bad" */
     int connected;
     int64_t last_check_ms;
-    int encrypted;           /* the copy is on an encrypted drive */
+    int encrypted;           /* the copy is encrypted: its drive is, or its folder is set to be */
     const char *media_location; /* where that drive is kept; "" if not set */
     int media_lost;          /* that drive was marked lost or broken: the copy no longer counts */
 } bd_copy_info;
@@ -595,6 +634,8 @@ typedef struct {
     const char *lost_why;    /* "lost" or "broken"; "" if not */
     int64_t bytes_held;      /* size of the good copies on it */
     int64_t reserve_bytes;   /* kept free on it for the catalog's copies (reserve_mb) */
+    int secondary;           /* an extra place for starred files (bd_place_add) */
+    int64_t limit_bytes;     /* an extra place: most it takes of starred files; 0 no limit */
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on
@@ -650,6 +691,88 @@ bd_status bd_deleted_forget(bd_catalog *cat, int64_t node_id, int64_t *forgotten
 /* Every version of a file and every copy of each version. */
 bd_status bd_list_copies(bd_catalog *cat, int64_t node_id, bd_copy_fn fn, void *ctx);
 
+/* ---- Starred files and extra places ------------------------------------ */
+
+/* Star a file or folder (rel_path "" stars a whole backup root). Starred
+ * files go to the drives like every file, and also to the extra places
+ * (bd_place_add): a Dropbox or OneDrive folder on this PC, a network
+ * share, any folder. A starred folder covers everything in it, now and
+ * later. BRODALF talks to no cloud service: the folder's own app syncs it. */
+bd_status bd_star_set(bd_catalog *cat, int64_t source_id, const char *rel_path, int on);
+/* 1 if rel_path is starred itself, 2 if a folder above it is, 0 if not. */
+int bd_starred(bd_catalog *cat, int64_t source_id, const char *rel_path);
+
+/* A starred file or folder, or one set to be encrypted. */
+typedef struct {
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;    /* "" the whole backup root */
+    int is_dir;
+    int found;               /* still in the catalog (a renamed folder is not) */
+    int64_t files;           /* live files it covers */
+    int64_t bytes;
+    int64_t added_ms;
+} bd_mark_info;
+typedef int (*bd_mark_fn)(void *ctx, const bd_mark_info *info);
+bd_status bd_list_stars(bd_catalog *cat, bd_mark_fn fn, void *ctx);
+/* Live starred files in all. */
+bd_status bd_starred_totals(bd_catalog *cat, int64_t *files, int64_t *bytes);
+
+/* Add a folder as an extra place for starred files. Like a drive it gets
+ * BRODALF/<catalog id>/ with plain copies in their folders (and the
+ * catalog's own copy), but its copies never count toward the copies you
+ * want: it is a second line, for the files that matter most. label must
+ * say what and where it is, in at least two words and 10 characters
+ * ("Dropbox folder on the laptop"). limit_bytes > 0: copy starred files
+ * there only up to that much in all, so a small free account does not
+ * fill up; 0: no limit. flags may be BD_MEDIA_ENCRYPTED to encrypt every
+ * copy there (a passphrase must be set and entered). */
+bd_status bd_place_add(bd_catalog *cat, const char *folder, const char *label, int64_t limit_bytes, unsigned flags,
+                       int64_t *out_media_id);
+bd_status bd_place_set_limit(bd_catalog *cat, int64_t media_id, int64_t limit_bytes);
+
+/* How an extra place stands for the starred files, from the catalog. */
+typedef struct {
+    int64_t starred_files, starred_bytes;   /* every live starred file */
+    int64_t have_files, have_bytes;         /* of those, the file as it is now is there */
+    int64_t used_bytes;                     /* every good copy there, older versions included */
+    int64_t limit_bytes;                    /* 0: no limit */
+    int64_t waiting_files, waiting_bytes;   /* the next backup to it would copy these */
+    int64_t over_limit_files;               /* of those, these would not fit under the limit */
+    int64_t over_limit_bytes;
+} bd_place_status;
+bd_status bd_place_status_get(bd_catalog *cat, int64_t media_id, bd_place_status *out);
+
+/* ---- Encrypting chosen folders ------------------------------------------ */
+
+/* Set a file or folder (rel_path "" a whole backup root) to be encrypted
+ * on every drive and extra place it is copied to, also the ones that are
+ * not encrypted drives. Needs a passphrase (bd_catalog_set_passphrase);
+ * backups then need it entered. Names stay readable: a copy is
+ * <name>.bdenc. Copies written before stay as they are, since nothing on
+ * a drive is overwritten or deleted; new copies and new versions are
+ * encrypted. Turning it off makes the next new copies plain. */
+bd_status bd_encrypt_path_set(bd_catalog *cat, int64_t source_id, const char *rel_path, int on);
+/* 1 set itself, 2 a folder above it is, 0 not. */
+int bd_encrypt_marked(bd_catalog *cat, int64_t source_id, const char *rel_path);
+bd_status bd_list_encrypt_paths(bd_catalog *cat, bd_mark_fn fn, void *ctx);
+
+typedef struct {
+    int64_t files, bytes;        /* live files set to be encrypted */
+    int64_t sealed_copies;       /* good copies of them as they are now that are encrypted */
+    int64_t plain_copies;        /* ... that are plain: written before they were set */
+    int64_t files_waiting;       /* with no encrypted copy anywhere yet */
+    int64_t drives_encrypted;    /* drives and places set up as encrypted, in use */
+    int64_t bytes_per_second;    /* how fast this PC encrypts (bd_crypto_speed) */
+} bd_encrypt_stats;
+bd_status bd_encrypt_stats_get(bd_catalog *cat, bd_encrypt_stats *out);
+
+/* How many bytes a second this PC encrypts, measured once (about a
+ * quarter of a second) and then remembered. Encrypting runs beside the
+ * writes to the drive, so it costs at most this; reading back to check
+ * and restoring decrypt at about the same speed. 0 if unknown. */
+int64_t bd_crypto_speed(void);
+
 /* ---- Drive status ---------------------------------------------------- */
 
 /* Where a drive stands, from the catalog alone (the drive need not be
@@ -701,6 +824,9 @@ void bd_format_utc(int64_t ms, char *out, size_t cap);
  *                  always be written there (default 512).
  *   "low_priority" 1: jobs run in the background so the PC stays usable,
  *                  0: full speed (default 1).
+ *   "parallel_copies" 1: "Back up to every plugged-in drive" writes each
+ *                  file to all of them at once (bd_backup_many); 0: one
+ *                  drive after another (default 0).
  * bd_option_get returns the default for an unset option and -1 for an
  * unknown name. */
 int bd_option_get(bd_catalog *cat, const char *name);

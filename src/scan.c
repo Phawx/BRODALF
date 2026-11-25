@@ -1034,7 +1034,7 @@ static bd_status merge_moves(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn lo
                            " AND (SELECT COUNT(*) FROM temp.mv_new y WHERE y.hash=w.hash AND y.size=w.size)=1",
                            -1, &q, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db,
-                           "SELECT n.current_version_id, s.name||'/'||n.rel_path, n.parent_id, n.source_id FROM nodes n"
+                           "SELECT n.current_version_id, s.name||'/'||n.rel_path, n.parent_id, n.source_id, n.rel_path FROM nodes n"
                            " JOIN sources s ON s.id=n.source_id WHERE n.id=?", -1, &get, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db, "DELETE FROM versions WHERE node_id=?", -1, &dv, NULL) != SQLITE_OK ||
         sqlite3_prepare_v2(cat->db, "UPDATE versions SET node_id=?1 WHERE node_id=?2", -1, &mv, NULL) != SQLITE_OK ||
@@ -1067,7 +1067,24 @@ static bd_status merge_moves(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn lo
         int64_t cur = sqlite3_column_int64(get, 0);
         char *from_path = bd_strdup((const char *)sqlite3_column_text(get, 1));
         int64_t parent = sqlite3_column_type(get, 2) == SQLITE_NULL ? 0 : sqlite3_column_int64(get, 2);
+        int64_t from_source = sqlite3_column_int64(get, 3);
+        char *from_rel = bd_strdup((const char *)sqlite3_column_text(get, 4));
         sqlite3_reset(get);
+        /* A star or an encrypt mark on the file itself moves with it. */
+        for (int t = 0; t < 2 && from_rel; t++) {
+            sqlite3_stmt *mk;
+            const char *sql = t == 0 ? "UPDATE OR IGNORE stars SET source_id=(SELECT source_id FROM nodes WHERE id=?1),"
+                                       " rel_path=(SELECT rel_path FROM nodes WHERE id=?1) WHERE source_id=?2 AND rel_path=?3"
+                                     : "UPDATE OR IGNORE encrypt_paths SET source_id=(SELECT source_id FROM nodes WHERE id=?1),"
+                                       " rel_path=(SELECT rel_path FROM nodes WHERE id=?1) WHERE source_id=?2 AND rel_path=?3";
+            if (sqlite3_prepare_v2(cat->db, sql, -1, &mk, NULL) != SQLITE_OK) continue;
+            sqlite3_bind_int64(mk, 1, pairs[i].to);
+            sqlite3_bind_int64(mk, 2, from_source);
+            sqlite3_bind_text(mk, 3, from_rel, -1, SQLITE_STATIC);
+            sqlite3_step(mk);
+            sqlite3_finalize(mk);
+        }
+        free(from_rel);
         /* The new entry's one version (just read, never copied) gives way
          * to the old entry's history. */
         sqlite3_reset(dv);

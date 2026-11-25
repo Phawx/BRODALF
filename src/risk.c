@@ -214,7 +214,7 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
                                      " COUNT(*), COALESCE(SUM(r.size),0), m.free_bytes, COALESCE(m.total_bytes,0),"
                                      " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
                                      " FROM media m JOIN r"
-                                     " WHERE m.kind='drive' AND m.retired_ms IS NULL"
+                                     " WHERE m.kind='drive' AND m.retired_ms IS NULL AND m.secondary=0"
                                      " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=r.v"
                                      "   AND c.media_id=m.id AND c.state='ok')"
                                      " AND (r.cp<?1 OR NOT EXISTS(SELECT 1 FROM copies c JOIN media m2 ON m2.id=c.media_id"

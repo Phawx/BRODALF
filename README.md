@@ -19,10 +19,12 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.8.0**, released 2026-11-25. It adds four things the owner
-picked from what 0.7.0 left for later: tabs in the window, starred files
-copied to extra places, encrypting only the folders you choose, and
-backing up to several drives at once; see [History](#history). Builds are
+Version **0.9.0**, built on the `six-features` branch and not released yet.
+It adds the six things 0.8.0 left for later: dark mode, German and Spanish,
+hiding file and folder names on an encrypted drive, an optional
+compression helper for backup drives, reading files in use from a shadow
+copy when you ask, and remembering the last database; see
+[History](#history). The released version is **0.8.0** (2026-11-25). Builds are
 on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
@@ -66,8 +68,10 @@ cmake --build build-win
 ### Opening a database
 
 Run `brodalf.exe`, or double-click a `.brodalf` file after associating it.
-BRODALF offers the database you used last. Until one is open, the buttons
-and the **Tools** menu are greyed out, and **File** has:
+BRODALF offers the database you used last, which it remembers in
+`%LOCALAPPDATA%\BRODALF\last-database.txt`. Until one is open, only **Open
+database** and **New database** work: every other button, the tabs and the
+**Tools** menu are greyed out, and **File** has:
 
 - **New database...**: first a checklist of the folders to back up (add as
   many as you like), then where to save the `.brodalf` file.
@@ -152,7 +156,8 @@ then the log.
 The menus are **File** (new, open, recover the database, the recovery
 sheet, CSV export, exit), **View** (the six tabs, the status of every
 drive, files at risk, the largest, deleted, damaged and in-use files, the
-files the last restore left alone, Refresh), **Tools** (add a backup root,
+files the last restore left alone, Refresh, **Appearance** and
+**Language**), **Tools** (add a backup root,
 scan, the bit-rot scan, change where a root is, back up, back up to every
 plugged-in drive, check a drive, restore, set up a disk, add an extra
 place, star or encrypt what is selected, every drive and extra place BRODALF
@@ -163,6 +168,21 @@ change what it leaves out, or say where it is now; right-click a version to
 restore just that version or open its copy on the drive.
 
 ![Local backups menu](docs/images/gui-menus.png)
+
+### Appearance and language
+
+**View > Appearance** is **Like Windows** (light or dark, as Windows' app
+mode is set), **Light** or **Dark**. Dark covers the title bar, menus, tabs,
+lists, the tree, text boxes, buttons, the status bar and BRODALF's own
+dialogs. Message boxes and Windows' own question dialogs stay light. With
+high contrast on, BRODALF always uses the high-contrast colours.
+
+**View > Language** is **Like Windows** (its display language), English,
+Deutsch or Español, and takes effect the next time BRODALF opens. The
+German and Spanish text is a machine translation that a native speaker has
+not checked yet; error messages from deep inside BRODALF, the command line
+and the installer stay in English. To add or correct a language, see
+`gui/lang/` and `tools/lang.py`.
 
 ### Nothing else starts by itself
 
@@ -303,6 +323,17 @@ marked, its copies stop counting, and what it held is backed up again to
 the other drives. If it turns up again, **Found it** makes its copies count
 again.
 
+**Compressing a drive** is optional and never starts by itself. **Compress
+the copies on it** (a drive's menu, or **Compress copies** on the Local
+backups tab) turns on Windows' own file compression for BRODALF's folder on
+the drive. The copies stay ordinary files that any Windows PC reads without
+BRODALF; they just take less room, and backups after that are compressed
+too. Documents often shrink to half or less; photos, videos, music and zip
+files barely shrink. It takes about as long as reading and writing every
+copy, and the same menu turns it off again. Encrypted drives are left out,
+since encrypted copies cannot be made smaller, and so are exFAT and FAT32
+drives, which cannot compress files.
+
 ### Checking a drive
 
 Checksums are what BRODALF trusts, not file names or dates. **Check drive**
@@ -333,8 +364,14 @@ ones. **View > Damaged files** lists them, to restore from a drive or to
 keep as they are now.
 
 A file another program holds open cannot be read, so a scan or backup skips
-it and lists it at the end. **View > Files that were in use** shows the
-list again.
+it and lists it at the end. BRODALF then offers to read those files from a
+**shadow copy**: a snapshot of the drive that Windows takes and no program
+holds open. It is only offered, never started by itself. On yes, Windows
+asks for administrator permission, BRODALF copies just those files out of
+the snapshot, scans them, backs them up again where the backup was going,
+and deletes its copies; Windows deletes the snapshot. **View > Files that
+were in use at the last scan** shows the list again and makes the same
+offer.
 
 ### Backup roots
 
@@ -401,9 +438,9 @@ There are four kinds, each on its own, all on the **Encryption** tab:
   encrypted drive.
 
 The first time, BRODALF asks you to choose a passphrase. File contents are
-encrypted (XChaCha20-Poly1305, key from Argon2id), while file and folder
-names stay readable so you can still find things in Explorer. Encrypted
-copies end in `.bdenc`. The tab also changes the passphrase, makes BRODALF
+encrypted (XChaCha20-Poly1305, key from Argon2id). File and folder names
+stay readable so you can still find things in Explorer, unless you choose
+otherwise (below). Encrypted copies end in `.bdenc`. The tab also changes the passphrase, makes BRODALF
 forget it until it is needed, makes a new recovery key and prints the
 recovery sheet (**File > Print a recovery sheet**), which lists your drives
 and a recovery key that opens your encrypted copies if the passphrase is
@@ -420,7 +457,16 @@ more space.
 **Write the passphrase down somewhere safe.** Without it, nobody can read the
 encrypted copies, including you.
 
-Hiding file and folder names is left for later.
+**Hiding names** is a choice for an encrypted drive or extra place, made
+when it is set up: tick **Also hide the names of the files and folders on
+it**. Every file and folder on it then gets a name of 24 letters and digits
+made from the real one with a key, so someone holding the drive sees how
+many files there are and how big, but not what they are called. The real
+names are in the database, whose copy on the drive is encrypted, so
+BRODALF still shows and restores everything by its real name. It cannot be
+changed later, and without BRODALF and the passphrase the copies cannot be
+found by name. Once a drive hides names, BRODALF 0.8.0 and older can no
+longer open the database.
 
 ![An encrypted drive in the versions panel](docs/images/gui-encryption.png)
 
@@ -493,6 +539,10 @@ brodalf-cli backup  family.brodalf "C:\Users\me\Dropbox"   # starred files to th
 brodalf-cli places  family.brodalf                    # how each extra place stands
 brodalf-cli encrypt-folder family.brodalf Pictures Taxes   # only that folder's copies are encrypted
 brodalf-cli encrypted-folders family.brodalf          # what is encrypted, and what it costs in time
+
+brodalf-cli drive family.brodalf G:\ "Grey Vault" --encrypt --hide-names   # names on it are hidden too
+brodalf-cli compress family.brodalf E:\ on            # Windows' own file compression for the copies on E:
+brodalf-cli scan  family.brodalf --shadow-copy         # as administrator: read files in use from a shadow copy
 ```
 
 The command line starts nothing by itself: each command runs once, when you
@@ -517,6 +567,9 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `src/query.c` | Ghost-tree state, deleted files, search |
 | `src/risk.c` | Full copies, files at risk, which drive would help, space tracking |
 | `src/marks.c` | Starred files, extra places, encrypted folders and what they cost |
+| `src/names.c` | Hidden names on an encrypted drive |
+| `src/compress.c` | The compression helper for a backup drive |
+| `src/shadow.c` | Copying files in use out of a shadow copy (Windows) |
 | `src/status.c` | Where each drive stands, CSV export |
 | `src/drive_hw.c` | Disk make, model, serial and SMART health |
 | `src/recover.c` | Finding database copies on drives, backup roots that moved |
@@ -524,6 +577,8 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `src/report.c` | The app log and error reports |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |
+| `gui/lang/` | Its translations (`de.po`, `es.po`) and the text to translate (`brodalf.pot`) |
+| `tools/lang.py` | Makes `brodalf.pot`, updates the `.po` files, checks them (run in CI) |
 | `cli/main.c` | `brodalf-cli` |
 | `tests/test_core.c` | End-to-end test |
 | `tests/test_crypto.c` | Encryption test |
@@ -610,6 +665,19 @@ on a local machine needs to pick the work up without the chat history.
   `stars`, `place`, `place-limit`, `places`, `encrypt-folder`,
   `plain-folder`, `encrypted-folders`, `pending` and `backup` to several
   drives (`--parallel`).
+- v0.9.0 (not released yet, on the `six-features` branch): the six things
+  0.8.0 left for later, picked by the owner on 2026-11-25. Dark mode in the
+  window (View > Appearance). The window in German and Spanish as well as
+  English (View > Language), machine-translated, with every piece of text
+  going through one lookup and `tools/lang.py` checking the translations in
+  CI. Hiding file and folder names on an encrypted drive or extra place, as
+  an option when it is set up (schema 9 once one exists). An optional
+  compression helper for backup drives, using Windows' own NTFS
+  compression. Reading files in use from a shadow copy again, offered after
+  a scan or backup and never started by itself. The last database kept in
+  `%LOCALAPPDATA%\BRODALF`, with only Open and New working until a
+  database is open. The command line gains `compress`, `drive --hide-names`,
+  `place --hide-names` and `scan`/`backup --shadow-copy`.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -644,8 +712,9 @@ The owner's answers of 2026-11-25 (in the project's files as
   stay browsable on the drive in a `.versions` folder.
 - **Encryption is optional**, and off unless chosen: per drive, per
   folder (since 0.8.0) and for the database file. It encrypts file
-  contents only; file and folder names stay readable so a drive is still
-  browsable.
+  contents; file and folder names stay readable so a drive is still
+  browsable, unless the person chooses to hide them on an encrypted drive
+  (since 0.9.0).
 - **Extra places are secondary** (since 0.8.0): a folder that gets a
   second copy of the starred files only. It must be described, its copies
   never count toward the copies wanted, and BRODALF talks to no cloud
@@ -764,7 +833,19 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. Everything new in 0.8.0, none of which has run on Windows, and the
+1. Everything new in 0.9.0, none of which has run on Windows (it was built
+   for Windows and the Windows CI build passes, but the window has not been
+   looked at): dark mode in every tab and dialog, and switching while
+   BRODALF is open; the German and Spanish window, above all whether longer
+   text is cut off in the dialogs and buttons, which are laid out for
+   English; the hide-names boxes and a drive set up with them, backed up,
+   checked and restored; the shadow-copy offer, the administrator prompt
+   and the backup that follows; compressing and uncompressing a real USB
+   drive from the window (the engine part runs in the Windows CI tests),
+   and the refusal on exFAT; the start-up choice with the last
+   database from `%LOCALAPPDATA%`, and the window greyed out until one is
+   open.
+2. Everything new in 0.8.0, none of which has run on Windows, and the
    window has not been looked at since the tabs went in: the six tabs and
    their buttons and tables, the File, View, Tools and Help menus, the tab
    remembered between runs; starring and encrypting from the tree, ★ and
@@ -773,11 +854,11 @@ in 0.4.0 came from the code review of the same day and this test:
    to it; an encrypted folder on a plain drive, and the time it says
    encrypting takes against a real backup; backing up to two or more USB
    drives at once against one after another.
-2. Plugging in a known disk while BRODALF is open: the device-change
+3. Plugging in a known disk while BRODALF is open: the device-change
    notification should only add a line to the log ("... is plugged in") and
    light up its files; nothing else should start. The test had the stick
    plugged in before launch, so this never fired.
-3. Everything new in 0.7.0, none of which has run on Windows: the menus
+4. Everything new in 0.7.0, none of which has run on Windows: the menus
    and right-click menus; New database, Open and Recover from a drive; the
    scan on open and the question about a backup root that moved; the line
    beside the buttons and the three kinds of progress bar; backing up with
@@ -788,15 +869,15 @@ in 0.4.0 came from the code review of the same day and this test:
    the bit-rot scan and damaged files; restores that never overwrite, Files
    the last restore left alone, restoring one version and the deleted
    files; backups at low priority; the installer's desktop shortcut.
-4. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
+5. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
    accented names, the leading-quote guard against formulas), and OneDrive
    online-only files left alone.
-5. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+6. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
    the temperature comes from property 52 and the ATA table is only read
    from ATA disks.
-6. Everything new in 0.5.0, none of which has run on Windows:
+7. Everything new in 0.5.0, none of which has run on Windows:
    - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
      thread, and how much the scan pool and batched fsyncs gain on real
      disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on
@@ -851,13 +932,14 @@ Ideas offered to the owner and not picked up. Pick by number.
    copy, local `quickXorHash` and Dropbox `content_hash` so uploads are
    verified, and resumable chunked uploads.
 
-10. Left for later from the 2026-11-25 answers (each is a large change
-    that could not be finished or tested here): dark mode; translations; a
-    cross-platform GUI (after 1.0); hiding file and folder names on a
-    drive; a compression helper; reading files in use from a shadow copy;
-    a cache of the last database in AppData. (Tabs, encrypting only some
-    folders, starred folders copied to extra places and copying to several
-    drives at once were built in 0.8.0.)
+10. Left for later from the 2026-11-25 answers: a cross-platform GUI
+    (after 1.0). (Tabs, encrypting only some folders, starred folders
+    copied to extra places and copying to several drives at once were
+    built in 0.8.0; dark mode, translations, hiding names, the compression
+    helper, shadow copies and the last database in AppData in 0.9.0.)
+11. More languages, a native speaker's review of the German and Spanish,
+    and translating the command line, the installer and the error
+    messages that come from inside BRODALF.
 
 Rejected: a tray icon or always-on mode, Windows notifications, merging
 databases, and (since 0.6.0) anything that starts by itself, such as
@@ -867,10 +949,16 @@ backups or checks on plug-in, or reminders.
 
 - Build and run the tests before pushing and keep CI green. Work that
   waits for the owner's word goes on a branch (as 0.7.0 did on
-  `reconcile-answers` and 0.8.0 on `four-features`); CI builds every
+  `reconcile-answers`, 0.8.0 on `four-features` and 0.9.0 on
+  `six-features`); CI builds every
   branch.
 - Ship a release only when the owner says so, started by hand (see
   [Releasing](#releasing)).
+- Every piece of text the window shows goes through `T()` (or `TN()` for
+  text with a count, `N_()` in a table that `T()` is applied to when
+  shown). After changing any, run `python3 tools/lang.py update` and
+  translate what it marks missing; CI runs `tools/lang.py check`. A
+  translation must keep the English %-codes in the same order.
 - Write user-facing text (menus, dialogs, this README) in plain language,
   no jargon; the user of the app is not a developer. Say "back up", not
   "protect", and "backup root" for a folder being backed up.

@@ -3,7 +3,10 @@
 Agreed with the project owner on 2026-09-28, brought in line with the
 owner's answers of 2026-11-25 in 0.7.0, and extended in 0.8.0 with the four
 features the owner picked from what 0.7.0 left for later (tabs, starred
-files and extra places, encrypted folders, several drives at once).
+files and extra places, encrypted folders, several drives at once) and in
+0.9.0 with the six 0.8.0 left (dark mode, translations, hidden names, a
+compression helper, shadow copies when asked, the last database in
+AppData).
 
 ## What it is
 
@@ -153,7 +156,23 @@ violation is reported through `bd_open_was_in_use()`, the scan or backup
 records the path in the temp table `in_use` and leaves the catalog as it
 was; `bd_list_in_use` lists them and the GUI says to close the program that
 holds them and scan again. (0.5.0 read such files from a VSS shadow copy
-through an elevated helper; 0.6.0 takes that out.)
+through an elevated helper; 0.6.0 took that out, and 0.9.0 brings it back
+as an offer, below.)
+
+Since 0.9.0 the app then offers a shadow copy (`src/shadow.c`), never
+starting one by itself. On yes it writes the list of files in use to a
+new folder under `%TEMP%`, hashes it with BLAKE3 and starts itself
+elevated (`ShellExecuteEx` with `runas`) as `brodalf.exe --shadow-copy
+<out> <list> <hash>`. The helper runs before COM is initialised, checks
+the list against the hash on its command line, accepts only plain
+`X:\...` paths inside the backup roots the list names (no `.`/`..`, no
+streams, no links or junctions leading elsewhere), makes a shadow copy of
+just the volumes involved, copies the files into a folder of its own that
+only administrators can write, writes a result file and lets VSS delete
+the snapshot. The app then scans with each path read from its copy
+(`bd_substitute_add`), backs up again where the backup was going, and
+deletes the copies. The CLI's `scan --shadow-copy` and `backup
+--shadow-copy` do the same in-process when run as administrator.
 
 OneDrive "online-only" files (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` or
 `RECALL_ON_OPEN`) are not read, so they are not downloaded: the scan counts
@@ -249,7 +268,11 @@ X:\BRODALF\<catalog id>\.versions\<root name>\<dir>\<stem>.v<N><ext>   later ver
 X:\BRODALF\<catalog id>\catalog-r<revision>.brodalf     copies of the database
 ```
 
-Files stay browsable without BRODALF. Nothing on a drive is ever
+Files stay browsable without BRODALF, unless the drive hides names (an
+encrypted drive set up so, since 0.9.0): then each part of the copies'
+paths below `<catalog id>`, `<root name>` and `.versions` included, is 24
+letters and digits (see Encryption), while `BRODALF.media` and the
+database copies keep their names. Nothing on a drive is ever
 overwritten, moved or deleted (answers 95 and 97). A version goes to the
 file's usual path when nothing is there; otherwise (an older version's copy,
 a damaged copy, or a file BRODALF did not write) it goes alongside, under
@@ -322,9 +345,12 @@ files on Windows) and `media.lost_why`,
 and the `revision` in `meta`. Version 8 (0.8.0) added `media.secondary`
 and `media.limit_bytes` (extra places), `copies.encrypted` (whether that
 copy is sealed, since a plain drive can now hold encrypted copies), the
-`stars` and `encrypt_paths` tables and the "parallel_copies" option. An
-older catalog is upgraded in place when it is opened; the version before
-then refuses it as newer.
+`stars` and `encrypt_paths` tables and the "parallel_copies" option.
+Version 9 (0.9.0) adds `media.hide_names`; the column is added to every
+catalog 0.9.0 opens, but the catalog is still saved as version 8, which
+0.8.0 opens, until some drive or extra place hides names. An older catalog
+is upgraded in place when it is opened; the version before then refuses
+it as newer.
 
 The database is kept small: no file data, only paths, sizes, times,
 checksums and where each copy is, compressed with zstd, so a search works
@@ -400,6 +426,23 @@ would help" suggestion points at one. `bd_place_status_get` says, from the
 catalog, how many starred files are there as they are now, what is
 waiting, what would go past the limit and the space used.
 
+## Compressing a drive
+
+Optional, and only when the person asks (0.9.0, `src/compress.c`):
+`bd_media_set_compression` turns Windows' own NTFS compression on or off
+for `<drive>/BRODALF/<catalog uuid>` and every folder and file in it
+(`FSCTL_SET_COMPRESSION`). The copies stay ordinary files any Windows PC
+reads; a compressed folder makes files copied into it later compressed
+too, so later backups need nothing more. It walks the folder twice, once
+to count for the progress bar, then to change and measure each file
+(size on disk), and records a "compress" or "uncompress" job. A file
+another program holds open is counted as failed and left as it was. It
+is refused on an encrypted drive (sealed copies cannot be made smaller),
+on exFAT or FAT32 (`bd_fs_can_compress`) and outside Windows; making an
+encrypted drive's files whole again is allowed. `bd_media_compression`
+says whether it can be and is on. Window: a drive's menu and the Local
+backups tab; CLI: `brodalf-cli compress`.
+
 ## Several drives at once
 
 `bd_backup` backs up to one drive. `bd_backup_many` (up to 16 connected
@@ -469,9 +512,10 @@ remove, space), which local drives implement with plain file operations.
 
 ## Encryption
 
-Optional and off unless chosen (answer 78), and it encrypts file contents
-only: names and folders stay readable so a drive can still be browsed
-(Phawx's call, 2026-09-28; hiding names, answer 79, is left for later).
+Optional and off unless chosen (answer 78), and it encrypts file contents:
+names and folders stay readable so a drive can still be browsed (Phawx's
+call, 2026-09-28), unless the drive hides names (answer 79, built in
+0.9.0, an option and off unless chosen).
 Built on [Monocypher](https://monocypher.org) 4.0.2, two vendored files.
 There are four kinds, each on its own: an encrypted drive or extra place,
 encrypted folders (since 0.8.0), the `.brodalf` file, and the database
@@ -500,6 +544,19 @@ copies on an encrypted drive.
   chosen stay plain, since nothing on a drive is overwritten; new copies
   and new versions are sealed. Taking a folder off the list makes the next
   new copies plain. A backup that would seal a copy needs the passphrase.
+- Hidden names (0.9.0, `src/names.c`): an encrypted drive or extra place
+  set up with `BD_MEDIA_HIDE_NAMES` (`media.hide_names`, and
+  `hide_names=1` in `BRODALF.media`) stores every path under
+  `BRODALF/<catalog uuid>/` with each part replaced by 24 base32
+  characters: the first 15 bytes of BLAKE3 keyed by a drive key, over the
+  hidden path of the folder above, a 0 byte and the real name. The drive
+  key is BLAKE3 keyed by the master key over "BRODALF hidden names v1" and
+  the drive's UUID, so two drives never share names, and a file always
+  gets the same name, which is how a backup finds what is already there. A
+  file keeps `.bdenc` at the end. The real names stay in the catalog, whose copy
+  on the drive is encrypted. Only an encrypted drive can hide names, and
+  it is fixed when the drive is set up. Check and backup messages show the
+  real names.
 - What it costs (answer 77): `bd_crypto_speed` measures once, for about a
   quarter of a second, how many bytes a second this PC seals, and
   remembers it. `bd_encrypt_cost_text` turns that into a few sentences for
@@ -605,10 +662,40 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
   it would copy and how the extra places stand. Under them, one bar per
   full copy; under the tabs, the job bar with Stop and its counts, the file
   bar, then the log.
-- Startup: the last database (kept in `HKCU\Software\BRODALF\LastCatalog`),
-  another one, a new one or recovery. A path on the command line opens
-  directly. A database open in another BRODALF window is refused with a
-  message naming it.
+- Startup: the last database, another one, a new one or recovery. The last
+  database is kept in `%LOCALAPPDATA%\BRODALF\last-database.txt`
+  (`bd_last_database`, since 0.9.0) and still in
+  `HKCU\Software\BRODALF\LastCatalog`, where 0.8.0 and older look; the
+  file wins. With no database open only Open database and New database
+  (and File's recovery) work; every other button, the tab pages and Tools
+  are greyed out. A path on the command line opens directly. A database
+  open in another BRODALF window is refused with a message naming it.
+- Appearance (0.9.0): View > Appearance is like Windows (its app mode,
+  `AppsUseLightTheme`), Light or Dark, kept in
+  `HKCU\Software\BRODALF\Appearance` (0, 1, 2). Dark uses the
+  undocumented uxtheme exports that Explorer uses (ordinals 133, 135, 136,
+  looked up at run time and skipped when absent), `DwmSetWindowAttribute`
+  for the title bar, the `DarkMode_Explorer`/`DarkMode_CFD`/
+  `DarkMode_ItemsView` themes for the common controls, and BRODALF's own
+  colours for dialogs, static text, tabs and the status bar. Message boxes
+  and the common question dialogs stay light. High contrast always uses
+  the system's colours, and a change of the Windows setting applies while
+  BRODALF runs.
+- Languages (0.9.0): every piece of text the window shows goes through
+  `T(L"...")`, `TN(n, L"one", L"many")` for text with a count, or `N_()` in
+  a table whose entries get `T()` where they are shown. Translations are
+  gettext `.po` files in `gui/lang/` (German and Spanish so far, machine
+  translated), embedded in the exe as RCDATA and read at start: entries
+  marked fuzzy or with a context are skipped, the plural rule must be
+  `(n != 1)` or `(n > 1)`, and an entry whose %-codes differ from the
+  English in number, order or kind is dropped and the English shown, so a
+  bad translation cannot crash a format call. Dialogs from `brodalf.rc`
+  are translated control by control when they open. The language is View
+  > Language, kept in `HKCU\Software\BRODALF\Language` (empty: Windows'
+  display language), and applies at the next start. `tools/lang.py` makes
+  `brodalf.pot` from the source, updates the `.po` files, and checks them
+  and every format call's argument count (CI). The engine's own messages,
+  the CLI and the installer stay English.
 - The tree loads folders lazily and draws each state with custom draw: grey
   italic for no reachable copy, amber for older version only, red bold for a
   bad copy, strikethrough for deleted. Folder and root rows show "x of y

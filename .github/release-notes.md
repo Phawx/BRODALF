@@ -1,38 +1,39 @@
-Run the installer (`brodalf-v0.8.0-windows-x64-setup.exe`): it needs no administrator rights, adds BRODALF to the Start menu and, if you tick it, the desktop. Or unzip the zip anywhere and run `brodalf.exe`.
+Run the installer (`brodalf-v0.9.0-windows-x64-setup.exe`): it needs no administrator rights, adds BRODALF to the Start menu and, if you tick it, the desktop. Or unzip the zip anywhere and run `brodalf.exe`.
 
 **Windows SmartScreen** will warn that the app is from an unknown publisher, because it is not code-signed. Click **More info**, then **Run anyway**.
 
-**Nothing new in this build has been tried on a real Windows PC yet.** It was built and tested on Linux and built by Windows CI, and the new window has not been looked at; please try it on a test folder first.
+**Nothing new in this build has been tried on a real Windows PC yet.** It was built and tested on Linux and built and tested by Windows CI, and the new window has not been looked at; please try it on a test folder first.
 
-This build adds four things picked from what 0.7.0 left for later. Everything 0.7.0 settled still holds: nothing on a backup drive is ever overwritten, moved or deleted; nothing starts by itself except the scan when a database opens; and copies are plain files in their folders.
+This build adds the six things 0.8.0 left for later. Everything 0.8.0 settled still holds: nothing on a backup drive is ever overwritten, moved or deleted; nothing starts by itself except the scan when a database opens; and copies are plain files in their folders unless you choose otherwise.
 
-**Tabs**
-- The window now has six tabs: **Primary Database** (the tree, search and details), **Next backup**, **Local backups**, **Starred files and extra places**, **Encryption** and **Restore**. Each has buttons for everything on it, and BRODALF opens on the tab you used last.
-- **Next backup** lists the files the next backup copies to a drive, an extra place or any drive, with a column for each full copy saying whether the file has it yet.
-- **Local backups** lists every drive with its size, free space, BRODALF's copies, other files, the space kept free, its health (SMART, temperature, hours on, wear), its oldest read-back and its problems.
-- **Restore** restores what is selected, everything or the deleted files, and lists the files the last restore left alone beside the backed-up copy's size and date.
-- The menus are now **File**, **View**, **Tools** and **Help**.
+**Dark mode**
+- **View > Appearance**: like Windows (light or dark, as its app mode is set), Light or Dark. Dark covers the title bar, menus, tabs, lists, the tree, text boxes, buttons, the status bar and BRODALF's own dialogs. Message boxes and Windows' own question dialogs stay light. With high contrast on, BRODALF uses the high-contrast colours.
 
-**Starred files and extra places**
-- Star the files and folders that matter most. They are backed up to your drives as before, and also to your **extra places**: a secondary backup in any folder you name, such as your Dropbox, OneDrive or Google Drive folder, a network share or a folder on another disk.
-- An extra place needs a description good enough to tell it apart (at least two words), can have a size limit, and can be encrypted. Only starred files go there, as plain files in their folders.
-- BRODALF only copies files into the folder; that folder's own app does any syncing. Copies there can be restored but never count toward the copies you want.
-- A scan leaves out BRODALF's own copies when an extra place is inside a backup root.
+**German and Spanish**
+- **View > Language**: like Windows (its display language), English, Deutsch or Español. It takes effect the next time BRODALF opens.
+- The German and Spanish text is a machine translation that no native speaker has checked yet, and some longer text may be cut off in dialogs laid out for English. Corrections are welcome as an issue or a pull request (`gui/lang/`).
+- Error messages from deep inside BRODALF, the command line and the installer stay in English.
 
-**Encrypting only some folders**
-- Encryption stays optional and off unless you choose it. You can now encrypt chosen files and folders on every drive, as well as whole drives and the database file.
-- The **Encryption** tab measures how fast this PC encrypts and says how much time that adds, for everything you chose and for each folder. On a USB hard drive a backup takes about as long as before; checking and restoring an encrypted copy take about the same again.
-- Copies made before you chose a folder stay as they are, since nothing on a drive is overwritten; new copies and new versions are encrypted.
+**Hiding file and folder names on an encrypted drive**
+- When you set up an encrypted drive or extra place, you can tick **Also hide the names of the files and folders on it**. Every file and folder on it then gets a name of 24 letters and digits, so someone holding the drive sees how many files there are and how big, but not what they are called.
+- BRODALF still shows, checks and restores everything by its real name, which is kept in the database. It is chosen when the drive is set up and cannot be changed later. Encryption stays optional and off unless you choose it.
 
-**Backing up to several drives at once**
-- **Back up to every plugged-in drive** backs up to each one after another. Tick **Back up to several drives at once** (Local backups tab or Settings) and BRODALF reads each file once and writes it to all of them at the same time.
-- That is quicker, but the PC works harder while it runs: other programs may be slower, and the backup goes at the pace of the slowest drive. It is off until you turn it on.
+**Compressing a backup drive**
+- **Compress the copies on it** (a drive's menu, or **Compress copies** on the Local backups tab) turns on Windows' own file compression for BRODALF's folder on that drive. The copies stay ordinary files that any Windows PC reads without BRODALF; they just take less room, and later backups to it are compressed too.
+- Documents often shrink to half or less; photos, videos, music and zip files barely shrink. It takes about as long as reading and writing every copy, and the same menu turns it off again. It never starts by itself, and encrypted, exFAT and FAT32 drives are left out.
+
+**Files in use, from a shadow copy**
+- When a scan or backup could not read files another program has open, BRODALF offers to read them from a shadow copy: a snapshot of the drive that Windows takes and no program holds open. It is only offered, never automatic.
+- On yes, Windows asks for administrator permission, BRODALF copies just those files out of the snapshot, scans them and backs them up again where the backup was going, then deletes its copies. **View > Files that were in use at the last scan** makes the same offer.
+
+**The last database**
+- BRODALF remembers the database you opened last in `%LOCALAPPDATA%\BRODALF` and offers it at start. Until a database is open, only **Open database** and **New database** work; the rest of the window stays greyed out.
 
 **Command line**
-- `brodalf-cli` gains `star`, `unstar`, `stars`, `place`, `place-limit`, `places`, `encrypt-folder`, `plain-folder`, `encrypted-folders` and `pending`, and `backup` takes several drives (with `--parallel` to write to them at once).
+- `brodalf-cli` gains `compress`, `drive --hide-names`, `place --hide-names`, and `scan --shadow-copy` and `backup --shadow-copy` (run as administrator).
 
-**Left for later:** dark mode, translations, a cross-platform app (after 1.0), hiding file and folder names on a drive, a compression helper and reading files in use from a shadow copy.
+**Left for later:** a cross-platform app (after 1.0), more languages, and translating the command line and the installer.
 
-0.8.0 opens and upgrades databases made by 0.7.0 and older. After that, 0.7.0 cannot open the database.
+0.9.0 opens and upgrades databases made by 0.8.0 and older, and 0.8.0 can still open them afterwards, until a drive or extra place hides names: from then on, 0.8.0 and older cannot open that database.
 
 `brodalf-cli.exe` is the command-line version; run it with no arguments for help.

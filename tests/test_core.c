@@ -616,6 +616,20 @@ static void set_env(const char *name, const char *value)
 /* App log, redaction and the prefilled issue link. */
 static void test_report(void)
 {
+    /* The last database: nothing until one is set, then that path,
+     * replaced by the next. */
+    set_env("BRODALF_STATE", at("state"));
+    CHECK(bd_last_database() == NULL);
+    REQUIRE_OK(bd_last_database_set("C:\\Users\\me\\My backups.brodalf"), NULL);
+    char *last = bd_last_database();
+    CHECK(last && strcmp(last, "C:\\Users\\me\\My backups.brodalf") == 0);
+    free(last);
+    REQUIRE_OK(bd_last_database_set("/home/me/Ünïcode backups.brodalf"), NULL);
+    last = bd_last_database();
+    CHECK(last && strcmp(last, "/home/me/Ünïcode backups.brodalf") == 0);
+    free(last);
+    CHECK(!exists(at("state/last-database.txt.tmp")));
+
 #ifdef _WIN32
     set_env("USERNAME", "Zqxwolf");
 #else

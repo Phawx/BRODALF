@@ -88,6 +88,68 @@ char *bd_applog_default_path(void)
     return p;
 }
 
+/* ---- The last database ------------------------------------------------ */
+
+static char *dir_of(const char *path);
+
+static char *last_database_file(void)
+{
+    char *dir = env("BRODALF_STATE");
+    if (dir) {
+        char *p = bd_path_join(dir, "last-database.txt");
+        free(dir);
+        return p;
+    }
+    /* The app log's folder, whatever BRODALF_LOG says. */
+#ifdef _WIN32
+    char *base = env("LOCALAPPDATA");
+    if (!base) base = env("APPDATA");
+    char *p = base ? bd_sprintf("%s\\BRODALF\\last-database.txt", base) : NULL;
+#else
+    char *base = env("XDG_STATE_HOME");
+    char *p = NULL;
+    if (base) p = bd_sprintf("%s/brodalf/last-database.txt", base);
+    else if ((base = env("HOME"))) p = bd_sprintf("%s/.local/state/brodalf/last-database.txt", base);
+#endif
+    free(base);
+    return p;
+}
+
+char *bd_last_database(void)
+{
+    char *file = last_database_file();
+    FILE *f = file ? bd_fopen(file, "rb") : NULL;
+    free(file);
+    if (!f) return NULL;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    buf[strcspn(buf, "\r\n")] = 0;
+    return buf[0] ? bd_strdup(buf) : NULL;
+}
+
+bd_status bd_last_database_set(const char *path)
+{
+    char *file = last_database_file();
+    if (!file) return BD_ERR_NOT_FOUND;
+    char *tmp = bd_sprintf("%s.tmp", file), *dir = dir_of(file);
+    bd_status s = BD_ERR_IO;
+    if (tmp && dir && bd_mkdirs(dir) == 0) {
+        FILE *f = bd_fopen(tmp, "wb");
+        if (f) {
+            int ok = fprintf(f, "%s\n", path) > 0;
+            if (fclose(f) != 0) ok = 0;
+            if (ok && bd_rename_replace(tmp, file) == 0) s = BD_OK;
+            else bd_remove(tmp);
+        }
+    }
+    free(tmp);
+    free(dir);
+    free(file);
+    return s;
+}
+
 static char *dir_of(const char *path)
 {
     char *d = bd_strdup(path);

@@ -1060,6 +1060,14 @@ const char *bd_version(void);
  * elsewhere. The environment variable BRODALF_LOG overrides it. malloc'd. */
 char *bd_applog_default_path(void);
 
+/* The database last opened in the window app, remembered for this user in
+ * a small file next to the app log (%LOCALAPPDATA%\BRODALF\last-database.txt
+ * on Windows), so the next start can offer it. Nothing else is kept there.
+ * bd_last_database: the path, or NULL when none is remembered; it may no
+ * longer be there. malloc'd. BRODALF_STATE overrides the folder. */
+char *bd_last_database(void);
+bd_status bd_last_database_set(const char *path);
+
 /* Start writing the app log to path (its folder is created). Each line gets
  * a timestamp. When the file passes about 1 MB it is moved to path.old and a
  * new one is started. Call these from one thread only. */

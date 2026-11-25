@@ -290,6 +290,8 @@ static const wchar_t *g_tab_names[N_TABS] = {L"Primary Database", L"Next backup"
 static int g_label_encrypt_default; /* the new-drive dialog starts with Encrypt ticked */
 #define N_BUTTONS 8
 static HWND g_buttons[N_BUTTONS];
+/* With no database open, the only buttons that work: Open and New. */
+static HWND g_nodb_open, g_nodb_new;
 static HFONT g_font, g_font_italic, g_font_strike, g_font_bold;
 static int g_dpi = 96;
 static bd_catalog *g_cat;
@@ -948,12 +950,21 @@ static DWORD WINAPI worker(LPVOID arg)
 }
 
 static void update_menus(void);
+static void layout(void);
 
 /* The buttons work only with a database open and no job running. */
 static void set_busy(int busy)
 {
     InterlockedExchange(&g_busy, busy);
     for (int i = 0; i < N_BUTTONS; i++) EnableWindow(g_buttons[i], !busy && g_cat);
+    int was_shown = g_nodb_open && IsWindowVisible(g_nodb_open);
+    if (g_nodb_open) {
+        ShowWindow(g_nodb_open, g_cat ? SW_HIDE : SW_SHOW);
+        ShowWindow(g_nodb_new, g_cat ? SW_HIDE : SW_SHOW);
+        EnableWindow(g_nodb_open, !busy);
+        EnableWindow(g_nodb_new, !busy);
+        if (was_shown != !g_cat) layout();
+    }
     EnableWindow(g_stop, busy);
     ShowWindow(g_stop, busy ? SW_SHOW : SW_HIDE);
     update_menus();
@@ -2003,7 +2014,8 @@ static void update_drives_label(void)
 {
     if (g_busy) return; /* the catalog belongs to the running job */
     if (!g_cat) {
-        SetWindowTextW(g_drives, L"No database is open. Use File > New database, Open database or Recover from a drive.");
+        SetWindowTextW(g_drives, L"No database is open. Open one or create a new one below; to start again from a backup drive, "
+                                 L"use File > Recover.");
         update_set_bars();
         return;
     }
@@ -7376,6 +7388,13 @@ static void layout(void)
         top += row_h + S(2);
     }
     if (g_set_count) top += pad - S(2);
+    /* No database: Open and New, under the greyed-out buttons. */
+    if (!g_cat && g_nodb_open) {
+        int bw = S(150);
+        MoveWindow(g_nodb_open, pad, top, bw, bar, TRUE);
+        MoveWindow(g_nodb_new, pad + bw + S(6), top, bw, bar, TRUE);
+        top += bar + pad;
+    }
 
     int prog_h = S(20);
     int body_h = h - top - log_h - prog_h * 2 - pad * 4;
@@ -7453,6 +7472,8 @@ static void create_children(HWND hwnd)
     g_buttons[5] = make_button(L"Drives...", ID_BTN_DRIVES);
     g_buttons[6] = make_button(L"Settings...", ID_BTN_SECURITY);
     g_buttons[7] = make_button(L"At risk...", ID_BTN_RISK);
+    g_nodb_open = make_button(L"Open database...", ID_M_OPEN_DB);
+    g_nodb_new = make_button(L"New database...", ID_M_NEW_DB);
 
     g_drives = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS, 0, 0, 10, 10, hwnd,
                                (HMENU)ID_DRIVES, g_inst, NULL);
@@ -7778,15 +7799,31 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 /* ---- Opening, creating and recovering a database ------------------------ */
 
+/* The database opened last: kept in %LOCALAPPDATA%\\BRODALF\\last-database.txt,
+ * and in the registry, where BRODALF 0.8.0 and earlier kept it (so it is
+ * still found after an upgrade). */
 static void reg_get_last(wchar_t *out, DWORD cap)
 {
     out[0] = 0;
+    char *saved = bd_last_database();
+    wchar_t *w = widen(saved);
+    free(saved);
+    if (w && w[0]) {
+        wcsncpy(out, w, cap - 1);
+        out[cap - 1] = 0;
+        free(w);
+        return;
+    }
+    free(w);
     DWORD bytes = cap * sizeof(wchar_t);
     if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"LastCatalog", RRF_RT_REG_SZ, NULL, out, &bytes) != ERROR_SUCCESS) out[0] = 0;
 }
 
 static void reg_set_last(const wchar_t *path)
 {
+    char *p = narrow(path);
+    if (p && bd_last_database_set(p) != BD_OK) bd_applog("could not remember the last database in the app data folder");
+    free(p);
     HKEY k;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) == ERROR_SUCCESS) {
         RegSetValueExW(k, L"LastCatalog", 0, REG_SZ, (const BYTE *)path, (DWORD)((wcslen(path) + 1) * sizeof(wchar_t)));

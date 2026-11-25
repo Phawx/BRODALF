@@ -1,0 +1,65 @@
+name: UI screenshots
+
+# Takes screenshots of the window app on a Windows machine, for people to
+# look over: every tab, the menus and the dialogs, in each language, light
+# and dark. Runs on pushes to the ui-screenshots branch only, or by hand.
+# It builds the app the usual way and releases nothing.
+on:
+  push:
+    branches: [ui-screenshots]
+  workflow_dispatch:
+    inputs:
+      combos:
+        description: "Languages and appearances, like en-light,de-dark"
+        default: "en-light,en-dark,de-light,de-dark,es-light,es-dark"
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      COMBOS: ${{ github.event.inputs.combos || 'en-light' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DBRODALF_BUILD_ID=${{ github.sha }}"
+          cmake --build build --config Release --parallel --target brodalf brodalf-cli
+      - name: Build the screenshot tool
+        shell: pwsh
+        run: |
+          $csc = Join-Path ([System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) "csc.exe"
+          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" }
+          & $csc /nologo /platform:x64 /r:System.Drawing.dll /out:shots.exe tools\ui-screenshots\Shots.cs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools\ui-screenshots\ids.py gui\main.c gui\resource.h | Out-File -Encoding ascii ids.txt
+          Get-Content ids.txt | Measure-Object -Line
+      - name: Use a 1920 by 1080 screen
+        shell: pwsh
+        run: |
+          .\shots.exe --resolution 1920 1080
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+      - name: Take the screenshots
+        shell: pwsh
+        run: >-
+          tools\ui-screenshots\run-all.ps1
+          -Exe "$PWD\build\Release\brodalf.exe" -Cli "$PWD\build\Release\brodalf-cli.exe"
+          -Shots "$PWD\shots.exe" -Ids "$PWD\ids.txt" -Out "$PWD\screenshots" -Combos $env:COMBOS
+      - name: Keep the app's log
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force screenshots | Out-Null
+          $log = "$env:LOCALAPPDATA\BRODALF\brodalf.log"
+          if (Test-Path $log) { Copy-Item $log screenshots\brodalf.log }
+      - name: Upload the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: screenshots
+          retention-days: 14

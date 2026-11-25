@@ -20,31 +20,45 @@ drive (see below).
 4. Show the ghost tree. Everything starts greyed out.
 5. Plug in a drive and back up. Files light up once a correct copy is on a
    connected drive.
-6. Later sessions rescan and watch for drives. Plugging a known drive in checks
-   its copies, reads back the ones not read back lately, and lights up the
-   matching files; unplugging greys them out.
-7. BRODALF is not resident. A scheduled task runs it once a day without a
-   window to rescan and say what needs backing up and which known drive has
-   room for it.
+6. Later sessions notice drives. Plugging a known drive in reads its
+   `BRODALF.media` and free space and lights up the matching files;
+   unplugging greys them out. Nothing else happens until the user presses a
+   button: scanning, backing up, checking and restoring are each the user's
+   choice, and the user sees where each one and each drive stands.
+7. BRODALF is not resident and starts nothing by itself (since 0.6.0): no
+   scheduled task, no backup or check on plug-in, no reminders, no
+   rescan on open. It does not care what else runs on the PC.
 
-## Running on a schedule
+## Nothing automatic
 
-The app never runs in the background. `brodalf.exe --check <catalog>` is
-what Windows Task Scheduler runs (task "BRODALF - <catalog name>", daily or
-weekly at 12:00, from the "schedule" option: 1, 7 or 0; the GUI registers
-the task on every start when the option is on, so a new catalog gets a
-daily task straight away). The task is created or updated through the Task
-Scheduler 2.0 COM API (`ITaskService`, a daily trigger every 1 or 7 days
-from 12:00 today, local time; run as the logged-on user; "start only on AC
-power" and "stop on battery" off, "start when available" on, so a laptop
-on battery still runs it and a missed run catches up). If the COM call
-fails, `schtasks.exe` is used as before, which leaves the battery
-conditions on. It scans silently,
-and only when files fall short of the protection target (or the guard
-tripped) shows one message: how much is at risk, and the drive to plug in,
-with an "Open BRODALF now?" button. The drive is `bd_suggest_drive`: the
-first known drive that would take everything at risk and had room for it
-when last seen, else the one with the most free space.
+Up to 0.5.0 a Windows Task Scheduler task ("BRODALF - <catalog file
+name>") ran `brodalf.exe --check <catalog>` daily or weekly. 0.6.0 removes
+it: when the GUI opens a catalog it deletes that task through the Task
+Scheduler 2.0 COM API (`ITaskFolder::DeleteTask`, falling back to
+`schtasks /Delete`), and `brodalf.exe --check <catalog>` itself only deletes
+the task and exits, in case the task fires before the catalog is opened.
+`--shadow-copy` exits with 1. The options "schedule", "auto_backup" and
+"guard_percent" are gone; `bd_option_get` returns -1 for them.
+
+Before a backup the GUI shows `bd_backup_preview`: what `bd_backup_ex`
+would copy, move, keep under `.versions` and prune, the free space (read
+now when plugged in), how much would not fit, and the oldest last scan of
+the folders. It reads only the catalog and the drive's free space. It also
+counts the files whose copy at its own path on the drive is good and how
+many of them changed or were deleted since (moves aside); a quarter or more
+of at least 50 is `mass_change`, which the GUI shows as a ransomware
+warning with "keep every old version this time" ticked
+(`bd_backup_opts.keep_old_versions`, no pruning).
+
+`bd_media_status_get` says where a drive stands from the catalog alone:
+live files whose current version, an older version or no version is on it
+(with sizes), deleted files whose last version is on it, old versions in
+`.versions`, bad and never-read-back copies, the last backup job and the
+last check job. `bd_list_jobs` lists the `jobs` table (scan, backup,
+restore, quick check, full check, read back; the newest 2000 are kept).
+`bd_export_csv` writes every file with its drives as UTF-8 CSV with a BOM;
+every text field is quoted and a leading `= + - @`, tab or CR gets a `'`
+so a spreadsheet does not run it as a formula.
 
 Free space is tracked in `space_log(media_id, at_ms, total_bytes,
 free_bytes, event)`, written when a drive is plugged in and before and
@@ -58,9 +72,8 @@ new files with the same checksums. A backup checks, for every new file it
 would copy, whether a deleted node has the same hash and size with a good
 copy on this drive (not under `.versions`) whose stored size and time still
 match; if so the copy is renamed on the drive and the copy row re-pointed.
-Folders the move empties are removed up to the catalog's folder. The scan
-keeps a temp table of nodes that are new or came back in this scan, so the
-guard can subtract moves from what looks like damage.
+Folders the move empties are removed up to the catalog's folder. The
+backup preview's mass-change count leaves moves out the same way.
 
 On Windows names ignore letter case, so a path that only differs in case
 from one the catalog knows (Photo.JPG that is now photo.jpg) is that same
@@ -91,51 +104,35 @@ skipped, which would have left a synced folder unprotected.)
 
 ## Read-back (verify) pass
 
-Every copy row remembers when it was last fully read back. When a drive
-connects, `bd_media_verify` rehashes the copies not read back in
-"verify_days" days (default 30) and marks the bad ones damaged. A full
-check reads every copy; a quick check only compares size and time.
+Every copy row remembers when it was last fully read back (a copy written
+again starts as never read back). When the user asks, `bd_media_verify`
+rehashes the copies not read back in "verify_days" days (default 30; 0
+every copy) and marks the bad ones damaged. A full check reads every copy;
+a quick check only compares size and time. `bd_media_connect` checks
+nothing; it only identifies the drive and records its free space.
 
-## Ransomware guard
+## Restoring as of a time
 
-After a scan, if changed plus deleted files, minus moves, reach
-"guard_percent" (default 25) of the files known before the scan, and at
-least 50 files were known, the guard trips. Settings `guard.tripped_ms`,
-`guard.before_ms` (the previous scan's time), `guard.changed`,
-`guard.deleted` and `guard.total` are written once, on the first trip, so
-later scans do not move the "before" point. While tripped, `bd_backup`
-returns `BD_ERR_GUARD` (unless `ignore_guard`) and version pruning is
-skipped. `bd_restore_ex` with `as_of_ms` restores the newest version first
-seen at or before that time, for every file known then including ones
-deleted since; "before the changes" is `as_of_ms = guard.before_ms`.
-`bd_guard_clear` resumes.
+`bd_restore_ex` with `as_of_ms` restores the newest version first seen at or
+before that time, for every file known then, including ones deleted since.
+(The ransomware guard of 0.3.0 to 0.5.0, which paused backups on its own
+after a mass change, was taken out in 0.6.0; the backup preview warns
+instead.)
 
 ## Files in use
 
 Opening a file for reading shares read, write and delete. A sharing or lock
-violation is reported through `bd_open_was_in_use()`, the scan records the
-path in the temp table `in_use` and leaves the catalog as it was. The GUI
-offers a shadow copy: `brodalf.exe --shadow-copy <out dir> <list> <hash>`
-runs elevated (`bd_shadow_helper` in `src/shadow.c`, the VSS
-backup-components API on `vssapi.dll`, loaded from System32 only). The
-unelevated side writes the list (the user's SID, the protected folders, the
-files in use) into its temp folder and puts the list's BLAKE3 hash on the
-command line, which is fixed once Windows asks for permission. The helper
-reads the list once and refuses it if the hash differs; refuses every file
-that is not a plain `X:\...` path strictly inside one of the protected
-folders (no `.` or `..` parts, no `:` streams); makes `<out dir>` itself as
-a new folder (refused if it already exists) with a protected DACL (SYSTEM
-and Administrators full control, the user read and delete), held open
-without delete sharing and checked to be the folder it made (not a reparse
-point, its final path and owner as expected); and copies each file out of
-the snapshot through handles, refusing one whose final path is not the one
-asked for (a junction or link leading elsewhere) and never replacing a file.
-It snapshots each volume involved, writes the copies as `N.bin` and writes
-`result.txt` (`ok`, `failed` or `refused` per file) while still holding the
-folder. The GUI then registers each staged
-file as a substitute for its path (temp table `substitute`), rescans and
-backs up; the scan hashes the substitute and the backup copies it, so the
-catalog records the real path.
+violation is reported through `bd_open_was_in_use()`, the scan or backup
+records the path in the temp table `in_use` and leaves the catalog as it
+was; `bd_list_in_use` lists them and the GUI says to close the program that
+holds them and scan again. (0.5.0 read such files from a VSS shadow copy
+through an elevated helper; 0.6.0 takes that out.)
+
+OneDrive "online-only" files (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` or
+`RECALL_ON_OPEN`) are not read, so they are not downloaded: the scan counts
+them in `files_online_only` and leaves the file's catalog entry as it was,
+and a file first seen online-only gets its first version once it is on the
+PC. A backup does not copy them either.
 
 ## Progress
 
@@ -431,10 +428,11 @@ on every plugged-in drive so they know the new key.
 
 Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
 
-- Menu bar: Catalog (folders, scan, restore, restore as of a date, exit),
-  Local backups (each known disk with its own submenu: back up, read back,
-  full check, details; add a disk; what needs backing up), Help (shadow
-  copies, log, reports, about). The Local backups menu is filled on
+- Menu bar: Catalog (folders, scan, files in use, restore, restore as of a
+  date, deleted files, recovery sheet, CSV export, exit), Local backups (each
+  known disk with its own submenu: back up, quick check, read back, full
+  check, where it stands; add a disk; what needs backing up; all disks;
+  status of every disk; history), Help (log, reports, about). The Local backups menu is filled on
   `WM_INITMENUPOPUP`.
 - A progress bar and a text line sit above the log; see Progress above.
 - Startup: a task dialog offers the last catalog (kept in
@@ -456,13 +454,17 @@ Native Win32 in `gui/main.c`, with comctl32 v6 and a DPI-aware manifest.
   drive plugged in meanwhile is queued and handled when the UI is done.
   The search box says search is available when the current job finishes,
   and searches again then.
-- `brodalf.exe --shadow-copy` is dispatched before `CoInitializeEx`: the
-  helper needs the multithreaded apartment, and VSS hangs in a
-  single-threaded one.
 - Drives: on startup and on `WM_DEVICECHANGE`, drives that disappeared are
   disconnected, every drive letter with a `BRODALF.media` for this catalog is
-  connected (with a quick check), and folders or shares used as storage are
-  retried where they were last seen.
+  connected (read only: its identity and free space), and folders or shares
+  used as storage are retried where they were last seen. The log says which
+  drive was plugged in and, where it applies, that it is due for a full
+  check, holds files for a waiting restore, or can take what did not fit on
+  a full drive. Nothing is started.
+- Back up shows the preview first (Start, Scan first then back up, or
+  Cancel). Check drive offers a quick check, a full check or a read back. A
+  restore that waits for drives continues when the user presses Restore...
+  and picks Continue.
 
 ## Installer
 
@@ -472,5 +474,6 @@ user into `%LOCALAPPDATA%\Programs\BRODALF` with no administrator rights
 (`RequestExecutionLevel user`), adds a Start menu shortcut and an uninstall
 entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\BRODALF`.
 The uninstaller removes only those files, the shortcut and that key: catalogs,
-the app log, `HKCU\Software\BRODALF` and any scheduled check task are left,
+the app log, `HKCU\Software\BRODALF` and any scheduled check task left by
+0.5.0 or earlier are left,
 since they belong to the user's catalogs. The installer is not signed.

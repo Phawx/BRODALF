@@ -1,28 +1,33 @@
-Run the installer (`brodalf-v0.5.0-windows-x64-setup.exe`): it needs no administrator rights and adds BRODALF to the Start menu. Or unzip the zip anywhere and run `brodalf.exe`.
+Run the installer (`brodalf-v0.6.0-windows-x64-setup.exe`): it needs no administrator rights and adds BRODALF to the Start menu. Or unzip the zip anywhere and run `brodalf.exe`.
 
 **Windows SmartScreen** will warn that the app is from an unknown publisher, because it is not code-signed. Click **More info**, then **Run anyway**.
 
 **Nothing new in this build has been tried on a real Windows PC yet.** It was built and tested on Linux and built by Windows CI; please try it on a test folder first.
 
+**Nothing starts by itself any more.** BRODALF keeps track of what has been backed up and to which drive, and does a scan, backup, check or restore only when you press its button. Taken out:
+- The daily or weekly scheduled check. Opening a catalog deletes the Windows task that 0.5.0 or earlier created for it.
+- Backing up when a drive is plugged in.
+- Reading back copies when a drive is plugged in.
+- Continuing a waiting restore when the next drive is plugged in.
+- Reminders on opening that a drive is due for a check.
+- The ransomware guard that paused backups after a mass change (the backup preview warns instead).
+- Reading files in use from a shadow copy (BRODALF now lists them and asks you to close the program and scan again).
+- Rescanning the folders on opening, and the quick check on plug-in. Both are now buttons: **Scan folders**, and **Check drive…**, which offers a quick check, a full check or a read back.
+
+Plugging in a known drive still lights up the files on it, and the log says when it is due for a check, holds files for a waiting restore or can take what did not fit elsewhere.
+
 New in this build:
-- **Faster.** Checksums use your processor's fast instructions (the checksums themselves are unchanged), copies read the next part of a file while writing the last, a scan checks several files at once, and backing up many small files waits for the disk far less often.
-- **Stop** a running scan, backup, check or restore. What was done until then is kept. Closing BRODALF during a job asks whether to stop it.
-- **Recover from a backup drive…** on the start screen: on a new PC, start from the catalog copy on any backup drive, then point folders that moved at their new place.
-- **Replace this drive…** in Drives: retire a drive and fill a new one with what would be left short without it. BRODALF suggests it when a drive's health says it is failing or worn.
-- **Print a recovery sheet…**: a page to print with your drives, where each is kept and what is on it, and, for encrypted catalogs, a recovery key that unlocks the catalog if you forget the passphrase.
-- **Show deleted files…**: files removed from your folders that are still on your drives, with restore.
-- **An installer**, and the download now includes the licences of the libraries BRODALF uses.
-- The scheduled check now also runs when a laptop is on battery.
+- **Before a backup**, BRODALF shows what it will do: files to copy and how much, files to move, old versions to keep or remove, the drive's free space and whether it fits, and when the folders were last scanned. Start, scan first, or cancel. If many backed-up files changed or vanished since, it warns and keeps every old version.
+- **Where each drive stands**: files whose newest version, an older version or no version is on it, deleted files and old versions kept there, bad or never-checked copies, and its last backup and check. In the drive's details, and for all drives in **Local backups > Status of every disk…**.
+- **History** of every scan, backup, restore and check, with when, how long and the result.
+- **Export the file list (CSV)…** with every file and the drives it is on.
+- **Files that were in use at the last scan…**.
+- A waiting restore continues when you press **Restore…** and choose to continue.
+- OneDrive files kept online only are left alone and not downloaded.
+- `brodalf-cli` gains `preview`, `status`, `history`, `export` and `backup --keep-old`, and Ctrl+C stops a job and keeps what finished.
 
-Fixed:
-- Copies and restored files keep the original file's modified time.
-- On Windows, renaming Photo.JPG to photo.jpg is seen as a rename, not a delete and a new file. A folder named `.versions` can no longer get mixed up with old versions on the drive.
-- Two copies of BRODALF can never open the same catalog, and the question about a stale lock after a crash is gone.
-- Plugging in a drive while BRODALF is asking you something no longer starts a backup underneath it, and search waits until a job finishes.
-- Reading files that are in use is safer: the helper that runs as administrator only reads files inside your protected folders, from a list only administrators can change.
-- Drive health shows the right temperature, and NVMe and USB-attached disks no longer show made-up SMART values.
-- Encryption fails safely if Windows cannot supply random numbers, and a damaged catalog's key settings are refused instead of used.
+Left out of this build: a read back right after each copy (Windows reads it from memory, so it proves nothing; Check drive's read back does the real check), adopting an existing drive, copying from one drive to another, and backing up creation times and file attributes. Each needs larger changes that could not be tested here.
 
-An encrypted catalog that has a recovery key cannot be opened by 0.4.0 or earlier.
+0.6.0 opens the same catalogs as 0.5.0.
 
 `brodalf-cli.exe` is the command-line version; run it with no arguments for help.

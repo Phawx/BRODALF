@@ -12,15 +12,19 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.5.0**, released 2026-11-24. The C core library, the Windows app
+Version **0.6.0**, released 2026-11-25. The C core library, the Windows app
 (`brodalf.exe`) and a command-line harness (`brodalf-cli`) work, with
 optional encryption. Builds are on the
 [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer that
 needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
 
-**Everything new in 0.5.0 has only been built and tested off Windows** (Linux
-tests and a MinGW build; the MSVC build in CI). See
+**0.6.0 takes out everything BRODALF used to start by itself**: it schedules
+nothing, backs up and checks only when you press the button, and shows what a
+backup will do before it starts (see [Nothing starts by itself](#nothing-starts-by-itself)).
+
+**Everything new in 0.5.0 and 0.6.0 has only been built and tested off
+Windows** (Linux tests; the MSVC build in CI). See
 [Open items](#open-items-what-still-needs-trying-on-a-real-windows-pc). The Go files at the
 top of the repo are the earlier prototype and are not part of the C build.
 
@@ -62,16 +66,20 @@ Run `brodalf.exe`, or double-click a `.brodalf` file after associating it.
 
 1. Pick the last catalog, open another, or create a new one.
 2. On a new catalog, choose the folders to protect.
-3. BRODALF looks for its drives and scans your folders for changes.
+3. BRODALF looks for the backup drives that are plugged in. It reads only
+   the small `BRODALF.media` file on each to know which drive it is; nothing
+   else starts until you press a button.
 4. The tree shows everything you protect. Greyed files have no copy on a drive
    that is plugged in (the label says which drive holds them, if any). Amber
    files have changed, and only an older version is reachable. Red means a
    copy is missing or damaged, and struck-through means deleted from your
    folder. Folders show how many files inside are available.
 5. Select a file to see every version and where each copy is.
-6. **Back up** copies what is missing to a plugged-in drive, or sets up a new
-   one. **Check drive** re-reads every copy. **Restore** writes the selected
-   file or folder back out. Plugging in a drive is noticed on its own.
+6. **Scan folders** finds what changed in your folders. **Back up** shows what
+   it will copy to a plugged-in drive and copies it when you press Start, or
+   sets up a new drive. **Check drive** reads the copies on a drive (a quick
+   look, a full read, or the copies not read lately). **Restore** writes the
+   selected file or folder back out.
 
 Clicking a file shows what it is (size, modified time, checksum, how many
 versions) and every drive that holds it: the drive's name, where it is kept,
@@ -83,9 +91,11 @@ which box to go and get.
 
 The **Local backups** menu lists every external or removable disk BRODALF
 knows, plugged in or not, with how much room it had when last seen; each
-disk has a submenu to back up to it, read back its copies, run a full check
-or see its details, and below the disks are **Add an external or removable
-disk...** and **What needs backing up, and which disk to plug in...**.
+disk has a submenu to back up to it, run a quick check, read back its
+copies, run a full check or see where it stands. Below the disks are **Add
+an external or removable disk...**, **What needs backing up, and which disk
+to plug in...**, **All disks...**, **Status of every disk...** and
+**History...**.
 
 ![Local backups menu](docs/images/gui-menus.png)
 
@@ -158,40 +168,55 @@ same window.
 
 ![Files at risk](docs/images/gui-at-risk.png)
 
-### Plug in to back up, and check reminders
+### Nothing starts by itself
 
-When a backup drive is plugged in while BRODALF is open, it checks your
-folders for changes and backs up to that drive on its own (it asks for the
-passphrase first if the drive is encrypted). Turn this off under
-**Settings > Back up as soon as a drive is plugged in**.
+BRODALF does what you press, and only then. It schedules nothing, does not
+back up or check a drive because it was plugged in, and does not care what
+else runs on the PC. When it opens, or a drive is plugged in, it only reads
+which BRODALF drives are present (their `BRODALF.media` file and free space)
+so the tree can show what is reachable. Scanning your folders, backing up,
+checking a drive and restoring each wait for their button, and the progress
+bar shows where a running job is. Close BRODALF and nothing of it runs.
 
-Copies sitting on a shelf can slowly go bad, so BRODALF keeps track of when
-each drive's copies were last read back by a full check. When a drive's
-oldest copy hasn't been read in 6 months, BRODALF lists it when it opens
-and offers a full check when that drive is plugged in. Change how often (3
-months, 6 months, a year, or never) under **Settings > Remind me to check
-each drive**.
+Earlier versions set up a daily check in Windows Task Scheduler. 0.6.0
+removes that task the first time it opens the catalog, or when the task next
+runs, whichever comes first.
 
-### Not running all the time
+### Before a backup: what it will do
 
-BRODALF does not sit in the background. Open it and it rescans your folders,
-works out what needs backing up and reads back the copies on whatever is
-plugged in; close it and nothing of it runs. Instead, Windows Task Scheduler
-runs a quiet check once a day. BRODALF sets that up the moment a catalog is
-created (daily at 12:00) and keeps it pointing at the copy of BRODALF you
-ran; change it or turn it off under **Settings > Check my folders for
-changes while BRODALF is closed** (every day, every week, or never). The
-check rescans with no window and speaks up only when files fall short of
-the target, with how much needs backing up and which disk to plug in. The
-disk it names is one that had enough free space when it was last seen, so
-you reach for a drive you already have rather than a new one.
+**Back up** first shows what the backup will do on that drive: how many files
+it copies and how much data, how many are new to it, how many changed (their
+older copy is kept under `.versions`), how many were moved or renamed (moved
+on the drive rather than copied again), how many old versions the keep rule
+removes first, the free space, and whether it all fits. It also says when the
+folders were last scanned, since a backup copies what that scan found;
+**Scan the folders first, then back up** scans and shows the numbers again.
+Nothing is written until you press **Start the backup**.
 
-![The scheduled check](docs/images/gui-check.png)
+If a quarter or more of the files whose copies on that drive are up to date
+(and at least 50) changed or were deleted since, the window warns that this
+is what ransomware encrypting your files looks like, makes Cancel the
+default, and ticks **Keep every old version on the drive this time**, so the
+good copies stay under `.versions` even if you go ahead.
 
-To know that, BRODALF records every drive's total and free space whenever
-it is plugged in and before and after each backup. **Drives...** shows the
-latest reading, and the **Free space** column of the at-risk view says
-whether what is at risk would fit on each drive.
+### Where each drive stands
+
+**Drives...**, then a drive, shows where it stands, from the catalog alone,
+so it works with the drive in a box: how many files are on it as they are
+now, how many changed since (only an older version is on it), how many are
+not on it at all, deleted files and older versions still kept on it, its
+last backup (when, how it ended, how many files), its last check, copies
+found missing or damaged, and copies never read back since they were
+written. **Local backups > Status of every disk...** puts every drive in one
+table. **History...** lists every scan, backup, restore and check you ran,
+how it ended and how long it took. **Catalog > Export the file list
+(CSV)...** writes every file, its size and date, and the drives holding it as
+it is now, for a spreadsheet.
+
+BRODALF records every drive's total and free space whenever it is plugged in
+and before and after each backup. **Drives...** shows the latest reading, and
+the **Free space** column of the at-risk view says whether what is at risk
+would fit on each drive.
 
 ### Moved and renamed folders
 
@@ -199,48 +224,40 @@ Renaming or moving a folder used to mean copying all of it again. A scan
 now recognises a file that disappeared in one place and turned up in
 another by its checksum and size, and the next backup moves the copy on the
 drive to the new name instead of copying it again. Folders that are left
-empty on the drive go too. The ransomware guard (below) also knows a move
-from damage, so renaming a big folder does not pause backups.
+empty on the drive go too. The backup window's warning about many changed
+files also knows a move from damage, so renaming a big folder does not set
+it off.
 
-### Read back when plugged in
+### Checking a drive
 
-Checksums are what BRODALF trusts, not file names or dates. When a known
-drive is plugged in (or is present when BRODALF opens), after the quick
-check it reads back every copy on it that has not been read back in a
-month and compares the checksum, so a copy going bad on the shelf shows up
-as damaged while you can still replace it from your folder or another
-drive. Change how often under **Settings > Read back copies when a drive is
-plugged in** (a week, a month, 3 months, or never). A full check of every
-copy is still one click away per drive.
+Checksums are what BRODALF trusts, not file names or dates. **Check drive**
+offers three checks of a plugged-in drive:
 
-### The ransomware guard
+- **Quick check**: is every copy there, at its size and time. Fast.
+- **Full check**: reads every copy and compares its checksum.
+- **Read back copies not read lately**: the copies not read back in a month,
+  and new ones, so a full check can be spread over time. Change the month
+  under **Settings > Check drive, Read back: which copies**.
 
-If one scan finds a quarter or more of your files (and at least 50) changed
-or gone at once, BRODALF treats it as what ransomware encrypting a disk
-looks like. It pauses backups, so the good copies on your drives are not
-replaced by scrambled ones, stops cleaning up old versions, and asks what
-happened:
+A copy going bad on the shelf then shows up as damaged while you can still
+replace it from your folder or another drive; the next backup to that drive
+writes it again. BRODALF keeps track of when each drive's copies were last
+read. When the oldest is more than 6 months old (**Settings > A drive is due
+for a full check after**), the drive's details say so, and so does the log
+when it is plugged in. It is a note, not a prompt.
 
-![The guard](docs/images/gui-guard.png)
-
-**Restore them as they were...** brings everything back as of the scan
-before the changes; **The changes are mine** lets backups carry on (and
-runs the one that was stopped). Pick the threshold, or turn the guard off,
-under **Settings > Pause backups (ransomware guard)**. Separately,
 **Catalog > Restore what is selected as it was on a date...** restores any
 folder as it stood at the end of a chosen day, including files deleted
-since.
+since, for when files were damaged or encrypted on the PC.
 
 ### Files in use
 
 A file another program holds open, such as Outlook's `.pst` or a running
-database, cannot be read, so a scan skips it and lists it at the end.
-BRODALF then offers to read such files from a Windows shadow copy: it asks
-for administrator permission once, takes a snapshot of the volume, copies
-just those files out of it and backs them up from there. The same offer is
-under **Help > Read files that are in use from a shadow copy...**. This has
-so far only been exercised under Wine, which has no shadow copy service, so
-please report what it does on a real Windows PC.
+database, cannot be read, so a scan or backup skips it and lists it at the
+end, with what to do: close that program and scan again. **Catalog > Files
+that were in use at the last scan...** shows the list again. (0.5.0 could
+read such files from a Windows shadow copy; 0.6.0 leaves that out, since
+BRODALF no longer works around other programs.)
 
 ### Search
 
@@ -257,8 +274,9 @@ result to see its details; double-click it to go to it in the tree.
 When you restore a folder whose files live on several drives, BRODALF first
 shows which drives it needs, in order, with where each one is kept:
 "1. Drive B (kept in Box 7), plugged in; 2. Drive A (kept in Box 3)". It
-restores what the plugged-in drives hold right away, then restores each
-other drive's part as soon as you plug it in (while BRODALF is open).
+restores what the plugged-in drives hold right away. Then plug in each other
+drive and press **Restore...**, which offers to continue the waiting
+restore with that drive's part.
 Files already in the destination with the right size and contents are
 skipped, so an interrupted restore just picks up where it stopped.
 
@@ -269,8 +287,8 @@ skipped, so an interrupted restore just picks up where it stopped.
 A backup never fills a drive to the last byte (it leaves 16 MB, or 0.5% of
 the drive, whichever is more). Files that don't fit are skipped and smaller
 ones still go on. BRODALF then offers to put what didn't fit on another
-plugged-in drive, or asks you to plug one in; that drive gets only the
-files the full drive(s) couldn't take, so a big folder spreads across as
+plugged-in drive, or tells you to plug one in and press **Back up**; the
+drive you choose then gets only the files the full drive(s) couldn't take, so a big folder spreads across as
 many drives as it needs. The tree shows how much space each protected
 folder needs next to its name.
 
@@ -292,9 +310,10 @@ backed up show as deleted, and their copies stay.
 A protected folder can be inside OneDrive or Dropbox (on many PCs Windows
 keeps Documents and Pictures in OneDrive). Their files carry a Windows
 marker that looks like a shortcut's; BRODALF tells the two apart and scans
-them like any other file. A file that is "online-only" is downloaded by
-Windows when BRODALF reads it to checksum it, so the first scan of a large
-online-only folder takes a while and uses disk space. Real shortcuts
+them like any other file. A file that is "online-only" (in the cloud, not on
+this PC) is left alone: BRODALF does not download it, says how many it left
+in the scan summary, and backs it up once it is on the PC (open it, or
+choose **Always keep on this device**). Real shortcuts
 (symbolic links and junctions) are left out of scans.
 
 ### Old versions
@@ -329,6 +348,7 @@ brodalf-cli add   family.brodalf "C:\Users\me\Pictures"
 brodalf-cli scan  family.brodalf
 brodalf-cli tree  family.brodalf                      # everything greyed out
 brodalf-cli drive family.brodalf E:\ "Blue WD 4TB"
+brodalf-cli preview family.brodalf E:\                   # what a backup would do, doing none of it
 brodalf-cli backup family.brodalf E:\
 brodalf-cli tree  family.brodalf --drive E:\          # backed-up files light up
 brodalf-cli versions family.brodalf Pictures "2024/IMG_0412.jpg" --drive E:\
@@ -344,7 +364,7 @@ brodalf-cli passphrase family.brodalf                        # change it
 brodalf-cli target  family.brodalf 2 2                       # 2 copies of everything, in 2 places
 brodalf-cli at-risk family.brodalf                           # what falls short, and which drive to plug in
 brodalf-cli search  family.brodalf party 2024                # find a file and the drive (and box) holding it
-brodalf-cli option  family.brodalf check_days 365            # remind to re-read each drive yearly
+brodalf-cli option  family.brodalf check_days 365            # a drive is due for a full check after a year
 
 brodalf-cli restore-plan family.brodalf --source Pictures --dest D:\restored   # which drives, in which order
 brodalf-cli backup family.brodalf G:\ --continue-from "Blue WD 4TB"  # only what did not fit on the full drive
@@ -356,14 +376,16 @@ brodalf-cli prune   family.brodalf E:\                        # apply that now (
 brodalf-cli need    family.brodalf                           # what needs backing up, and the drive to plug in
 brodalf-cli verify  family.brodalf E:\                        # read back copies not read back in 30 days
 brodalf-cli option  family.brodalf verify_days 7             # ... make that a week
-brodalf-cli guard   family.brodalf                           # why backups are paused (--clear: the changes were mine)
-brodalf-cli backup  family.brodalf E:\ --anyway              # back up although the guard tripped
+brodalf-cli backup  family.brodalf E:\ --keep-old            # remove no old versions this time
 brodalf-cli restore family.brodalf D:\restored --as-of 2026-09-30 --drive E:\    # the files as they were that day
-brodalf-cli restore family.brodalf D:\restored --as-of before-changes --drive E:\ # as before the guard tripped
-brodalf-cli option  family.brodalf guard_percent 50          # pause only when half the files change at once
-brodalf-cli option  family.brodalf schedule 7                # the Windows app checks weekly (1: daily, 0: never)
-brodalf-cli shadow-copy C:\shadow "C:\Users\me\Outlook.pst"  # as administrator: copy an in-use file out of a shadow copy
+brodalf-cli status  family.brodalf                           # where each drive stands
+brodalf-cli history family.brodalf "Blue WD 4TB"             # what was run on that drive
+brodalf-cli export  family.brodalf files.csv                 # every file and its drives, for a spreadsheet
 ```
+
+The command line, like the app, starts nothing by itself: each command runs
+once, when you run it. Ctrl+C stops a long one between files and keeps what
+it finished.
 
 Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 (and `BRODALF_NEW_PASSPHRASE` when setting one).
@@ -374,14 +396,14 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | --- | --- |
 | `include/brodalf.h` | Public API of the core library |
 | `src/catalog.c` | The `.brodalf` file format and schema |
-| `src/scan.c` | Scanning source folders, versions, moves, the ransomware guard |
+| `src/scan.c` | Scanning source folders, versions, moves |
 | `src/media.c` | Drive IDs, connecting drives, quick, full and read-back checks |
 | `src/backup.c` | Backup with kept versions, restore |
 | `src/crypto.c` | Passphrase, master key, encrypted file streams |
 | `src/store*.c`, `src/store.h` | Storage interface: local drives and folders |
 | `src/query.c` | Ghost-tree state for the GUI |
 | `src/risk.c` | Files at risk, which drive would help, space tracking |
-| `src/shadow.c` | Windows shadow copies for files in use |
+| `src/status.c` | Where each drive stands, job history, CSV export |
 | `src/drive_hw.c` | Disk make, model, serial and SMART health |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |
@@ -427,17 +449,28 @@ on a local machine needs to pick the work up without the chat history.
   PC, a recovery key, deleted files, replacing a drive, the recovery sheet,
   an installer); the scheduled check created through the Task Scheduler COM
   API so it runs on battery. None of it has run on a real Windows PC yet.
+- v0.6.0 (2026-11-25): nothing starts by itself (owner's call, 2026-11-24).
+  Taken out: the scheduled check (its task is removed), backing up and
+  reading back when a drive is plugged in, the quick check on plug-in, the
+  rescan on open, check reminders, a restore carrying on by itself, the
+  ransomware guard and shadow copies. Added: a backup preview before Start
+  (with a warning, and old versions kept, when many files changed at once),
+  where each drive stands, a job history, a CSV export of the file list,
+  online-only cloud files left alone, Ctrl+C in the command line.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
-- **Not resident.** BRODALF never runs in the background. It runs when opened,
-  and a Windows Task Scheduler job runs `brodalf.exe --check <catalog>`
-  periodically to rescan, work out the space needed and name a known drive
-  with enough free space. Free space per drive is recorded on plug-in and
+- **Not resident, and nothing automatic** (since 0.6.0, owner's call
+  2026-11-24). BRODALF never runs in the background and schedules nothing.
+  It does not care what else runs on the PC. Its point is keeping track of
+  what has been backed up, and to where, from the original folders. The
+  person chooses when to scan, back up, check and restore, and sees where
+  each job and each drive stands. On open and on plug-in it only reads which
+  drives are present. Free space per drive is recorded on plug-in and
   before and after every backup. A tray icon or always-on mode was rejected.
 - **Checksums are the truth.** Whether data is safely held is decided by
-  BLAKE3 checksums, everywhere: quick and full checks, read-back on plug-in,
-  move and rename detection.
+  BLAKE3 checksums, everywhere: quick and full checks, read-back, move and
+  rename detection.
 - **Offline removable drives.** A drive is identified by the
   `BRODALF.media` file on it, never by its letter.
 - **No cloud storage for now** (owner's call, 2026-10-07). OneDrive and
@@ -456,14 +489,15 @@ on a local machine needs to pick the work up without the chat history.
 - **Windows is the platform, the GUI is the interface**: native Win32 in C,
   with a Local backups menu listing every known disk and a prominent
   progress area. POSIX builds exist for tests and the CLI.
-- **Startup flow**: open BRODALF, pick or create a `.brodalf` file, connect
-  everything reachable, pick folders, scan metadata and checksums, show the
+- **Startup flow**: open BRODALF, pick or create a `.brodalf` file, see which
+  drives are plugged in, pick folders (a new catalog scans them), show the
   ghost tree greyed out until a copy is verified on connected storage.
   Clicking an entry shows its details in a second pane.
 - **A copy of the catalog goes onto each drive** at the end of every backup
   to it (`catalog-backup.brodalf`).
-- **Ransomware**: on a mass change, pause backups and steer toward restoring,
-  not backing up.
+- **Ransomware**: before a backup, warn about a mass change and keep the old
+  versions, steering toward restoring, not backing up (the automatic pause
+  of 0.3.0 to 0.5.0 was taken out in 0.6.0).
 
 The original design write-up lives at
 https://claude.ai/artifact/RMxcPVGY6unWn917nXnJ8w, but everything that
@@ -546,18 +580,19 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. The scheduled check: registering the task works (exit code 0 on real
-   Windows). Still to see: `brodalf.exe --check <catalog>` actually
-   running at 12:00 and popping its one message when files are at risk.
-   Note that `schtasks` creates tasks with "do not start on battery" by
-   default, so a laptop on battery may never run it.
-2. Files in use: the shadow-copy offer, the single UAC prompt, and whether
-   an open `.pst` actually gets read and backed up (`src/shadow.c`). Try
-   `brodalf-cli shadow-copy` from an elevated prompt first.
-3. Plugging in a known disk while BRODALF is open: the device-change
-   notification should quick check it, then (as the code is written) read
-   back copies older than a month, scan, and back up. The test had the
-   stick plugged in before launch, so this never fired.
+1. Upgrading from 0.5.0: the old daily task in Task Scheduler ("BRODALF -
+   <catalog file>") should be gone after the catalog is opened once, and a
+   task that fires before that should remove itself and show nothing.
+2. Plugging in a known disk while BRODALF is open: the device-change
+   notification should only add a line to the log ("... is plugged in") and
+   light up its files; nothing else should start. The test had the stick
+   plugged in before launch, so this never fired.
+3. Everything new in 0.6.0: the backup window (its numbers against what the
+   backup then does, Scan first, the mass-change warning and its tick box),
+   Check drive's three choices, the drive's "Where it stands", Status of
+   every disk, History, the CSV export opened in Excel (the accented names,
+   the leading-quote guard against formulas), continuing a waiting restore
+   from Restore..., and OneDrive online-only files left alone.
 4. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
@@ -574,8 +609,6 @@ in 0.4.0 came from the code review of the same day and this test:
    - a case-only rename (Photo.JPG to photo.jpg) on NTFS and exFAT;
    - a second BRODALF on the same catalog is refused, and the catalog opens
      again after a crash (named mutex);
-   - the shadow-copy helper's admin-only list folder and its path check;
-   - the scheduled check's settings in Task Scheduler (starts on battery);
    - Recover from a backup drive on a second PC, Replace this drive, the
      recovery sheet in a browser and printed, unlocking with the recovery
      key, the deleted-files view;
@@ -591,13 +624,18 @@ limits of the new work:
   source folders. Deleted files and older versions held only on the old
   drive are counted and the user is told to keep the old drive; they are not
   copied drive to drive.
-- `brodalf-cli` has no Ctrl+C handling: `die()` does not save the catalog.
+- 0.6.0 leaves out three of the picks offered for it, for now: reading each
+  copy back straight after writing it (Windows would usually serve the read
+  from its cache, so it would not prove the drive holds the data; Check
+  drive's read back does), adopting a drive that already holds copies made
+  another way, and copying from drive to drive. Each needs bigger changes
+  to the catalog and matching than could be tested here.
+- `brodalf-cli` errors that end the program (`die()`) do not save the
+  catalog; Ctrl+C does.
 - 0.4.0 and earlier refuse an encrypted catalog that has a recovery key, as
   a newer format.
 - Case-insensitive matching keys (`nodes.rel_fold`) are only written by
   Windows builds, so files added to a catalog by a POSIX build have none.
-- The weekly scheduled check is a daily trigger every 7 days (MinGW's
-  Task Scheduler headers made a weekly trigger awkward).
 
 ### Backlog: suggested but not yet asked for
 
@@ -617,7 +655,8 @@ Ideas offered to the owner and not picked up. Pick by number.
    copy, local `quickXorHash` and Dropbox `content_hash` so uploads are
    verified, and resumable chunked uploads.
 
-Rejected: a tray icon or always-on mode (periodic runs only).
+Rejected: a tray icon or always-on mode, and (since 0.6.0) anything that
+starts by itself: scheduled checks, backups or checks on plug-in, reminders.
 
 ### Working conventions
 

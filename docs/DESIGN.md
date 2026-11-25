@@ -336,7 +336,10 @@ writes a new file and swaps it in atomically.
 
 Tables: `sources`, `nodes`, `versions`, `media`, `media_hardware`, `copies`,
 `space_log`, `jobs`, `settings`, `meta` (and `cloud_accounts` in catalogs
-written by 0.3.0), `stars` and `encrypt_paths`. Schema version 8.
+written by 0.3.0), `stars`, `encrypt_paths` and `damaged_files` (0.10.0:
+what the last bit-rot scan found, kept after BRODALF closes; it is created
+when a catalog opens and needs no new schema version). Schema version 8,
+or 9 once a drive or extra place hides names; see below.
 Version 6 added `nodes.rel_fold`, the
 case-folded path used on Windows. Version 7 (0.7.0) added
 `sources.active`, `nodes.deleted_ack`, `nodes.moved_from`,
@@ -376,7 +379,7 @@ GUI asks where it is now (with a guess under `%USERPROFILE%` when the old
 path was under `X:\Users\<name>`); `bd_source_relocate` changes only
 `sources.path`, so the root keeps its name on the drives and its files keep
 their versions and copies. "I cannot find it" offers a restore of that root
-from the drives, with the drives it needs in order. Database > "Change where
+from the drives, with the drives it needs in order. Tools > "Change where
 a backup root is" does the same at any time.
 
 ## Copies wanted and full copies

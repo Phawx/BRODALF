@@ -18,6 +18,12 @@
  *     no ":" streams;
  *   - a file whose path leads somewhere else through a link or junction is
  *     refused (the path Windows opened must be the one asked for);
+ *   - a file is copied only if the user who asked may read it: their
+ *     account, named by its SID in that list, is checked against the
+ *     file's permissions as they are in the snapshot (an Authz access
+ *     check). The SID must be a user account's, not a group's. A list that
+ *     names someone else's account gains its writer nothing: the copies
+ *     can be read only by the account it names;
  *   - the copies go into a new folder the helper makes itself, which only
  *     administrators can write to and the user can read and delete, held
  *     open so it cannot be swapped for a link while the helper works.
@@ -343,6 +349,7 @@ static int shadow_copy(const char *const *paths, int n, const char *dest_dir, co
 #endif
 #include <windows.h>
 #include <aclapi.h>
+#include <authz.h>
 #include <objbase.h>
 #include <sddl.h>
 #include <stdlib.h>
@@ -530,9 +537,85 @@ static HANDLE make_private_dir(const wchar_t *dest, const char *reader_sid, char
     return h;
 }
 
+/* What the user who asked may read. The helper runs as an administrator,
+ * perhaps another account than the user's (whoever typed a password into
+ * Windows' prompt), so it cannot take the user's own token: it makes an
+ * Authz client context for the account the list names and asks Windows
+ * whether that account may read each file. */
+typedef struct {
+    AUTHZ_RESOURCE_MANAGER_HANDLE rm;
+    AUTHZ_CLIENT_CONTEXT_HANDLE ctx;
+} reader_check;
+
+static void reader_check_end(reader_check *rc)
+{
+    if (rc->ctx) AuthzFreeContext(rc->ctx);
+    if (rc->rm) AuthzFreeResourceManager(rc->rm);
+    rc->ctx = NULL;
+    rc->rm = NULL;
+}
+
+static int reader_check_begin(reader_check *rc, const char *reader_sid, char *err, size_t err_len)
+{
+    memset(rc, 0, sizeof(*rc));
+    wchar_t *wsid = widen(reader_sid);
+    PSID sid = NULL;
+    wchar_t name[512], domain[512];
+    DWORD nn = 512, dn = 512;
+    SID_NAME_USE use = SidTypeUnknown;
+    LUID none = {0, 0};
+    /* A user account, not a group: the copies' folder lets exactly that
+     * account read them, and its access is what is checked. */
+    int ok = wsid && ConvertStringSidToSidW(wsid, &sid) && LookupAccountSidW(NULL, sid, name, &nn, domain, &dn, &use) &&
+             use == SidTypeUser;
+    DWORD e = ok ? NO_ERROR : GetLastError();
+    /* Flags 0: Windows gives the context the groups a logon of that account
+     * would have (an S4U logon), or where it cannot, the groups the account
+     * belongs to without those for the kind of logon (Interactive and the
+     * like). Either way only what the account itself is let read passes. */
+    if (ok && !(ok = AuthzInitializeResourceManager(AUTHZ_RM_FLAG_NO_AUDIT, NULL, NULL, NULL, L"BRODALF", &rc->rm)))
+        e = GetLastError();
+    if (ok && !(ok = AuthzInitializeContextFromSid(0, sid, rc->rm, NULL, none, NULL, &rc->ctx)))
+        e = GetLastError();
+    if (sid) LocalFree(sid);
+    free(wsid);
+    if (!ok) {
+        reader_check_end(rc);
+        say(err, err_len, "Windows could not tell which of these files you may read; nothing was copied",
+            e != NO_ERROR ? HRESULT_FROM_WIN32(e) : E_INVALIDARG);
+        return -1;
+    }
+    return 0;
+}
+
+/* 1 if the account may read the open file, by the file's own permissions;
+ * 0 if not, or if Windows cannot say. */
+static int reader_may_read(const reader_check *rc, HANDLE file)
+{
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (GetSecurityInfo(file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                        NULL, NULL, NULL, NULL, &sd) != ERROR_SUCCESS)
+        return 0;
+    AUTHZ_ACCESS_REQUEST req;
+    memset(&req, 0, sizeof(req));
+    req.DesiredAccess = FILE_GENERIC_READ;
+    ACCESS_MASK granted = 0;
+    DWORD error = ERROR_ACCESS_DENIED;
+    AUTHZ_ACCESS_REPLY reply;
+    memset(&reply, 0, sizeof(reply));
+    reply.ResultListLength = 1;
+    reply.GrantedAccessMask = &granted;
+    reply.Error = &error;
+    BOOL ok = AuthzAccessCheck(0, rc->ctx, &req, NULL, sd, NULL, 0, &reply, NULL);
+    LocalFree(sd);
+    return ok && error == ERROR_SUCCESS && (granted & FILE_GENERIC_READ) == FILE_GENERIC_READ;
+}
+
 /* Copy one file out of the snapshot through handles, refusing a path that
- * a link or junction leads elsewhere, and never replacing a file. */
-static int copy_out(const wchar_t *from, const wchar_t *to)
+ * a link or junction leads elsewhere, and never replacing a file. With
+ * reader, only a file that account may read is copied. 1 copied, 0 not,
+ * -2 refused because the account may not read it. */
+static int copy_out(const wchar_t *from, const wchar_t *to, const reader_check *reader)
 {
     HANDLE in = CreateFileW(from, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                             FILE_FLAG_SEQUENTIAL_SCAN, NULL);
@@ -542,6 +625,10 @@ static int copy_out(const wchar_t *from, const wchar_t *to)
         !is_where_asked(in, from, VOLUME_NAME_NT)) {
         CloseHandle(in);
         return 0;
+    }
+    if (reader && !reader_may_read(reader, in)) {
+        CloseHandle(in);
+        return -2;
     }
     HANDLE out = CreateFileW(to, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (out == INVALID_HANDLE_VALUE) { CloseHandle(in); return 0; }
@@ -583,9 +670,19 @@ static int shadow_copy(const char *const *paths, int n, const char *dest_dir, co
     HANDLE held = INVALID_HANDLE_VALUE;
     wchar_t *wdest = widen(dest_dir);
     if (!wdest) { say(err, err_len, "out of memory", E_OUTOFMEMORY); write_result(result_path, n, ok, paths, err); return -1; }
+    reader_check reader;
+    memset(&reader, 0, sizeof(reader));
     if (reader_sid) {
         held = make_private_dir(wdest, reader_sid, err, err_len);
         if (held == INVALID_HANDLE_VALUE) { free(wdest); return -1; } /* no result file: the folder may not be ours */
+        /* Before any snapshot: if Windows cannot say what the user may
+         * read, nothing is copied. */
+        if (reader_check_begin(&reader, reader_sid, err, err_len) != 0) {
+            write_result(result_path, n, ok, paths, err);
+            CloseHandle(held);
+            free(wdest);
+            return -1;
+        }
     }
     if (n <= 0) {
         write_result(result_path, n, ok, paths, err);
@@ -674,7 +771,9 @@ static int shadow_copy(const char *const *paths, int n, const char *dest_dir, co
         if (!from) continue;
         swprintf(from, len, L"%ls\\%ls", dev, inside);
         swprintf(to, MAX_PATH * 2, L"%ls\\%d.bin", wdest, i + 1);
-        if (copy_out(from, to)) { ok[i] = 1; copied++; }
+        int got = copy_out(from, to, reader_sid ? &reader : NULL);
+        if (got == 1) { ok[i] = 1; copied++; }
+        else if (got == -2) bd_applog("shadow copy helper: refused %s (the user who asked may not read it)", paths[i]);
         free(from);
     }
     a = NULL;
@@ -690,6 +789,7 @@ done:
         CoTaskMemFree(props[k].m_pwszExposedPath);
     }
     if (b) b->v->Release(b); /* a backup-context snapshot is deleted here */
+    reader_check_end(&reader);
     if (lib) FreeLibrary(lib);
     if (com) CoUninitialize();
     for (int k = 0; k < nvol; k++) free(volumes[k]);

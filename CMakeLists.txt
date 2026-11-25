@@ -108,7 +108,7 @@ target_compile_definitions(brodalf_core PRIVATE
     BRODALF_VERSION="${PROJECT_VERSION}"
     BRODALF_BUILD_ID="${BRODALF_BUILD_ID}")
 if(WIN32)
-    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 ole32 user32)
+    target_link_libraries(brodalf_core PUBLIC bcrypt advapi32 authz ole32 user32)
     target_compile_definitions(brodalf_core PRIVATE UNICODE _UNICODE)
 else()
     find_package(Threads REQUIRED)

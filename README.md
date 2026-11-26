@@ -223,7 +223,9 @@ its date.
 If many of the files whose copies on that drive were up to date have
 changed at once, BRODALF stops and asks first, since that is what
 ransomware encrypting your files looks like. **Show the changed files**
-lists them; **Back up anyway** goes ahead, and the copies already on the
+lists each one with what happened to it and when; if the changes are
+yours, **Back up these changes** in that list goes ahead. **Back up
+anyway** says how many files it copies, and the copies already on the
 drive stay as they are.
 
 A backup never fills a drive to the last byte: it leaves room for the

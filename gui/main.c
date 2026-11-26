@@ -598,16 +598,39 @@ static char *xstrdup(const char *s)
     return d;
 }
 
+/* The locale for numbers and dates: the user's own when it is in the
+ * language shown (English in Britain: en-GB), else that language's. */
+static const wchar_t *fmt_locale(void)
+{
+    static wchar_t user[LOCALE_NAME_MAX_LENGTH];
+    static int have = -1;
+    if (have < 0) have = GetUserDefaultLocaleName(user, LOCALE_NAME_MAX_LENGTH) > 0;
+    const wchar_t *ui = g_langs[g_lang].code;
+    size_t n = wcslen(ui);
+    if (have && _wcsnicmp(user, ui, n) == 0 && (user[n] == L'-' || user[n] == 0)) return user;
+    return ui;
+}
+
+/* "1.0 GB", not "1022.9 MB"; "315,9 MB" in German and Spanish. */
 static void format_bytes(int64_t b, wchar_t *out, size_t n)
 {
     const wchar_t *units[] = {T(L"bytes"), T(L"KB"), T(L"MB"), T(L"GB"), T(L"TB")};
     double v = (double)b;
     int u = 0;
-    while (v >= 1024.0 && u < 4) { v /= 1024.0; u++; }
-    if (u == 0) swprintf(out, n, T(L"%lld bytes"), (long long)b);
-    else swprintf(out, n, L"%.1f %ls", v, units[u]);
+    while (v >= 1000.0 && u < 4) { v /= 1024.0; u++; }
+    if (u == 0) {
+        swprintf(out, n, T(L"%lld bytes"), (long long)b);
+        return;
+    }
+    swprintf(out, n, L"%.1f %ls", v, units[u]);
+    wchar_t dec[8];
+    if (GetLocaleInfoEx(fmt_locale(), LOCALE_SDECIMAL, dec, 8) == 2 && dec[0] != L'.') {
+        wchar_t *dot = wcschr(out, L'.');
+        if (dot) *dot = dec[0];
+    }
 }
 
+/* A date and time as the language shown writes them: 26.11.2026 01:21. */
 static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 {
     if (ms <= 0) { swprintf(out, n, T(L"never")); return; }
@@ -616,7 +639,10 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
     SYSTEMTIME st;
     FileTimeToLocalFileTime(&ft, &local);
     FileTimeToSystemTime(&local, &st);
-    swprintf(out, n, L"%04d-%02d-%02d %02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+    wchar_t d[96], tm[64];
+    if (!GetDateFormatEx(fmt_locale(), DATE_SHORTDATE, &st, NULL, d, 96, NULL)) swprintf(d, 96, L"%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+    if (!GetTimeFormatEx(fmt_locale(), TIME_NOSECONDS, &st, NULL, tm, 64)) swprintf(tm, 64, L"%02d:%02d", st.wHour, st.wMinute);
+    swprintf(out, n, L"%ls %ls", d, tm);
 }
 
 /* ---- Globals ------------------------------------------------------------ */
@@ -1904,11 +1930,75 @@ static void post_text(UINT msg, const wchar_t *text)
 /* A backup to several drives at once may report from more than one thread. */
 static SRWLOCK g_report_lock = SRWLOCK_INIT;
 
+/* The engine's log lines seen most, as full sentences in the language
+ * shown, with Windows paths. A line not here keeps its words, with a
+ * capital letter. */
+static const struct { const char *pre, *post; const wchar_t *say; } g_core_lines[] = {
+    {"scanning ", "", N_(L"Scanning %ls")},
+    {"contents changed but size and time did not (damage?): ", "", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
+    {"something else is already at ", "; left alone", N_(L"Left alone, because something else is already at %ls")},
+    {"backup root ", " is not reachable; skipped (nothing marked deleted)", N_(L"Backup root %ls cannot be reached, so it was skipped. Nothing in it was marked deleted.")},
+    {"missing on drive: ", "", N_(L"Missing on the drive: %ls")},
+    {"damaged on drive: ", "", N_(L"Damaged on the drive: %ls")},
+    {"in use by another program, skipped: ", "", N_(L"In use by another program, so it was skipped: %ls")},
+    {"moved or renamed, copies kept: ", "", N_(L"Moved or renamed; its copies are kept: %ls")},
+    {"skipped link: ", "", N_(L"Skipped a link: %ls")},
+    {"online-only, skipped: ", "", N_(L"Online only (not on this PC), so it was skipped: %ls")},
+    {"online-only (not on this PC), not copied: ", "", N_(L"Online only (not on this PC), so it was not copied: %ls")},
+    {"changed while copying, scan again: ", "", N_(L"Changed while it was being copied; scan again: %ls")},
+    {"source file missing, scan again: ", "", N_(L"Gone from its folder while backing up; scan again: %ls")},
+    {"an older copy is gone from the drive: ", "", N_(L"An older copy is gone from the drive: %ls")},
+    {"the copy is there again as it was, so it counts again: ", "", N_(L"The copy is there again as it was, so it counts again: %ls")},
+    {"backing up to ", " drives at once: each file is read once and written to all of them",
+     N_(L"Backing up to %ls drives at once: each file is read once and written to all of them.")},
+    {"encrypted copies are skipped: enter the passphrase to check them too", NULL,
+     N_(L"Encrypted copies are skipped: enter the passphrase to check them too.")},
+    {"files changed since the scan are read again and backed up as they are now", NULL,
+     N_(L"Files changed since the scan are read again and backed up as they are now.")},
+    {"files that are online-only (in the cloud, not on this PC) are skipped, not downloaded", NULL,
+     N_(L"Files that are online only (in the cloud, not on this PC) are skipped, not downloaded.")},
+    {"the drive is full; files that do not fit wait for another drive", NULL, N_(L"The drive is full. Files that do not fit wait for another drive.")},
+    {"the drive stopped answering or was unplugged: the backup stops", NULL, N_(L"The drive stopped answering or was unplugged, so the backup stops.")},
+    {"the drive stopped answering or was unplugged: nothing on it was marked missing or damaged", NULL,
+     N_(L"The drive stopped answering or was unplugged. Nothing on it was marked missing or damaged.")},
+};
+
+static wchar_t *core_line(const char *message)
+{
+    size_t ml = strlen(message);
+    for (size_t i = 0; i < sizeof(g_core_lines) / sizeof(g_core_lines[0]); i++) {
+        const char *pre = g_core_lines[i].pre, *post = g_core_lines[i].post;
+        size_t pl = strlen(pre);
+        if (!post) {
+            if (strcmp(message, pre) == 0) return _wcsdup(T(g_core_lines[i].say));
+            continue;
+        }
+        size_t ql = strlen(post);
+        if (ml < pl + ql || strncmp(message, pre, pl) != 0 || strcmp(message + ml - ql, post) != 0) continue;
+        char *arg = malloc(ml - pl - ql + 1);
+        if (!arg) break;
+        memcpy(arg, message + pl, ml - pl - ql);
+        arg[ml - pl - ql] = 0;
+        wchar_t *wa = widen(arg);
+        free(arg);
+        if (!wa) break;
+        for (wchar_t *c = wa; *c; c++) if (*c == L'/') *c = L'\\';
+        size_t cap = wcslen(wa) + wcslen(T(g_core_lines[i].say)) + 8;
+        wchar_t *out = malloc(cap * sizeof(wchar_t));
+        if (out) swprintf(out, cap, T(g_core_lines[i].say), wa);
+        free(wa);
+        return out;
+    }
+    wchar_t *w = widen(message);
+    if (w && w[0] >= L'a' && w[0] <= L'z') w[0] = (wchar_t)(w[0] - L'a' + L'A');
+    return w;
+}
+
 static void job_log(void *ctx, const char *message)
 {
     job *j = ctx;
     j->problems++;
-    wchar_t *w = widen(message);
+    wchar_t *w = core_line(message);
     if (!w) return;
     post_text(WM_APP_LOG, w);
     AcquireSRWLockExclusive(&g_report_lock);
@@ -2798,6 +2888,9 @@ static bd_status ui_save(void)
 #define LOG_TRIM 900000
 #define LOG_CUT 300000
 
+static wchar_t g_log_last[600]; /* the last line, to count it when it comes again */
+static int g_log_last_at = -1, g_log_last_end = -1, g_log_last_n;
+
 static void log_append(const wchar_t *text)
 {
     int len = GetWindowTextLengthW(g_log);
@@ -2816,9 +2909,32 @@ static void log_append(const wchar_t *text)
         SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)note);
         len = GetWindowTextLengthW(g_log);
     }
-    SendMessageW(g_log, EM_SETSEL, len, len);
-    SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)text);
-    SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)L"\r\n");
+    wchar_t stamp[48] = L"";
+    GetTimeFormatEx(fmt_locale(), 0, NULL, NULL, stamp, 48);
+    size_t tl = wcslen(text);
+    if (len == g_log_last_end && g_log_last_at >= 0 && tl < 600 && wcscmp(text, g_log_last) == 0) {
+        /* The same line again, with nothing between: "(x4)" on it. */
+        g_log_last_n++;
+        size_t cap = tl + 96;
+        wchar_t *line = malloc(cap * sizeof(wchar_t));
+        if (line) {
+            swprintf(line, cap, L"%ls   %ls  (\x00d7%d)\r\n", stamp, text, g_log_last_n);
+            SendMessageW(g_log, EM_SETSEL, g_log_last_at, len);
+            SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)line);
+            free(line);
+        }
+    } else {
+        g_log_last_at = len;
+        g_log_last_n = 1;
+        if (tl < 600) wcscpy(g_log_last, text);
+        else g_log_last[0] = 0;
+        SendMessageW(g_log, EM_SETSEL, len, len);
+        SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)stamp);
+        SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)L"   ");
+        SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)text);
+        SendMessageW(g_log, EM_REPLACESEL, FALSE, (LPARAM)L"\r\n");
+    }
+    g_log_last_end = GetWindowTextLengthW(g_log);
     char *u = narrow(text);
     if (u) { bd_applog("%s", u); free(u); }
 }
@@ -2827,7 +2943,7 @@ static void log_append(const wchar_t *text)
 static void ui_log(void *ctx, const char *message)
 {
     (void)ctx;
-    wchar_t *w = widen(message);
+    wchar_t *w = core_line(message);
     if (w) log_append(w);
     free(w);
 }
@@ -4624,14 +4740,23 @@ static void lv_columns(HWND lv, const wchar_t **names, const int *widths, int n)
 {
     lv_sortable(lv);
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
+    /* Never narrower than its name, in any language. */
+    HDC dc = GetDC(lv);
+    HFONT f = (HFONT)SendMessageW(lv, WM_GETFONT, 0, 0);
+    HGDIOBJ of = SelectObject(dc, f ? f : g_font);
     for (int i = 0; i < n; i++) {
         LVCOLUMNW c;
         memset(&c, 0, sizeof(c));
         c.mask = LVCF_TEXT | LVCF_WIDTH;
         c.pszText = (wchar_t *)T(names[i]); /* the tables mark their names with N_ */
-        c.cx = S(widths[i]);
+        SIZE sz = {0, 0};
+        GetTextExtentPoint32W(dc, c.pszText, (int)wcslen(c.pszText), &sz);
+        int need = sz.cx + S(22);
+        c.cx = S(widths[i]) > need ? S(widths[i]) : need;
         ListView_InsertColumn(lv, i, &c);
     }
+    SelectObject(dc, of);
+    ReleaseDC(lv, dc);
 }
 
 static void lv_row(HWND lv, const wchar_t **cells, int n)
@@ -11163,12 +11288,12 @@ static void friendly_time(int64_t ms, wchar_t *out, size_t cap)
     FileTimeToSystemTime(&local, &st);
     GetLocalTime(&now);
     wchar_t tm[64] = L"", dt[128] = L"";
-    if (!GetTimeFormatEx(ui_locale(), TIME_NOSECONDS, &st, NULL, tm, 64)) swprintf(tm, 64, L"%02d:%02d", st.wHour, st.wMinute);
+    if (!GetTimeFormatEx(fmt_locale(), TIME_NOSECONDS, &st, NULL, tm, 64)) swprintf(tm, 64, L"%02d:%02d", st.wHour, st.wMinute);
     int64_t days = day_number(&now) - day_number(&st);
     if (days == 0) swprintf(out, cap, T(L"today at %ls"), tm);
     else if (days == 1) swprintf(out, cap, T(L"yesterday at %ls"), tm);
     else {
-        if (!GetDateFormatEx(ui_locale(), DATE_SHORTDATE, &st, NULL, dt, 128, NULL))
+        if (!GetDateFormatEx(fmt_locale(), DATE_SHORTDATE, &st, NULL, dt, 128, NULL))
             swprintf(dt, 128, L"%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
         swprintf(out, cap, T(L"%ls at %ls"), dt, tm);
     }

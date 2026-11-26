@@ -926,7 +926,7 @@ static class Shots {
         Thread.Sleep(500);
 
         MenuBar("", 0);
-        ButtonMenu("button-settings", "ID_BTN_SECURITY", true);
+        DialogStep("button-settings", "ID_BTN_SECURITY", true);
         ButtonMenu("button-drives", "ID_BTN_DRIVES", false);
         ButtonMenu("button-drives-first", "ID_BTN_DRIVES", false, "button-drives-a-drive-s-details");
         ButtonMenu("button-back-up", "ID_BTN_BACKUP", false);

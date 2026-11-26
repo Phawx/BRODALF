@@ -182,8 +182,9 @@ restore just that version or open its copy on the drive.
 
 **View > Appearance** is **Like Windows** (light or dark, as Windows' app
 mode is set), **Light** or **Dark**. Dark covers the title bar, menus, tabs,
-lists, the tree, text boxes, buttons, the status bar and BRODALF's own
-dialogs. Message boxes and Windows' own question dialogs stay light. With
+lists, the tree, text boxes, buttons, tick boxes and choices (drawn with a
+blue tick or dot, greyed flat when they can't be changed), the status bar
+and BRODALF's own dialogs. Message boxes and Windows' own question dialogs stay light. With
 high contrast on, BRODALF always uses the high-contrast colours.
 
 **View > Language** is **Like Windows** (its display language), English,
@@ -205,6 +206,17 @@ BRODALF and nothing of it runs.
 
 By default a running job lets other programs come first, so the PC stays
 usable (**Settings > Let other programs come first while a job runs**).
+
+**Settings** opens one window with every setting of the open database, in
+four parts: **Copies** (how many copies of every file, in how many places,
+and how many files that goal leaves short right now), **Checks** (when a
+plugged-in drive offers a check, and what **Check copies not checked
+lately** reads), **Backups** (one drive after another or several at once,
+letting other programs come first, the space kept free on each drive, what
+to leave out in every backup root) and **Passphrase**. OK applies what you
+changed; Cancel leaves everything as it was. Appearance and language are
+in the **View** menu. The goal line at the top of the window has a
+**Change...** link to the same window.
 
 ### Backing up
 
@@ -237,7 +249,7 @@ drive stay as they are.
 
 A backup never fills a drive to the last byte: it leaves room for the
 database's own copies (512 MB by default; **Settings > Space kept free on
-each drive**). Files that don't fit wait for another drive, and each drive
+each drive for the database's copies**). Files that don't fit wait for another drive, and each drive
 gets whatever it is missing, so a big folder spreads across as many drives
 as it needs. At the end of every backup, a copy of the database goes onto
 the drive as `catalog-r<revision>.brodalf`, next to the older ones.
@@ -248,12 +260,13 @@ the drive as `catalog-r<revision>.brodalf`, next to the older ones.
 
 With two or more drives plugged in, **Back up to every plugged-in drive**
 backs up to each of them, one after another, as it starts. Tick **Back up
-to several drives at once** (on the **Local backups** tab or under
-**Settings**) and BRODALF instead reads each file once and writes it to all
+to several drives at once** (on the **Local backups** tab) or pick
+**Settings > Several drives at once** and BRODALF instead reads each file once and writes it to all
 the drives at the same time. That is quicker, but the PC works harder
 while it runs: the USB ports, memory and processor are shared by every
 drive at once, so other programs may be slower, and the backup goes at the
-pace of the slowest drive. BRODALF says so before it turns the option on.
+pace of the slowest drive. BRODALF says so before it turns the option on,
+and Settings says so beside the choice.
 A drive that fails to write a file does not stop the others.
 
 ### Starred files and extra places
@@ -292,7 +305,8 @@ backed up again as new files.
 ### Full copies and files at risk
 
 You choose how many copies of every file you want, in how many places (by
-default **2 copies, in 2 places**). A place is what a drive's "where it is
+default **2 copies, in 2 places**), in **Settings** or the **Files at
+risk** window. A place is what a drive's "where it is
 kept" says (so "Box A" and "Office shelf" are two places), and drives with
 no place set count together as one. A copy counts when BRODALF last saw it
 good, whether or not the drive is plugged in right now.
@@ -315,7 +329,8 @@ this drive**. Setting it up asks for a name (the disk's own label to start
 with) and where it is kept, then makes BRODALF's own folder on it, touches
 nothing else on the disk and backs up to it. Whether the drive is encrypted
 is chosen then and cannot be changed later. **Settings > Ask again about
-the drives you said never to ask about** undoes **Never ask**.
+the drives you said never to ask about** (shown when there are any) undoes
+**Never ask**.
 
 Each time a drive is plugged in BRODALF reads what the disk says about
 itself and keeps the latest reading in the database: make, model, serial
@@ -369,7 +384,7 @@ and checksum. It offers two choices:
   last 30 days, and new ones, so a full check can be spread over time.
 
 When a plugged-in drive's oldest check is older than **Settings > A
-plugged-in drive offers a check after** (6 months by default), BRODALF
+plugged-in drive offers a check of its copies** (every 6 months by default), BRODALF
 offers a check. A copy never checked since it was written comes due a
 week after it was written. After a backup, **Check what was just
 written** reads just those copies; Windows may still hold some of them in

@@ -1082,6 +1082,19 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
                     FillRect(dc, &e, br);
                 }
             }
+            /* A list with no header is a form (label, value): no lines
+             * between its columns either, except on the selected row. */
+            if ((GetWindowLongW(h, GWL_STYLE) & LVS_NOCOLUMNHEADER) && cols > 1) {
+                for (int i = ListView_GetTopIndex(h); i <= last; i++) {
+                    if (ListView_GetItemState(h, i, LVIS_SELECTED) & LVIS_SELECTED) continue;
+                    for (int c = 1; c < cols; c++) {
+                        RECT sr;
+                        if (!ListView_GetSubItemRect(h, i, c, LVIR_BOUNDS, &sr)) continue;
+                        RECT e = {sr.left - S(3), sr.top, sr.left + S(3), sr.bottom};
+                        FillRect(dc, &e, br);
+                    }
+                }
+            }
             DeleteObject(br);
             ReleaseDC(h, dc);
         }
@@ -1167,6 +1180,132 @@ static LRESULT CALLBACK dark_button_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp,
     return DefSubclassProc(h, msg, wp, lp);
 }
 
+static COLORREF ui_link(void);
+
+/* Check boxes and radio buttons, painted in the dark: unthemed, Windows
+ * draws a white box, and its disabled text embossed. Here the box is a dark
+ * field with a blue tick or dot, and disabled text is a flat grey. */
+static void dark_check_paint(HWND h, HDC dc)
+{
+    RECT rc;
+    GetClientRect(h, &rc);
+    HWND parent = GetParent(h);
+    HBRUSH under = parent == g_main ? g_br_bg : (HBRUSH)SendMessageW(parent, WM_CTLCOLORBTN, (WPARAM)dc, (LPARAM)h);
+    FillRect(dc, &rc, under ? under : g_br_bg);
+    LONG style = GetWindowLongW(h, GWL_STYLE), kind = style & BS_TYPEMASK;
+    int radio = kind == BS_RADIOBUTTON || kind == BS_AUTORADIOBUTTON;
+    LRESULT st = SendMessageW(h, BM_GETSTATE, 0, 0);
+    int checked = (st & BST_CHECKED) != 0, on = IsWindowEnabled(h), hot = (st & (BST_HOT | BST_PUSHED)) != 0;
+    HFONT f = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    HGDIOBJ of = f ? SelectObject(dc, f) : NULL;
+    TEXTMETRICW tm;
+    GetTextMetricsW(dc, &tm);
+    wchar_t text[512];
+    GetWindowTextW(h, text, 512);
+    int box = S(14), gap = S(6);
+    UINT flags = DT_LEFT | ((style & BS_MULTILINE) ? DT_WORDBREAK : DT_SINGLELINE | DT_VCENTER);
+    if (SendMessageW(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL) flags |= DT_HIDEPREFIX;
+    RECT tr = {rc.left + box + gap, rc.top, rc.right, rc.bottom};
+    RECT calc = tr;
+    DrawTextW(dc, text, -1, &calc, flags | DT_CALCRECT);
+    int th = calc.bottom - calc.top;
+    if (style & BS_MULTILINE) {
+        tr.top = rc.top + ((rc.bottom - rc.top) - th) / 2;
+        tr.bottom = tr.top + th;
+    }
+    /* The box sits beside the first line. */
+    int line_top = (style & BS_MULTILINE) ? tr.top : rc.top + ((rc.bottom - rc.top) - tm.tmHeight) / 2;
+    int by = line_top + (tm.tmHeight - box) / 2;
+    RECT b = {rc.left + S(1), by, rc.left + S(1) + box, by + box};
+    COLORREF accent = ui_link();
+    COLORREF edge = !on ? RGB(70, 70, 70) : checked ? accent : hot ? RGB(200, 200, 200) : RGB(160, 160, 160);
+    COLORREF fill = !on ? RGB(38, 38, 38) : checked && !radio ? accent : hot ? RGB(45, 45, 45) : DARK_FIELD;
+    HBRUSH br = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, S(1) > 0 ? S(1) : 1, edge);
+    HGDIOBJ ob = SelectObject(dc, br), op = SelectObject(dc, pen);
+    if (radio) Ellipse(dc, b.left, b.top, b.right, b.bottom);
+    else RoundRect(dc, b.left, b.top, b.right, b.bottom, S(4), S(4));
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(br);
+    DeleteObject(pen);
+    if (checked && radio) {
+        int d = box / 2 - S(1);
+        HBRUSH dot = CreateSolidBrush(on ? accent : RGB(110, 110, 110));
+        HPEN np = (HPEN)GetStockObject(NULL_PEN);
+        ob = SelectObject(dc, dot);
+        op = SelectObject(dc, np);
+        int cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
+        Ellipse(dc, cx - d / 2, cy - d / 2, cx + d / 2 + 1, cy + d / 2 + 1);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(dot);
+    } else if (checked) {
+        HPEN tick = CreatePen(PS_SOLID, S(2) > 1 ? S(2) : 2, on ? RGB(20, 20, 20) : RGB(110, 110, 110));
+        op = SelectObject(dc, tick);
+        POINT pt[3] = {{b.left + box * 3 / 14, b.top + box * 7 / 14},
+                       {b.left + box * 6 / 14, b.top + box * 10 / 14},
+                       {b.left + box * 11 / 14, b.top + box * 4 / 14}};
+        Polyline(dc, pt, 3);
+        SelectObject(dc, op);
+        DeleteObject(tick);
+    }
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, on ? DARK_TEXT : RGB(110, 110, 110));
+    DrawTextW(dc, text, -1, &tr, flags);
+    if (GetFocus() == h && !(SendMessageW(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)) {
+        RECT fr = {tr.left - S(2), (style & BS_MULTILINE) ? tr.top : rc.top + ((rc.bottom - rc.top) - th) / 2,
+                   tr.left + (calc.right - calc.left) + S(2), 0};
+        fr.bottom = fr.top + th;
+        SetTextColor(dc, DARK_TEXT);
+        SetBkColor(dc, DARK_BG);
+        DrawFocusRect(dc, &fr);
+    }
+    if (of) SelectObject(dc, of);
+}
+
+static LRESULT CALLBACK dark_check_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (!g_dark || g_hc) return DefSubclassProc(h, msg, wp, lp);
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        dark_check_paint(h, dc);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_PRINTCLIENT:
+        dark_check_paint(h, (HDC)wp);
+        return 0;
+    case WM_MOUSEMOVE:
+    case WM_MOUSELEAVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE:
+    case WM_SETTEXT:
+    case WM_UPDATEUISTATE:
+    case WM_CAPTURECHANGED:
+    case BM_SETCHECK:
+    case BM_SETSTATE:
+    case BM_CLICK: {
+        /* The button paints itself as it handles these: paint over it. */
+        LRESULT r = DefSubclassProc(h, msg, wp, lp);
+        if (IsWindow(h)) RedrawWindow(h, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+        return r;
+    }
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
 static void theme_control(HWND h)
 {
     wchar_t cls[64];
@@ -1181,7 +1320,12 @@ static void theme_control(HWND h)
         }
         /* A themed check box or group box draws its text black whatever
          * colour it is given: unthemed it takes the colour. */
-        else SetWindowTheme(h, g_dark ? L"" : NULL, g_dark ? L"" : NULL);
+        else {
+            SetWindowTheme(h, g_dark ? L"" : NULL, g_dark ? L"" : NULL);
+            if (kind == BS_CHECKBOX || kind == BS_AUTOCHECKBOX || kind == BS_3STATE || kind == BS_AUTO3STATE ||
+                kind == BS_RADIOBUTTON || kind == BS_AUTORADIOBUTTON)
+                SetWindowSubclass(h, dark_check_proc, 4, 0);
+        }
     } else if (_wcsicmp(cls, WC_EDITW) == 0) {
         SetWindowTheme(h, g_dark ? (style & ES_MULTILINE ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
         if (style & ES_MULTILINE) {
@@ -1205,7 +1349,7 @@ static void theme_control(HWND h)
         ListView_SetBkColor(h, bg);
         ListView_SetTextBkColor(h, bg);
         ListView_SetTextColor(h, g_dark ? DARK_TEXT : GetSysColor(COLOR_WINDOWTEXT));
-    } else if (_wcsicmp(cls, WC_SCROLLBARW) == 0 || _wcsicmp(cls, WC_LISTBOXW) == 0) {
+    } else if (_wcsicmp(cls, WC_SCROLLBARW) == 0 || _wcsicmp(cls, WC_LISTBOXW) == 0 || _wcsicmp(cls, UPDOWN_CLASSW) == 0) {
         SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
     } else if (_wcsicmp(cls, WC_TABCONTROLW) == 0) {
         SetWindowSubclass(h, dark_tab_proc, 1, 0);
@@ -7347,62 +7491,6 @@ static void cmd_skip(int64_t source_id, const wchar_t *root_name)
 
 static void settings_command(int cmd);
 
-static void cmd_security(void)
-{
-    int has = bd_catalog_has_passphrase(g_cat), unlocked = bd_catalog_is_unlocked(g_cat);
-    HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, ID_MENU_SET_PASS, has ? T(L"Change the passphrase...") : T(L"Set a passphrase..."));
-    AppendMenuW(m, MF_STRING | (has ? 0 : MF_GRAYED) | (bd_catalog_file_encrypted(g_cat) ? MF_CHECKED : 0),
-                ID_MENU_ENCRYPT_CATALOG, T(L"Encrypt the database file"));
-    AppendMenuW(m, MF_STRING | (has && unlocked ? 0 : MF_GRAYED), ID_MENU_LOCK, T(L"Forget the passphrase until it is needed"));
-    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    HMENU remind = CreatePopupMenu();
-    int days = bd_option_get(g_cat, "check_days");
-    AppendMenuW(remind, MF_STRING | (days == 90 ? MF_CHECKED : 0), ID_MENU_CHECK_90, T(L"Every 3 months"));
-    AppendMenuW(remind, MF_STRING | (days == 180 ? MF_CHECKED : 0), ID_MENU_CHECK_180, T(L"Every 6 months"));
-    AppendMenuW(remind, MF_STRING | (days == 365 ? MF_CHECKED : 0), ID_MENU_CHECK_365, T(L"Every year"));
-    AppendMenuW(remind, MF_STRING | (days == 0 ? MF_CHECKED : 0), ID_MENU_CHECK_NEVER, T(L"Never"));
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)remind, T(L"A plugged-in drive offers a check after"));
-    HMENU verify = CreatePopupMenu();
-    int vd = bd_option_get(g_cat, "verify_days");
-    AppendMenuW(verify, MF_STRING | (vd == 7 ? MF_CHECKED : 0), ID_M_VERIFY_7, T(L"Copies not checked in a week"));
-    AppendMenuW(verify, MF_STRING | (vd == 30 ? MF_CHECKED : 0), ID_M_VERIFY_30, T(L"Copies not checked in a month"));
-    AppendMenuW(verify, MF_STRING | (vd == 90 ? MF_CHECKED : 0), ID_M_VERIFY_90, T(L"Copies not checked in 3 months"));
-    AppendMenuW(verify, MF_STRING | (vd == 0 ? MF_CHECKED : 0), ID_M_VERIFY_NEVER, T(L"Every copy"));
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)verify, T(L"Check copies not checked lately: which copies"));
-    HMENU reserve = CreatePopupMenu();
-    int rmb = bd_option_get(g_cat, "reserve_mb");
-    AppendMenuW(reserve, MF_STRING | (rmb == 256 ? MF_CHECKED : 0), ID_MENU_RESERVE_256, T(L"256 MB"));
-    AppendMenuW(reserve, MF_STRING | (rmb == 512 ? MF_CHECKED : 0), ID_MENU_RESERVE_512, T(L"512 MB"));
-    AppendMenuW(reserve, MF_STRING | (rmb == 1024 ? MF_CHECKED : 0), ID_MENU_RESERVE_1024, T(L"1 GB"));
-    AppendMenuW(reserve, MF_STRING | (rmb == 2048 ? MF_CHECKED : 0), ID_MENU_RESERVE_2048, T(L"2 GB"));
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)reserve, T(L"Space kept free on each drive for the database's copies"));
-    AppendMenuW(m, MF_STRING | (bd_option_get(g_cat, "low_priority") ? MF_CHECKED : 0), ID_MENU_LOW_PRIORITY,
-                T(L"Let other programs come first while a job runs"));
-    AppendMenuW(m, MF_STRING | (bd_option_get(g_cat, "parallel_copies") > 0 ? MF_CHECKED : 0), ID_MENU_PARALLEL,
-                T(L"Back up to several drives at once"));
-    AppendMenuW(m, MF_STRING, ID_MENU_SKIP, T(L"What to leave out in every backup root..."));
-    {
-        DWORD n_ignored = 0;
-        HKEY k;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, IGNORED_KEY, 0, KEY_READ, &k) == ERROR_SUCCESS) {
-            RegQueryInfoKeyW(k, NULL, NULL, NULL, NULL, NULL, NULL, &n_ignored, NULL, NULL, NULL, NULL);
-            RegCloseKey(k);
-        }
-        if (n_ignored) {
-            wchar_t text[200];
-            swprintf(text, 200, TN((int)n_ignored, L"Ask again about the %d drive you said never to ask about", L"Ask again about the %d drives you said never to ask about"),
-                     (int)n_ignored);
-            AppendMenuW(m, MF_STRING, ID_MENU_UNIGNORE, text);
-        }
-    }
-    RECT r;
-    GetWindowRect(g_buttons[6], &r);
-    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
-    DestroyMenu(m);
-    settings_command(cmd);
-}
-
 static void settings_command(int cmd)
 {
     if (cmd == ID_MENU_SET_PASS) {
@@ -7476,6 +7564,276 @@ static void settings_command(int cmd)
             log_append(on ? T(L"Backups to every plugged-in drive now write to all of them at once.")
                           : T(L"Backups to every plugged-in drive now go one drive after another."));
     }
+}
+
+/* ---- Settings ------------------------------------------------------------- */
+
+/* One window for every setting of the open database: the goal, how backups
+ * run, when drives offer a check, the passphrase. Appearance and Language
+ * stay in View. OK applies what changed, with one save. */
+static const int g_set_check_days[] = {90, 180, 365, 0};
+static const int g_set_verify_days[] = {7, 30, 90, 0};
+static const int g_set_reserve_mb[] = {256, 512, 1024, 2048};
+static int g_set_preview_tone; /* TONE_SAFE or TONE_WARN, for the line under the goal */
+
+/* Pick the item for value. A value set some other way gets an item of its
+ * own, which leaves it as it is. */
+static void set_combo_pick(HWND combo, const int *values, int n, int value, const wchar_t *other)
+{
+    for (int i = 0; i < n; i++)
+        if (values[i] == value) {
+            SendMessageW(combo, CB_SETCURSEL, (WPARAM)i, 0);
+            return;
+        }
+    wchar_t text[120];
+    swprintf(text, 120, other, value);
+    SendMessageW(combo, CB_SETCURSEL, (WPARAM)SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)text), 0);
+}
+
+/* The value picked, or -1 for the item that leaves it as it is. */
+static int set_combo_value(HWND dlg, int id, const int *values, int n)
+{
+    int i = (int)SendDlgItemMessageW(dlg, id, CB_GETCURSEL, 0, 0);
+    return i >= 0 && i < n ? values[i] : -1;
+}
+
+/* The passphrase part, as it is now. */
+static void settings_pass_state(HWND dlg)
+{
+    int has = bd_catalog_has_passphrase(g_cat), unlocked = bd_catalog_is_unlocked(g_cat);
+    SetDlgItemTextW(dlg, IDC_SET_PASS_STATE,
+                    !has      ? T(L"This database has no passphrase, so nothing is encrypted.")
+                    : unlocked ? T(L"This database has a passphrase, and BRODALF has it now.")
+                               : T(L"This database has a passphrase. BRODALF asks for it when it needs it."));
+    SetDlgItemTextW(dlg, IDC_SET_PASS, has ? T(L"Change the passphrase...") : T(L"Set a passphrase..."));
+    EnableWindow(GetDlgItem(dlg, IDC_SET_LOCK), has && unlocked);
+    EnableWindow(GetDlgItem(dlg, IDC_SET_ENC_CAT), has);
+    CheckDlgButton(dlg, IDC_SET_ENC_CAT, bd_catalog_file_encrypted(g_cat) ? BST_CHECKED : BST_UNCHECKED);
+}
+
+/* How many files the goal in the boxes leaves short, counted now. The
+ * engine counts against the saved goal, so it is set for the count and put
+ * back. Not while a job runs, which may be reading it. */
+static void settings_preview(HWND dlg)
+{
+    BOOL ok1 = FALSE, ok2 = FALSE;
+    int c = (int)GetDlgItemInt(dlg, IDC_SET_COPIES, &ok1, FALSE), pl = (int)GetDlgItemInt(dlg, IDC_SET_PLACES, &ok2, FALSE);
+    wchar_t text[300] = L"";
+    g_set_preview_tone = TONE_NEUTRAL;
+    if (!ok1 || !ok2 || c < 1 || c > 16 || pl < 1) {
+        wcscpy(text, T(L"Copies go from 1 to 16."));
+    } else if (pl > c) {
+        wcscpy(text, T(L"There cannot be more places than copies."));
+        g_set_preview_tone = TONE_WARN;
+    } else if (g_busy) {
+        SetTimer(dlg, 1, 500, NULL); /* count it once the job is done */
+    } else {
+        bd_target was, t = {c, pl};
+        bd_target_get(g_cat, &was);
+        bd_risk_stats st;
+        memset(&st, 0, sizeof(st));
+        int counted = bd_target_set(g_cat, &t) == BD_OK && bd_list_at_risk(g_cat, 0, NULL, NULL, &st) == BD_OK;
+        bd_target_set(g_cat, &was);
+        if (counted && st.files_at_risk > 0) {
+            swprintf(text, 300, TN((int)(st.files_at_risk > 1000000 ? 1000000 : st.files_at_risk),
+                                   L"With this goal, %lld file is short of copies now.", L"With this goal, %lld files are short of copies now."),
+                     (long long)st.files_at_risk);
+            g_set_preview_tone = TONE_WARN;
+        } else if (counted) {
+            wcscpy(text, T(L"With this goal, every file has enough copies now."));
+            g_set_preview_tone = TONE_SAFE;
+        }
+    }
+    SetDlgItemTextW(dlg, IDC_SET_PREVIEW, text);
+    InvalidateRect(GetDlgItem(dlg, IDC_SET_PREVIEW), NULL, TRUE);
+}
+
+/* OK: put in what changed, then save once. 0 when something could not be. */
+static int settings_apply(HWND dlg)
+{
+    int changed = 0;
+    BOOL ok1 = FALSE, ok2 = FALSE;
+    bd_target was, t;
+    bd_target_get(g_cat, &was);
+    t.copies = (int)GetDlgItemInt(dlg, IDC_SET_COPIES, &ok1, FALSE);
+    t.places = (int)GetDlgItemInt(dlg, IDC_SET_PLACES, &ok2, FALSE);
+    if (!ok1 || !ok2 || t.copies < 1 || t.copies > 16 || t.places < 1 || t.places > t.copies) {
+        MessageBoxW(dlg, T(L"Keep 1 to 16 copies of every file, in no more places than copies."), APP_NAME, MB_ICONINFORMATION);
+        SetFocus(GetDlgItem(dlg, ok1 && t.copies >= 1 && t.copies <= 16 ? IDC_SET_PLACES : IDC_SET_COPIES));
+        return 0;
+    }
+    if (t.copies != was.copies || t.places != was.places) {
+        bd_status s = bd_target_set(g_cat, &t);
+        if (s != BD_OK) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(dlg, e && e[0] ? e : T(L"Could not change the target."), APP_NAME, MB_ICONWARNING);
+            free(e);
+            return 0;
+        }
+        wchar_t line[300];
+        if (t.places > 1) swprintf(line, 300, T(L"The goal is now %d copies of every file, in %d different places."), t.copies, t.places);
+        else swprintf(line, 300, TN(t.copies, L"The goal is now %d copy of every file.", L"The goal is now %d copies of every file."), t.copies);
+        log_append(line);
+        changed = 1;
+    }
+    int par = IsDlgButtonChecked(dlg, IDC_SET_PARALLEL) == BST_CHECKED;
+    if (par != (bd_option_get(g_cat, "parallel_copies") > 0) && bd_option_set(g_cat, "parallel_copies", par) == BD_OK) {
+        log_append(par ? T(L"Backups to every plugged-in drive now write to all of them at once.")
+                       : T(L"Backups to every plugged-in drive now go one drive after another."));
+        changed = 1;
+    }
+    int low = IsDlgButtonChecked(dlg, IDC_SET_LOWPRI) == BST_CHECKED;
+    if (low != (bd_option_get(g_cat, "low_priority") != 0) && bd_option_set(g_cat, "low_priority", low) == BD_OK) {
+        log_append(low ? T(L"Jobs now let other programs come first: they may take longer while the PC is busy.")
+                       : T(L"Jobs now run at normal speed, even while other programs are busy."));
+        changed = 1;
+    }
+    int mb = set_combo_value(dlg, IDC_SET_RESERVE, g_set_reserve_mb, 4);
+    if (mb >= 0 && mb != bd_option_get(g_cat, "reserve_mb") && bd_option_set(g_cat, "reserve_mb", mb) == BD_OK) {
+        wchar_t line[200];
+        swprintf(line, 200, T(L"Backups now keep %d MB free on each drive for the database's copies."), mb);
+        log_append(line);
+        changed = 1;
+    }
+    int d = set_combo_value(dlg, IDC_SET_CHECK_DAYS, g_set_check_days, 4);
+    if (d >= 0 && d != bd_option_get(g_cat, "check_days") && bd_option_set(g_cat, "check_days", d) == BD_OK) {
+        wchar_t line[200];
+        if (d) swprintf(line, 200, T(L"A plugged-in drive whose copies have not been checked in %d days offers a check."), d);
+        else wcscpy(line, T(L"Drives never offer a check by themselves."));
+        log_append(line);
+        changed = 1;
+    }
+    int vd = set_combo_value(dlg, IDC_SET_VERIFY, g_set_verify_days, 4);
+    if (vd >= 0 && vd != bd_option_get(g_cat, "verify_days") && bd_option_set(g_cat, "verify_days", vd) == BD_OK) {
+        wchar_t line[200];
+        if (vd) swprintf(line, 200, T(L"Check copies not checked lately now reads the copies not checked in %d days, and new ones."), vd);
+        else wcscpy(line, T(L"Check copies not checked lately now reads every copy on the drive."));
+        log_append(line);
+        changed = 1;
+    }
+    if (changed) {
+        bd_status s = ui_save();
+        if (s != BD_OK) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            report_status(dlg, s, 0, e && e[0] ? e : T(L"Could not save the settings."));
+            free(e);
+            return 0;
+        }
+    }
+    /* The database file's encryption asks for the passphrase and saves by itself. */
+    int enc = IsDlgButtonChecked(dlg, IDC_SET_ENC_CAT) == BST_CHECKED;
+    if (IsWindowEnabled(GetDlgItem(dlg, IDC_SET_ENC_CAT)) && enc != (bd_catalog_file_encrypted(g_cat) != 0))
+        settings_command(ID_MENU_ENCRYPT_CATALOG);
+    return 1;
+}
+
+static INT_PTR CALLBACK settings_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_CTLCOLORSTATIC && !g_hc && g_set_preview_tone != TONE_NEUTRAL && GetDlgCtrlID((HWND)lp) == IDC_SET_PREVIEW) {
+        LRESULT r;
+        HDC dc = (HDC)wp;
+        if (!theme_ctlcolor(msg, wp, lp, &r)) {
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+            r = (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        SetTextColor(dc, tone_text(g_set_preview_tone));
+        return (INT_PTR)r;
+    }
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
+    (void)lp;
+    switch (msg) {
+    case WM_INITDIALOG: {
+        static const int heads[] = {IDC_SET_HEAD_COPIES, IDC_SET_HEAD_CHECKS, IDC_SET_HEAD_BACKUP, IDC_SET_HEAD_PASS};
+        for (int i = 0; i < 4; i++) SendDlgItemMessageW(dlg, heads[i], WM_SETFONT, (WPARAM)g_font_semi, FALSE);
+        bd_target t;
+        bd_target_get(g_cat, &t);
+        SendDlgItemMessageW(dlg, IDC_SET_COPIES_UD, UDM_SETRANGE32, 1, 16);
+        SendDlgItemMessageW(dlg, IDC_SET_PLACES_UD, UDM_SETRANGE32, 1, 16);
+        SetDlgItemInt(dlg, IDC_SET_COPIES, (UINT)t.copies, FALSE);
+        SetDlgItemInt(dlg, IDC_SET_PLACES, (UINT)t.places, FALSE);
+        CheckRadioButton(dlg, IDC_SET_SERIAL, IDC_SET_PARALLEL,
+                         bd_option_get(g_cat, "parallel_copies") > 0 ? IDC_SET_PARALLEL : IDC_SET_SERIAL);
+        CheckDlgButton(dlg, IDC_SET_LOWPRI, bd_option_get(g_cat, "low_priority") ? BST_CHECKED : BST_UNCHECKED);
+        HWND c = GetDlgItem(dlg, IDC_SET_RESERVE);
+        static const wchar_t *reserve[] = {N_(L"256 MB"), N_(L"512 MB"), N_(L"1 GB"), N_(L"2 GB")};
+        for (int i = 0; i < 4; i++) SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)T(reserve[i]));
+        set_combo_pick(c, g_set_reserve_mb, 4, bd_option_get(g_cat, "reserve_mb"), L"%d MB");
+        c = GetDlgItem(dlg, IDC_SET_CHECK_DAYS);
+        static const wchar_t *check[] = {N_(L"Every 3 months"), N_(L"Every 6 months"), N_(L"Every year"), N_(L"Never")};
+        for (int i = 0; i < 4; i++) SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)T(check[i]));
+        set_combo_pick(c, g_set_check_days, 4, bd_option_get(g_cat, "check_days"), T(L"Every %d days"));
+        c = GetDlgItem(dlg, IDC_SET_VERIFY);
+        static const wchar_t *verify[] = {N_(L"Copies not checked in a week"), N_(L"Copies not checked in a month"),
+                                          N_(L"Copies not checked in 3 months"), N_(L"Every copy")};
+        for (int i = 0; i < 4; i++) SendMessageW(c, CB_ADDSTRING, 0, (LPARAM)T(verify[i]));
+        set_combo_pick(c, g_set_verify_days, 4, bd_option_get(g_cat, "verify_days"), T(L"Copies not checked in %d days"));
+        DWORD n_ignored = 0;
+        HKEY k;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, IGNORED_KEY, 0, KEY_READ, &k) == ERROR_SUCCESS) {
+            RegQueryInfoKeyW(k, NULL, NULL, NULL, NULL, NULL, NULL, &n_ignored, NULL, NULL, NULL, NULL);
+            RegCloseKey(k);
+        }
+        if (n_ignored) {
+            wchar_t text[200];
+            swprintf(text, 200, TN((int)n_ignored, L"Ask again about the %d drive you said never to ask about", L"Ask again about the %d drives you said never to ask about"),
+                     (int)n_ignored);
+            SetDlgItemTextW(dlg, IDC_SET_UNIGNORE, text);
+        } else ShowWindow(GetDlgItem(dlg, IDC_SET_UNIGNORE), SW_HIDE);
+        settings_pass_state(dlg);
+        settings_preview(dlg);
+        return TRUE;
+    }
+    case WM_TIMER:
+        if (wp == 1) {
+            KillTimer(dlg, 1);
+            settings_preview(dlg);
+        }
+        return TRUE;
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_SET_COPIES:
+        case IDC_SET_PLACES:
+            if (HIWORD(wp) == EN_CHANGE) SetTimer(dlg, 1, 300, NULL);
+            return TRUE;
+        case IDC_SET_SKIP:
+            cmd_skip(0, NULL);
+            return TRUE;
+        case IDC_SET_UNIGNORE:
+            settings_command(ID_MENU_UNIGNORE);
+            ShowWindow(GetDlgItem(dlg, IDC_SET_UNIGNORE), SW_HIDE);
+            return TRUE;
+        case IDC_SET_PASS:
+            set_passphrase_ui();
+            settings_pass_state(dlg);
+            return TRUE;
+        case IDC_SET_LOCK:
+            settings_command(ID_MENU_LOCK);
+            settings_pass_state(dlg);
+            return TRUE;
+        case IDOK:
+            if (!settings_apply(dlg)) return TRUE;
+            EndDialog(dlg, IDOK);
+            return TRUE;
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    case WM_DESTROY:
+        KillTimer(dlg, 1);
+        break;
+    }
+    return FALSE;
+}
+
+static void cmd_settings(void)
+{
+    if (!g_cat) return;
+    DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_SETTINGS), g_main, settings_proc);
+    update_drives_label();
+    if (IsWindow(CTL(ID_LOCAL_PARALLEL)))
+        SendMessageW(CTL(ID_LOCAL_PARALLEL), BM_SETCHECK, bd_option_get(g_cat, "parallel_copies") > 0 ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 /* ---- Recovery sheet ---------------------------------------------------- */
@@ -9282,7 +9640,7 @@ static void menu_command(int cmd)
     case ID_M_IN_USE: show_in_use(1, NULL); break;
     case ID_M_STATUS_ALL: cmd_table(TABLE_DRIVES); break;
     case ID_M_EXPORT: cmd_export(); break;
-    case ID_M_SETTINGS: cmd_security(); break;
+    case ID_M_SETTINGS: cmd_settings(); break;
     case ID_M_BACKUP: cmd_backup(); break;
     case ID_M_BACKUP_ALL: cmd_backup_all(1); break;
     case ID_M_CHECK: cmd_check(); break;
@@ -13338,7 +13696,7 @@ static LRESULT CALLBACK header_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (i == CARD_MORE) show_tab(TAB_LOCAL);
         else if (i >= 0) select_media_row(g_cards[i].id, g_cards[i].secondary);
         else if (!IsRectEmpty(&g_goal_link) && PtInRect(&g_goal_link, p) && g_cat && !g_busy && !g_ui_depth)
-            PostMessageW(g_main, WM_COMMAND, MAKEWPARAM(ID_BTN_RISK, BN_CLICKED), (LPARAM)g_buttons[7]);
+            PostMessageW(g_main, WM_COMMAND, MAKEWPARAM(ID_M_SETTINGS, 0), 0);
         return 0;
     }
     case WM_RBUTTONUP: {
@@ -15037,7 +15395,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_BACKUP: cmd_backup(); break;
         case ID_BTN_CHECK: cmd_check(); break;
         case ID_BTN_RESTORE: cmd_restore(); break;
-        case ID_BTN_SECURITY: cmd_security(); break;
+        case ID_BTN_SECURITY: cmd_settings(); break;
         case ID_BTN_READBACK: read_back_new(); break;
         case ID_BTN_NEXT: header_next(); break;
         case ID_BTN_JOB1: jp_action(0); break;

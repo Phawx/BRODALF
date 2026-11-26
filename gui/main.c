@@ -37,6 +37,8 @@
 #include "brodalf.h"
 #include "resource.h"
 
+#define COUNT_OF(a) ((int)(sizeof(a) / sizeof((a)[0])))
+
 #define APP_NAME L"BRODALF"
 #define REG_KEY L"Software\\BRODALF"
 
@@ -3162,7 +3164,7 @@ static int file_icon(const wchar_t *name)
 {
     const wchar_t *dot = wcsrchr(name, L'.');
     wchar_t ext[16] = L"";
-    if (dot && wcslen(dot) < COUNT_OF(ext)) {
+    if (dot && (int)wcslen(dot) < COUNT_OF(ext)) {
         for (int i = 0; dot[i]; i++) ext[i] = (wchar_t)towlower(dot[i]);
         ext[wcslen(dot)] = 0;
     }
@@ -8425,7 +8427,6 @@ static const int g_enc_btns[] = {ID_ENC_PASS, ID_ENC_LOCK, ID_ENC_KEY, ID_ENC_SH
 static const int g_enc_btns2[] = {ID_ENC_ADD, ID_ENC_PICK, ID_ENC_REMOVE, ID_ENC_SHOW};
 static const int g_rest_btns[] = {ID_REST_SEL, ID_REST_ALL, ID_REST_DELETED, ID_REST_CONTINUE};
 static const int g_rest_btns2[] = {ID_REST_OPEN, ID_REST_TABLE};
-#define COUNT_OF(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 /* What each row of a page's list is. */
 typedef struct { int64_t id; int connected, lost, secondary; } media_row;
@@ -12252,7 +12253,7 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
         const wchar_t *probe[] = {T(L"Changed since backup"), T(L"Not backed up"), T(L"Copy damaged"), T(L"May be damaged"),
                                   T(L"Cannot be found"), T(L"No longer backed up"), T(L"Drive not plugged in")};
         int w = S(120);
-        for (size_t i = 0; i < COUNT_OF(probe); i++) {
+        for (int i = 0; i < COUNT_OF(probe); i++) {
             int t = text_w(cd->nmcd.hdc, g_font, probe[i]) + S(12);
             if (t > w) w = t;
         }

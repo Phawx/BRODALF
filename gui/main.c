@@ -2208,64 +2208,230 @@ static void post_text(UINT msg, const wchar_t *text)
 /* A backup to several drives at once may report from more than one thread. */
 static SRWLOCK g_report_lock = SRWLOCK_INIT;
 
-/* The engine's log lines seen most, as full sentences in the language
- * shown, with Windows paths. A line not here keeps its words, with a
- * capital letter. */
-static const struct { const char *pre, *post; const wchar_t *say; } g_core_lines[] = {
-    {"scanning ", "", N_(L"Scanning %ls")},
-    {"contents changed but size and time did not (damage?): ", "", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
-    {"something else is already at ", "; left alone", N_(L"Left alone, because something else is already at %ls")},
-    {"backup root ", " is not reachable; skipped (nothing marked deleted)", N_(L"Backup root %ls cannot be reached, so it was skipped. Nothing in it was marked deleted.")},
-    {"missing on drive: ", "", N_(L"Missing on the drive: %ls")},
-    {"damaged on drive: ", "", N_(L"Damaged on the drive: %ls")},
-    {"in use by another program, skipped: ", "", N_(L"In use by another program, so it was skipped: %ls")},
-    {"moved or renamed, copies kept: ", "", N_(L"Moved or renamed; its copies are kept: %ls")},
-    {"skipped link: ", "", N_(L"Skipped a link: %ls")},
-    {"online-only, skipped: ", "", N_(L"Online only (not on this PC), so it was skipped: %ls")},
-    {"online-only (not on this PC), not copied: ", "", N_(L"Online only (not on this PC), so it was not copied: %ls")},
-    {"changed while copying, scan again: ", "", N_(L"Changed while it was being copied; scan again: %ls")},
-    {"source file missing, scan again: ", "", N_(L"Gone from its folder while backing up; scan again: %ls")},
-    {"an older copy is gone from the drive: ", "", N_(L"An older copy is gone from the drive: %ls")},
-    {"the copy is there again as it was, so it counts again: ", "", N_(L"The copy is there again as it was, so it counts again: %ls")},
-    {"backing up to ", " drives at once: each file is read once and written to all of them",
+/* The engine's log lines, as full sentences in the language shown, with
+ * Windows paths. Each is matched by a pattern in which %p is a path (its /
+ * become \), %s words kept as they are (a drive's name, a date, what SQLite
+ * said), %n a number, and %e what went wrong on a drive, itself put in the
+ * language shown when it is known. A pattern that comes before another it
+ * could be mistaken for (a longer line ending the same way) is the more
+ * particular. A line not here keeps its words, with a capital letter. */
+enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS };
+static const struct { const char *pat; const wchar_t *say; int plural; } g_core_lines[] = {
+    {"scanning %p", N_(L"Scanning %ls")},
+    {"contents changed but size and time did not (damage?): %p", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
+    {"something else is already at %p; left alone", N_(L"Left alone, because something else is already at %ls")},
+    {"backup root %p is not reachable; skipped (nothing marked deleted)", N_(L"Backup root %ls cannot be reached, so it was skipped. Nothing in it was marked deleted.")},
+    {"%n backup root(s) could not be found; nothing in them was marked deleted", NULL, CL_ROOTS_MISSING},
+    {"missing on drive: %p", N_(L"Missing on the drive: %ls")},
+    {"damaged on drive: %p", N_(L"Damaged on the drive: %ls")},
+    {"in use by another program, skipped: %p", N_(L"In use by another program, so it was skipped: %ls")},
+    {"moved or renamed, copies kept: %p", N_(L"Moved or renamed; its copies are kept: %ls")},
+    {"skipped link: %p", N_(L"Skipped a link: %ls")},
+    {"online-only, skipped: %p", N_(L"Online only (not on this PC), so it was skipped: %ls")},
+    {"online-only (not on this PC), not copied: %p", N_(L"Online only (not on this PC), so it was not copied: %ls")},
+    {"changed while copying, scan again: %p", N_(L"Changed while it was being copied; scan again: %ls")},
+    {"source file missing, scan again: %p", N_(L"Gone from its folder while backing up; scan again: %ls")},
+    {"an older copy is gone from the drive: %p", N_(L"An older copy is gone from the drive: %ls")},
+    {"the copy is there again as it was, so it counts again: %p", N_(L"The copy is there again as it was, so it counts again: %ls")},
+    {"the folder %p has the name of BRODALF's own folder on the drives; its new copies go to %p instead",
+     N_(L"The folder %ls has the name of BRODALF's own folder on the drives, so its new copies go to %ls instead.")},
+    {"cannot read %p; keeping what the catalog already knows", N_(L"Could not read %ls, so what the database knows about it is kept.")},
+    {"cannot read %p: %e", N_(L"Could not read %ls: %ls")},
+    {"cannot read %p", N_(L"Could not read %ls")},
+    {"cannot record the new version of %p: %s", N_(L"Could not record the new version of %ls: %ls")},
+    {"cannot look at %p: %e", N_(L"Could not look at %ls: %ls")},
+    {"a file BRODALF did not write is at %p; it is left alone", N_(L"A file BRODALF did not write is at %ls, so it is left alone.")},
+    {"cannot find a free name on the drive for %p: %e", N_(L"Could not find a free name on the drive for %ls: %ls")},
+    {"cannot copy %p to the drive: %e", N_(L"Could not copy %ls to the drive: %ls")},
+    {"cannot copy %p to the drive", N_(L"Could not copy %ls to the drive")},
+    {"cannot write the copy of %p to the drive", N_(L"Could not write the copy of %ls to the drive")},
+    {"a file appeared at %p while copying; left alone, back up again",
+     N_(L"A file appeared at %ls while it was being copied, so it was left alone. Back up again.")},
+    {"cannot finish writing %p: %e", N_(L"Could not finish writing %ls: %ls")},
+    {"copied %p but could not record it: %s", N_(L"Copied %ls, but could not record it: %ls")},
+    {"backing up to %n drives at once: each file is read once and written to all of them",
      N_(L"Backing up to %ls drives at once: each file is read once and written to all of them.")},
-    {"encrypted copies are skipped: enter the passphrase to check them too", NULL,
-     N_(L"Encrypted copies are skipped: enter the passphrase to check them too.")},
-    {"files changed since the scan are read again and backed up as they are now", NULL,
-     N_(L"Files changed since the scan are read again and backed up as they are now.")},
-    {"files that are online-only (in the cloud, not on this PC) are skipped, not downloaded", NULL,
+    {"not backed up: the path stored for \"%p\" could lead outside its folder", N_(L"Not backed up: the path stored for %ls could lead outside its folder.")},
+    {"\"%s\": " BD_WHY_FAT32 ". Such files wait for another drive",
+     N_(L"%ls is FAT32 and cannot hold files of 4 GB or more; reformat it as exFAT or NTFS. Such files wait for another drive.")},
+    {BD_WHY_FAT32 ". Such files wait for another drive",
+     N_(L"This drive is FAT32 and cannot hold files of 4 GB or more; reformat it as exFAT or NTFS. Such files wait for another drive.")},
+    {"\"%s\" is full; files that do not fit wait for another drive", N_(L"%ls is full. Files that do not fit wait for another drive.")},
+    {"\"%s\" has reached the size you set for it; starred files over it are not copied there",
+     N_(L"%ls has reached the size you set for it, so starred files over it are not copied there.")},
+    {"\"%s\" stopped answering or was unplugged: the backup stops", N_(L"%ls stopped answering or was unplugged, so the backup stops.")},
+    {"cannot record the copies found gone: %s", N_(L"Could not record the copies found gone: %ls")},
+    {"cannot record the copies found damaged or missing: %s", N_(L"Could not record the copies found damaged or missing: %ls")},
+    {"cannot record the copies: %s", N_(L"Could not record the copies: %ls")},
+    {"catalog saved; %n files copied so far", NULL, CL_SAVED_SO_FAR},
+    {"the catalog could not be saved during the backup (it is saved at the end): %s",
+     N_(L"The database could not be saved during the backup (it is saved at the end): %ls")},
+    {"the catalog could not be copied to the drive: %s", N_(L"The database could not be copied to the drive: %ls")},
+    {"the catalog could not be copied to \"%s\": %s", N_(L"The database could not be copied to %ls: %ls")},
+    {"the copy on \"%s\" is recorded at a path that could lead outside its folder, so it is not read: %p",
+     N_(L"The copy on %ls is recorded at a path that could lead outside its folder, so it is not read: %ls")},
+    {"restored %p from the copy on \"%s\"", N_(L"Restored %ls from the copy on %ls")},
+    {"the copy on \"%s\" is missing: %p; trying the next copy", N_(L"The copy on %ls is missing: %ls. Trying the next copy.")},
+    {"the copy on \"%s\" is missing: %p", N_(L"The copy on %ls is missing: %ls")},
+    {"the copy on \"%s\" is damaged: %p; trying the next copy", N_(L"The copy on %ls is damaged: %ls. Trying the next copy.")},
+    {"the copy on \"%s\" is damaged: %p", N_(L"The copy on %ls is damaged: %ls")},
+    {"cannot restore %p from the copy on \"%s\": %e; trying the next copy", N_(L"Could not restore %ls from the copy on %ls: %ls. Trying the next copy.")},
+    {"cannot restore %p from the copy on \"%s\"; trying the next copy", N_(L"Could not restore %ls from the copy on %ls. Trying the next copy.")},
+    {"cannot restore %p from the copy on \"%s\": %e", N_(L"Could not restore %ls from the copy on %ls: %ls")},
+    {"cannot restore %p from the copy on \"%s\"", N_(L"Could not restore %ls from the copy on %ls")},
+    {"out of memory: cannot restore %p", N_(L"Out of memory: could not restore %ls")},
+    {"no copy of %p could be read back right, so it was not restored", N_(L"No copy of %ls could be read back right, so it was not restored.")},
+    {"not restored: the path stored for \"%p\" could lead outside the folder you chose",
+     N_(L"Not restored: the path stored for %ls could lead outside the folder you chose.")},
+    {"%p: restored the version from before; the newer one has no good copy to restore from",
+     N_(L"%ls: restored an older version; the newer one has no good copy to restore from.")},
+    {"%p: restored the version from before; the newer one was never backed up", N_(L"%ls: restored an older version; the newer one was never backed up.")},
+    {"%p: restored the version from %s; the newer one has no good copy to restore from",
+     N_(L"%ls: restored the version from %ls; the newer one has no good copy to restore from.")},
+    {"%p: restored the version from %s; the newer one was never backed up", N_(L"%ls: restored the version from %ls; the newer one was never backed up.")},
+    {"%n file was left alone because something else was already there", NULL, CL_CONFLICTS},
+    {"%n files were left alone because something else was already there", NULL, CL_CONFLICTS},
+    {"cannot change the folder %p", N_(L"Could not change the folder %ls")},
+    {"cannot compress %p (another program may have it open)", N_(L"Could not compress %ls (another program may have it open).")},
+    {"cannot uncompress %p (another program may have it open)", N_(L"Could not uncompress %ls (another program may have it open).")},
+    {"compressed: %n files, %n changed, %n could not be", NULL, CL_COMPRESSED},
+    {"uncompressed: %n files, %n changed, %n could not be", NULL, CL_UNCOMPRESSED},
+    {"\"%s\" is on a different disk than last time (serial %s, was %s %s)", N_(L"%ls is on a different disk than last time (serial %ls; it was %ls %ls).")},
+    {"re-registered drive \"%s\"", N_(L"Registered the drive %ls again")},
+    {"cannot check %p: %e", N_(L"Could not check %ls: %ls")},
+    {"the backup root name \"%s\" is not a safe folder name: its files will not be restored",
+     N_(L"The backup root name %ls is not a safe folder name, so its files will not be restored.")},
+    {"the stored path \"%p\" could lead outside a restore folder: it will not be restored",
+     N_(L"The stored path %ls could lead outside a restore folder, so it will not be restored.")},
+    {"a copy on \"%s\" is recorded at \"%p\", which could lead outside its folder: it will not be read",
+     N_(L"A copy on %ls is recorded at %ls, which could lead outside its folder, so it will not be read.")},
+    {"and %n more paths like those", NULL, CL_MORE_PATHS},
+    {"encrypted copies are skipped: enter the passphrase to check them too", N_(L"Encrypted copies are skipped: enter the passphrase to check them too.")},
+    {"files changed since the scan are read again and backed up as they are now", N_(L"Files changed since the scan are read again and backed up as they are now.")},
+    {"files that are online-only (in the cloud, not on this PC) are skipped, not downloaded",
      N_(L"Files that are online only (in the cloud, not on this PC) are skipped, not downloaded.")},
-    {"the drive is full; files that do not fit wait for another drive", NULL, N_(L"The drive is full. Files that do not fit wait for another drive.")},
-    {"the drive stopped answering or was unplugged: the backup stops", NULL, N_(L"The drive stopped answering or was unplugged, so the backup stops.")},
-    {"the drive stopped answering or was unplugged: nothing on it was marked missing or damaged", NULL,
+    {"the drive is full; files that do not fit wait for another drive", N_(L"The drive is full. Files that do not fit wait for another drive.")},
+    {"the drive stopped answering or was unplugged: the backup stops", N_(L"The drive stopped answering or was unplugged, so the backup stops.")},
+    {"the drive stopped answering or was unplugged: nothing on it was marked missing or damaged",
      N_(L"The drive stopped answering or was unplugged. Nothing on it was marked missing or damaged.")},
 };
 
+/* What went wrong on a drive (the %e of a line). */
+static const struct { const char *pat; const wchar_t *say; } g_core_errs[] = {
+    {"cannot look at %p", N_(L"could not look at %ls")},
+    {"cannot create the folder for %p", N_(L"could not create the folder for %ls")},
+    {"cannot write %p", N_(L"could not write %ls")},
+    {"cannot move %p to %p", N_(L"could not move %ls to %ls")},
+};
+
+/* The lines that say how many, in the right form for the number. */
+static const wchar_t *core_plural(int which, long long n)
+{
+    switch (which) {
+    case CL_ROOTS_MISSING:
+        return TN(n, L"%ls backup root could not be found; nothing in it was marked deleted.",
+                  L"%ls backup roots could not be found; nothing in them was marked deleted.");
+    case CL_CONFLICTS:
+        return TN(n, L"%ls file was left alone, because something else was already there.",
+                  L"%ls files were left alone, because something else was already there.");
+    case CL_SAVED_SO_FAR: return TN(n, L"Database saved; %ls file copied so far.", L"Database saved; %ls files copied so far.");
+    case CL_COMPRESSED:
+        return TN(n, L"Compressed: %ls file, %ls changed, %ls could not be.", L"Compressed: %ls files, %ls changed, %ls could not be.");
+    case CL_UNCOMPRESSED:
+        return TN(n, L"Uncompressed: %ls file, %ls changed, %ls could not be.", L"Uncompressed: %ls files, %ls changed, %ls could not be.");
+    case CL_MORE_PATHS: return TN(n, L"And %ls more path like those.", L"And %ls more paths like those.");
+    }
+    return L"%ls";
+}
+
+#define CORE_CAPS 4
+typedef struct { const char *at; size_t len; char kind; } core_cap;
+
+/* Whether a line is the pattern; its pieces in caps. Returns how many, or -1. */
+static int core_match(const char *pat, const char *msg, core_cap *caps, int n)
+{
+    while (*pat) {
+        if (pat[0] == '%' && pat[1] && strchr("psne", pat[1])) {
+            if (n >= CORE_CAPS) return -1;
+            char kind = pat[1];
+            for (size_t len = 1; msg[len - 1]; len++) {
+                if (kind == 'n' && !(msg[len - 1] >= '0' && msg[len - 1] <= '9')) break;
+                caps[n].at = msg;
+                caps[n].len = len;
+                caps[n].kind = kind;
+                int got = core_match(pat + 2, msg + len, caps, n + 1);
+                if (got >= 0) return got;
+            }
+            return -1;
+        }
+        if (*pat != *msg) return -1;
+        pat++;
+        msg++;
+    }
+    return *msg ? -1 : n;
+}
+
+static wchar_t *core_err(const char *message);
+
+/* One piece of a line, as it is shown. */
+static wchar_t *core_piece(const core_cap *c)
+{
+    char *a = malloc(c->len + 1);
+    if (!a) return NULL;
+    memcpy(a, c->at, c->len);
+    a[c->len] = 0;
+    wchar_t *w = c->kind == 'e' ? core_err(a) : widen(a);
+    free(a);
+    if (w && c->kind == 'p')
+        for (wchar_t *ch = w; *ch; ch++)
+            if (*ch == L'/') *ch = L'\\';
+    return w;
+}
+
+/* A line put together from the words in the language shown and its pieces. */
+static wchar_t *core_say(const wchar_t *say, const core_cap *caps, int n)
+{
+    wchar_t *piece[CORE_CAPS] = {NULL};
+    size_t cap = wcslen(say) + 8;
+    for (int i = 0; i < n; i++) {
+        piece[i] = core_piece(&caps[i]);
+        cap += piece[i] ? wcslen(piece[i]) : 0;
+    }
+    wchar_t *out = malloc(cap * sizeof(wchar_t));
+    if (out)
+        swprintf(out, cap, say, piece[0] ? piece[0] : L"", piece[1] ? piece[1] : L"", piece[2] ? piece[2] : L"",
+                 piece[3] ? piece[3] : L"");
+    for (int i = 0; i < n; i++) free(piece[i]);
+    return out;
+}
+
+static wchar_t *core_err(const char *message)
+{
+    core_cap caps[CORE_CAPS];
+    for (size_t i = 0; i < sizeof(g_core_errs) / sizeof(g_core_errs[0]); i++) {
+        int n = core_match(g_core_errs[i].pat, message, caps, 0);
+        if (n >= 0) return core_say(T(g_core_errs[i].say), caps, n);
+    }
+    return widen(message);
+}
+
 static wchar_t *core_line(const char *message)
 {
-    size_t ml = strlen(message);
+    core_cap caps[CORE_CAPS];
     for (size_t i = 0; i < sizeof(g_core_lines) / sizeof(g_core_lines[0]); i++) {
-        const char *pre = g_core_lines[i].pre, *post = g_core_lines[i].post;
-        size_t pl = strlen(pre);
-        if (!post) {
-            if (strcmp(message, pre) == 0) return _wcsdup(T(g_core_lines[i].say));
-            continue;
+        int n = core_match(g_core_lines[i].pat, message, caps, 0);
+        if (n < 0) continue;
+        const wchar_t *say = g_core_lines[i].say ? T(g_core_lines[i].say) : NULL;
+        if (!say) {
+            long long count = 0;
+            for (int k = 0; k < n; k++)
+                if (caps[k].kind == 'n') {
+                    count = strtoll(caps[k].at, NULL, 10);
+                    break;
+                }
+            say = core_plural(g_core_lines[i].plural, count);
         }
-        size_t ql = strlen(post);
-        if (ml < pl + ql || strncmp(message, pre, pl) != 0 || strcmp(message + ml - ql, post) != 0) continue;
-        char *arg = malloc(ml - pl - ql + 1);
-        if (!arg) break;
-        memcpy(arg, message + pl, ml - pl - ql);
-        arg[ml - pl - ql] = 0;
-        wchar_t *wa = widen(arg);
-        free(arg);
-        if (!wa) break;
-        for (wchar_t *c = wa; *c; c++) if (*c == L'/') *c = L'\\';
-        size_t cap = wcslen(wa) + wcslen(T(g_core_lines[i].say)) + 8;
-        wchar_t *out = malloc(cap * sizeof(wchar_t));
-        if (out) swprintf(out, cap, T(g_core_lines[i].say), wa);
-        free(wa);
-        return out;
+        return core_say(say, caps, n);
     }
     wchar_t *w = widen(message);
     if (w && w[0] >= L'a' && w[0] <= L'z') w[0] = (wchar_t)(w[0] - L'a' + L'A');
@@ -3988,6 +4154,7 @@ static wchar_t g_files_empty[300]; /* what the list says when it has no rows */
 
 static const wchar_t *list_chip(const node_ref *r, wchar_t *buf, size_t cap, int *tone);
 static wchar_t *where_text(int64_t source_id, const char *rel);
+static void format_ns(int64_t ns, wchar_t *out, size_t n);
 
 /* Windows' own name for a kind of file, as Explorer's Type column says it
  * (in Windows' language): from the extension only, kept by extension. */

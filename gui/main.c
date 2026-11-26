@@ -4571,6 +4571,26 @@ static void detail_say(const wchar_t *text)
     InvalidateRect(g_detail, NULL, TRUE);
 }
 
+/* The details pane's words when it shows nothing, drawn here and wrapped
+ * to its width (a list's own empty text is one short line). */
+static LRESULT CALLBACK detail_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (msg == WM_PAINT && g_detail_empty[0] && ListView_GetItemCount(h) == 0) {
+        LRESULT res = DefSubclassProc(h, msg, wp, lp);
+        RECT rc;
+        GetClientRect(h, &rc);
+        InflateRect(&rc, -S(12), -S(10));
+        HDC dc = GetDC(h);
+        draw_str(dc, (HFONT)SendMessageW(h, WM_GETFONT, 0, 0), theme_gray(), g_detail_empty, rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        ReleaseDC(h, dc);
+        return res;
+    }
+    if (msg == WM_SIZE && g_detail_empty[0]) InvalidateRect(h, NULL, TRUE);
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
 /* Where a drive is, for the details pane: plugged in, last seen, lost. */
 static void detail_where(const drive_snap *d, wchar_t *out, size_t cap)
 {
@@ -4597,8 +4617,12 @@ static void show_detail(void)
     if (!g_cat) { detail_say(L""); return; }
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
     if (!r) {
-        detail_say(T(L"Select a file or folder to see its versions and which drives hold them. Help > What the file list shows "
-                     L"draws what each name and state means."));
+        if (TreeView_GetCount(g_tree) == 0)
+            detail_say(T(L"Nothing to show yet. Add backup root... picks a folder to back up; every file in it is then listed on "
+                         L"the left, and this side shows which drives hold its copies."));
+        else
+            detail_say(T(L"Select a file or folder to see its versions and which drives hold them. Help > What the file list shows "
+                         L"draws what each name and state means."));
         return;
     }
     g_detail_empty[0] = 0;
@@ -15070,6 +15094,7 @@ static void create_children(HWND hwnd)
                                g_page[TAB_DB], (HMENU)ID_DETAIL, g_inst, NULL);
     SendMessageW(g_detail, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_detail, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    SetWindowSubclass(g_detail, detail_proc, 5, 0);
     {
         LVCOLUMNW c;
         memset(&c, 0, sizeof(c));
@@ -15593,13 +15618,6 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return enc_state_draw((NMLVCUSTOMDRAW *)lp);
         if (nh->idFrom == ID_DETAIL && nh->hwndFrom == g_detail) {
             if (nh->code == NM_CUSTOMDRAW) return kv_draw((NMLVCUSTOMDRAW *)lp);
-            if (nh->code == LVN_GETEMPTYMARKUP && g_detail_empty[0]) {
-                NMLVEMPTYMARKUP *em = (NMLVEMPTYMARKUP *)lp;
-                em->dwFlags = 0;
-                wcsncpy(em->szMarkup, g_detail_empty, L_MAX_URL_LENGTH - 1);
-                em->szMarkup[L_MAX_URL_LENGTH - 1] = 0;
-                return TRUE;
-            }
             if (nh->code == LVN_KEYDOWN && ((NMLVKEYDOWN *)lp)->wVKey == 'C' && (GetKeyState(VK_CONTROL) & 0x8000)) {
                 detail_copy(ListView_GetNextItem(g_detail, -1, LVNI_SELECTED));
                 return 0;

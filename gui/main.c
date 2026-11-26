@@ -4203,6 +4203,34 @@ static void version_note(const node_ref *r, wchar_t *out, size_t cap)
              best, m, a, cur, b);
 }
 
+/* The full name of what is selected: its backup root, then its path, the
+ * way Windows writes paths. */
+static void node_full_name(HTREEITEM h, const node_ref *r, wchar_t *out, size_t cap)
+{
+    HTREEITEM root = h, up;
+    while (root && (up = TreeView_GetParent(g_tree, root)) != NULL) root = up;
+    wchar_t name[300] = L"";
+    TVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = TVIF_TEXT;
+    it.hItem = root;
+    it.pszText = name;
+    it.cchTextMax = 300;
+    if (root) SendMessageW(g_tree, TVM_GETITEMW, 0, (LPARAM)&it);
+    wchar_t *rel = widen(r->rel ? r->rel : "");
+    if (rel && *rel) swprintf(out, cap, L"%ls\\%ls", name, rel);
+    else swprintf(out, cap, L"%ls", name);
+    free(rel);
+    for (wchar_t *c = out; *c; c++)
+        if (*c == L'/') *c = L'\\';
+}
+
+/* The versions list's columns as wide as what they hold. */
+static void versions_fit_cols(void)
+{
+    for (int c = 0; c < 6; c++) ListView_SetColumnWidth(g_list, c, LVSCW_AUTOSIZE_USEHEADER);
+}
+
 static void show_detail(void)
 {
     SendMessageW(g_list, LVM_DELETEALLITEMS, 0, 0);
@@ -4211,14 +4239,14 @@ static void show_detail(void)
     node_ref *r = item_ref(TreeView_GetSelection(g_tree));
     if (!r) {
         wchar_t text[2400];
-        swprintf(text, 2400, L"%ls\r\n\r\n%ls", T(L"Select a file to see what it is, its versions, and which drives hold it."), tree_legend());
+        swprintf(text, 2400, L"%ls\r\n\r\n%ls", T(L"Select a file or folder to see its versions and which drives hold them."), tree_legend());
         SetWindowTextW(g_detail, text);
         return;
     }
-    wchar_t *rel = widen(r->rel && *r->rel ? r->rel : "(whole folder)");
+    wchar_t full[1400];
+    node_full_name(TreeView_GetSelection(g_tree), r, full, 1400);
     wtext t = {NULL, 0, 0};
-    wadd(&t, L"%ls\r\n%ls\r\n", rel, state_words(r->state));
-    free(rel);
+    wadd(&t, L"%ls\r\n%ls\r\n", full, state_words(r->state));
     {
         const char *mr = r->rel ? r->rel : "";
         int st = bd_starred(g_cat, r->source_id, mr), en = bd_encrypt_marked(g_cat, r->source_id, mr);
@@ -4246,7 +4274,7 @@ static void show_detail(void)
             format_ns(c->mtime_ns, mod, 64);
             format_time_ms(c->first_seen_ms, seen, 64);
             wchar_t *hash = widen(cl.items[i].hash);
-            wadd(&t, T(L"\r\nFile\r\n    Size %ls, modified %ls\r\n    Version %d of %d, first seen %ls\r\n    BLAKE3 %ls\r\n"),
+            wadd(&t, T(L"\r\nFile\r\n    Size %ls, modified %ls\r\n    Version %d of %d, first seen %ls\r\n    Checksum (BLAKE3) %ls\r\n"),
                  size, mod, current, versions, seen, hash);
             free(hash);
             break;
@@ -4297,6 +4325,7 @@ static void show_detail(void)
         wadd(&t, T(L"\r\nRight-click a version below to restore it or to open it on its drive.\r\n"));
         free(cl.items);
         free(dl.items);
+        versions_fit_cols();
     }
     SetWindowTextW(g_detail, t.p ? t.p : L"");
     free(t.p);
@@ -9124,9 +9153,13 @@ static void layout_pages(void)
     mv(g_search, pad, y, tree_w, search_h);
     mv(g_tree, pad, y + below, tree_w, body - below);
     mv(g_results, pad, y + below, tree_w, body - below);
-    int rx = pad * 2 + tree_w, rw = w - rx - pad, detail_h = body * 58 / 100;
+    int rx = pad * 2 + tree_w, rw = w - rx - pad;
+    int list_h = (font_h(g_font) + S(8)) * 6; /* a header and five versions */
+    if (list_h < body * 42 / 100) list_h = body * 42 / 100;
+    if (list_h > body * 62 / 100) list_h = body * 62 / 100;
+    int detail_h = body - list_h - gap;
     mv(g_detail, rx, y, rw, detail_h);
-    mv(g_list, rx, y + detail_h + gap, rw, body - detail_h - gap);
+    mv(g_list, rx, y + detail_h + gap, rw, list_h);
 
     /* Next backup */
     int lw = button_width(CTL(ID_NEXT_FOR_LABEL)) - S(18);

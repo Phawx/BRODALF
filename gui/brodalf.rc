@@ -157,8 +157,8 @@ BEGIN
 END
 
 1 VERSIONINFO
-FILEVERSION 0,10,0,0
-PRODUCTVERSION 0,10,0,0
+FILEVERSION 0,10,1,0
+PRODUCTVERSION 0,10,1,0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -168,8 +168,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "BRODALF backup tracker"
             VALUE "ProductName", "BRODALF"
-            VALUE "FileVersion", "0.10.0"
-            VALUE "ProductVersion", "0.10.0"
+            VALUE "FileVersion", "0.10.1"
+            VALUE "ProductVersion", "0.10.1"
         END
     END
     BLOCK "VarFileInfo"

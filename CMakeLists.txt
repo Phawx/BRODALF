@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf VERSION 0.10.0 LANGUAGES C)
+project(brodalf VERSION 0.10.1 LANGUAGES C)
 
 # Link the C runtime statically so brodalf.exe runs on a PC without the
 # Visual C++ redistributable.

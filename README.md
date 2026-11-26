@@ -19,11 +19,12 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.10.0** (2026-11-25) fixes what two independent reviews of
-0.9.0 found: a drive that drops out is no longer taken for a drive of
-missing copies, restores try every good copy and fall back to the newest
-backed-up version, the window can be used from the keyboard, no longer
-freezes on large databases and says plainly when a job had problems; see
+Version **0.10.1** (2026-11-26) fixes twelve window problems that
+screenshots of 0.10.0 showed: a backup now says which drive it is writing
+and the full-copy bars move and name their drives, the warnings agree with
+each other, a damaged file or a broken drive shows where you look, and the
+lists that tell you to restore have a button that does it. 0.10.0
+(2026-11-25) fixed what two independent reviews of 0.9.0 found; see
 [History](#history). Builds are
 on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
@@ -709,6 +710,27 @@ on a local machine needs to pick the work up without the chat history.
   read-back offer after a backup. Installer: asks to close a running
   BRODALF. Not built, as they go against the design answers: restoring as
   of a date, and reading back automatically after every backup.
+- v0.10.1 (2026-11-26, built on the `ui-fixes` branch first): screenshots
+  of every window, tab, menu and dialog in English, German and Spanish,
+  light and dark, taken by a driver on a Windows CI runner (the
+  `ui-screenshots` branch), showed twelve problems, now fixed. During a
+  backup the line names the drive being written and how many are left,
+  and the full-copy bars move as each drive finishes
+  (`bd_progress.recorded`); each bar names its drives
+  (`bd_backup_set_drives`) and gives one measure. The ransomware warning
+  counts changed and deleted files apart and opens the list on a click;
+  backing up to every drive asks with Show the changed files. A damaged
+  file shows in the tree, the header and the Damaged files count. Drives
+  marked lost or broken say so and are left out of search, Deleted files
+  and the export. Drive details no longer contradict themselves about
+  reading back (`oldest_unread_ms`). Damaged files, Changed since the copy
+  and Left alone by the last restore restore the right version
+  (`bd_restore_version`). Recovering the database also looks in the open
+  database's drives and asks with Look again and Choose the folder. Tab
+  buttons no longer break into pieces, and a wrapped warning is no longer
+  printed over. Dark list headers are readable, and the encryption
+  question, file filters and leave-out comments are translated. No
+  change to the database format.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -864,7 +886,13 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. Everything new in 0.10.0, which was only compiled and tested by the
+1. Everything new in 0.10.1: it was seen only in automated screenshots
+   on a Windows CI runner, never used by a person. In particular a real
+   USB drive for Recover the database (the screenshots used folder
+   drives), the restore buttons in Damaged files, Changed since the copy
+   and Left alone by the last restore, and the bars during a backup to
+   several drives.
+2. Everything new in 0.10.0, which was only compiled and tested by the
    Windows CI build and never run on a PC: the keyboard (Tab order, the &
    letters in German and Spanish, the shortcuts), job results with
    problems and Show what went wrong, the window staying responsive on a
@@ -876,7 +904,7 @@ in 0.4.0 came from the code review of the same day and this test:
    damaged copy on one of two drives; a FAT32 stick with a file of 4 GB
    or more; a network-share backup root; the shadow helper's access
    check; the installer's question with BRODALF open.
-2. Everything new in 0.9.0, none of which has run on Windows (it was built
+3. Everything new in 0.9.0, none of which has run on Windows (it was built
    for Windows and the Windows CI build passes, but the window has not been
    looked at): dark mode in every tab and dialog, and switching while
    BRODALF is open; the German and Spanish window, above all whether longer
@@ -888,7 +916,7 @@ in 0.4.0 came from the code review of the same day and this test:
    and the refusal on exFAT; the start-up choice with the last
    database from `%LOCALAPPDATA%`, and the window greyed out until one is
    open.
-3. Everything new in 0.8.0, none of which has run on Windows, and the
+4. Everything new in 0.8.0, none of which has run on Windows, and the
    window has not been looked at since the tabs went in: the six tabs and
    their buttons and tables, the File, View, Tools and Help menus, the tab
    remembered between runs; starring and encrypting from the tree, ★ and
@@ -897,11 +925,11 @@ in 0.4.0 came from the code review of the same day and this test:
    to it; an encrypted folder on a plain drive, and the time it says
    encrypting takes against a real backup; backing up to two or more USB
    drives at once against one after another.
-4. Plugging in a known disk while BRODALF is open: the device-change
+5. Plugging in a known disk while BRODALF is open: the device-change
    notification should only add a line to the log ("... is plugged in") and
    light up its files; nothing else should start. The test had the stick
    plugged in before launch, so this never fired.
-5. Everything new in 0.7.0, none of which has run on Windows: the menus
+6. Everything new in 0.7.0, none of which has run on Windows: the menus
    and right-click menus; New database, Open and Recover from a drive; the
    scan on open and the question about a backup root that moved; the line
    beside the buttons and the three kinds of progress bar; backing up with
@@ -912,15 +940,15 @@ in 0.4.0 came from the code review of the same day and this test:
    the bit-rot scan and damaged files; restores that never overwrite, Files
    the last restore left alone, restoring one version and the deleted
    files; backups at low priority; the installer's desktop shortcut.
-6. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
+7. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
    accented names, the leading-quote guard against formulas), and OneDrive
    online-only files left alone.
-7. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+8. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
    the temperature comes from property 52 and the ATA table is only read
    from ATA disks.
-8. Everything new in 0.5.0, none of which has run on Windows:
+9. Everything new in 0.5.0, none of which has run on Windows:
    - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
      thread, and how much the scan pool and batched fsyncs gain on real
      disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on

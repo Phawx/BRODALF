@@ -8616,6 +8616,22 @@ static int search_cb(void *ctx, const bd_search_info *r)
     return 0;
 }
 
+/* The results' columns as wide as what they hold, within the list; where
+ * each file has copies takes the rest. */
+static void search_fit_cols(void)
+{
+    RECT rc;
+    GetClientRect(g_results, &rc);
+    int w = rc.right;
+    static const int share[] = {38, 34, 20};
+    for (int c = 0; c < 3; c++) {
+        ListView_SetColumnWidth(g_results, c, LVSCW_AUTOSIZE_USEHEADER);
+        int cap = w * share[c] / 100;
+        if (ListView_GetColumnWidth(g_results, c) > cap) ListView_SetColumnWidth(g_results, c, cap);
+    }
+    ListView_SetColumnWidth(g_results, 3, LVSCW_AUTOSIZE_USEHEADER);
+}
+
 static void run_search(void)
 {
     if (!g_cat) return;
@@ -8630,6 +8646,7 @@ static void run_search(void)
         SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
         ShowWindow(g_results, SW_HIDE);
         ShowWindow(g_tree, SW_SHOW);
+        show_detail(); /* the tree's own selection again */
         return;
     }
     if (g_busy) {
@@ -8649,6 +8666,21 @@ static void run_search(void)
         const wchar_t *cells[] = {T(L"No files or folders match."), L"", L"", L""};
         lv_row(g_results, cells, 4);
     }
+    /* Until a result is picked, the details say what was found, not what
+     * was selected before the search. */
+    {
+        wchar_t msg[700];
+        if (!g_hit_n) swprintf(msg, 700, T(L"Nothing matches \"%ls\". Esc goes back to the folders."), p);
+        else if (g_hit_n >= 500)
+            swprintf(msg, 700, T(L"The first %d files and folders that match \"%ls\". Type more of the name to find fewer."), g_hit_n, p);
+        else
+            swprintf(msg, 700, TN(g_hit_n, L"%d file or folder matches \"%ls\". Select it to see where its copies are.",
+                                  L"%d files and folders match \"%ls\". Select one to see where its copies are."),
+                     g_hit_n, p);
+        SetWindowTextW(g_detail, msg);
+        ListView_DeleteAllItems(g_list);
+    }
+    search_fit_cols();
     SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_results, NULL, TRUE);
     ShowWindow(g_tree, SW_HIDE);

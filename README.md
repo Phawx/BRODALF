@@ -467,6 +467,13 @@ recovery sheet (**File > Print a recovery sheet**), which lists your drives
 and a recovery key that opens your encrypted copies if the passphrase is
 lost.
 
+Wherever BRODALF asks for the passphrase, it says under the field when it
+is not right, and **Show** shows what you typed. A new passphrase is ticked
+off as you type it: at least 8 characters, and the same twice. Changing it
+is one window: the current passphrase (unless it is already entered), then
+the new one twice, with **Use the recovery key** if you no longer know the
+current one.
+
 **What it costs in time.** BRODALF measures how fast this PC encrypts and
 says what that means, for everything you chose and for each folder in the
 list. Encrypting runs while each copy is written, so on a USB hard drive a

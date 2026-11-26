@@ -5865,46 +5865,210 @@ static wchar_t g_pass_buf[512];
 static const wchar_t *g_pass_text;
 static int g_pass_catalog;
 static int g_pass_mode; /* IDD_PASSPHRASE: 0 passphrase, 1 also offer the recovery key, 2 typing the recovery key */
+static int g_pass_changing;     /* IDD_NEW_PASSPHRASE: changing the passphrase, not setting the first one */
+static int g_pass_need_current; /* IDD_NEW_PASSPHRASE: also ask for the current one, which it checks */
+static INT_PTR g_pass_rc;
+/* With this set, IDD_PASSPHRASE tries what was typed before it closes: 1
+ * when it may close (it worked, or failed in a way the caller reports), 0
+ * to say in place that it is not right. */
+typedef int (*pass_try_fn)(void *ctx, const char *secret, int recovery);
+static pass_try_fn g_pass_try;
+static void *g_pass_try_ctx;
+
+static void free_secret(char *p);
+
+/* Drop a dialog's rows from the control first_id down to (not including)
+ * the row of next_id, and pull up what is below them. */
+static void dialog_drop_rows(HWND dlg, int first_id, int next_id)
+{
+    HWND f = GetDlgItem(dlg, first_id), n = GetDlgItem(dlg, next_id);
+    if (!f || !n) return;
+    RECT a, b;
+    GetWindowRect(f, &a);
+    GetWindowRect(n, &b);
+    POINT top = {a.left, a.top}, below = {b.left, b.top};
+    ScreenToClient(dlg, &top);
+    ScreenToClient(dlg, &below);
+    int dy = below.y - top.y;
+    if (dy <= 0) return;
+    for (HWND c = GetWindow(dlg, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        RECT r;
+        GetWindowRect(c, &r);
+        POINT pt = {r.left, r.top};
+        ScreenToClient(dlg, &pt);
+        if (pt.y >= below.y) SetWindowPos(c, NULL, pt.x, pt.y - dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        else if (pt.y >= top.y) ShowWindow(c, SW_HIDE);
+    }
+    RECT w;
+    GetWindowRect(dlg, &w);
+    SetWindowPos(dlg, NULL, w.left, w.top + dy / 2, w.right - w.left, w.bottom - w.top - dy, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/* A line under a field that says what is wrong, or nothing. */
+static void pass_error(HWND dlg, int id, const wchar_t *text)
+{
+    wchar_t t[400];
+    if (text && text[0]) swprintf(t, 400, L"\x2715 %ls", text);
+    else t[0] = 0;
+    SetDlgItemTextW(dlg, id, t);
+}
+
+/* The new passphrase's two rules, ticked as they are met; the button
+ * waits for both. */
+static void pass_rules(HWND dlg)
+{
+    wchar_t a[512], b[512];
+    GetDlgItemTextW(dlg, IDC_PASS_EDIT, a, 512);
+    GetDlgItemTextW(dlg, IDC_PASS_EDIT2, b, 512);
+    int long_enough = wcslen(a) >= 8, same = a[0] && wcscmp(a, b) == 0;
+    SecureZeroMemory(a, sizeof(a));
+    SecureZeroMemory(b, sizeof(b));
+    int current = !g_pass_need_current || GetWindowTextLengthW(GetDlgItem(dlg, IDC_PASS_CUR)) > 0;
+    wchar_t t[200];
+    swprintf(t, 200, L"%ls %ls", long_enough ? L"\x2713" : L"\x2022", T(L"At least 8 characters"));
+    SetDlgItemTextW(dlg, IDC_PASS_RULE_LEN, t);
+    swprintf(t, 200, L"%ls %ls", same ? L"\x2713" : L"\x2022", T(L"Both match"));
+    SetDlgItemTextW(dlg, IDC_PASS_RULE_SAME, t);
+    SetPropW(dlg, L"BrodalfRules", (HANDLE)(INT_PTR)((long_enough ? 1 : 0) | (same ? 2 : 0)));
+    InvalidateRect(GetDlgItem(dlg, IDC_PASS_RULE_LEN), NULL, TRUE);
+    InvalidateRect(GetDlgItem(dlg, IDC_PASS_RULE_SAME), NULL, TRUE);
+    EnableWindow(GetDlgItem(dlg, IDOK), long_enough && same && current);
+}
+
+/* Show what is typed, or dots again. */
+static void pass_show(HWND dlg)
+{
+    int show = IsDlgButtonChecked(dlg, IDC_PASS_SHOW) == BST_CHECKED;
+    static const int ids[] = {IDC_PASS_EDIT, IDC_PASS_EDIT2, IDC_PASS_CUR};
+    for (int i = 0; i < 3; i++) {
+        HWND e = GetDlgItem(dlg, ids[i]);
+        if (!e) continue;
+        SendMessageW(e, EM_SETPASSWORDCHAR, show ? 0 : 0x25CF, 0);
+        InvalidateRect(e, NULL, TRUE);
+    }
+}
+
+static void pass_select(HWND dlg, int id)
+{
+    HWND e = GetDlgItem(dlg, id);
+    SetFocus(e);
+    SendMessageW(e, EM_SETSEL, 0, -1);
+}
 
 static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_CTLCOLORSTATIC && !g_hc) {
+        /* The rules and the errors in their colours. */
+        int id = GetDlgCtrlID((HWND)lp);
+        if (id == IDC_PASS_ERROR || id == IDC_PASS_CUR_ERROR || id == IDC_PASS_RULE_LEN || id == IDC_PASS_RULE_SAME) {
+            LRESULT r;
+            HDC dc = (HDC)wp;
+            if (!theme_ctlcolor(msg, wp, lp, &r)) {
+                SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+                r = (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+            }
+            int met = (int)(INT_PTR)GetPropW(dlg, L"BrodalfRules");
+            SetTextColor(dc, id == IDC_PASS_RULE_LEN ? ((met & 1) ? tone_text(TONE_SAFE) : theme_gray())
+                             : id == IDC_PASS_RULE_SAME ? ((met & 2) ? tone_text(TONE_SAFE) : theme_gray())
+                             : tone_text(TONE_BAD));
+            return (INT_PTR)r;
+        }
+    }
     INT_PTR themed;
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
+    int is_new = GetDlgItem(dlg, IDC_PASS_EDIT2) != NULL;
     switch (msg) {
     case WM_INITDIALOG:
         SetDlgItemTextW(dlg, IDC_PASS_TEXT, g_pass_text);
-        if (GetDlgItem(dlg, IDC_PASS_RECOVERY) && g_pass_mode != 1) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
+        if (is_new) {
+            if (g_pass_changing) {
+                SetWindowTextW(dlg, T(L"Change the passphrase"));
+                SetDlgItemTextW(dlg, IDC_PASS_NEW_LABEL, T(L"New passphrase:"));
+                SetDlgItemTextW(dlg, IDOK, T(L"Change it"));
+            }
+            if (!g_pass_need_current || !bd_catalog_has_recovery_key(g_cat)) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
+            /* Already encrypted: nothing to tick. */
+            if (g_pass_changing && bd_catalog_file_encrypted(g_cat)) dialog_drop_rows(dlg, IDC_PASS_CATALOG, IDC_PASS_RECOVERY);
+            if (!g_pass_need_current) dialog_drop_rows(dlg, IDC_PASS_CUR_LABEL, IDC_PASS_NEW_LABEL);
+            pass_rules(dlg);
+            SetFocus(GetDlgItem(dlg, g_pass_need_current ? IDC_PASS_CUR : IDC_PASS_EDIT));
+            return FALSE;
+        }
+        if (g_pass_mode != 1) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
         if (g_pass_mode == 2) {
             /* A recovery key is long and read off paper: show what is typed. */
             SetWindowTextW(dlg, T(L"Enter the recovery key"));
             SendDlgItemMessageW(dlg, IDC_PASS_EDIT, EM_SETPASSWORDCHAR, 0, 0);
+            ShowWindow(GetDlgItem(dlg, IDC_PASS_SHOW), SW_HIDE);
         }
         SetFocus(GetDlgItem(dlg, IDC_PASS_EDIT));
         return FALSE;
     case WM_COMMAND:
+        if (HIWORD(wp) == EN_CHANGE) {
+            if (LOWORD(wp) == IDC_PASS_EDIT && !is_new) pass_error(dlg, IDC_PASS_ERROR, NULL);
+            if (LOWORD(wp) == IDC_PASS_CUR) pass_error(dlg, IDC_PASS_CUR_ERROR, NULL);
+            if (is_new) pass_rules(dlg);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDC_PASS_SHOW) {
+            pass_show(dlg);
+            return TRUE;
+        }
         if (LOWORD(wp) == IDOK) {
             GetDlgItemTextW(dlg, IDC_PASS_EDIT, g_pass_buf, 512);
-            if (GetDlgItem(dlg, IDC_PASS_EDIT2)) {
+            if (is_new) {
                 wchar_t again[512];
                 GetDlgItemTextW(dlg, IDC_PASS_EDIT2, again, 512);
                 int same = wcscmp(again, g_pass_buf) == 0;
                 SecureZeroMemory(again, sizeof(again));
-                if (wcslen(g_pass_buf) < 8) {
-                    MessageBoxW(dlg, T(L"Use at least 8 characters. A few unrelated words make a good passphrase."), APP_NAME, MB_ICONWARNING);
+                if (wcslen(g_pass_buf) < 8 || !same) {
+                    /* The ticks under the fields say which rule is not met. */
+                    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+                    MessageBeep(MB_ICONWARNING);
                     return TRUE;
                 }
-                if (!same) {
-                    MessageBoxW(dlg, T(L"The two passphrases are different. Type them again."), APP_NAME, MB_ICONWARNING);
+                if (g_pass_need_current) {
+                    wchar_t cur[512];
+                    GetDlgItemTextW(dlg, IDC_PASS_CUR, cur, 512);
+                    char *c = narrow(cur);
+                    SecureZeroMemory(cur, sizeof(cur));
+                    HCURSOR old = SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
+                    bd_status st = bd_catalog_unlock(g_cat, c ? c : "");
+                    SetCursor(old);
+                    free_secret(c);
+                    if (st != BD_OK) {
+                        SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+                        wchar_t *e = st == BD_ERR_PASSPHRASE ? NULL : widen(bd_catalog_error(g_cat));
+                        pass_error(dlg, IDC_PASS_CUR_ERROR, e && e[0] ? e : T(L"That passphrase is not right."));
+                        free(e);
+                        pass_select(dlg, IDC_PASS_CUR);
+                        return TRUE;
+                    }
+                }
+                g_pass_catalog = IsWindowVisible(GetDlgItem(dlg, IDC_PASS_CATALOG)) && IsDlgButtonChecked(dlg, IDC_PASS_CATALOG) == BST_CHECKED;
+            } else if (g_pass_try) {
+                char *p = narrow(g_pass_buf);
+                HCURSOR old = SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
+                int done = g_pass_try(g_pass_try_ctx, p ? p : "", g_pass_mode == 2);
+                SetCursor(old);
+                free_secret(p);
+                if (!done) {
+                    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+                    pass_error(dlg, IDC_PASS_ERROR, g_pass_mode == 2 ? T(L"That recovery key is not right.")
+                                                                     : T(L"That passphrase is not right."));
+                    pass_select(dlg, IDC_PASS_EDIT);
                     return TRUE;
                 }
-                g_pass_catalog = IsDlgButtonChecked(dlg, IDC_PASS_CATALOG) == BST_CHECKED;
             }
             EndDialog(dlg, IDOK);
             return TRUE;
         }
         if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
         if (LOWORD(wp) == IDC_PASS_RECOVERY) { EndDialog(dlg, IDC_PASS_RECOVERY); return TRUE; }
+        break;
+    case WM_DESTROY:
+        RemovePropW(dlg, L"BrodalfRules");
         break;
     }
     return FALSE;
@@ -5916,6 +6080,19 @@ static char *ask_passphrase(HWND owner, int dialog, const wchar_t *text)
     g_pass_text = text;
     g_pass_catalog = 0;
     INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(dialog), owner, pass_proc);
+    g_pass_rc = rc;
+    g_pass_mode = 0;
+    char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
+    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+    return p;
+}
+
+/* The recovery key, typed off the sheet. NULL if cancelled. */
+static char *ask_recovery_key(HWND owner)
+{
+    g_pass_text = T(L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.");
+    g_pass_mode = 2;
+    INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
     g_pass_mode = 0;
     char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
     SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
@@ -5932,10 +6109,8 @@ static char *ask_unlock_secret(HWND owner, const wchar_t *text, int allow_recove
     g_pass_mode = allow_recovery ? 1 : 0;
     INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
     if (rc == IDC_PASS_RECOVERY) {
-        g_pass_text = T(L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.");
-        g_pass_mode = 2;
-        rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
         *is_recovery = 1;
+        return ask_recovery_key(owner);
     }
     g_pass_mode = 0;
     char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
@@ -5961,35 +6136,68 @@ static void free_secret(char *p)
     free(p);
 }
 
+static int unlock_try(void *ctx, const char *secret, int recovery)
+{
+    bd_status *s = ctx;
+    *s = recovery ? bd_catalog_unlock_recovery(g_cat, secret) : bd_catalog_unlock(g_cat, secret);
+    return *s != BD_ERR_PASSPHRASE;
+}
+
 /* Make sure the key is available. Only while no job runs. 1 if unlocked. */
 static int unlock_ui(const wchar_t *why)
 {
     if (!bd_catalog_has_passphrase(g_cat) || bd_catalog_is_unlocked(g_cat)) return 1;
-    for (;;) {
-        int recovery = 0;
-        char *p = ask_unlock_secret(g_main, why, bd_catalog_has_recovery_key(g_cat), &recovery);
-        if (!p) return 0;
-        SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
-        bd_status s = recovery ? bd_catalog_unlock_recovery(g_cat, p) : bd_catalog_unlock(g_cat, p);
-        free_secret(p);
-        if (s == BD_OK) {
-            if (recovery) offer_new_passphrase(g_main);
-            return 1;
-        }
-        MessageBoxW(g_main, recovery ? T(L"That recovery key is not right. Check it against the sheet and try again.")
-                                     : T(L"That passphrase is not right. Try again."),
-                    APP_NAME, MB_ICONWARNING);
+    int recovery = 0;
+    bd_status s = BD_ERR_PASSPHRASE;
+    g_pass_try = unlock_try;
+    g_pass_try_ctx = &s;
+    char *p = ask_unlock_secret(g_main, why, bd_catalog_has_recovery_key(g_cat), &recovery);
+    g_pass_try = NULL;
+    if (!p) return 0;
+    free_secret(p);
+    if (s != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not unlock the encryption key."));
+        free(e);
+        return 0;
     }
+    if (recovery) offer_new_passphrase(g_main);
+    return 1;
 }
 
 /* Set the first passphrase, or change it. 1 on success. */
 static int set_passphrase_ui(void)
 {
     int changing = bd_catalog_has_passphrase(g_cat);
-    if (changing && !unlock_ui(T(L"Enter the current passphrase first."))) return 0;
-    char *p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE,
-                             T(L"The passphrase protects encrypted drives and, if you choose, this database file. "
-                             L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone."));
+    /* One dialog: the current passphrase (when it is not entered yet), the
+     * new one twice. */
+    const wchar_t *text = changing ? T(L"The new passphrase replaces the current one. Write it down somewhere safe: without it, "
+                                       L"encrypted copies cannot be read, by you or anyone.")
+                                   : T(L"The passphrase protects encrypted drives and, if you choose, this database file. "
+                                       L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone.");
+    g_pass_changing = changing;
+    g_pass_need_current = changing && !bd_catalog_is_unlocked(g_cat);
+    char *p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE, text);
+    if (!p && g_pass_rc == IDC_PASS_RECOVERY) {
+        /* The current one is forgotten: the recovery key opens it, then the new one. */
+        bd_status us = BD_ERR_PASSPHRASE;
+        g_pass_try = unlock_try;
+        g_pass_try_ctx = &us;
+        char *k = ask_recovery_key(g_main);
+        int typed = k != NULL;
+        g_pass_try = NULL;
+        free_secret(k);
+        if (typed && us == BD_OK) {
+            g_pass_need_current = 0;
+            g_pass_changing = 1;
+            p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE, text);
+        } else if (typed) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            report_status(g_main, us, 0, e && e[0] ? e : T(L"Could not unlock the encryption key."));
+            free(e);
+        }
+    }
+    g_pass_changing = g_pass_need_current = 0;
     if (!p) return 0;
     SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
     bd_status s = bd_catalog_set_passphrase(g_cat, p);
@@ -14620,22 +14828,29 @@ static int ask_database_choice(const wchar_t *last, const wchar_t *missing)
  * A cancelled prompt returns BD_ERR_PASSPHRASE with no message. */
 static int g_opened_by_recovery; /* offer a new passphrase once it is open */
 
+typedef struct { const char *path; bd_catalog **out; bd_status s; } open_try_ctx;
+
+static int open_try(void *ctx, const char *secret, int recovery)
+{
+    open_try_ctx *o = ctx;
+    o->s = recovery ? bd_catalog_open_with_recovery(o->path, secret, o->out) : bd_catalog_open_with(o->path, secret, o->out);
+    return o->s != BD_ERR_PASSPHRASE;
+}
+
 static bd_status open_maybe_encrypted(const char *path, bd_catalog **out)
 {
     if (!bd_catalog_file_needs_passphrase(path)) return bd_catalog_open(path, out);
     int can_recover = bd_catalog_file_has_recovery_key(path);
-    for (;;) {
-        int recovery = 0;
-        char *p = ask_unlock_secret(g_main, T(L"This database is encrypted. Enter its passphrase to open it."), can_recover, &recovery);
-        if (!p) return BD_ERR_PASSPHRASE;
-        bd_status s = recovery ? bd_catalog_open_with_recovery(path, p, out) : bd_catalog_open_with(path, p, out);
-        free_secret(p);
-        if (s == BD_OK && recovery) g_opened_by_recovery = 1;
-        if (s != BD_ERR_PASSPHRASE) return s;
-        MessageBoxW(g_main, recovery ? T(L"That recovery key is not right. Check it against the sheet and try again.")
-                                     : T(L"That passphrase is not right. Try again."),
-                    APP_NAME, MB_ICONWARNING);
-    }
+    int recovery = 0;
+    open_try_ctx o = {path, out, BD_ERR_PASSPHRASE};
+    g_pass_try = open_try;
+    g_pass_try_ctx = &o;
+    char *p = ask_unlock_secret(g_main, T(L"This database is encrypted. Enter its passphrase to open it."), can_recover, &recovery);
+    g_pass_try = NULL;
+    if (!p) return BD_ERR_PASSPHRASE;
+    free_secret(p);
+    if (o.s == BD_OK && recovery) g_opened_by_recovery = 1;
+    return o.s;
 }
 
 static void show_open_error(bd_status s, const wchar_t *fallback)

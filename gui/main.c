@@ -919,13 +919,11 @@ static DWORD g_win_build;
 /* Windows' high contrast is on: the window uses its colours only. */
 static int g_hc;
 
-/* Colours the tree uses for each state, readable on either background.
- * Each state also has its words after the name (state_suffix) and its own
- * font, so the colour is never all there is to it. In high contrast they
- * are the theme's own: the link colour, grey text and the text colour. */
-static COLORREF theme_older(void) { return g_hc ? GetSysColor(COLOR_HOTLIGHT) : g_dark ? RGB(225, 175, 70) : RGB(150, 100, 0); }
+/* The grey the tree and lists use for names with no copy at hand,
+ * readable on either background. Each state also has its words in a chip
+ * beside the name and in its tooltip (state_suffix), so the colour is
+ * never all there is to it. In high contrast it is the theme's grey. */
 static COLORREF theme_gray(void) { return g_hc ? GetSysColor(COLOR_GRAYTEXT) : g_dark ? DARK_GRAY : GetSysColor(COLOR_GRAYTEXT); }
-static COLORREF theme_bad(void) { return g_hc ? GetSysColor(COLOR_WINDOWTEXT) : g_dark ? RGB(255, 115, 115) : RGB(180, 30, 30); }
 
 static int high_contrast(void)
 {
@@ -1020,6 +1018,8 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
     return DefSubclassProc(h, msg, wp, lp);
 }
 
+static void tree_metrics(void);
+
 static void theme_control(HWND h)
 {
     wchar_t cls[64];
@@ -1037,9 +1037,10 @@ static void theme_control(HWND h)
     } else if (_wcsicmp(cls, WC_COMBOBOXW) == 0) {
         SetWindowTheme(h, g_dark ? L"DarkMode_CFD" : NULL, NULL);
     } else if (_wcsicmp(cls, WC_TREEVIEWW) == 0) {
-        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : L"Explorer", NULL);
         TreeView_SetBkColor(h, g_dark ? DARK_FIELD : (COLORREF)-1);
         TreeView_SetTextColor(h, g_dark ? DARK_TEXT : (COLORREF)-1);
+        tree_metrics();
     } else if (_wcsicmp(cls, WC_LISTVIEWW) == 0) {
         SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
         HWND header = ListView_GetHeader(h);
@@ -2929,7 +2930,27 @@ typedef struct {
     int loaded;
     bd_node_state state;
     char *rel;
+    /* What the tree paints beside the name (tree_custom_draw). */
+    int root;              /* a backup root's own item */
+    int missing, inactive; /* roots: not found at the last scan; no longer backed up */
+    int64_t size;          /* files: the current version; roots: every live file */
+    int64_t files_total, files_available; /* folders */
+    int damaged;           /* how many files a bit-rot scan found damaged: in it, or it */
+    int starred, encrypted;
+    wchar_t *drive;        /* the drive that holds its copies, when it is not plugged in */
+    wchar_t *path;         /* roots: where it is */
+    wchar_t *tip;          /* all of it in words, for its tooltip and screen readers */
 } node_ref;
+
+static void free_node_ref(node_ref *r)
+{
+    if (!r) return;
+    free(r->rel);
+    free(r->drive);
+    free(r->path);
+    free(r->tip);
+    free(r);
+}
 
 typedef struct {
     bd_node_info info;
@@ -2956,10 +2977,9 @@ static int collect_child(void *ctx, const bd_node_info *info)
     return 0;
 }
 
-/* The words after a name in the tree that say its state, as its colour
- * and font do, for anyone who cannot tell those apart and for screen
- * readers; NULL for a good copy on a plugged-in drive, and for a folder
- * whose count says it. */
+/* The words that say a name's state in its tooltip, as its chip, colour
+ * and font do in the tree, for screen readers; NULL for a good copy on a
+ * plugged-in drive, and for a folder whose count says it. */
 static const wchar_t *state_suffix(const bd_node_info *n, const char *label)
 {
     switch (n->state) {
@@ -2975,16 +2995,17 @@ static const wchar_t *state_suffix(const bd_node_info *n, const char *label)
 /* What the tree shows, for the details pane and Help. */
 static const wchar_t *tree_legend(void)
 {
-    return T(L"How the list of files shows each one:\r\n"
-             L"    Name: a good copy is on a drive that is plugged in.\r\n"
-             L"    Name   on <drive>, in italics: its copy is on a drive that is not plugged in.\r\n"
-             L"    Name   - not backed up, in italics: it has no copy yet.\r\n"
-             L"    Name   - changed since backup, in another colour: only an older version is backed up.\r\n"
-             L"    Name   - copy damaged, in bold: the copy on the plugged-in drive is missing or damaged; back up again to fix it.\r\n"
-             L"    Name   - deleted, struck through: gone from its folder; BRODALF still keeps track of its copies.\r\n"
-             L"    Name   - may be damaged: a bit-rot scan found it changed without its size or time changing (Damaged files...).\r\n"
-             L"    Folder   (3 of 10 available): how many files in it have a good copy on a plugged-in drive.\r\n"
-             L"    \x2605 starred: also copied to your extra places. [encrypted]: encrypted on every drive and extra place it is copied to.");
+    return T(L"How the list of files shows each one: its name, then on the right its state and its size.\r\n"
+             L"    No state: a good copy is on a drive that is plugged in.\r\n"
+             L"    On <drive>, name in grey: its copy is on a drive that is not plugged in.\r\n"
+             L"    Not backed up, name in grey italics: it has no copy yet.\r\n"
+             L"    Changed since backup: only an older version is backed up.\r\n"
+             L"    Copy damaged: the copy on the plugged-in drive is missing or damaged; back up again to fix it.\r\n"
+             L"    Deleted, name struck through: gone from its folder; BRODALF still keeps track of its copies.\r\n"
+             L"    May be damaged: a bit-rot scan found it changed without its size or time changing (Damaged files...).\r\n"
+             L"    3 of 10 available, on a folder: how many files in it have a good copy on a plugged-in drive.\r\n"
+             L"    \x2605 after a name: starred, also copied to your extra places. A lock: encrypted on every drive and extra place it is copied to.\r\n"
+             L"    Point at a name for all of this in words. A file's versions are in its details.");
 }
 
 static void item_text(const bd_node_info *n, const char *name, const char *label, wchar_t *out, size_t cap)
@@ -3081,7 +3102,16 @@ static int marks_has(const mark_keys *s, int64_t source_id, const char *rel)
     return 0;
 }
 
-/* After a name in the tree: a star when starred, [encrypted] when chosen,
+/* Whether it is starred, set to be encrypted, or found damaged, for the
+ * marks the tree paints after its name. */
+static void set_marks(node_ref *r)
+{
+    r->starred = marks_has(&g_star_keys, r->source_id, r->rel);
+    r->encrypted = marks_has(&g_enc_keys, r->source_id, r->rel);
+    r->damaged = damaged_in(r->source_id, r->rel, r->is_dir);
+}
+
+/* In a name's tooltip: a star when starred, [encrypted] when chosen,
  * and what a bit-rot scan found damaged (Damaged files... lists it). */
 static void add_marks(wchar_t *text, size_t cap, int64_t source_id, const char *rel, int is_dir)
 {
@@ -3099,6 +3129,56 @@ static void add_marks(wchar_t *text, size_t cap, int64_t source_id, const char *
     if (marks_has(&g_enc_keys, source_id, rel) && n < cap) swprintf(text + n, cap - n, T(L"   [encrypted]"));
 }
 
+/* The tree's icons are Windows' own, as in Explorer: from the file's
+ * extension only, so a file need not be there (or be plugged in) to get
+ * its icon. Kept by extension, as asking is slow for thousands. */
+typedef struct { wchar_t ext[16]; int icon; } ext_icon;
+static ext_icon g_ext_icons[96];
+static int g_n_ext_icons, g_icon_folder = -1, g_icon_folder_open = -1;
+
+static int shell_icon(const wchar_t *name, DWORD attrs, UINT extra)
+{
+    SHFILEINFOW sfi;
+    memset(&sfi, 0, sizeof(sfi));
+    if (!SHGetFileInfoW(name, attrs, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES | extra))
+        return -1;
+    return sfi.iIcon;
+}
+
+static void tree_icons_init(void)
+{
+    SHFILEINFOW sfi;
+    memset(&sfi, 0, sizeof(sfi));
+    HIMAGELIST il = (HIMAGELIST)SHGetFileInfoW(L"folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
+                                               SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+    if (!il) return;
+    TreeView_SetImageList(g_tree, il, TVSIL_NORMAL);
+    g_icon_folder = sfi.iIcon;
+    g_icon_folder_open = shell_icon(L"folder", FILE_ATTRIBUTE_DIRECTORY, SHGFI_OPENICON);
+    if (g_icon_folder_open < 0) g_icon_folder_open = g_icon_folder;
+}
+
+static int file_icon(const wchar_t *name)
+{
+    const wchar_t *dot = wcsrchr(name, L'.');
+    wchar_t ext[16] = L"";
+    if (dot && wcslen(dot) < COUNT_OF(ext)) {
+        for (int i = 0; dot[i]; i++) ext[i] = (wchar_t)towlower(dot[i]);
+        ext[wcslen(dot)] = 0;
+    }
+    for (int i = 0; i < g_n_ext_icons; i++)
+        if (wcscmp(g_ext_icons[i].ext, ext) == 0) return g_ext_icons[i].icon;
+    wchar_t probe[24];
+    swprintf(probe, COUNT_OF(probe), L"file%ls", ext);
+    int icon = shell_icon(probe, FILE_ATTRIBUTE_NORMAL, 0);
+    if (g_n_ext_icons < (int)COUNT_OF(g_ext_icons)) {
+        wcscpy(g_ext_icons[g_n_ext_icons].ext, ext);
+        g_ext_icons[g_n_ext_icons].icon = icon;
+        g_n_ext_icons++;
+    }
+    return icon;
+}
+
 static HTREEITEM insert_item(HTREEITEM parent, const wchar_t *text, node_ref *ref, int has_children)
 {
     TVINSERTSTRUCTW tv;
@@ -3109,6 +3189,23 @@ static HTREEITEM insert_item(HTREEITEM parent, const wchar_t *text, node_ref *re
     tv.item.pszText = (LPWSTR)text;
     tv.item.lParam = (LPARAM)ref;
     tv.item.cChildren = has_children ? 1 : 0;
+    int dir = !ref || ref->is_dir, icon = dir ? g_icon_folder : file_icon(text);
+    if (icon >= 0) {
+        tv.item.mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+        tv.item.iImage = tv.item.iSelectedImage = icon;
+#ifdef TVIF_EXPANDEDIMAGE
+        if (dir && g_icon_folder_open >= 0) {
+            tv.itemex.mask |= TVIF_EXPANDEDIMAGE;
+            tv.itemex.iExpandedImage = g_icon_folder_open;
+        }
+#endif
+    }
+    /* A root's name in bold; a deleted file's icon faded. */
+    if (ref && (ref->root || ref->state == BD_STATE_DELETED)) {
+        tv.item.mask |= TVIF_STATE;
+        tv.item.stateMask = TVIS_BOLD | TVIS_CUT;
+        tv.item.state = ref->root ? TVIS_BOLD : TVIS_CUT;
+    }
     return (HTREEITEM)SendMessageW(g_tree, TVM_INSERTITEMW, 0, (LPARAM)&tv);
 }
 
@@ -3129,6 +3226,8 @@ static void load_children(HTREEITEM parent, node_ref *pref)
     for (int i = 0; i < l.n; i++) {
         child *c = &l.items[i];
         node_ref *r = calloc(1, sizeof(node_ref));
+        wchar_t text[1024];
+        item_text(&c->info, c->name, c->label, text, 1024);
         if (r) {
             r->source_id = pref->source_id;
             r->node_id = c->info.node_id;
@@ -3136,11 +3235,17 @@ static void load_children(HTREEITEM parent, node_ref *pref)
             r->state = c->info.state;
             r->rel = c->rel;
             c->rel = NULL;
+            r->size = c->info.size;
+            r->files_total = c->info.files_total;
+            r->files_available = c->info.files_available;
+            if (c->label && *c->label && c->info.state == BD_STATE_OFFLINE) r->drive = widen(c->label);
+            set_marks(r);
+            add_marks(text, 1024, r->source_id, r->rel, r->is_dir);
+            r->tip = _wcsdup(text);
         }
-        wchar_t text[1024];
-        item_text(&c->info, c->name, c->label, text, 1024);
-        if (r) add_marks(text, 1024, r->source_id, r->rel, r->is_dir);
-        insert_item(parent, text, r, c->info.is_dir && (c->info.files_total > 0 || 1));
+        wchar_t *name = widen(c->name);
+        insert_item(parent, name ? name : L"", r, c->info.is_dir && (c->info.files_total > 0 || 1));
+        free(name);
         free(c->name);
         free(c->rel);
         free(c->label);
@@ -3249,7 +3354,21 @@ static void rebuild_tree(void)
     bd_list_sources(g_cat, collect_source, &l);
     for (int i = 0; i < l.n; i++) {
         node_ref *r = calloc(1, sizeof(node_ref));
-        if (r) { r->source_id = l.items[i].source_id; r->is_dir = 1; r->state = l.items[i].state; r->rel = xstrdup(""); }
+        if (r) {
+            r->source_id = l.items[i].source_id;
+            r->is_dir = 1;
+            r->root = 1;
+            r->state = l.items[i].state;
+            r->rel = xstrdup("");
+            r->missing = l.items[i].missing;
+            r->inactive = !l.items[i].active;
+            r->size = l.items[i].bytes_total;
+            r->files_total = l.items[i].files_total;
+            r->files_available = l.items[i].files_available;
+            r->path = widen(l.paths[i]);
+            if (l.labels[i] && *l.labels[i] && l.items[i].state == BD_STATE_OFFLINE) r->drive = widen(l.labels[i]);
+            set_marks(r);
+        }
         bd_node_info as_folder;
         memset(&as_folder, 0, sizeof(as_folder));
         as_folder.is_dir = 1;
@@ -3265,7 +3384,10 @@ static void rebuild_tree(void)
                  l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
                  : !l.items[i].active ? T(L"   - no longer backed up") : L"");
         add_marks(text, 1024, l.items[i].source_id, "", 1);
-        HTREEITEM h = insert_item(TVI_ROOT, text, r, 1);
+        if (r) r->tip = _wcsdup(text);
+        wchar_t *wname = widen(l.names[i]);
+        HTREEITEM h = insert_item(TVI_ROOT, wname ? wname : L"", r, 1);
+        free(wname);
         if (first_build) keys_add(&expanded, r ? r->source_id : 0, 0);
         (void)h;
         free(wp);
@@ -10688,7 +10810,9 @@ static void goal_text(wchar_t *out, size_t cap)
 }
 
 /* Works out where everything in the header goes for width w; returns its
- * height. Also places its buttons. */
+ * height. Also places its buttons. In a wide window the drive cards stand
+ * in two columns on the right, beside the verdict and the bars, so the
+ * header leaves the tabs more room. */
 static int header_measure(int w, int place)
 {
     int pad = S(14), x = pad, y = pad, gap = S(12);
@@ -10696,8 +10820,12 @@ static int header_measure(int w, int place)
     int icon = S(32);
     int row_h = th + S(2) + line;
     if (row_h < icon) row_h = icon;
+    int cw = w >= S(1400) ? S(260) : S(224), ch = S(64), cg = S(10);
+    int side = g_cat && g_ncards > 0 && w >= S(1000);
+    int side_w = side ? (g_ncards == 1 ? cw : cw * 2 + cg) : 0;
+    int left_r = side ? w - pad - side_w - S(20) : w - pad;
     /* The buttons on the right of the verdict. */
-    int bx = w - pad;
+    int bx = left_r;
     HWND btns[2] = {NULL, NULL};
     int nb = 0;
     if (!g_cat) {
@@ -10733,16 +10861,16 @@ static int header_measure(int w, int place)
         }
         ReleaseDC(NULL, dc);
         g_hd_right_w = S(260);
-        if (g_hd_right_w > w / 3) g_hd_right_w = w / 3;
+        if (g_hd_right_w > (left_r - x) / 3) g_hd_right_w = (left_r - x) / 3;
         g_hd_bar_row = S(24);
-        SetRect(&g_hd_bars, x, y, w - pad, y + g_hd_bar_row * g_nhbars);
+        SetRect(&g_hd_bars, x, y, left_r, y + g_hd_bar_row * g_nhbars);
         y += g_hd_bar_row * g_nhbars;
     } else
         SetRectEmpty(&g_hd_bars);
     /* The goal, with a link to change it. */
-    if (!g_hd_compact) {
+    if (!g_hd_compact || side) {
         y += S(4);
-        SetRect(&g_hd_goal, x, y, w - pad, y + line);
+        SetRect(&g_hd_goal, x, y, left_r, y + line);
         y += line;
     } else
         SetRectEmpty(&g_hd_goal);
@@ -10750,11 +10878,32 @@ static int header_measure(int w, int place)
     /* The cards. */
     g_ncard_shown = 0;
     g_card_more = 0;
-    if (g_ncards) {
+    if (side) {
+        /* Beside the verdict: two to a row, two rows. */
+        int per_row = g_ncards == 1 ? 1 : 2, room = per_row * 2, n = g_ncards, cx = w - pad - side_w;
+        int shown = n <= room ? n : room - 1, used_rows = 0;
+        for (int i = 0; i <= shown; i++) {
+            if (i == shown && shown == n) break;
+            int r = i / per_row, c = i % per_row;
+            RECT *rc = &g_card_rc[i == shown ? CARD_MORE : i];
+            SetRect(rc, cx + c * (cw + cg), pad + r * (ch + cg), cx + c * (cw + cg) + cw, pad + r * (ch + cg) + ch);
+            if (r + 1 > used_rows) used_rows = r + 1;
+        }
+        g_ncard_shown = shown;
+        g_card_more = n - shown;
+        int bottom = pad + used_rows * ch + (used_rows - 1) * cg;
+        if (bottom > y) y = bottom;
+    } else if (g_ncards) {
         y += gap;
-        int cw = S(224), ch = S(64), cg = S(10), avail = w - pad * 2;
+        int avail = w - pad * 2;
         int per_row = (avail + cg) / (cw + cg);
         if (per_row < 1) per_row = 1;
+        /* Few enough for one row: each as wide as there is room for. */
+        if (g_ncards <= per_row && g_ncards > 0) {
+            int fit = (avail - cg * (g_ncards - 1)) / g_ncards;
+            if (fit > S(320)) fit = S(320);
+            if (fit > cw) cw = fit;
+        }
         int rows = g_hd_compact ? 1 : 2, room = per_row * rows, n = g_ncards;
         int shown = n <= room ? n : room - 1;
         int used_rows = 0;
@@ -11428,6 +11577,7 @@ static int jobpanel_height(int w)
     switch (g_jp_state) {
     case JP_RUN: return pad + S(28) + S(6) + S(8) + S(6) + line + (g_jp_file[0] ? S(4) + line : 0) + pad;
     case JP_IDLE: return S(44);
+    case JP_OK: return pad + S(28) + pad; /* all went well: one line */
     }
     /* A result: its title and up to three lines of what happened. */
     HDC dc = GetDC(NULL);
@@ -11541,9 +11691,18 @@ static void jobpanel_paint(HDC dc, const RECT *rc)
     RECT tr = {tx, y, right, y + S(28)};
     draw_str(dc, g_font_semi, tone == TONE_SAFE ? ui_text() : tone_text(tone), g_jp_title, tr,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    y += S(28) + S(2);
-    RECT lr = {tx, y, rc->right - pad, rc->bottom - pad};
-    draw_str(dc, g_font, ui_text(), g_jp_line, lr, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+    if (g_jp_state == JP_OK) {
+        /* What it did, on the same line after the title. */
+        int lx = tx + text_w(dc, g_font_semi, g_jp_title) + S(14);
+        if (lx < right - S(40)) {
+            RECT lr = {lx, y, right, y + S(28)};
+            draw_str(dc, g_font, ui_sub(), g_jp_line, lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+    } else {
+        y += S(28) + S(2);
+        RECT lr = {tx, y, rc->right - pad, rc->bottom - pad};
+        draw_str(dc, g_font, ui_text(), g_jp_line, lr, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+    }
     if (!IsRectEmpty(&g_jp_close)) {
         RECT xr = g_jp_close;
         int cx = (xr.left + xr.right) / 2, cy = (xr.top + xr.bottom) / 2, u = S(4);
@@ -11861,16 +12020,22 @@ static void layout(void)
     int top = y + bar + gap, hw = w - pad * 2;
 
     /* A low window: one row of drives and of warnings, and no goal line
-     * (the status bar has it). */
-    g_hd_compact = h < S(720);
+     * (the status bar has it), so the tabs keep room for their lists. */
+    int jh = g_jobpanel ? jobpanel_height(hw) : 0;
+    int log_h = g_log_open ? S(110) : 0, want = S(340), hh = 0, wh = 0, body_h = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        g_hd_compact = pass == 1 || h < S(720);
+        hh = g_header ? header_height(hw) : 0;
+        wh = g_warnbar ? warn_height() : 0;
+        body_h = h - top - (hh ? hh + gap : 0) - (wh ? wh + gap : 0) - gap - jh - (log_h ? log_h + gap : 0) - pad;
+        if (body_h >= want || g_hd_compact) break;
+    }
     if (g_header) {
-        int hh = header_height(hw);
         MoveWindow(g_header, pad, top, hw, hh, TRUE);
         header_layout();
         top += hh + gap;
     }
     if (g_warnbar) {
-        int wh = warn_height();
         if (wh) {
             MoveWindow(g_warnbar, pad, top, hw, wh, TRUE);
             ShowWindow(g_warnbar, SW_SHOWNA);
@@ -11881,12 +12046,9 @@ static void layout(void)
             ShowWindow(g_warnbar, SW_HIDE);
     }
 
-    int jh = g_jobpanel ? jobpanel_height(hw) : 0;
-    int log_h = g_log_open ? S(110) : 0;
-    int body_h = h - top - gap - jh - (log_h ? log_h + gap : 0) - pad;
-    /* A low window: the log gives up some of its height first. */
-    if (log_h && body_h < S(260)) {
-        int take = S(260) - body_h;
+    /* Then the log gives up some of its height. */
+    if (log_h && body_h < want) {
+        int take = want - body_h;
         if (take > log_h - S(56)) take = log_h - S(56);
         if (take > 0) {
             log_h -= take;
@@ -11921,37 +12083,214 @@ static void layout(void)
     RedrawWindow(g_main, &below, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
+/* The tree paints two columns on the right of each row: its state, as a
+ * chip, and its size. After the name come a star when it is starred, a
+ * lock when it is encrypted, and a root's path in grey. */
+static int g_tree_state_w, g_tree_size_w;
+
+/* The theme's parts and states for a tree row (vssym32.h). */
+enum { TREE_PART_ITEM = 1, TREE_HOT = 2, TREE_SELECTED = 3, TREE_SELECTED_NOFOCUS = 5, TREE_HOT_SELECTED = 6 };
+
+/* Rows tall enough for a chip, at any size of text. */
+static void tree_metrics(void)
+{
+    if (!g_tree) return;
+    int h = font_h(g_font) + S(10);
+    if (h < S(24)) h = S(24);
+    TreeView_SetItemHeight(g_tree, h);
+}
+
+static COLORREF tree_bg(void) { return g_hc ? GetSysColor(COLOR_WINDOW) : g_dark ? DARK_FIELD : GetSysColor(COLOR_WINDOW); }
+static COLORREF tree_fg(void) { return g_hc ? GetSysColor(COLOR_WINDOWTEXT) : g_dark ? DARK_TEXT : GetSysColor(COLOR_WINDOWTEXT); }
+static COLORREF star_color(void) { return g_hc ? GetSysColor(COLOR_WINDOWTEXT) : g_dark ? RGB(255, 214, 10) : RGB(193, 156, 0); }
+
+/* A chip no wider than max: its words end in ... if they do not fit. */
+static int draw_chip_fit(HDC dc, int x, int y, int h, const wchar_t *s, int tone, int max)
+{
+    int w = text_w(dc, g_font, s) + S(12);
+    if (w > max) w = max;
+    if (w < S(16)) return 0;
+    RECT r = {x, y, x + w, y + h};
+    if (g_hc) round_box(dc, &r, S(6), GetSysColor(COLOR_WINDOW), GetSysColor(COLOR_WINDOWTEXT));
+    else round_box(dc, &r, S(6), tone_tint(tone), CLR_INVALID);
+    RECT t = {x + S(6), y, x + w - S(6), y + h};
+    draw_str(dc, g_font, tone_text(tone), s, t, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    return w;
+}
+
+/* A small padlock in lines, size s high. Returns its width. */
+static int draw_lock(HDC dc, int x, int y, int s, COLORREF c)
+{
+    int bw = s * 3 / 4, bh = s * 9 / 16, by = y + s - bh, lw = S(3) / 2 < 1 ? 1 : S(3) / 2;
+    int sx0 = x + bw / 5, sx1 = x + bw - bw / 5;
+    HPEN pen = CreatePen(PS_SOLID, lw, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(dc, sx0, y, sx1 + 1, by + bh / 2, sx1 - sx0, sx1 - sx0);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(pen);
+    RECT b = {x, by, x + bw, y + s};
+    round_box(dc, &b, S(3), c, CLR_INVALID);
+    return bw;
+}
+
+/* What the State column says for a row, and in which tone. */
+static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int *tone)
+{
+    *tone = TONE_NEUTRAL;
+    if (r->root && r->missing) { *tone = TONE_BAD; return T(L"Cannot be found"); }
+    if (r->root && r->inactive) return T(L"No longer backed up");
+    if (!r->is_dir) {
+        if (r->state == BD_STATE_BAD) { *tone = TONE_BAD; return T(L"Copy damaged"); }
+        if (r->damaged && r->state != BD_STATE_DELETED) { *tone = TONE_WARN; return T(L"May be damaged"); }
+        switch (r->state) {
+        case BD_STATE_AVAILABLE_OLDER: *tone = TONE_WARN; return T(L"Changed since backup");
+        case BD_STATE_NO_COPY: *tone = TONE_WARN; return T(L"Not backed up");
+        case BD_STATE_DELETED: return T(L"Deleted");
+        case BD_STATE_OFFLINE:
+            if (!r->drive) return T(L"Drive not plugged in");
+            swprintf(buf, cap, T(L"On %ls"), r->drive);
+            return buf;
+        default: return NULL;
+        }
+    }
+    if (r->damaged) {
+        *tone = TONE_WARN;
+        swprintf(buf, cap, TN(r->damaged, L"%d may be damaged", L"%d may be damaged"), r->damaged);
+        return buf;
+    }
+    if (r->state == BD_STATE_NO_COPY && r->files_total > 0) { *tone = TONE_WARN; return T(L"Not backed up"); }
+    if (r->state == BD_STATE_OFFLINE && r->drive) {
+        swprintf(buf, cap, T(L"On %ls"), r->drive);
+        return buf;
+    }
+    if (r->files_total <= 0) return NULL;
+    swprintf(buf, cap, T(L"%lld of %lld available"), (long long)r->files_available, (long long)r->files_total);
+    return buf;
+}
+
+static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
+{
+    HDC dc = cd->nmcd.hdc;
+    HTREEITEM h = (HTREEITEM)cd->nmcd.dwItemSpec;
+    RECT row = cd->nmcd.rc, cr, tr;
+    GetClientRect(g_tree, &cr);
+    if (!TreeView_GetItemRect(g_tree, h, &tr, TRUE)) return;
+    int rh = row.bottom - row.top, right = cr.right - S(8);
+    int show_size = cr.right >= S(380), show_state = cr.right >= S(260);
+    int size_l = show_size ? right - g_tree_size_w : right;
+    int state_l = show_state ? size_l - (show_size ? S(12) : 0) - g_tree_state_w : size_l;
+    if (show_state && state_l < tr.left + S(48)) { /* deep in the tree and narrow: the tooltip says it */
+        show_state = 0;
+        state_l = size_l;
+    }
+    int cols_l = state_l - S(8);
+    if (cols_l < tr.left + S(24)) cols_l = tr.left + S(24);
+
+    /* A name too long for the room left: cut where the columns start. */
+    int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0, hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+    COLORREF fg = tree_fg();
+    if (!sel) {
+        if (r->state == BD_STATE_OFFLINE || r->state == BD_STATE_NO_COPY || r->state == BD_STATE_DELETED) fg = theme_gray();
+    }
+    if (tr.right > cols_l) {
+        int ell = text_w(dc, g_font, L"\x2026") + S(2);
+        RECT clip = {cols_l - ell, row.top, row.right, row.bottom};
+        fill_color(dc, &clip, tree_bg());
+        if (sel || hot) {
+            HTHEME th = OpenThemeData(g_tree, L"TreeView");
+            if (th) {
+                int st = sel ? (GetFocus() == g_tree ? (hot ? TREE_HOT_SELECTED : TREE_SELECTED) : TREE_SELECTED_NOFOCUS) : TREE_HOT;
+                DrawThemeBackground(th, dc, TREE_PART_ITEM, st, &row, &clip);
+                CloseThemeData(th);
+            }
+        }
+        RECT er = {cols_l - ell, row.top, cols_l, row.bottom};
+        draw_str(dc, g_font, fg, L"\x2026", er, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        tr.right = cols_l;
+    }
+
+    /* After the name: the star, the lock, and where a root is. */
+    int x = tr.right + S(6), gh = font_h(g_font);
+    if (r->starred && x + gh < cols_l) {
+        RECT sr = {x, row.top, cols_l, row.bottom};
+        draw_str(dc, g_font, star_color(), L"\x2605", sr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        x += text_w(dc, g_font, L"\x2605") + S(5);
+    }
+    if (r->encrypted && x + gh < cols_l) {
+        int ls = gh * 3 / 4;
+        x += draw_lock(dc, x, row.top + (rh - ls) / 2, ls, ui_link()) + S(6);
+    }
+    if (r->root && r->path && x + S(24) < cols_l) {
+        RECT pr = {x + S(2), row.top, cols_l, row.bottom};
+        draw_str(dc, g_font, theme_gray(), r->path, pr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
+    }
+
+    /* The columns. */
+    int ch = gh + S(4);
+    if (ch > rh - S(2)) ch = rh - S(2);
+    int cy = row.top + (rh - ch) / 2;
+    if (show_state) {
+        wchar_t buf[300];
+        int tone;
+        const wchar_t *chip = tree_chip(r, buf, COUNT_OF(buf), &tone);
+        if (chip) draw_chip_fit(dc, state_l, cy, ch, chip, tone, g_tree_state_w);
+    }
+    if (show_size && r->size > 0 && (!r->is_dir || r->root)) {
+        wchar_t bytes[64];
+        format_bytes(r->size, bytes, 64);
+        RECT zr = {size_l, row.top, right, row.bottom};
+        draw_str(dc, g_font, sel ? tree_fg() : theme_gray(), bytes, zr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    }
+}
+
 static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
 {
     switch (cd->nmcd.dwDrawStage) {
-    case CDDS_PREPAINT:
+    case CDDS_PREPAINT: {
+        /* The State column is as wide as its longest word, in this language. */
+        const wchar_t *probe[] = {T(L"Changed since backup"), T(L"Not backed up"), T(L"Copy damaged"), T(L"May be damaged"),
+                                  T(L"Cannot be found"), T(L"No longer backed up"), T(L"Drive not plugged in")};
+        int w = S(120);
+        for (size_t i = 0; i < COUNT_OF(probe); i++) {
+            int t = text_w(cd->nmcd.hdc, g_font, probe[i]) + S(12);
+            if (t > w) w = t;
+        }
+        g_tree_state_w = w;
+        g_tree_size_w = text_w(cd->nmcd.hdc, g_font, L"999.9 MB") + S(6);
         return CDRF_NOTIFYITEMDRAW;
+    }
     case CDDS_ITEMPREPAINT: {
         node_ref *r = (node_ref *)cd->nmcd.lItemlParam;
-        if (!r || (cd->nmcd.uItemState & CDIS_SELECTED)) return CDRF_DODEFAULT;
+        if (!r) return CDRF_DODEFAULT;
+        int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
         HFONT font = NULL;
         switch (r->state) {
-        case BD_STATE_AVAILABLE:
-        case BD_STATE_PARTIAL:
-            break;
-        case BD_STATE_AVAILABLE_OLDER:
-            cd->clrText = theme_older();
-            break;
         case BD_STATE_OFFLINE:
-        case BD_STATE_NO_COPY:
-            cd->clrText = theme_gray();
-            font = g_font_italic;
+            if (!sel) cd->clrText = theme_gray();
             break;
-        case BD_STATE_BAD:
-            cd->clrText = theme_bad();
-            font = g_font_bold;
+        case BD_STATE_NO_COPY:
+            if (!sel) cd->clrText = theme_gray();
+            if (!r->is_dir) font = g_font_italic;
             break;
         case BD_STATE_DELETED:
-            cd->clrText = theme_gray();
+            if (!sel) cd->clrText = theme_gray();
             font = g_font_strike;
             break;
+        default:
+            break;
         }
-        if (font) { SelectObject(cd->nmcd.hdc, font); return CDRF_NEWFONT; }
+        if (r->root && r->missing && !sel) cd->clrText = theme_gray();
+        LRESULT ret = CDRF_NOTIFYPOSTPAINT;
+        if (font && !r->root) {
+            SelectObject(cd->nmcd.hdc, font);
+            ret |= CDRF_NEWFONT;
+        }
+        return ret;
+    }
+    case CDDS_ITEMPOSTPAINT: {
+        node_ref *r = (node_ref *)cd->nmcd.lItemlParam;
+        if (r) tree_post_paint(cd, r);
         return CDRF_DODEFAULT;
     }
     }
@@ -11997,11 +12336,13 @@ static void create_children(HWND hwnd)
 
     create_pages(hwnd);
     g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
-                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT |
-                                 TVS_SHOWSELALWAYS | TVS_FULLROWSELECT,
+                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS |
+                                 TVS_FULLROWSELECT | TVS_INFOTIP | TVS_NOHSCROLL,
                              0, 0, 10, 10, g_page[TAB_DB], (HMENU)ID_TREE, g_inst, NULL);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)g_font, TRUE);
     TreeView_SetExtendedStyle(g_tree, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+    tree_icons_init();
+    tree_metrics();
 
     g_search = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10,
                                g_page[TAB_DB], (HMENU)ID_SEARCH, g_inst, NULL);
@@ -12175,6 +12516,7 @@ static void dpi_changed(HWND hwnd, int dpi, const RECT *want)
         r.to[2] = g_font_strike;
         r.to[3] = g_font_bold;
         EnumChildWindows(hwnd, refont_child, (LPARAM)&r);
+        tree_metrics();
         if (g_tip) {
             SendMessageW(g_tip, WM_SETFONT, (WPARAM)g_font, FALSE);
             SendMessageW(g_tip, TTM_SETMAXTIPWIDTH, 0, S(560));
@@ -12485,7 +12827,13 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (nh->code == TVN_DELETEITEMW) {
                 NMTREEVIEWW *tv = (NMTREEVIEWW *)lp;
                 node_ref *r = (node_ref *)tv->itemOld.lParam;
-                if (r) { free(r->rel); free(r); }
+                free_node_ref(r);
+                return 0;
+            }
+            if (nh->code == TVN_GETINFOTIPW) {
+                NMTVGETINFOTIPW *tip = (NMTVGETINFOTIPW *)lp;
+                node_ref *r = (node_ref *)tip->lParam;
+                if (r && r->tip && tip->pszText && tip->cchTextMax > 0) lstrcpynW(tip->pszText, r->tip, tip->cchTextMax);
                 return 0;
             }
         }

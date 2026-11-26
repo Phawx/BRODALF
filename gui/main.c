@@ -9149,6 +9149,8 @@ enum { CHOICE_LAST = 100, CHOICE_OPEN, CHOICE_NEW, CHOICE_RECOVER, CHOICE_FIND }
 static void open_database_ui(int choice);
 static void cmd_bitrot(void);
 
+static void cmd_legend(void);
+
 static void menu_command(int cmd)
 {
     if (cmd >= ID_DRIVE_ACT_BASE) {
@@ -9178,7 +9180,7 @@ static void menu_command(int cmd)
         return;
     }
     case ID_M_LEGEND:
-        MessageBoxW(g_main, tree_legend(), APP_NAME, MB_ICONINFORMATION);
+        cmd_legend();
         return;
     case ID_M_ABOUT: {
         wchar_t *v = widen(bd_version()), msg[700];
@@ -14147,14 +14149,15 @@ static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int
 static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
 {
     HDC dc = cd->nmcd.hdc;
+    HWND tv = cd->nmcd.hdr.hwndFrom;
     HTREEITEM h = (HTREEITEM)cd->nmcd.dwItemSpec;
     RECT row = cd->nmcd.rc, cr, tr;
-    GetClientRect(g_tree, &cr);
-    if (!TreeView_GetItemRect(g_tree, h, &tr, TRUE)) return;
+    GetClientRect(tv, &cr);
+    if (!TreeView_GetItemRect(tv, h, &tr, TRUE)) return;
     int rh = row.bottom - row.top, right = cr.right - S(8);
     int show_size = cr.right >= S(380), show_state = cr.right >= S(260);
-    int size_l = show_size ? right - g_tree_size_w : right;
-    int state_l = show_state ? size_l - (show_size ? S(12) : 0) - g_tree_state_w : size_l;
+    int size_l = show_size ? right - tv_size_w : right;
+    int state_l = show_state ? size_l - (show_size ? S(12) : 0) - tv_state_w : size_l;
     if (show_state && state_l < tr.left + S(48)) { /* deep in the tree and narrow: the tooltip says it */
         show_state = 0;
         state_l = size_l;
@@ -14173,9 +14176,9 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
         RECT clip = {cols_l - ell, row.top, row.right, row.bottom};
         fill_color(dc, &clip, tree_bg());
         if (sel || hot) {
-            HTHEME th = OpenThemeData(g_tree, L"TreeView");
+            HTHEME th = OpenThemeData(tv, L"TreeView");
             if (th) {
-                int st = sel ? (GetFocus() == g_tree ? (hot ? TREE_HOT_SELECTED : TREE_SELECTED) : TREE_SELECTED_NOFOCUS) : TREE_HOT;
+                int st = sel ? (GetFocus() == tv ? (hot ? TREE_HOT_SELECTED : TREE_SELECTED) : TREE_SELECTED_NOFOCUS) : TREE_HOT;
                 DrawThemeBackground(th, dc, TREE_PART_ITEM, st, &row, &clip);
                 CloseThemeData(th);
             }
@@ -14209,7 +14212,7 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
         wchar_t buf[300];
         int tone;
         const wchar_t *chip = tree_chip(r, buf, COUNT_OF(buf), &tone);
-        if (chip) draw_chip_fit(dc, state_l, cy, ch, chip, tone, g_tree_state_w);
+        if (chip) draw_chip_fit(dc, state_l, cy, ch, chip, tone, tv_state_w);
     }
     if (show_size && r->size > 0 && (!r->is_dir || r->root)) {
         wchar_t bytes[64];
@@ -14321,6 +14324,147 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
     }
     return CDRF_DODEFAULT;
 }
+
+/* ---- What the file list shows ---------------------------------------------
+ * Sample rows, drawn by the same code as the list of files, each with a line
+ * under it that says what it means. */
+
+static HTREEITEM legend_item(HWND tv, HTREEITEM parent, const wchar_t *text, node_ref *r)
+{
+    TVINSERTSTRUCTW t;
+    memset(&t, 0, sizeof(t));
+    t.hParent = parent;
+    t.hInsertAfter = TVI_LAST;
+    t.item.mask = TVIF_TEXT | TVIF_PARAM;
+    t.item.pszText = (LPWSTR)text;
+    t.item.lParam = (LPARAM)r;
+    if (r) {
+        int icon = r->is_dir ? g_icon_folder : file_icon(text);
+        if (icon >= 0) {
+            t.item.mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+            t.item.iImage = t.item.iSelectedImage = icon;
+        }
+    }
+    return (HTREEITEM)SendMessageW(tv, TVM_INSERTITEMW, 0, (LPARAM)&t);
+}
+
+/* The line under a sample: plain words, lined up under its name. */
+static LRESULT legend_says_draw(NMTVCUSTOMDRAW *cd)
+{
+    HWND tv = cd->nmcd.hdr.hwndFrom;
+    HTREEITEM h = (HTREEITEM)cd->nmcd.dwItemSpec, parent = TreeView_GetParent(tv, h);
+    RECT row = cd->nmcd.rc, pr;
+    int x = row.left + S(28);
+    if (parent && TreeView_GetItemRect(tv, parent, &pr, TRUE)) x = pr.left + S(2);
+    fill_color(cd->nmcd.hdc, &row, tree_bg());
+    wchar_t text[400] = L"";
+    TVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = TVIF_TEXT;
+    it.hItem = h;
+    it.pszText = text;
+    it.cchTextMax = 400;
+    SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&it);
+    RECT tr = {x, row.top, row.right - S(8), row.bottom - S(6)};
+    draw_str(cd->nmcd.hdc, g_font, tree_fg(), text, tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    return CDRF_SKIPDEFAULT;
+}
+
+static INT_PTR CALLBACK legend_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    INT_PTR themed;
+    if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
+    static node_ref refs[10];
+    static wchar_t drive[128], path[300];
+    switch (msg) {
+    case WM_INITDIALOG: {
+        HWND tv = GetDlgItem(dlg, IDC_LEGEND_TREE);
+        SendMessageW(tv, WM_SETFONT, (WPARAM)g_font, FALSE);
+        TreeView_SetExtendedStyle(tv, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+        HIMAGELIST il = g_tree ? TreeView_GetImageList(g_tree, TVSIL_NORMAL) : NULL;
+        if (il) TreeView_SetImageList(tv, il, TVSIL_NORMAL);
+        int ih = font_h(g_font) + S(10);
+        TreeView_SetItemHeight(tv, ih < S(24) ? S(24) : ih);
+        /* A drive of theirs to name, if there is one. */
+        swprintf(drive, 128, L"%ls", T(L"Blue"));
+        {
+            drive_list dl = load_drives();
+            for (int i = 0; i < dl.n; i++)
+                if (!dl.items[i].secondary && strcmp(dl.items[i].kind, "drive") == 0) {
+                    wchar_t *w = widen(dl.items[i].label);
+                    if (w && *w) swprintf(drive, 128, L"%ls", w);
+                    free(w);
+                    break;
+                }
+            free(dl.items);
+        }
+        swprintf(path, 300, L"%ls", L"C:\\Users\\Documents");
+        memset(refs, 0, sizeof(refs));
+        struct { const wchar_t *name, *says; } rows[10] = {
+            {T(L"Letter.docx"), T(L"No state: a good copy is on a drive that is plugged in.")},
+            {T(L"Taxes 2025.pdf"), T(L"Name in grey: its copy is on a drive that is not plugged in.")},
+            {T(L"Notes.txt"), T(L"Name in grey italics: it has no copy yet.")},
+            {T(L"Budget.xlsx"), T(L"Only an older version is backed up; the next backup copies it.")},
+            {T(L"Holiday.jpg"), T(L"Its copy on the plugged-in drive is missing or damaged; back up again to fix it.")},
+            {T(L"Old plan.docx"), T(L"Name struck through: gone from its folder; its copies are still kept.")},
+            {T(L"Song.mp3"), T(L"A bit-rot scan found it changed while its size and time stayed the same.")},
+            {T(L"Photos"), T(L"A folder: how many files in it have a good copy on a plugged-in drive.")},
+            {T(L"Passport.pdf"), T(L"Star: also copied to your extra places. Lock: encrypted wherever it is copied.")},
+            {T(L"Documents"), T(L"A backup root that was not there at the last scan, and where it was.")},
+        };
+        refs[0].state = BD_STATE_AVAILABLE; refs[0].size = 24900;
+        refs[1].state = BD_STATE_OFFLINE; refs[1].size = 182000; refs[1].drive = drive;
+        refs[2].state = BD_STATE_NO_COPY; refs[2].size = 3100;
+        refs[3].state = BD_STATE_AVAILABLE_OLDER; refs[3].size = 48200;
+        refs[4].state = BD_STATE_BAD; refs[4].size = 2400000;
+        refs[5].state = BD_STATE_DELETED; refs[5].size = 19700;
+        refs[6].state = BD_STATE_AVAILABLE; refs[6].damaged = 1; refs[6].size = 5300000;
+        refs[7].state = BD_STATE_AVAILABLE; refs[7].is_dir = 1; refs[7].files_total = 10; refs[7].files_available = 3;
+        refs[8].state = BD_STATE_AVAILABLE; refs[8].starred = 1; refs[8].encrypted = 1; refs[8].size = 310000;
+        refs[9].state = BD_STATE_AVAILABLE; refs[9].is_dir = 1; refs[9].root = 1; refs[9].missing = 1; refs[9].path = path;
+        for (int i = 0; i < 10; i++) {
+            HTREEITEM it = legend_item(tv, TVI_ROOT, rows[i].name, &refs[i]);
+            legend_item(tv, it, rows[i].says, NULL);
+            TreeView_Expand(tv, it, TVE_EXPAND);
+        }
+        TreeView_SelectSetFirstVisible(tv, TreeView_GetRoot(tv));
+        SetDlgItemTextW(dlg, IDC_LEGEND_TEXT, T(L"Each file and folder shows its name, then on the right its state and its size. Point at a "
+                                                L"name for all of it in words; a file's versions are in its details."));
+        SetFocus(GetDlgItem(dlg, IDCANCEL));
+        return FALSE;
+    }
+    case WM_NOTIFY: {
+        NMHDR *nh = (NMHDR *)lp;
+        if (nh->idFrom != IDC_LEGEND_TREE) break;
+        if (nh->code == NM_CUSTOMDRAW) {
+            NMTVCUSTOMDRAW *cd = (NMTVCUSTOMDRAW *)lp;
+            LRESULT r = cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT && !cd->nmcd.lItemlParam ? legend_says_draw(cd) : tree_custom_draw(cd);
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, r);
+            return TRUE;
+        }
+        if (nh->code == TVN_ITEMEXPANDINGW) {
+            /* The lines under the samples stay open. */
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, ((NMTREEVIEWW *)lp)->action == TVE_COLLAPSE);
+            return TRUE;
+        }
+        if (nh->code == TVN_SELCHANGINGW) {
+            /* Nothing to choose here. */
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, TRUE);
+            return TRUE;
+        }
+        break;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) {
+            EndDialog(dlg, 0);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static void cmd_legend(void) { DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LEGEND), g_main, legend_proc); }
 
 /* A tooltip whose text is asked for when it shows (TTN_GETDISPINFOW). */
 static void add_tip(HWND h)

@@ -746,6 +746,7 @@ static void local_metrics(void);
 static void draw_page_button(const DRAWITEMSTRUCT *di);
 static int next_text_lines(void);
 static int font_h(HFONT f);
+static void lv_select(HWND lv, int row);
 static wchar_t g_next_label[128];         /* Next backup: the drive chosen, by its name */
 static int g_next_copy_col = -1, g_next_copy_n; /* where its Copy columns are */
 static int g_next_text_lines;
@@ -4856,6 +4857,7 @@ typedef struct { HWND lv; int rows; } risk_fill_ctx;
 static int64_t g_risk_media[64];
 static int g_risk_connected[64], g_risk_media_n;
 static wchar_t g_risk_media_name[64][128];
+static wchar_t g_risk_label[64][64];
 static int64_t g_risk_pick;
 
 static int risk_file_cb(void *ctx, const bd_risk_info *r)
@@ -4866,8 +4868,12 @@ static int risk_file_cb(void *ctx, const bd_risk_info *r)
     wchar_t *src = widen(r->source_name), *rel = widen(r->rel_path), file[1200], copies[16], places[16], size[64], note[200];
     swprintf(file, 1200, L"%ls\\%ls", src ? src : L"", rel ? rel : L"");
     for (wchar_t *c = file; *c; c++) if (*c == L'/') *c = L'\\';
-    swprintf(copies, 16, L"%d", r->copies);
-    swprintf(places, 16, L"%d", r->places);
+    {
+        bd_target t;
+        bd_target_get(g_cat, &t);
+        swprintf(copies, 16, T(L"%d of %d"), r->copies, t.copies);
+        swprintf(places, 16, T(L"%d of %d"), r->places, t.places);
+    }
     format_bytes(r->size, size, 64);
     note[0] = 0;
     if (r->older_copies) wcscat(note, T(L"Changed since its last backup. "));
@@ -4887,7 +4893,6 @@ static int risk_help_cb(void *ctx, const bd_risk_help *h)
     swprintf(name, 300, L"%ls%ls", label ? label : L"", h->connected ? T(L"  (plugged in)") : L"");
     swprintf(files, 32, TN(h->files, L"%lld file", L"%lld files"), (long long)h->files);
     format_bytes(h->bytes, size, 64);
-    const wchar_t *kind = T(L"Drive");
     wchar_t room[96];
     wcsncpy(room, T(L"unknown"), 95);
     room[95] = 0;
@@ -4896,19 +4901,37 @@ static int risk_help_cb(void *ctx, const bd_risk_help *h)
         format_bytes(h->free_bytes, fb, 64);
         swprintf(room, 96, T(L"%ls free%ls"), fb, h->fits ? T(L", room for all of it") : T(L", not enough"));
     }
-    const wchar_t *cells[] = {name, kind, loc && *loc ? loc : T(L"(not set)"), files, size, room};
-    lv_row(f->lv, cells, 6);
+    const wchar_t *cells[] = {name, loc && *loc ? loc : T(L"(not set)"), files, size, room};
+    lv_row(f->lv, cells, 5);
     if (g_risk_media_n < 64) {
         g_risk_media[g_risk_media_n] = h->media_id;
         g_risk_connected[g_risk_media_n] = h->connected;
         swprintf(g_risk_media_name[g_risk_media_n], 128, L"%ls%ls%ls%ls", label ? label : L"", loc && *loc ? T(L" (kept in ") : L"",
                  loc && *loc ? loc : L"", loc && *loc ? L")" : L"");
+        swprintf(g_risk_label[g_risk_media_n], 64, L"%ls", label ? label : L"");
         g_risk_media_n++;
     }
     free(label);
     free(loc);
     f->rows++;
     return 0;
+}
+
+/* The button says which drive it backs up to; it is on only when the
+ * selected drive is plugged in. */
+static void risk_button(HWND dlg)
+{
+    HWND help = GetDlgItem(dlg, IDC_RISK_HELP), b = GetDlgItem(dlg, IDC_RISK_BACKUP);
+    int row = lv_index(help, ListView_GetNextItem(help, -1, LVNI_SELECTED));
+    wchar_t text[120];
+    if (row >= 0 && row < g_risk_media_n && g_risk_connected[row]) {
+        swprintf(text, 120, T(L"Back up to %ls"), g_risk_label[row]);
+        EnableWindow(b, TRUE);
+    } else {
+        swprintf(text, 120, L"%ls", row >= 0 && row < g_risk_media_n ? T(L"Plug it in to back up") : T(L"Back up to it"));
+        EnableWindow(b, FALSE);
+    }
+    SetWindowTextW(b, text);
 }
 
 static void risk_fill(HWND dlg)
@@ -4940,7 +4963,6 @@ static void risk_fill(HWND dlg)
                  (long long)st.deleted_kept, (long long)st.deleted_short, (long long)st.old_versions_kept, (long long)st.old_versions_short);
     }
     SetDlgItemTextW(dlg, IDC_RISK_SUMMARY, text);
-    EnableWindow(GetDlgItem(dlg, IDC_RISK_BACKUP), st.files_at_risk > 0);
 
     HWND help = GetDlgItem(dlg, IDC_RISK_HELP), files = GetDlgItem(dlg, IDC_RISK_FILES);
     ListView_DeleteAllItems(help);
@@ -4952,6 +4974,13 @@ static void risk_fill(HWND dlg)
         const wchar_t *cells[] = {T(L"None of your drives would help. Set up another drive, or one kept somewhere else."), L"", L"", L"", L""};
         lv_row(help, cells, 5);
     }
+    /* The first plugged-in drive is picked, so the button is ready. */
+    for (int i = 0; i < g_risk_media_n; i++)
+        if (g_risk_connected[i]) {
+            lv_select(help, i);
+            break;
+        }
+    risk_button(dlg);
     risk_fill_ctx fc = {files, 0};
     if (st.files_at_risk) bd_list_at_risk(g_cat, 0, risk_file_cb, &fc, NULL);
     if (st.files_at_risk > fc.rows) {
@@ -4968,11 +4997,11 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_INITDIALOG: {
-        static const wchar_t *help_cols[] = {N_(L"Drive"), N_(L"Kind"), N_(L"Kept in"), N_(L"Would help"), N_(L"Size"), N_(L"Free space")};
-        static const int help_w[] = {150, 60, 100, 80, 70, 190};
+        static const wchar_t *help_cols[] = {N_(L"Drive"), N_(L"Kept in"), N_(L"Would fix"), N_(L"Size"), N_(L"Free space")};
+        static const int help_w[] = {150, 120, 80, 70, 200};
         static const wchar_t *file_cols[] = {N_(L"File"), N_(L"Copies"), N_(L"Places"), N_(L"Size"), N_(L"Note")};
         static const int file_w[] = {280, 56, 56, 70, 200};
-        lv_columns(GetDlgItem(dlg, IDC_RISK_HELP), help_cols, help_w, 6);
+        lv_columns(GetDlgItem(dlg, IDC_RISK_HELP), help_cols, help_w, 5);
         lv_columns(GetDlgItem(dlg, IDC_RISK_FILES), file_cols, file_w, 5);
         bd_target t;
         bd_target_get(g_cat, &t);
@@ -5026,6 +5055,7 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     case WM_NOTIFY: {
         NMHDR *nh = (NMHDR *)lp;
         if (nh->idFrom == IDC_RISK_HELP && nh->code == NM_DBLCLK) SendMessageW(dlg, WM_COMMAND, IDC_RISK_BACKUP, 0);
+        if (nh->idFrom == IDC_RISK_HELP && nh->code == LVN_ITEMCHANGED) risk_button(dlg);
         return TRUE;
     }
     }

@@ -53,11 +53,11 @@ BEGIN
     EDITTEXT IDC_RISK_PLACES, 160, 42, 22, 13, ES_NUMBER
     LTEXT "different places.", -1, 186, 44, 64, 10
     PUSHBUTTON "Apply", IDC_RISK_APPLY, 254, 41, 50, 14
-    LTEXT "A place is what Drives... says a drive's ""Where it is kept"" is. Drives with no place set count as one place together.", -1, 8, 60, 404, 18
-    LTEXT "Back up to these next (double-click a plugged-in one to start):", -1, 8, 82, 316, 10
-    PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 328, 78, 84, 14
+    LTEXT "A drive's place is where it is kept; Drives... sets it. Drives with no place set count as one place together.", -1, 8, 60, 404, 18
+    LTEXT "The drives that would fix the most, best first:", -1, 8, 82, 284, 10
+    PUSHBUTTON "Back up to it", IDC_RISK_BACKUP, 296, 78, 116, 14
     CONTROL "", IDC_RISK_HELP, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 8, 94, 404, 56
-    LTEXT "Files short of the target, fewest copies first:", IDC_RISK_FILES_TEXT, 8, 156, 404, 10
+    LTEXT "Files below your goal, fewest copies first:", IDC_RISK_FILES_TEXT, 8, 156, 404, 10
     CONTROL "", IDC_RISK_FILES, "SysListView32", LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP, 8, 168, 404, 120
     DEFPUSHBUTTON "Close", IDCANCEL, 362, 294, 50, 14
 END

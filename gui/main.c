@@ -1255,7 +1255,11 @@ static LRESULT CALLBACK dark_status_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp,
             wchar_t *text = calloc((size_t)len + 1, sizeof(wchar_t));
             if (!text) continue;
             SendMessageW(h, SB_GETTEXTW, (WPARAM)i, (LPARAM)text);
-            r.left += S(4);
+            if (i > 0 && text[0]) {
+                RECT sep = {r.left, r.top + S(4), r.left + 1, r.bottom - S(4)};
+                FillRect(dc, &sep, g_br_border);
+            }
+            r.left += S(6);
             DrawTextW(dc, text, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             free(text);
         }
@@ -1828,6 +1832,8 @@ static int jobpanel_height(int w);
 static void jp_start(const wchar_t *what);
 static void jp_stopping(void);
 static void goal_text(wchar_t *out, size_t cap);
+static void status_bar_refresh(void);
+static void status_state(const wchar_t *s);
 static void select_media_row(int64_t id, int secondary);
 static void drive_popup(int64_t id, int x, int y);
 
@@ -2756,15 +2762,17 @@ static void start_next_job(void)
         swprintf(what_buf, 700, T(L"Checking what was just written to %ls..."), name);
         what = what_buf;
     }
-    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
+    /* The job panel says what a job does; a refresh, which it does not
+     * show, says so in a word in the status bar. */
+    status_state(j->kind != JOB_REFRESH ? L"" : j->saving ? T(L"Saving...") : T(L"Updating the figures..."));
     /* If Windows shuts down or signs out now, its list of what holds that
      * up says what BRODALF is doing (WM_ENDSESSION stops it and saves). */
     wchar_t reason[400];
     if (j->kind == JOB_REFRESH) swprintf(reason, 400, L"%ls", what);
     else swprintf(reason, 400, T(L"%ls Shutting down now stops it; what was done until then is kept."), what);
     ShutdownBlockReasonCreate(g_main, reason);
-    /* A refresh says what it does in the status bar only: the bar and its
-     * line still show how the last job ended. */
+    /* A refresh shows in the status bar only: the job panel still shows
+     * how the last job ended. */
     g_njob_ids = 0;
     if (j->n_many)
         for (int k = 0; k < j->n_many && k < 16; k++) g_job_ids[g_njob_ids++] = j->many[k];
@@ -2805,7 +2813,7 @@ static void stop_job(void)
     EnableWindow(g_stop, FALSE);
     keep_focus(g_tabs);
     update_menus();
-    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)T(L"Stopping..."));
+    status_state(T(L"Stopping..."));
     jp_stopping();
 }
 
@@ -4537,17 +4545,7 @@ static void update_drives_label(void)
         warn_sort();
     }
     header_refresh();
-    /* The status bar: the database and the goal, beside what is happening. */
-    if (g_status) {
-        wchar_t db[MAX_PATH * 2 + 64] = L"", goal[300] = L"";
-        if (g_cat) {
-            const wchar_t *base = wcsrchr(g_cat_path, L'\\');
-            swprintf(db, MAX_PATH * 2 + 64, T(L"Database: %ls"), base ? base + 1 : g_cat_path);
-            goal_text(goal, 300);
-        }
-        SendMessageW(g_status, SB_SETTEXTW, 1, (LPARAM)db);
-        SendMessageW(g_status, SB_SETTEXTW, 2, (LPARAM)goal);
-    }
+    status_bar_refresh();
     /* The button says how many files are short of the target; it is as
      * wide as its text. */
     wchar_t risk[64];
@@ -11604,6 +11602,82 @@ static int font_h(HFONT f)
     return tm.tmHeight;
 }
 
+/* The status bar holds quiet facts, each in its own part: the database,
+ * the goal, the last scan, and whether a change is being saved. What is
+ * running is in the job panel above it, so it is not said twice. */
+static wchar_t g_sb_state[200];
+
+static void status_state(const wchar_t *s)
+{
+    swprintf(g_sb_state, 200, L"%ls", s ? s : L"");
+    status_bar_refresh();
+}
+
+static void status_bar_refresh(void)
+{
+    if (!g_status) return;
+    wchar_t db[MAX_PATH * 2 + 64] = L"", goal[160] = L"", scan[160] = L"";
+    if (g_cat) {
+        const wchar_t *base = wcsrchr(g_cat_path, L'\\');
+        swprintf(db, MAX_PATH * 2 + 64, T(L"Database: %ls"), base ? base + 1 : g_cat_path);
+        if (g_target_places > 1) swprintf(goal, 160, T(L"Goal: %d copies in %d places"), g_target_copies, g_target_places);
+        else swprintf(goal, 160, TN(g_target_copies, L"Goal: %d copy", L"Goal: %d copies"), g_target_copies);
+        if (g_figs && g_figs->last_scan_ms) {
+            wchar_t when[96];
+            friendly_time(g_figs->last_scan_ms, when, 96);
+            swprintf(scan, 160, T(L"Last scan %ls"), when);
+        } else if (g_figs)
+            swprintf(scan, 160, L"%ls", T(L"Not scanned yet"));
+    } else
+        swprintf(db, 64, L"%ls", T(L"No database open"));
+    const wchar_t *txt[4] = {db, goal, scan, g_sb_state};
+    /* Each part as wide as its text; the database has the rest. */
+    int wpart[4] = {0, 0, 0, 0};
+    HDC dc = GetDC(g_status);
+    HFONT f = (HFONT)SendMessageW(g_status, WM_GETFONT, 0, 0);
+    HGDIOBJ old = f ? SelectObject(dc, f) : NULL;
+    for (int i = 1; i < 4; i++) {
+        SIZE sz = {0, 0};
+        if (txt[i][0]) GetTextExtentPoint32W(dc, txt[i], (int)wcslen(txt[i]), &sz);
+        wpart[i] = txt[i][0] ? sz.cx + S(26) : 0;
+    }
+    if (old) SelectObject(dc, old);
+    ReleaseDC(g_status, dc);
+    RECT rc;
+    GetClientRect(g_status, &rc);
+    int parts[4];
+    parts[3] = -1;
+    parts[2] = rc.right - GetSystemMetrics(SM_CXVSCROLL) - wpart[3];
+    parts[1] = parts[2] - wpart[2];
+    parts[0] = parts[1] - wpart[1];
+    if (parts[0] < S(120)) parts[0] = S(120);
+    if (parts[1] < parts[0]) parts[1] = parts[0];
+    if (parts[2] < parts[1]) parts[2] = parts[1];
+    SendMessageW(g_status, SB_SETPARTS, 4, (LPARAM)parts);
+    for (int i = 0; i < 4; i++) SendMessageW(g_status, SB_SETTEXTW, (WPARAM)i, (LPARAM)txt[i]);
+}
+
+/* A window that would reach past the screen's work area (under the
+ * taskbar, say) is made to fit it. */
+static void fit_to_work_area(HWND hwnd)
+{
+    MONITORINFO mi;
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    RECT wa = mi.rcWork, r;
+    GetWindowRect(hwnd, &r);
+    int w = r.right - r.left, h = r.bottom - r.top, x = r.left, y = r.top;
+    if (w > wa.right - wa.left) w = wa.right - wa.left;
+    if (h > wa.bottom - wa.top) h = wa.bottom - wa.top;
+    if (x + w > wa.right) x = wa.right - w;
+    if (y + h > wa.bottom) y = wa.bottom - h;
+    if (x < wa.left) x = wa.left;
+    if (y < wa.top) y = wa.top;
+    if (x != r.left || y != r.top || w != r.right - r.left || h != r.bottom - r.top)
+        SetWindowPos(hwnd, NULL, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 static void goal_text(wchar_t *out, size_t cap)
 {
     if (g_target_places > 1)
@@ -12816,15 +12890,7 @@ static void layout(void)
     int status_h = sr.bottom - sr.top;
     int w = rc.right, h = rc.bottom - status_h;
     int pad = S(8), gap = S(8), bar = S(30);
-    /* The status bar: what is happening, the database, the goal. */
-    {
-        int parts[3] = {w - S(560), w - S(280), -1};
-        if (parts[0] < S(220)) {
-            parts[0] = w / 2;
-            parts[1] = w * 3 / 4;
-        }
-        SendMessageW(g_status, SB_SETPARTS, 3, (LPARAM)parts);
-    }
+    status_bar_refresh();
 
     /* The buttons, each as wide as its text, onto a second row (or more)
      * when the window is narrow. */
@@ -13763,7 +13829,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (j->kind == JOB_REFRESH) {
             /* A change was saved: the figures are new, the tree is as it was. */
             InterlockedExchange(&g_busy, 0);
-            SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)j->summary);
+            status_state(j->saving && j->status == BD_OK ? T(L"Saved") : L"");
             if (g_close_after) {
                 job_free(j);
                 DestroyWindow(hwnd);
@@ -13802,7 +13868,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         int stopped = stopping || j->status == BD_ERR_CANCELLED;
         if (j->kind == JOB_DRIVES && j->status == BD_OK) jp_restore();
         else jp_result(j, headline, stopped, !stopped && j->status != BD_OK && job_drive_gone(j));
-        SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)(j->kind == JOB_DRIVES ? j->summary : g_jp_title));
+        status_state(L"");
         log_append(line);
         if (j->n_report && (j->n_problems > 0 || j->status != BD_OK)) {
             /* Kept for "Show what went wrong" until the next job with problems. */
@@ -13898,7 +13964,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_busy && g_running_kind == JOB_REFRESH) {
             /* A change is being saved: close once it is. */
             g_close_after = 1;
-            SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)T(L"Closing as soon as your changes are saved..."));
+            status_state(T(L"Closing once your changes are saved..."));
             return 0;
         }
         if (g_busy) {
@@ -14112,6 +14178,7 @@ static void close_database(void)
     g_conflicts = NULL;
     g_n_conflicts = 0;
     g_last_restore[0] = 0;
+    g_sb_state[0] = 0;
     g_n_check_offered = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");
@@ -14691,6 +14758,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (!hwnd) { LocalFree(argv); return 1; }
     /* It opened on a monitor at another DPI (WM_CREATE took that on). */
     if (g_dpi != made_at) SetWindowPos(hwnd, NULL, 0, 0, S(1240), S(820), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    fit_to_work_area(hwnd);
     theme_window(hwnd);
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);

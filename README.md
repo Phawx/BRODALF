@@ -127,7 +127,11 @@ nothing when a good copy is plugged in. Starred files and folders show a
 many files inside are available. **Help > What the file list shows** draws
 a sample of each, with what it means under it. Select a
 file to see every version and where each copy is, even when none of those
-drives are plugged in, so you know which box to go and get. The buttons
+drives are plugged in, so you know which box to go and get. Its details read
+like a form: the name, the folder it is in, its state, size, version and
+checksum, then one row for each drive with a copy, saying whether the copy
+is good and where that drive is (plugged in, or last seen and where it is
+kept). Right-click a row, or press Ctrl+C, to copy its value. The buttons
 add a backup root, star or encrypt what is selected, run the bit-rot scan,
 change where a root is, change what to leave out, list the deleted,
 damaged, in-use and largest files, and export the list as CSV.

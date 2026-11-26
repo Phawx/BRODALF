@@ -27,6 +27,43 @@ BEGIN
     PUSHBUTTON "Cancel", IDCANCEL, 182, 142, 50, 14
 END
 
+IDD_SETTINGS DIALOGEX 0, 0, 460, 276
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Settings"
+FONT 9, "Segoe UI", 0, 0, 1
+BEGIN
+    LTEXT "Copies", IDC_SET_HEAD_COPIES, 8, 8, 216, 10
+    LTEXT "Copies of every file to keep:", -1, 14, 24, 150, 18
+    EDITTEXT IDC_SET_COPIES, 170, 22, 40, 13, ES_NUMBER
+    CONTROL "", IDC_SET_COPIES_UD, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 210, 22, 10, 13
+    LTEXT "Different places they must be in:", -1, 14, 44, 150, 18
+    EDITTEXT IDC_SET_PLACES, 170, 42, 40, 13, ES_NUMBER
+    CONTROL "", IDC_SET_PLACES_UD, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 210, 42, 10, 13
+    LTEXT "Drives kept in the same place count as one place, and so do drives with no place set. Where a drive is kept is in its details (Drives...).", -1, 14, 62, 210, 26
+    LTEXT "", IDC_SET_PREVIEW, 14, 90, 210, 18
+    LTEXT "Checks", IDC_SET_HEAD_CHECKS, 8, 116, 216, 10
+    LTEXT "A plugged-in drive offers a check of its copies:", -1, 14, 130, 210, 10
+    COMBOBOX IDC_SET_CHECK_DAYS, 14, 142, 160, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Check copies not checked lately reads:", -1, 14, 162, 210, 10
+    COMBOBOX IDC_SET_VERIFY, 14, 174, 160, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "Ask again about drives", IDC_SET_UNIGNORE, 14, 196, 210, 14
+    LTEXT "Backups", IDC_SET_HEAD_BACKUP, 236, 8, 216, 10
+    CONTROL "One drive after another (easier on this PC)", IDC_SET_SERIAL, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 242, 22, 210, 10
+    CONTROL "Several drives at once", IDC_SET_PARALLEL, "Button", BS_AUTORADIOBUTTON, 242, 34, 210, 10
+    LTEXT "Faster with two or more drives, but this PC works harder while it runs, other programs may be slower, and the backup goes at the pace of the slowest drive.", -1, 254, 46, 198, 34
+    CONTROL "Let other programs come first while a job runs", IDC_SET_LOWPRI, "Button", BS_AUTOCHECKBOX | BS_MULTILINE | WS_GROUP | WS_TABSTOP, 242, 82, 210, 18
+    LTEXT "Space kept free on each drive for the database's copies:", -1, 242, 104, 210, 18
+    COMBOBOX IDC_SET_RESERVE, 242, 122, 100, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "What to leave out in every backup root...", IDC_SET_SKIP, 242, 142, 210, 14
+    LTEXT "Passphrase", IDC_SET_HEAD_PASS, 236, 166, 216, 10
+    LTEXT "", IDC_SET_PASS_STATE, 242, 180, 210, 18
+    PUSHBUTTON "Set a passphrase...", IDC_SET_PASS, 242, 200, 140, 14
+    CONTROL "Encrypt the database file", IDC_SET_ENC_CAT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 242, 218, 210, 10
+    PUSHBUTTON "Forget the passphrase until it is needed", IDC_SET_LOCK, 242, 232, 210, 14
+    DEFPUSHBUTTON "OK", IDOK, 348, 256, 50, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 402, 256, 50, 14
+END
+
 IDD_LEGEND DIALOGEX 0, 0, 380, 330
 STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "What the file list shows"

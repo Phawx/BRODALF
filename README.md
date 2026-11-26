@@ -325,7 +325,11 @@ are offered in a list, so drives kept together get the same words.
 places**) shows where each drive stands, from the database alone, so it
 works with the drive in a box: what it holds, what changed since, its last
 backup and check, copies found missing or damaged, and its total, free and
-kept-free space. **View > Status of every drive** puts every drive in one
+kept-free space. Its details window puts the name and where it is kept at
+the top, then the facts as a form, one label and its value to a row, under
+**This drive**, **Where it stands** and **The disk**; when the drive's own
+health says to replace it, that advice is under them in the warning colour.
+**View > Status of every drive** puts every drive in one
 table, and the **Local backups** tab shows them all as a list. **File >
 Export the file list (CSV)** writes every file and the drives holding it,
 for a spreadsheet.
@@ -461,11 +465,21 @@ There are four kinds, each on its own, all on the **Encryption** tab:
 The first time, BRODALF asks you to choose a passphrase. File contents are
 encrypted (XChaCha20-Poly1305, key from Argon2id). File and folder names
 stay readable so you can still find things in Explorer, unless you choose
-otherwise (below). Encrypted copies end in `.bdenc`. The tab also changes the passphrase, makes BRODALF
+otherwise (below). Encrypted copies end in `.bdenc`. The **Encryption** tab's table says at a glance what is
+encrypted and what is not: the passphrase and its recovery key, this database file, and each drive and
+extra place (double-click one for its details). Under it are the folders you chose to encrypt, with how
+far their encrypted copies got and what it costs in time. The tab also changes the passphrase, makes BRODALF
 forget it until it is needed, makes a new recovery key and prints the
 recovery sheet (**File > Print a recovery sheet**), which lists your drives
 and a recovery key that opens your encrypted copies if the passphrase is
 lost.
+
+Wherever BRODALF asks for the passphrase, it says under the field when it
+is not right, and **Show** shows what you typed. A new passphrase is ticked
+off as you type it: at least 8 characters, and the same twice. Changing it
+is one window: the current passphrase (unless it is already entered), then
+the new one twice, with **Use the recovery key** if you no longer know the
+current one.
 
 **What it costs in time.** BRODALF measures how fast this PC encrypts and
 says what that means, for everything you chose and for each folder in the

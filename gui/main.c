@@ -130,7 +130,8 @@ enum {
     ID_ENC_SHEET,
     ID_ENC_DRIVE,
     ID_ENC_CATALOG,
-    ID_ENC_TEXT,
+    ID_ENC_INTRO,
+    ID_ENC_STATE,
     ID_ENC_LABEL,
     ID_ENC_ADD,
     ID_ENC_PICK,
@@ -753,6 +754,7 @@ static int g_next_copy_col = -1, g_next_copy_n; /* where its Copy columns are */
 static int g_next_text_lines;
 static void local_fit_cols(void);
 static int local_list_need(void);
+static int enc_state_need(void);
 /* The Local backups table's columns. */
 static const wchar_t *const g_local_cols[6] = {N_(L"Drive"), N_(L"State"), N_(L"Copies on it"),
                                                N_(L"Space"), N_(L"Health"), N_(L"Last checked")};
@@ -4428,34 +4430,246 @@ static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
 
 static const drive_snap *g_edit_drive;
 static wchar_t g_edit_name[256], g_edit_location[256];
+static int g_drive_note_warn; /* the note under the facts is advice to replace the drive */
+
+/* The drive details as a form: a label and its value on each row, under
+ * headings. A row's data says what it is: 0 a fact, 1 a heading, 2 space. */
+enum { KV_FACT, KV_HEAD, KV_SPACE };
+
+static int lv_index(HWND lv, int pos);
+static void dialog_drop_rows(HWND dlg, int first_id, int next_id);
+
+static void kv_row(HWND lv, int kind, const wchar_t *label, const wchar_t *fmt, ...)
+{
+    wchar_t v[1024] = L"";
+    if (fmt) {
+        va_list ap;
+        va_start(ap, fmt);
+        vswprintf(v, 1024, fmt, ap);
+        va_end(ap);
+    }
+    if (kind == KV_HEAD && ListView_GetItemCount(lv) > 0) kv_row(lv, KV_SPACE, L"", NULL);
+    LVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_TEXT | LVIF_PARAM;
+    it.iItem = ListView_GetItemCount(lv);
+    it.lParam = kind;
+    it.pszText = (wchar_t *)label;
+    int row = (int)SendMessageW(lv, LVM_INSERTITEMW, 0, (LPARAM)&it);
+    LVITEMW sub;
+    memset(&sub, 0, sizeof(sub));
+    sub.iSubItem = 1;
+    sub.pszText = v;
+    SendMessageW(lv, LVM_SETITEMTEXTW, (WPARAM)row, (LPARAM)&sub);
+}
+
+/* Headings in semibold, labels in grey, values in the text colour. */
+static LRESULT kv_draw(NMLVCUSTOMDRAW *cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: return CDRF_NOTIFYSUBITEMDRAW;
+    case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+        HWND lv = cd->nmcd.hdr.hwndFrom;
+        int item = (int)cd->nmcd.dwItemSpec, kind = lv_index(lv, item);
+        int selected = (ListView_GetItemState(lv, item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+        SelectObject(cd->nmcd.hdc, kind == KV_HEAD && g_font_semi ? g_font_semi : (HFONT)SendMessageW(lv, WM_GETFONT, 0, 0));
+        cd->clrText = g_hc || selected || kind == KV_HEAD || cd->iSubItem != 0 ? ListView_GetTextColor(lv) : theme_gray();
+        return CDRF_NEWFONT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
+/* The facts about one drive or extra place, under headings. */
+static void drive_form(HWND lv, const drive_snap *d)
+{
+    wchar_t when[64], a[64], b[64];
+    wchar_t *root = widen(d->root);
+    int is_drive = strcmp(d->kind, "drive") == 0;
+    kv_row(lv, KV_HEAD, d->secondary ? T(L"This extra place") : T(L"This drive"), NULL);
+    format_time_ms(d->last_seen_ms, when, 64);
+    if (!is_drive) kv_row(lv, KV_FACT, T(L"State"), L"%ls", T(L"Cloud account from an earlier version (not supported in this version)"));
+    else if (d->lost_ms) {
+        wchar_t lost[64];
+        format_time_ms(d->lost_ms, lost, 64);
+        /* An extra place has its own words: it is gone, not lost. */
+        int broken = strcmp(d->lost_why, "broken") == 0;
+        kv_row(lv, KV_FACT, T(L"State"),
+               d->secondary ? (broken ? T(L"Marked broken on %ls") : T(L"Marked gone %ls")) : broken ? T(L"Marked broken %ls") : T(L"Marked lost %ls"),
+               lost);
+    } else if (d->connected) kv_row(lv, KV_FACT, T(L"State"), T(L"Plugged in now at %ls"), root ? root : L"");
+    else if (root && *root) kv_row(lv, KV_FACT, T(L"State"), T(L"Not plugged in. Last seen %ls at %ls"), when, root);
+    else kv_row(lv, KV_FACT, T(L"State"), T(L"Not plugged in. Last seen %ls"), when);
+    kv_row(lv, KV_FACT, T(L"Encryption"), L"%ls", d->hide_names ? T(L"Encrypted, names hidden") : d->encrypted ? T(L"Encrypted") : T(L"Not encrypted"));
+    format_time_ms(d->added_ms, when, 64);
+    kv_row(lv, KV_FACT, T(L"Set up"), TN(d->copies, L"%ls, %lld copy recorded", L"%ls, %lld copies recorded"), when, (long long)d->copies);
+    if (is_drive && !d->lost_ms && d->copies) {
+        format_bytes(d->bytes_held, a, 64);
+        kv_row(lv, KV_FACT, T(L"Good copies"), L"%ls", a);
+        if (d->oldest_unread_ms) {
+            format_time_ms(d->oldest_unread_ms, when, 64);
+            kv_row(lv, KV_FACT, T(L"Checked"), T(L"Some never, since they were written (the oldest %ls)%ls"), when,
+                   d->check_due ? T(L" (due for a check)") : L"");
+        } else {
+            format_time_ms(d->oldest_check_ms, when, 64);
+            kv_row(lv, KV_FACT, T(L"Checked"), T(L"All; the oldest check was %ls%ls"), when, d->check_due ? T(L" (due for a check)") : L"");
+        }
+    }
+    free(root);
+
+    if (is_drive) {
+        kv_row(lv, KV_HEAD, T(L"Where it stands"), NULL);
+        const drive_fig *g = fig_of(d->id);
+        if (!g || !g->has_ms)
+            kv_row(lv, KV_FACT, T(L"Its copies"), L"%ls", g ? T(L"Could not be read from the database.") : T(L"Being read..."));
+        else {
+            bd_media_status ms = g->ms;
+            format_bytes(ms.bytes_current, a, 64);
+            kv_row(lv, KV_FACT, T(L"As they are now"), TN(ms.files_current, L"%lld file (%ls)", L"%lld files (%ls)"), (long long)ms.files_current, a);
+            if (ms.files_behind) {
+                format_bytes(ms.bytes_behind, a, 64);
+                kv_row(lv, KV_FACT, T(L"Changed since"), TN(ms.files_behind, L"%lld file (%ls): only an older version is on it",
+                                                             L"%lld files (%ls): only an older version is on it"),
+                       (long long)ms.files_behind, a);
+            }
+            if (ms.files_not_here) {
+                format_bytes(ms.bytes_not_here, a, 64);
+                kv_row(lv, KV_FACT, T(L"Not on it at all"), TN(ms.files_not_here, L"%lld file (%ls)", L"%lld files (%ls)"),
+                       (long long)ms.files_not_here, a);
+            }
+            if (ms.deleted_kept)
+                kv_row(lv, KV_FACT, T(L"Deleted, still kept"), TN(ms.deleted_kept, L"%lld file deleted from its folder", L"%lld files deleted from their folders"),
+                       (long long)ms.deleted_kept);
+            if (ms.old_versions) {
+                format_bytes(ms.old_bytes, a, 64);
+                kv_row(lv, KV_FACT, T(L"Older versions"), L"%lld (%ls)", (long long)ms.old_versions, a);
+            }
+            if (ms.last_backup_ms) {
+                wchar_t failed[96] = L"";
+                format_time_ms(ms.last_backup_ms, when, 64);
+                if (ms.last_backup_failed) swprintf(failed, 96, T(L", %lld failed"), (long long)ms.last_backup_failed);
+                kv_row(lv, KV_FACT, T(L"Last backup"), T(L"%ls: %ls, %lld files copied%ls"), when,
+                       job_end_words(ms.last_backup_status, ms.last_backup_end_ms), (long long)ms.last_backup_files, failed);
+            } else
+                kv_row(lv, KV_FACT, T(L"Last backup"), L"%ls", T(L"Never backed up to"));
+            if (ms.last_check_ms) {
+                format_time_ms(ms.last_check_ms, when, 64);
+                kv_row(lv, KV_FACT, T(L"Last check"),
+                       strcmp(ms.last_check_kind, "read back") == 0 ? T(L"%ls: %ls (only the copies not checked lately)") : L"%ls: %ls", when,
+                       job_end_words(ms.last_check_status, ms.last_check_ms));
+            } else
+                kv_row(lv, KV_FACT, T(L"Last check"), L"%ls", T(L"Never: Check drive... checks its copies"));
+            if (ms.copies_bad)
+                kv_row(lv, KV_FACT, T(L"Damaged or missing"), TN(ms.copies_bad, L"%lld copy when last checked: the next backup to it writes it again",
+                                                                  L"%lld copies when last checked: the next backup to it writes them again"),
+                       (long long)ms.copies_bad);
+            if (ms.copies_never_read)
+                kv_row(lv, KV_FACT, T(L"Never checked"), TN(ms.copies_never_read, L"%lld copy, since it was written", L"%lld copies, since they were written"),
+                       (long long)ms.copies_never_read);
+        }
+    }
+
+    /* An extra place is a folder: the disk under it says nothing about it. */
+    if (!is_drive || d->secondary) return;
+    kv_row(lv, KV_HEAD, T(L"The disk"), NULL);
+    if (!d->has_hw) {
+        kv_row(lv, KV_FACT, T(L"Disk"), L"%ls", T(L"No details yet: they are read the next time it is plugged in."));
+        return;
+    }
+    const bd_drive_hw *h = &d->hw;
+    wchar_t *vendor = widen(h->vendor), *model = widen(h->model), *bus = widen(h->bus), *serial = widen(h->serial);
+    wchar_t *fw = widen(h->firmware), *vname = widen(h->volume_name), *vser = widen(h->volume_serial), *fs = widen(h->filesystem);
+    wchar_t *health = widen(h->health), *note = widen(h->note);
+    a[0] = 0;
+    if (h->disk_bytes > 0) format_bytes(h->disk_bytes, a, 64);
+    wchar_t name[256], line[512] = L"";
+    swprintf(name, 256, L"%ls%ls%ls", vendor, *vendor && *model ? L" " : L"", model);
+    const wchar_t *parts[3] = {name, a, bus};
+    for (int i = 0; i < 3; i++)
+        if (*parts[i]) swprintf(line + wcslen(line), 512 - wcslen(line), L"%ls%ls", *line ? L", " : L"", parts[i]);
+    if (*line) kv_row(lv, KV_FACT, T(L"Disk"), L"%ls", line);
+    if (*serial) kv_row(lv, KV_FACT, T(L"Serial number"), L"%ls%ls%ls", serial, *fw ? T(L", firmware ") : L"", fw);
+    if (*vser) kv_row(lv, KV_FACT, T(L"Volume"), T(L"\"%ls\" (%ls, serial %ls)"), *vname ? vname : T(L"no name"), fs, vser);
+    if (h->smart) {
+        wtext t = {NULL, 0, 0};
+        wadd(&t, L"%ls", *health ? health : T(L"unknown"));
+        if (h->temperature_c >= 0) wadd(&t, L", %d \x00B0" L"C", h->temperature_c);
+        if (h->power_on_hours >= 0) wadd(&t, T(L", %lld hours powered on"), (long long)h->power_on_hours);
+        if (h->power_cycles >= 0) wadd(&t, T(L", %lld power cycles"), (long long)h->power_cycles);
+        if (h->percent_used >= 0) wadd(&t, T(L", %d%% worn"), h->percent_used);
+        kv_row(lv, KV_FACT, T(L"Health"), L"%ls", t.p ? t.p : L"");
+        free(t.p);
+        if (h->reallocated_sectors > 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
+            kv_row(lv, KV_FACT, T(L"Sectors"), T(L"%lld reallocated, %lld waiting to be reallocated, %lld unreadable"),
+                   (long long)(h->reallocated_sectors > 0 ? h->reallocated_sectors : 0),
+                   (long long)(h->pending_sectors > 0 ? h->pending_sectors : 0),
+                   (long long)(h->uncorrectable_sectors > 0 ? h->uncorrectable_sectors : 0));
+    } else if (h->temperature_c >= 0)
+        kv_row(lv, KV_FACT, T(L"Temperature"), L"%d \x00B0" L"C", h->temperature_c);
+    if (*note) kv_row(lv, KV_FACT, T(L"Note"), L"%ls", note);
+    if (d->total > 0) {
+        format_bytes(d->freeb, a, 64);
+        format_bytes(d->total, b, 64);
+        kv_row(lv, KV_FACT, T(L"Free space"), T(L"%ls free of %ls when last seen"), a, b);
+    }
+    format_time_ms(d->hw_read_ms, when, 64);
+    kv_row(lv, KV_FACT, T(L"Read from the drive"), L"%ls", when);
+    free(vendor); free(model); free(bus); free(serial); free(fw); free(vname); free(vser); free(fs); free(health); free(note);
+}
 
 static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_CTLCOLORSTATIC && !g_hc && g_drive_note_warn && GetDlgCtrlID((HWND)lp) == IDC_DRIVE_NOTE) {
+        /* Advice to replace the drive, in the warning colour. */
+        LRESULT r;
+        HDC dc = (HDC)wp;
+        if (!theme_ctlcolor(msg, wp, lp, &r)) {
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+            r = (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        SetTextColor(dc, tone_text(TONE_WARN));
+        return (INT_PTR)r;
+    }
     INT_PTR themed;
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG: {
         const drive_snap *d = g_edit_drive;
-        wtext t = {NULL, 0, 0};
-        wchar_t added[64], copies[32];
-        add_drive_heading(&t, d, L"");
-        format_time_ms(d->added_ms, added, 64);
-        swprintf(copies, 32, L"%lld", (long long)d->copies);
-        wadd(&t, T(L"    Set up %ls, %ls copies recorded\r\n\r\n"), added, copies);
-        if (strcmp(d->kind, "drive") == 0) {
-            add_drive_status(&t, d->id, L"");
-            wadd(&t, L"\r\n");
+        HWND lv = GetDlgItem(dlg, IDC_DRIVE_INFO);
+        ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        {
+            LVCOLUMNW c;
+            memset(&c, 0, sizeof(c));
+            c.mask = LVCF_WIDTH;
+            c.cx = S(160);
+            ListView_InsertColumn(lv, 0, &c);
+            ListView_InsertColumn(lv, 1, &c);
         }
-        /* An extra place is a folder: the disk under it says nothing about it. */
-        if (!d->secondary) add_drive_lines(&t, d, L"");
-        if (d->lost_ms && d->secondary)
-            wadd(&t, T(L"\r\nBRODALF no longer copies starred files there. Your full copies do not change: extra places never count "
-                     L"toward them. If it is back, choose Found it.\r\n"));
-        else if (d->lost_ms)
-            wadd(&t, T(L"\r\nIts copies still restore if it turns up, but they no longer count toward your full copies, so the "
-                     L"files it held are backed up again to your other drives. If you find it, choose Found it.\r\n"));
-        SetDlgItemTextW(dlg, IDC_DRIVE_INFO, t.p ? t.p : L"");
+        drive_form(lv, d);
+        {
+            /* The labels as wide as the widest, the values the rest. */
+            RECT rc;
+            GetClientRect(lv, &rc);
+            ListView_SetColumnWidth(lv, 0, LVSCW_AUTOSIZE);
+            int w0 = ListView_GetColumnWidth(lv, 0) + S(12);
+            if (w0 > rc.right * 45 / 100) w0 = rc.right * 45 / 100;
+            ListView_SetColumnWidth(lv, 0, w0);
+            ListView_SetColumnWidth(lv, 1, rc.right - w0 - GetSystemMetrics(SM_CXVSCROLL));
+        }
+        /* Under the facts: what being marked lost means, or what the drive's
+         * health says to do. */
+        const wchar_t *note = d->lost_ms && d->secondary
+                                  ? T(L"BRODALF no longer copies starred files there. Your full copies do not change: extra places never count "
+                                      L"toward them. If it is back, choose Found it.")
+                              : d->lost_ms ? T(L"Its copies still restore if it turns up, but they no longer count toward your full copies, so the "
+                                               L"files it held are backed up again to your other drives. If you find it, choose Found it.")
+                              : d->secondary ? NULL
+                                             : replace_advice(d);
+        g_drive_note_warn = note && !d->lost_ms;
+        SetDlgItemTextW(dlg, IDC_DRIVE_NOTE, note ? note : L"");
+        if (!note) dialog_drop_rows(dlg, IDC_DRIVE_NOTE, IDC_DRIVE_LOST);
         SetDlgItemTextW(dlg, IDC_DRIVE_LOST, d->lost_ms ? T(L"Found it") : d->secondary ? T(L"It is gone...") : T(L"Mark lost or broken..."));
         if (d->secondary) {
             /* An extra place, not a drive: its own words. */
@@ -4464,7 +4678,6 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(dlg, IDC_DRIVE_LOC_TEXT, T(L"Where it is (optional):"));
         }
         EnableWindow(GetDlgItem(dlg, IDC_DRIVE_LOST), strcmp(d->kind, "drive") == 0);
-        free(t.p);
         wchar_t *name = widen(d->label), *loc = widen(d->location);
         SetDlgItemTextW(dlg, IDC_DRIVE_NAME, name);
         fill_places_combo(GetDlgItem(dlg, IDC_DRIVE_LOCATION), loc);
@@ -4489,6 +4702,14 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             return TRUE;
         }
         break;
+    case WM_NOTIFY: {
+        const NMHDR *nh = (const NMHDR *)lp;
+        if (nh->idFrom == IDC_DRIVE_INFO && nh->code == NM_CUSTOMDRAW) {
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, kv_draw((NMLVCUSTOMDRAW *)lp));
+            return TRUE;
+        }
+        break;
+    }
     }
     return FALSE;
 }
@@ -5865,46 +6086,210 @@ static wchar_t g_pass_buf[512];
 static const wchar_t *g_pass_text;
 static int g_pass_catalog;
 static int g_pass_mode; /* IDD_PASSPHRASE: 0 passphrase, 1 also offer the recovery key, 2 typing the recovery key */
+static int g_pass_changing;     /* IDD_NEW_PASSPHRASE: changing the passphrase, not setting the first one */
+static int g_pass_need_current; /* IDD_NEW_PASSPHRASE: also ask for the current one, which it checks */
+static INT_PTR g_pass_rc;
+/* With this set, IDD_PASSPHRASE tries what was typed before it closes: 1
+ * when it may close (it worked, or failed in a way the caller reports), 0
+ * to say in place that it is not right. */
+typedef int (*pass_try_fn)(void *ctx, const char *secret, int recovery);
+static pass_try_fn g_pass_try;
+static void *g_pass_try_ctx;
+
+static void free_secret(char *p);
+
+/* Drop a dialog's rows from the control first_id down to (not including)
+ * the row of next_id, and pull up what is below them. */
+static void dialog_drop_rows(HWND dlg, int first_id, int next_id)
+{
+    HWND f = GetDlgItem(dlg, first_id), n = GetDlgItem(dlg, next_id);
+    if (!f || !n) return;
+    RECT a, b;
+    GetWindowRect(f, &a);
+    GetWindowRect(n, &b);
+    POINT top = {a.left, a.top}, below = {b.left, b.top};
+    ScreenToClient(dlg, &top);
+    ScreenToClient(dlg, &below);
+    int dy = below.y - top.y;
+    if (dy <= 0) return;
+    for (HWND c = GetWindow(dlg, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        RECT r;
+        GetWindowRect(c, &r);
+        POINT pt = {r.left, r.top};
+        ScreenToClient(dlg, &pt);
+        if (pt.y >= below.y) SetWindowPos(c, NULL, pt.x, pt.y - dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        else if (pt.y >= top.y) ShowWindow(c, SW_HIDE);
+    }
+    RECT w;
+    GetWindowRect(dlg, &w);
+    SetWindowPos(dlg, NULL, w.left, w.top + dy / 2, w.right - w.left, w.bottom - w.top - dy, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/* A line under a field that says what is wrong, or nothing. */
+static void pass_error(HWND dlg, int id, const wchar_t *text)
+{
+    wchar_t t[400];
+    if (text && text[0]) swprintf(t, 400, L"\x2715 %ls", text);
+    else t[0] = 0;
+    SetDlgItemTextW(dlg, id, t);
+}
+
+/* The new passphrase's two rules, ticked as they are met; the button
+ * waits for both. */
+static void pass_rules(HWND dlg)
+{
+    wchar_t a[512], b[512];
+    GetDlgItemTextW(dlg, IDC_PASS_EDIT, a, 512);
+    GetDlgItemTextW(dlg, IDC_PASS_EDIT2, b, 512);
+    int long_enough = wcslen(a) >= 8, same = a[0] && wcscmp(a, b) == 0;
+    SecureZeroMemory(a, sizeof(a));
+    SecureZeroMemory(b, sizeof(b));
+    int current = !g_pass_need_current || GetWindowTextLengthW(GetDlgItem(dlg, IDC_PASS_CUR)) > 0;
+    wchar_t t[200];
+    swprintf(t, 200, L"%ls %ls", long_enough ? L"\x2713" : L"\x2022", T(L"At least 8 characters"));
+    SetDlgItemTextW(dlg, IDC_PASS_RULE_LEN, t);
+    swprintf(t, 200, L"%ls %ls", same ? L"\x2713" : L"\x2022", T(L"Both match"));
+    SetDlgItemTextW(dlg, IDC_PASS_RULE_SAME, t);
+    SetPropW(dlg, L"BrodalfRules", (HANDLE)(INT_PTR)((long_enough ? 1 : 0) | (same ? 2 : 0)));
+    InvalidateRect(GetDlgItem(dlg, IDC_PASS_RULE_LEN), NULL, TRUE);
+    InvalidateRect(GetDlgItem(dlg, IDC_PASS_RULE_SAME), NULL, TRUE);
+    EnableWindow(GetDlgItem(dlg, IDOK), long_enough && same && current);
+}
+
+/* Show what is typed, or dots again. */
+static void pass_show(HWND dlg)
+{
+    int show = IsDlgButtonChecked(dlg, IDC_PASS_SHOW) == BST_CHECKED;
+    static const int ids[] = {IDC_PASS_EDIT, IDC_PASS_EDIT2, IDC_PASS_CUR};
+    for (int i = 0; i < 3; i++) {
+        HWND e = GetDlgItem(dlg, ids[i]);
+        if (!e) continue;
+        SendMessageW(e, EM_SETPASSWORDCHAR, show ? 0 : 0x25CF, 0);
+        InvalidateRect(e, NULL, TRUE);
+    }
+}
+
+static void pass_select(HWND dlg, int id)
+{
+    HWND e = GetDlgItem(dlg, id);
+    SetFocus(e);
+    SendMessageW(e, EM_SETSEL, 0, -1);
+}
 
 static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_CTLCOLORSTATIC && !g_hc) {
+        /* The rules and the errors in their colours. */
+        int id = GetDlgCtrlID((HWND)lp);
+        if (id == IDC_PASS_ERROR || id == IDC_PASS_CUR_ERROR || id == IDC_PASS_RULE_LEN || id == IDC_PASS_RULE_SAME) {
+            LRESULT r;
+            HDC dc = (HDC)wp;
+            if (!theme_ctlcolor(msg, wp, lp, &r)) {
+                SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+                r = (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+            }
+            int met = (int)(INT_PTR)GetPropW(dlg, L"BrodalfRules");
+            SetTextColor(dc, id == IDC_PASS_RULE_LEN ? ((met & 1) ? tone_text(TONE_SAFE) : theme_gray())
+                             : id == IDC_PASS_RULE_SAME ? ((met & 2) ? tone_text(TONE_SAFE) : theme_gray())
+                             : tone_text(TONE_BAD));
+            return (INT_PTR)r;
+        }
+    }
     INT_PTR themed;
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
+    int is_new = GetDlgItem(dlg, IDC_PASS_EDIT2) != NULL;
     switch (msg) {
     case WM_INITDIALOG:
         SetDlgItemTextW(dlg, IDC_PASS_TEXT, g_pass_text);
-        if (GetDlgItem(dlg, IDC_PASS_RECOVERY) && g_pass_mode != 1) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
+        if (is_new) {
+            if (g_pass_changing) {
+                SetWindowTextW(dlg, T(L"Change the passphrase"));
+                SetDlgItemTextW(dlg, IDC_PASS_NEW_LABEL, T(L"New passphrase:"));
+                SetDlgItemTextW(dlg, IDOK, T(L"Change it"));
+            }
+            if (!g_pass_need_current || !bd_catalog_has_recovery_key(g_cat)) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
+            /* Already encrypted: nothing to tick. */
+            if (g_pass_changing && bd_catalog_file_encrypted(g_cat)) dialog_drop_rows(dlg, IDC_PASS_CATALOG, IDC_PASS_RECOVERY);
+            if (!g_pass_need_current) dialog_drop_rows(dlg, IDC_PASS_CUR_LABEL, IDC_PASS_NEW_LABEL);
+            pass_rules(dlg);
+            SetFocus(GetDlgItem(dlg, g_pass_need_current ? IDC_PASS_CUR : IDC_PASS_EDIT));
+            return FALSE;
+        }
+        if (g_pass_mode != 1) ShowWindow(GetDlgItem(dlg, IDC_PASS_RECOVERY), SW_HIDE);
         if (g_pass_mode == 2) {
             /* A recovery key is long and read off paper: show what is typed. */
             SetWindowTextW(dlg, T(L"Enter the recovery key"));
             SendDlgItemMessageW(dlg, IDC_PASS_EDIT, EM_SETPASSWORDCHAR, 0, 0);
+            ShowWindow(GetDlgItem(dlg, IDC_PASS_SHOW), SW_HIDE);
         }
         SetFocus(GetDlgItem(dlg, IDC_PASS_EDIT));
         return FALSE;
     case WM_COMMAND:
+        if (HIWORD(wp) == EN_CHANGE) {
+            if (LOWORD(wp) == IDC_PASS_EDIT && !is_new) pass_error(dlg, IDC_PASS_ERROR, NULL);
+            if (LOWORD(wp) == IDC_PASS_CUR) pass_error(dlg, IDC_PASS_CUR_ERROR, NULL);
+            if (is_new) pass_rules(dlg);
+            return TRUE;
+        }
+        if (LOWORD(wp) == IDC_PASS_SHOW) {
+            pass_show(dlg);
+            return TRUE;
+        }
         if (LOWORD(wp) == IDOK) {
             GetDlgItemTextW(dlg, IDC_PASS_EDIT, g_pass_buf, 512);
-            if (GetDlgItem(dlg, IDC_PASS_EDIT2)) {
+            if (is_new) {
                 wchar_t again[512];
                 GetDlgItemTextW(dlg, IDC_PASS_EDIT2, again, 512);
                 int same = wcscmp(again, g_pass_buf) == 0;
                 SecureZeroMemory(again, sizeof(again));
-                if (wcslen(g_pass_buf) < 8) {
-                    MessageBoxW(dlg, T(L"Use at least 8 characters. A few unrelated words make a good passphrase."), APP_NAME, MB_ICONWARNING);
+                if (wcslen(g_pass_buf) < 8 || !same) {
+                    /* The ticks under the fields say which rule is not met. */
+                    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+                    MessageBeep(MB_ICONWARNING);
                     return TRUE;
                 }
-                if (!same) {
-                    MessageBoxW(dlg, T(L"The two passphrases are different. Type them again."), APP_NAME, MB_ICONWARNING);
+                if (g_pass_need_current) {
+                    wchar_t cur[512];
+                    GetDlgItemTextW(dlg, IDC_PASS_CUR, cur, 512);
+                    char *c = narrow(cur);
+                    SecureZeroMemory(cur, sizeof(cur));
+                    HCURSOR old = SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
+                    bd_status st = bd_catalog_unlock(g_cat, c ? c : "");
+                    SetCursor(old);
+                    free_secret(c);
+                    if (st != BD_OK) {
+                        SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+                        wchar_t *e = st == BD_ERR_PASSPHRASE ? NULL : widen(bd_catalog_error(g_cat));
+                        pass_error(dlg, IDC_PASS_CUR_ERROR, e && e[0] ? e : T(L"That passphrase is not right."));
+                        free(e);
+                        pass_select(dlg, IDC_PASS_CUR);
+                        return TRUE;
+                    }
+                }
+                g_pass_catalog = IsWindowVisible(GetDlgItem(dlg, IDC_PASS_CATALOG)) && IsDlgButtonChecked(dlg, IDC_PASS_CATALOG) == BST_CHECKED;
+            } else if (g_pass_try) {
+                char *p = narrow(g_pass_buf);
+                HCURSOR old = SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
+                int done = g_pass_try(g_pass_try_ctx, p ? p : "", g_pass_mode == 2);
+                SetCursor(old);
+                free_secret(p);
+                if (!done) {
+                    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+                    pass_error(dlg, IDC_PASS_ERROR, g_pass_mode == 2 ? T(L"That recovery key is not right.")
+                                                                     : T(L"That passphrase is not right."));
+                    pass_select(dlg, IDC_PASS_EDIT);
                     return TRUE;
                 }
-                g_pass_catalog = IsDlgButtonChecked(dlg, IDC_PASS_CATALOG) == BST_CHECKED;
             }
             EndDialog(dlg, IDOK);
             return TRUE;
         }
         if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); return TRUE; }
         if (LOWORD(wp) == IDC_PASS_RECOVERY) { EndDialog(dlg, IDC_PASS_RECOVERY); return TRUE; }
+        break;
+    case WM_DESTROY:
+        RemovePropW(dlg, L"BrodalfRules");
         break;
     }
     return FALSE;
@@ -5916,6 +6301,19 @@ static char *ask_passphrase(HWND owner, int dialog, const wchar_t *text)
     g_pass_text = text;
     g_pass_catalog = 0;
     INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(dialog), owner, pass_proc);
+    g_pass_rc = rc;
+    g_pass_mode = 0;
+    char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
+    SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
+    return p;
+}
+
+/* The recovery key, typed off the sheet. NULL if cancelled. */
+static char *ask_recovery_key(HWND owner)
+{
+    g_pass_text = T(L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.");
+    g_pass_mode = 2;
+    INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
     g_pass_mode = 0;
     char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
     SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
@@ -5932,10 +6330,8 @@ static char *ask_unlock_secret(HWND owner, const wchar_t *text, int allow_recove
     g_pass_mode = allow_recovery ? 1 : 0;
     INT_PTR rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
     if (rc == IDC_PASS_RECOVERY) {
-        g_pass_text = T(L"Type the recovery key from your recovery sheet. Dashes and spaces do not matter.");
-        g_pass_mode = 2;
-        rc = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PASSPHRASE), owner, pass_proc);
         *is_recovery = 1;
+        return ask_recovery_key(owner);
     }
     g_pass_mode = 0;
     char *p = rc == IDOK ? narrow(g_pass_buf) : NULL;
@@ -5961,35 +6357,68 @@ static void free_secret(char *p)
     free(p);
 }
 
+static int unlock_try(void *ctx, const char *secret, int recovery)
+{
+    bd_status *s = ctx;
+    *s = recovery ? bd_catalog_unlock_recovery(g_cat, secret) : bd_catalog_unlock(g_cat, secret);
+    return *s != BD_ERR_PASSPHRASE;
+}
+
 /* Make sure the key is available. Only while no job runs. 1 if unlocked. */
 static int unlock_ui(const wchar_t *why)
 {
     if (!bd_catalog_has_passphrase(g_cat) || bd_catalog_is_unlocked(g_cat)) return 1;
-    for (;;) {
-        int recovery = 0;
-        char *p = ask_unlock_secret(g_main, why, bd_catalog_has_recovery_key(g_cat), &recovery);
-        if (!p) return 0;
-        SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
-        bd_status s = recovery ? bd_catalog_unlock_recovery(g_cat, p) : bd_catalog_unlock(g_cat, p);
-        free_secret(p);
-        if (s == BD_OK) {
-            if (recovery) offer_new_passphrase(g_main);
-            return 1;
-        }
-        MessageBoxW(g_main, recovery ? T(L"That recovery key is not right. Check it against the sheet and try again.")
-                                     : T(L"That passphrase is not right. Try again."),
-                    APP_NAME, MB_ICONWARNING);
+    int recovery = 0;
+    bd_status s = BD_ERR_PASSPHRASE;
+    g_pass_try = unlock_try;
+    g_pass_try_ctx = &s;
+    char *p = ask_unlock_secret(g_main, why, bd_catalog_has_recovery_key(g_cat), &recovery);
+    g_pass_try = NULL;
+    if (!p) return 0;
+    free_secret(p);
+    if (s != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not unlock the encryption key."));
+        free(e);
+        return 0;
     }
+    if (recovery) offer_new_passphrase(g_main);
+    return 1;
 }
 
 /* Set the first passphrase, or change it. 1 on success. */
 static int set_passphrase_ui(void)
 {
     int changing = bd_catalog_has_passphrase(g_cat);
-    if (changing && !unlock_ui(T(L"Enter the current passphrase first."))) return 0;
-    char *p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE,
-                             T(L"The passphrase protects encrypted drives and, if you choose, this database file. "
-                             L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone."));
+    /* One dialog: the current passphrase (when it is not entered yet), the
+     * new one twice. */
+    const wchar_t *text = changing ? T(L"The new passphrase replaces the current one. Write it down somewhere safe: without it, "
+                                       L"encrypted copies cannot be read, by you or anyone.")
+                                   : T(L"The passphrase protects encrypted drives and, if you choose, this database file. "
+                                       L"Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone.");
+    g_pass_changing = changing;
+    g_pass_need_current = changing && !bd_catalog_is_unlocked(g_cat);
+    char *p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE, text);
+    if (!p && g_pass_rc == IDC_PASS_RECOVERY) {
+        /* The current one is forgotten: the recovery key opens it, then the new one. */
+        bd_status us = BD_ERR_PASSPHRASE;
+        g_pass_try = unlock_try;
+        g_pass_try_ctx = &us;
+        char *k = ask_recovery_key(g_main);
+        int typed = k != NULL;
+        g_pass_try = NULL;
+        free_secret(k);
+        if (typed && us == BD_OK) {
+            g_pass_need_current = 0;
+            g_pass_changing = 1;
+            p = ask_passphrase(g_main, IDD_NEW_PASSPHRASE, text);
+        } else if (typed) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            report_status(g_main, us, 0, e && e[0] ? e : T(L"Could not unlock the encryption key."));
+            free(e);
+        }
+    }
+    g_pass_changing = g_pass_need_current = 0;
     if (!p) return 0;
     SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
     bd_status s = bd_catalog_set_passphrase(g_cat, p);
@@ -9520,9 +9949,17 @@ static void layout_pages(void)
     mv(CTL(ID_PLACE_LIST), pad, y, iw, h - y - pad);
 
     /* Encryption */
-    y = pad + flow(g_enc_btns, COUNT_OF(g_enc_btns), pad, pad, iw) + gap;
-    part = (h - y - pad) * 52 / 100;
-    y += mv(CTL(ID_ENC_TEXT), pad, y, iw, part) + gap;
+    y = pad + mv(CTL(ID_ENC_INTRO), pad, pad, iw, text_height(CTL(ID_ENC_INTRO), iw)) + gap;
+    y += flow(g_enc_btns, COUNT_OF(g_enc_btns), pad, y, iw) + gap;
+    {
+        /* The table as tall as its rows, within reason; the folders get the rest. */
+        int room = h - y - pad;
+        part = enc_state_need();
+        if (part > room * 60 / 100) part = room * 60 / 100;
+        if (part < room * 30 / 100) part = room * 30 / 100;
+    }
+    y += mv(CTL(ID_ENC_STATE), pad, y, iw, part) + gap;
+    lv_fit_all(CTL(ID_ENC_STATE), 2);
     y += mv(CTL(ID_ENC_LABEL), pad, y, iw, text_height(CTL(ID_ENC_LABEL), iw)) + S(2);
     y += flow(g_enc_btns2, COUNT_OF(g_enc_btns2), pad, y, iw) + gap;
     mv(CTL(ID_ENC_LIST), pad, y, iw, h - y - pad);
@@ -9641,7 +10078,13 @@ static void create_pages(HWND hwnd)
     page_button(TAB_ENCRYPT, T(L"Print the recovery sheet..."), ID_ENC_SHEET);
     page_button(TAB_ENCRYPT, T(L"Set up an encrypted drive..."), ID_ENC_DRIVE);
     page_check(TAB_ENCRYPT, T(L"Encrypt the database file"), ID_ENC_CATALOG);
-    page_text(TAB_ENCRYPT, ID_ENC_TEXT);
+    page_label(TAB_ENCRYPT, ID_ENC_INTRO, L"");
+    {
+        static const wchar_t *cols[] = {N_(L"What"), N_(L"State"), N_(L"What it means")};
+        static const int widths[] = {260, 160, 640};
+        page_list(TAB_ENCRYPT, ID_ENC_STATE, cols, widths, 3);
+        ListView_SetExtendedListViewStyle(CTL(ID_ENC_STATE), LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    }
     page_label(TAB_ENCRYPT, ID_ENC_LABEL, T(L"Folders encrypted on every drive and extra place they are copied to:"));
     page_button(TAB_ENCRYPT, T(L"Encrypt what is selected in Primary Database"), ID_ENC_ADD);
     page_button(TAB_ENCRYPT, T(L"Choose a folder to encrypt..."), ID_ENC_PICK);
@@ -10672,6 +11115,57 @@ static void fill_starred(void)
 
 typedef struct { HWND lv; int64_t bps; } enc_fill;
 
+/* The tab's table: what can be encrypted, and whether it is. By row: is it
+ * on (drawn in colour), the drive it is about, what a double-click does. */
+#define ENC_STATE_MAX 80
+static int g_enc_state_n, g_enc_state_on[ENC_STATE_MAX], g_enc_state_cmd[ENC_STATE_MAX];
+static int64_t g_enc_state_drive[ENC_STATE_MAX];
+
+static void enc_state_row(HWND lv, const wchar_t *what, const wchar_t *state, int on, const wchar_t *means, int64_t drive, int cmd)
+{
+    if (g_enc_state_n >= ENC_STATE_MAX) return;
+    const wchar_t *cells[] = {what, state, means};
+    lv_row(lv, cells, 3);
+    g_enc_state_on[g_enc_state_n] = on;
+    g_enc_state_drive[g_enc_state_n] = drive;
+    g_enc_state_cmd[g_enc_state_n] = cmd;
+    g_enc_state_n++;
+}
+
+static int enc_state_need(void)
+{
+    HWND lv = CTL(ID_ENC_STATE);
+    int rowh = line_height() + S(6);
+    RECT ir;
+    if (ListView_GetItemCount(lv) > 0 && ListView_GetItemRect(lv, 0, &ir, LVIR_BOUNDS)) rowh = ir.bottom - ir.top;
+    RECT hr = {0, 0, 0, 0};
+    HWND hd = ListView_GetHeader(lv);
+    if (hd) GetWindowRect(hd, &hr);
+    int head = hr.bottom - hr.top;
+    if (head <= 0) head = S(26);
+    return head + (g_enc_state_n ? g_enc_state_n : 4) * rowh + S(8);
+}
+
+/* The State column in colour: blue for what is on, grey for what is not. */
+static LRESULT enc_state_draw(NMLVCUSTOMDRAW *cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: return CDRF_NOTIFYSUBITEMDRAW;
+    case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+        HWND lv = cd->nmcd.hdr.hwndFrom;
+        int item = (int)cd->nmcd.dwItemSpec, r = lv_index(lv, item);
+        int selected = (ListView_GetItemState(lv, item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+        if (cd->iSubItem == 1 && !g_hc && !selected && r >= 0 && r < g_enc_state_n)
+            cd->clrText = g_enc_state_on[r] ? tone_text(TONE_WORK) : theme_gray();
+        else
+            cd->clrText = ListView_GetTextColor(lv);
+        return CDRF_NEWFONT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
 static int enc_row_cb(void *ctx, const bd_mark_info *m)
 {
     enc_fill *f = ctx;
@@ -10691,17 +11185,20 @@ static int enc_row_cb(void *ctx, const bd_mark_info *m)
 
 static void fill_encrypt(void)
 {
-    HWND ed = CTL(ID_ENC_TEXT), lv = CTL(ID_ENC_LIST);
-    int r = lv_selected(ID_ENC_LIST), sel = -1;
+    HWND sl = CTL(ID_ENC_STATE), lv = CTL(ID_ENC_LIST);
+    int r = lv_selected(ID_ENC_LIST), sel = -1, was_rows = g_enc_state_n;
     mark_key keep = {0, NULL};
     if (r >= 0 && r < g_enc_nrows) { keep.source_id = g_enc_rows[r].source_id; keep.rel = xstrdup(g_enc_rows[r].rel); }
     g_filling++;
     SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(sl, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(lv);
+    ListView_DeleteAllItems(sl);
+    g_enc_state_n = 0;
     rows_free(&g_enc_rows, &g_enc_nrows);
     if (!g_cat) {
-        SetWindowTextW(ed, L"");
         SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+        SendMessageW(sl, WM_SETREDRAW, TRUE, 0);
         free(keep.rel);
         g_filling--;
         return;
@@ -10715,78 +11212,101 @@ static void fill_encrypt(void)
     if (keep.rel) sel = row_of(g_enc_rows, g_enc_nrows, keep.source_id, keep.rel);
     free(keep.rel);
 
-    wtext t = {NULL, 0, 0};
-    wchar_t a[64];
-    wadd(&t, T(L"Nothing is encrypted unless you choose it, and every kind below is optional: use none, any one of them, or all "
-             L"of them together.\r\n\r\n"));
-    wadd(&t, T(L"Passphrase\r\n"));
+    /* The table: the passphrase, this file, every drive and extra place. */
     if (!has)
-        wadd(&t, T(L"    None set. Each kind of encryption needs one: Set a passphrase... above. Write it down somewhere safe: "
-                 L"without it, encrypted copies cannot be read, by you or anyone.\r\n"));
+        enc_state_row(sl, T(L"Passphrase"), T(L"Not set"), 0, T(L"Each kind of encryption needs one: Set a passphrase... above."), 0, ID_ENC_PASS);
     else {
-        wadd(&t, T(L"    Set. %ls\r\n"), unlocked ? T(L"Entered for now: BRODALF can encrypt, and read encrypted copies, until you press "
-                                                L"Forget the passphrase or close it.")
-                                              : T(L"Not entered now: BRODALF asks for it when a job needs it."));
-        wadd(&t, T(L"    Recovery key: %ls\r\n"), bd_catalog_has_recovery_key(g_cat)
-                                                   ? T(L"made. It is on the recovery sheet, and opens your encrypted backups if the "
-                                                     L"passphrase is ever forgotten.")
-                                                   : T(L"none yet. Make a new recovery key... puts one on a recovery sheet to print."));
+        enc_state_row(sl, T(L"Passphrase"), unlocked ? T(L"Set, entered for now") : T(L"Set"), 1,
+                      unlocked ? T(L"BRODALF can encrypt, and read encrypted copies, until you press Forget the passphrase or close it.")
+                               : T(L"Not entered now: BRODALF asks for it when a job needs it."),
+                      0, ID_ENC_PASS);
+        int key = bd_catalog_has_recovery_key(g_cat);
+        enc_state_row(sl, T(L"Recovery key"), key ? T(L"Made") : T(L"None yet"), key,
+                      key ? T(L"It is on the recovery sheet, and opens your encrypted backups if the passphrase is ever forgotten.")
+                          : T(L"Make a new recovery key... puts one on a recovery sheet to print."),
+                      0, 0);
     }
-    wadd(&t, T(L"\r\nThis database file (the list of your files and where their copies are)\r\n    %ls\r\n"),
-         bd_catalog_file_encrypted(g_cat) ? T(L"Encrypted: BRODALF asks for the passphrase when it opens it.")
-                                          : T(L"Not encrypted. Tick Encrypt the database file above to encrypt it."));
-    wadd(&t, T(L"\r\nWhole drives and extra places\r\n"));
+    int file_enc = bd_catalog_file_encrypted(g_cat);
+    enc_state_row(sl, T(L"This database file"), file_enc ? T(L"Encrypted") : T(L"Not encrypted"), file_enc,
+                  file_enc ? T(L"The list of your files and where their copies are. BRODALF asks for the passphrase when it opens it.")
+                           : T(L"The list of your files and where their copies are. Tick Encrypt the database file above to encrypt it."),
+                  0, 0);
     drive_list dl = load_drives();
-    int n_enc = 0;
+    int n_drives = 0;
     for (int i = 0; i < dl.n; i++) {
         const drive_snap *d = &dl.items[i];
-        if (!d->encrypted || strcmp(d->kind, "drive") != 0) continue;
-        wchar_t name[600];
+        if (strcmp(d->kind, "drive") != 0) continue;
+        wchar_t name[600], what[700];
         drive_name(d->label, d->location, name, 600);
-        wadd(&t, T(L"    %ls%ls: every copy on it is encrypted\r\n"), name, d->secondary ? T(L" (extra place)") : L"");
-        n_enc++;
+        swprintf(what, 700, L"%ls%ls", name, d->secondary ? T(L" (extra place)") : L"");
+        enc_state_row(sl, what, !d->encrypted ? T(L"Not encrypted") : d->hide_names ? T(L"Encrypted, names hidden") : T(L"Encrypted"),
+                      d->encrypted,
+                      !d->encrypted ? T(L"Plain copies, except the folders you chose below. It stays as it was set up.")
+                      : d->hide_names ? T(L"Every copy on it is encrypted, and the names of its files and folders are hidden.")
+                                      : T(L"Every copy on it is encrypted. Its file and folder names stay readable."),
+                      d->id, 0);
+        n_drives++;
     }
     free(dl.items);
-    if (!n_enc)
-        wadd(&t, T(L"    None. You choose it when you set up a drive (Set up an encrypted drive... above) or add an extra place: every "
-                 L"copy on it is then encrypted. A drive already set up stays as it is.\r\n"));
-    wadd(&t, T(L"\r\nOnly the folders you choose (listed below)\r\n"));
+    if (!n_drives)
+        enc_state_row(sl, T(L"Drives and extra places"), T(L"No drives yet"), 0,
+                      T(L"Set up an encrypted drive... above sets up a drive with every copy on it encrypted."), 0, ID_ENC_DRIVE);
+
+    /* Above the buttons: that it is all optional, and the time it takes when
+     * no folders are chosen; with folders, the time goes with them. */
+    wchar_t a[64], cost[1600];
+    encrypt_cost_text(g_enc_nrows ? es.bytes : 0, cost, 1600);
+    wtext t = {NULL, 0, 0};
+    wadd(&t, L"%ls", T(L"Nothing is encrypted unless you choose it, and every kind is optional: use none, any one of them, or all of them together."));
+    if (!g_enc_nrows) wadd(&t, L" %ls", cost);
+    int changed = 0;
+    set_text_if(ID_ENC_INTRO, t.p ? t.p : L"", &changed);
+    free(t.p);
+
+    /* Over the folders' table: what is in them, how far it got, the time. */
+    wtext lb = {NULL, 0, 0};
+    wadd(&lb, L"%ls", T(L"Folders encrypted on every drive and extra place they are copied to:"));
     if (!g_enc_nrows)
-        wadd(&t, T(L"    None. Choose a folder below to encrypt just it, on every drive and extra place it is copied to, also drives "
-                 L"that are not encrypted. Everything else stays plain, which is quicker to back up and to restore.\r\n"));
+        wadd(&lb, L" %ls", T(L"none yet. Choose a folder to encrypt just it, also on drives that are not encrypted. Everything else stays "
+                             L"plain, which is quicker to back up and to restore."));
     else {
         format_bytes(es.bytes, a, 64);
-        wadd(&t, TN(es.files, L"    %lld file (%ls) in them is encrypted wherever it is copied. Names stay readable: a copy is the "
-                              L"file's name with .bdenc after it.\r\n",
-                    L"    %lld files (%ls) in them are encrypted wherever they are copied. Names stay readable: a copy is the "
-                    L"file's name with .bdenc after it.\r\n"),
+        wadd(&lb, L" ");
+        wadd(&lb, TN(es.files, L"%lld file (%ls), encrypted wherever it is copied. Its name stays readable, with .bdenc after it.",
+                     L"%lld files (%ls), encrypted wherever they are copied. Their names stay readable, with .bdenc after them."),
              (long long)es.files, a);
-        wchar_t sealed[200], waiting[300];
+        wchar_t sealed[200];
         swprintf(sealed, 200, TN(es.sealed_copies, L"%lld encrypted copy so far", L"%lld encrypted copies so far"), (long long)es.sealed_copies);
-        swprintf(waiting, 300, TN(es.files_waiting, L"%lld file still waits for a first encrypted copy, which the next backups make.",
-                                  L"%lld files still wait for a first encrypted copy, which the next backups make."),
-                 (long long)es.files_waiting);
-        wadd(&t, L"    %ls; %ls\r\n", sealed, waiting);
-        if (es.plain_copies)
-            wadd(&t, TN(es.plain_copies, L"    %lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF "
-                                         L"never overwrites or deletes anything on a drive.\r\n",
-                        L"    %lld plain copies were made before you chose to encrypt them. They stay as they are, since BRODALF "
-                        L"never overwrites or deletes anything on a drive.\r\n"),
+        wadd(&lb, L" %ls.", sealed);
+        if (es.files_waiting) {
+            wchar_t waiting[300];
+            swprintf(waiting, 300, TN(es.files_waiting, L"%lld file still waits for a first encrypted copy, which the next backups make.",
+                                      L"%lld files still wait for a first encrypted copy, which the next backups make."),
+                     (long long)es.files_waiting);
+            wadd(&lb, L" %ls", waiting);
+        }
+        if (es.plain_copies) {
+            wadd(&lb, L" ");
+            wadd(&lb, TN(es.plain_copies, L"%lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF "
+                                          L"never overwrites or deletes anything on a drive.",
+                         L"%lld plain copies were made before you chose to encrypt them. They stay as they are, since BRODALF "
+                         L"never overwrites or deletes anything on a drive."),
                  (long long)es.plain_copies);
+        }
+        wadd(&lb, L"\r\n%ls", cost);
     }
-    wadd(&t, T(L"\r\nWhat it means for time\r\n"));
-    wchar_t cost[1600];
-    encrypt_cost_text(es.bytes, cost, 1600);
-    wadd(&t, L"    %ls\r\n", cost);
-    if (has && !unlocked && (g_enc_nrows || n_enc))
-        wadd(&t, T(L"    Backing up, checking and restoring what is encrypted need the passphrase entered; BRODALF asks for it.\r\n"));
-    SetWindowTextW(ed, t.p ? t.p : L"");
-    free(t.p);
+    set_text_if(ID_ENC_LABEL, lb.p ? lb.p : L"", &changed);
+    free(lb.p);
+
     if (sel < 0 && g_enc_nrows) sel = 0;
     lv_select(lv, sel);
     SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+    SendMessageW(sl, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(lv, NULL, TRUE);
+    InvalidateRect(sl, NULL, TRUE);
     g_filling--;
+    if (changed || was_rows != g_enc_state_n) layout_pages();
+    else lv_fit_all(sl, 2);
 }
 
 /* Restore --------------------------------------------------------------- */
@@ -11734,6 +12254,14 @@ static int page_notify(NMHDR *nh)
         edit_drive(g_local_rows[r].id);
     } else if (id == ID_PLACE_LIST && r >= 0 && r < g_place_n) {
         edit_drive(g_place_rows[r].id);
+    } else if (id == ID_ENC_STATE && r >= 0 && r < g_enc_state_n) {
+        if (g_enc_state_drive[r]) edit_drive(g_enc_state_drive[r]);
+        else if (g_enc_state_cmd[r] == ID_ENC_PASS) set_passphrase_ui();
+        else if (g_enc_state_cmd[r] == ID_ENC_DRIVE) {
+            g_label_encrypt_default = 1;
+            add_disk();
+            g_label_encrypt_default = 0;
+        }
     } else if (id == ID_REST_LIST && r >= 0 && r < g_n_conflicts && g_conflicts[r].dest) {
         show_in_explorer(g_conflicts[r].dest);
     }
@@ -14228,6 +14756,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (nh->idFrom == ID_NEXT_LIST && nh->hwndFrom == CTL(ID_NEXT_LIST) && nh->code == NM_CUSTOMDRAW)
             return next_custom_draw((NMLVCUSTOMDRAW *)lp);
+        if (nh->idFrom == ID_ENC_STATE && nh->hwndFrom == CTL(ID_ENC_STATE) && nh->code == NM_CUSTOMDRAW)
+            return enc_state_draw((NMLVCUSTOMDRAW *)lp);
         if (nh->idFrom == ID_LOCAL_LIST && nh->hwndFrom == CTL(ID_LOCAL_LIST)) {
             if (nh->code == NM_CUSTOMDRAW) return local_custom_draw((NMLVCUSTOMDRAW *)lp);
             if (nh->code == LVN_GETINFOTIPW) {
@@ -14620,22 +15150,29 @@ static int ask_database_choice(const wchar_t *last, const wchar_t *missing)
  * A cancelled prompt returns BD_ERR_PASSPHRASE with no message. */
 static int g_opened_by_recovery; /* offer a new passphrase once it is open */
 
+typedef struct { const char *path; bd_catalog **out; bd_status s; } open_try_ctx;
+
+static int open_try(void *ctx, const char *secret, int recovery)
+{
+    open_try_ctx *o = ctx;
+    o->s = recovery ? bd_catalog_open_with_recovery(o->path, secret, o->out) : bd_catalog_open_with(o->path, secret, o->out);
+    return o->s != BD_ERR_PASSPHRASE;
+}
+
 static bd_status open_maybe_encrypted(const char *path, bd_catalog **out)
 {
     if (!bd_catalog_file_needs_passphrase(path)) return bd_catalog_open(path, out);
     int can_recover = bd_catalog_file_has_recovery_key(path);
-    for (;;) {
-        int recovery = 0;
-        char *p = ask_unlock_secret(g_main, T(L"This database is encrypted. Enter its passphrase to open it."), can_recover, &recovery);
-        if (!p) return BD_ERR_PASSPHRASE;
-        bd_status s = recovery ? bd_catalog_open_with_recovery(path, p, out) : bd_catalog_open_with(path, p, out);
-        free_secret(p);
-        if (s == BD_OK && recovery) g_opened_by_recovery = 1;
-        if (s != BD_ERR_PASSPHRASE) return s;
-        MessageBoxW(g_main, recovery ? T(L"That recovery key is not right. Check it against the sheet and try again.")
-                                     : T(L"That passphrase is not right. Try again."),
-                    APP_NAME, MB_ICONWARNING);
-    }
+    int recovery = 0;
+    open_try_ctx o = {path, out, BD_ERR_PASSPHRASE};
+    g_pass_try = open_try;
+    g_pass_try_ctx = &o;
+    char *p = ask_unlock_secret(g_main, T(L"This database is encrypted. Enter its passphrase to open it."), can_recover, &recovery);
+    g_pass_try = NULL;
+    if (!p) return BD_ERR_PASSPHRASE;
+    free_secret(p);
+    if (o.s == BD_OK && recovery) g_opened_by_recovery = 1;
+    return o.s;
 }
 
 static void show_open_error(bd_status s, const wchar_t *fallback)

@@ -1531,7 +1531,7 @@ bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx)
      * earlier BRODALF, may have recorded a new version since). */
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.source_id, s.name, n.rel_path, n.size, v.hash, d.found_hash, d.found_ms"
+                           "SELECT n.id, n.source_id, s.name, n.rel_path, n.size, v.hash, d.found_hash, d.found_ms, n.current_version_id"
                            " FROM damaged_files d"
                            " JOIN nodes n ON n.id=d.node_id AND n.current_version_id=d.version_id AND n.deleted=0"
                            " JOIN sources s ON s.id=n.source_id"
@@ -1550,6 +1550,7 @@ bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx)
         d.hash_on_record = sqlite3_column_text(q, 5) ? (const char *)sqlite3_column_text(q, 5) : "";
         d.hash_found = (const char *)sqlite3_column_text(q, 6);
         d.found_ms = sqlite3_column_int64(q, 7);
+        d.version_id = sqlite3_column_int64(q, 8);
         if (fn(ctx, &d) != 0) { rc = SQLITE_DONE; break; }
     }
     sqlite3_finalize(q);

@@ -283,6 +283,7 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.limit_bytes = sqlite3_column_int64(q, 38);
         info.hide_names = sqlite3_column_int(q, 39);
         int64_t oldest_unread = col_num(q, 40);
+        info.oldest_unread_ms = oldest_unread > 0 ? oldest_unread : 0;
         info.check_due = check_days > 0 &&
                          ((info.oldest_check_ms > 0 && now - info.oldest_check_ms >= (int64_t)check_days * 24 * 3600 * 1000) ||
                           (oldest_unread > 0 && now - oldest_unread >= (int64_t)unread_days * 24 * 3600 * 1000));
@@ -376,7 +377,7 @@ bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn f
         "SELECT n.id, n.source_id, s.name, n.rel_path, n.name, n.is_dir, n.size, n.deleted,"
         " " CUR_AVAILABLE ", " ANY_AVAILABLE ", " BAD_CONNECTED ", " ANY_COPY ","
         " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w FROM copies c JOIN media m ON m.id=c.media_id"
-        "   WHERE c.version_id=n.current_version_id AND c.state='ok' ORDER BY 1)),"
+        "   WHERE c.version_id=n.current_version_id AND c.state='ok' AND m.retired_ms IS NULL ORDER BY 1)),"
         " (%s) AS nm"
         " FROM nodes n JOIN sources s ON s.id=n.source_id WHERE %s"
         " ORDER BY nm DESC, n.deleted, n.is_dir DESC, s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE LIMIT %d",
@@ -391,7 +392,7 @@ bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn f
                            "SELECT COUNT(*), COALESCE(SUM(" CUR_AVAILABLE "),0), COALESCE(SUM(" ANY_COPY "),0),"
                            " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w"
                            "   FROM nodes n2 JOIN copies c ON c.version_id=n2.current_version_id JOIN media m ON m.id=c.media_id"
-                           "   WHERE n2.source_id=?1 AND n2.is_dir=0 AND n2.deleted=0 AND c.state='ok'"
+                           "   WHERE n2.source_id=?1 AND n2.is_dir=0 AND n2.deleted=0 AND c.state='ok' AND m.retired_ms IS NULL"
                            "   AND substr(n2.rel_path,1,length(?2)+1)=?2||'/' ORDER BY 1))"
                            " FROM nodes n WHERE n.source_id=?1 AND n.is_dir=0 AND n.deleted=0"
                            " AND substr(n.rel_path,1,length(?2)+1)=?2||'/'",
@@ -462,9 +463,9 @@ bd_status bd_list_deleted(bd_catalog *cat, int64_t source_id, int new_only, bd_d
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT n.id, n.source_id, s.name, n.rel_path, COALESCE(v.size, n.size), n.last_seen_ms,"
                            " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label FROM copies c JOIN media m ON m.id=c.media_id"
-                           "   WHERE c.version_id=v.id AND c.state='ok' ORDER BY m.label)),"
+                           "   WHERE c.version_id=v.id AND c.state='ok' AND m.retired_ms IS NULL ORDER BY m.label)),"
                            " EXISTS(SELECT 1 FROM copies c JOIN temp.connected k ON k.media_id=c.media_id"
-                           "   WHERE c.version_id=v.id AND c.state='ok'),"
+                           "   WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_USABLE("c") "),"
                            " EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_USABLE("c") "),"
                            " n.deleted_ack"
                            " FROM nodes n JOIN sources s ON s.id=n.source_id LEFT JOIN versions v ON v.id=n.current_version_id"

@@ -492,7 +492,7 @@ static bd_status open_db(bd_catalog *cat)
                      /* The last restore: files it left alone because something else was there. */
                      "CREATE TEMP TABLE IF NOT EXISTS restore_conflicts(id INTEGER PRIMARY KEY, source_name TEXT NOT NULL,"
                      " rel_path TEXT NOT NULL, dest TEXT NOT NULL, want_size INTEGER NOT NULL, want_mtime_ns INTEGER NOT NULL,"
-                     " have_size INTEGER NOT NULL, have_mtime_ns INTEGER NOT NULL);"
+                     " have_size INTEGER NOT NULL, have_mtime_ns INTEGER NOT NULL, version_id INTEGER NOT NULL DEFAULT 0);"
                      /* During a backup: the drives it writes to. */
                      "CREATE TEMP TABLE IF NOT EXISTS bk_dests(media_id INTEGER PRIMARY KEY, secondary INTEGER NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");

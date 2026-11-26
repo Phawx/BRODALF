@@ -169,6 +169,12 @@ typedef struct {
     int64_t file_bytes_done;
     int64_t file_bytes_total;
     int done;
+    /* 1 on a call made right after a backup recorded a group of copies in
+     * the catalog. Such a call comes from the thread running the job, so
+     * the callback may read the catalog in it (bd_backup_sets, to show the
+     * full copies growing). Every other call has 0 and may come from a
+     * thread reading files for the job: it must not touch the catalog. */
+    int recorded;
 } bd_progress;
 typedef void (*bd_progress_fn)(void *ctx, const bd_progress *p);
 void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
@@ -287,6 +293,7 @@ typedef struct {
     const char *hash_on_record;
     const char *hash_found;
     int64_t found_ms;        /* when a bit-rot scan first found it like this */
+    int64_t version_id;      /* the version on record, whose copies are the good contents (bd_restore_version) */
 } bd_damaged_info;
 typedef int (*bd_damaged_fn)(void *ctx, const bd_damaged_info *info);
 bd_status bd_list_damaged(bd_catalog *cat, bd_damaged_fn fn, void *ctx);
@@ -541,6 +548,7 @@ typedef struct {
      * list (bd_deleted_ack); a moved file does not count. */
     int64_t files_held;
     int64_t held_changed;
+    int64_t held_deleted;      /* of held_changed, those gone from their folder (the rest changed contents) */
     int mass_change;           /* held_changed is a quarter or more of files_held (at least 50 files) */
     /* Of files_to_copy, those too big for the drive's file system (FAT32:
      * 4 GiB or more): they will not fit and are in bytes_short. The file
@@ -592,6 +600,7 @@ typedef struct {
     int64_t size_now;
     int64_t changed_ms;        /* when the scan first saw the new contents */
     int deleted;               /* gone from its folder (see above) */
+    int64_t version_id_on_drive; /* the version the drive holds, to restore it (bd_restore_version) */
 } bd_changed_info;
 typedef int (*bd_changed_fn)(void *ctx, const bd_changed_info *info);
 bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed_fn fn, void *ctx);
@@ -664,6 +673,7 @@ typedef struct {
     int64_t want_mtime_ns;
     int64_t have_size;      /* -1: a folder is there */
     int64_t have_mtime_ns;
+    int64_t version_id;     /* the version it was going to put there, to restore it elsewhere (bd_restore_version) */
 } bd_conflict_info;
 typedef int (*bd_conflict_fn)(void *ctx, const bd_conflict_info *info);
 bd_status bd_list_restore_conflicts(bd_catalog *cat, bd_conflict_fn fn, void *ctx);
@@ -802,6 +812,9 @@ typedef struct {
     /* The oldest good copy on it by when it was last fully checked (or
      * written, if never checked); 0 if it holds no copies. */
     int64_t oldest_check_ms;
+    /* The oldest good copy on it never read back since it was written, by
+     * when it was written; 0 if every good copy was read back. */
+    int64_t oldest_unread_ms;
     int check_due;           /* older than the check_days option, or it holds a good copy never
                                 read back that was written 7 days ago (check_days if less) */
     int64_t lost_ms;         /* when it was marked lost or broken; 0 if not (bd_media_mark_lost) */
@@ -846,7 +859,8 @@ typedef struct {
     const char *rel_path;
     int64_t size;
     int64_t last_seen_ms;    /* the last scan that still found it */
-    const char *drives;      /* names of the drives holding a good copy, ", " between them; "" if none */
+    const char *drives;      /* names of the drives holding a good copy, ", " between them; "" if none.
+                                Drives marked lost or broken are left out: nothing comes back from them */
     int connected;           /* one of them is plugged in */
     int backed_up;           /* its last version has a good copy on a drive that counts */
     int acknowledged;        /* the user has seen it (bd_deleted_ack) */
@@ -1025,7 +1039,7 @@ typedef struct {
     bd_node_state state;     /* as in the ghost tree */
     /* Drives holding a good copy of the current version (for
      * a folder: of any file inside), as "Label (kept in)" joined by "; ".
-     * "" if none. */
+     * "" if none. Drives marked lost or broken are left out. */
     const char *where;
 } bd_search_info;
 
@@ -1064,6 +1078,18 @@ typedef struct {
     int64_t bytes_total;
 } bd_set_progress;
 bd_status bd_backup_sets(bd_catalog *cat, bd_set_progress *out, int cap, int *sets);
+
+/* Which drives make up each full copy, for naming them: a file's good
+ * copies on drives that count are ranked by drive (oldest drive first), and
+ * full copy k is on the drives that hold some file's k-th copy. out gets one
+ * entry for each set and drive, ordered by set and then drive, up to cap;
+ * *n how many. */
+typedef struct {
+    int set;          /* 1, 2, ... */
+    int64_t media_id;
+    int64_t files;    /* files whose k-th copy is on it */
+} bd_set_drive;
+bd_status bd_backup_set_drives(bd_catalog *cat, bd_set_drive *out, int cap, int *n);
 
 typedef struct {
     int64_t node_id;

@@ -176,7 +176,7 @@ bd_status bd_export_csv(bd_catalog *cat, const char *path, int64_t *out_rows)
                            " (SELECT group_concat(lbl, '; ') FROM (SELECT DISTINCT m.label ||"
                            "   CASE WHEN trim(COALESCE(m.location,''))<>'' THEN ' (' || trim(m.location) || ')' ELSE '' END AS lbl"
                            "   FROM copies c JOIN media m ON m.id=c.media_id"
-                           "   WHERE c.version_id=n.current_version_id AND c.state='ok' ORDER BY m.label COLLATE NOCASE))"
+                           "   WHERE c.version_id=n.current_version_id AND c.state='ok' AND m.retired_ms IS NULL ORDER BY m.label COLLATE NOCASE))"
                            " FROM nodes n JOIN sources s ON s.id=n.source_id WHERE n.is_dir=0"
                            " ORDER BY s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)

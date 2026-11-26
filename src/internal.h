@@ -283,6 +283,9 @@ void bd_report(bd_catalog *cat, int64_t files_done, const char *current, int for
 /* bd_report for a file of this size that is about to be read: its own bar. */
 void bd_report_file(bd_catalog *cat, int64_t files_done, const char *current, int64_t size);
 void bd_progress_end(bd_catalog *cat);
+/* From the thread running the job, right after copies were recorded: a
+ * progress call with recorded set (see bd_progress). */
+void bd_report_recorded(bd_catalog *cat);
 void bd_io_tick(int64_t bytes);
 /* Send this thread's bd_io_tick calls to fn instead (a hashing worker hands
  * its byte counts to the thread running the job). NULL undoes it. */

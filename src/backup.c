@@ -846,8 +846,12 @@ static void dest_flush(bd_catalog *cat, backup_dest *d, int n, bd_log_fn log, vo
         }
     } else {
         int64_t before = d->stats->files_failed;
+        size_t had = d->ng;
         sync_group(cat, d->store, d->group, d->ng, d->stats, log, log_ctx);
         dest_gone(cat, d, before, n, log, log_ctx);
+        /* The copies are in the catalog now (in this batch's transaction):
+         * the window can show the full copies growing. */
+        if (had) bd_report_recorded(cat);
     }
     d->ng = 0;
     d->group_bytes = 0;
@@ -1353,7 +1357,7 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
      * large share at once is what ransomware encrypting the folders looks
      * like: the user should see the list before backing that up. */
     if (sqlite3_prepare_v2(cat->db,
-                           HELD_CTE " SELECT COUNT(*), COALESCE(SUM(n.deleted<>0 OR hv.id IS NOT n.current_version_id),0)"
+                           HELD_CTE " SELECT COUNT(*), COALESCE(SUM(n.deleted<>0 OR hv.id IS NOT n.current_version_id),0), COALESCE(SUM(n.deleted<>0),0)"
                            " FROM h JOIN nodes n ON n.id=h.nid JOIN versions hv ON hv.node_id=h.nid AND hv.version_no=h.vno"
                            " WHERE n.is_dir=0 AND (n.deleted=0 OR n.deleted_ack=0) AND (?2=0 OR n.source_id=?2)"
                            " AND " BD_SQL_ACTIVE("n"),
@@ -1363,6 +1367,7 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
         if (sqlite3_step(q) == SQLITE_ROW) {
             out->files_held = sqlite3_column_int64(q, 0);
             out->held_changed = sqlite3_column_int64(q, 1);
+            out->held_deleted = sqlite3_column_int64(q, 2);
         }
         sqlite3_finalize(q);
     }
@@ -1416,7 +1421,7 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
                            HELD_CTE " SELECT n.id, s.name, n.rel_path, hv.version_no, COALESCE(cv.version_no, hv.version_no),"
-                           " hv.size, COALESCE(cv.size, hv.size), COALESCE(cv.first_seen_ms, 0), n.deleted<>0"
+                           " hv.size, COALESCE(cv.size, hv.size), COALESCE(cv.first_seen_ms, 0), n.deleted<>0, hv.id"
                            " FROM h JOIN nodes n ON n.id=h.nid JOIN sources s ON s.id=n.source_id"
                            " JOIN versions hv ON hv.node_id=h.nid AND hv.version_no=h.vno"
                            " LEFT JOIN versions cv ON cv.id=n.current_version_id"
@@ -1438,6 +1443,7 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
         c.size_now = sqlite3_column_int64(q, 6);
         c.changed_ms = sqlite3_column_int64(q, 7);
         c.deleted = sqlite3_column_int(q, 8);
+        c.version_id_on_drive = sqlite3_column_int64(q, 9);
         if (fn(ctx, &c) != 0) break;
     }
     sqlite3_finalize(q);
@@ -1573,14 +1579,15 @@ static char *restore_dest(const char *dest_root, int flat, const char *source_na
     return dest;
 }
 
-static void note_conflict(bd_catalog *cat, const char *source_name, const char *rel, const char *dest, int64_t want_size,
-                          int64_t want_mtime, const bd_stat_t *have)
+static void note_conflict(bd_catalog *cat, int64_t version_id, const char *source_name, const char *rel, const char *dest,
+                          int64_t want_size, int64_t want_mtime, const bd_stat_t *have)
 {
     sqlite3_stmt *u;
     if (sqlite3_prepare_v2(cat->db,
-                           "INSERT INTO temp.restore_conflicts(source_name, rel_path, dest, want_size, want_mtime_ns, have_size, have_mtime_ns)"
-                           " VALUES(?,?,?,?,?,?,?)", -1, &u, NULL) != SQLITE_OK)
+                           "INSERT INTO temp.restore_conflicts(source_name, rel_path, dest, want_size, want_mtime_ns, have_size, have_mtime_ns,"
+                           " version_id) VALUES(?,?,?,?,?,?,?,?)", -1, &u, NULL) != SQLITE_OK)
         return;
+    sqlite3_bind_int64(u, 8, version_id);
     sqlite3_bind_text(u, 1, source_name ? source_name : "", -1, SQLITE_STATIC);
     sqlite3_bind_text(u, 2, rel ? rel : "", -1, SQLITE_STATIC);
     sqlite3_bind_text(u, 3, dest, -1, SQLITE_STATIC);
@@ -1634,7 +1641,7 @@ static int restore_file(bd_catalog *cat, restore_run *r, const restore_file_item
             }
         }
         stats->files_conflict++;
-        note_conflict(cat, it->source_name, it->rel, dest, it->size, it->mtime, &dst);
+        note_conflict(cat, it->version_id, it->source_name, it->rel, dest, it->size, it->mtime, &dst);
         bd_logf(log, log_ctx, "something else is already at %s; left alone", dest);
         return 0;
     }
@@ -1697,7 +1704,7 @@ static int restore_file(bd_catalog *cat, restore_run *r, const restore_file_item
                 bd_stat_t now;
                 if (bd_stat(dest, &now) == 0) {
                     stats->files_conflict++;
-                    note_conflict(cat, it->source_name, it->rel, dest, it->size, it->mtime, &now);
+                    note_conflict(cat, it->version_id, it->source_name, it->rel, dest, it->size, it->mtime, &now);
                     rc = 2;
                 } else {
                     rc = -1;
@@ -1929,8 +1936,8 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
         }
     }
     if (stats->files_conflict)
-        bd_logf(log, log_ctx, "%lld files were left alone because something else was already there",
-                (long long)stats->files_conflict);
+        bd_logf(log, log_ctx, "%lld %s left alone because something else was already there",
+                (long long)stats->files_conflict, stats->files_conflict == 1 ? "file was" : "files were");
     bd_report(cat, files_seen, NULL, 1);
     bd_progress_end(cat);
     restore_run_end(cat, &run, log, log_ctx);
@@ -2008,7 +2015,7 @@ bd_status bd_list_restore_conflicts(bd_catalog *cat, bd_conflict_fn fn, void *ct
 {
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT source_name, rel_path, dest, want_size, want_mtime_ns, have_size, have_mtime_ns"
+                           "SELECT source_name, rel_path, dest, want_size, want_mtime_ns, have_size, have_mtime_ns, version_id"
                            " FROM temp.restore_conflicts ORDER BY id", -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list restore conflicts");
     while (sqlite3_step(q) == SQLITE_ROW) {
@@ -2020,6 +2027,7 @@ bd_status bd_list_restore_conflicts(bd_catalog *cat, bd_conflict_fn fn, void *ct
         c.want_mtime_ns = sqlite3_column_int64(q, 4);
         c.have_size = sqlite3_column_int64(q, 5);
         c.have_mtime_ns = sqlite3_column_int64(q, 6);
+        c.version_id = sqlite3_column_int64(q, 7);
         if (fn(ctx, &c) != 0) break;
     }
     sqlite3_finalize(q);

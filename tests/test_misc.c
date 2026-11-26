@@ -178,6 +178,7 @@ static void test_mass_change(void)
         REQUIRE_OK(bd_backup_preview(u.cat, u.drive, 0, &pv), u.cat);
         CHECK(pv.files_held == 60);
         CHECK(pv.held_changed == 20);
+        CHECK(pv.held_deleted == (pass == 0 ? 0 : 20)); /* renamed away: the old names are gone from the folder */
         CHECK(pv.mass_change);
         int n[2] = {0, 0};
         REQUIRE_OK(bd_list_changed_on_media(u.cat, u.drive, count_changed, n), u.cat);

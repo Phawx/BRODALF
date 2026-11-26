@@ -130,7 +130,8 @@ enum {
     ID_ENC_SHEET,
     ID_ENC_DRIVE,
     ID_ENC_CATALOG,
-    ID_ENC_TEXT,
+    ID_ENC_INTRO,
+    ID_ENC_STATE,
     ID_ENC_LABEL,
     ID_ENC_ADD,
     ID_ENC_PICK,
@@ -753,6 +754,7 @@ static int g_next_copy_col = -1, g_next_copy_n; /* where its Copy columns are */
 static int g_next_text_lines;
 static void local_fit_cols(void);
 static int local_list_need(void);
+static int enc_state_need(void);
 /* The Local backups table's columns. */
 static const wchar_t *const g_local_cols[6] = {N_(L"Drive"), N_(L"State"), N_(L"Copies on it"),
                                                N_(L"Space"), N_(L"Health"), N_(L"Last checked")};
@@ -9728,9 +9730,17 @@ static void layout_pages(void)
     mv(CTL(ID_PLACE_LIST), pad, y, iw, h - y - pad);
 
     /* Encryption */
-    y = pad + flow(g_enc_btns, COUNT_OF(g_enc_btns), pad, pad, iw) + gap;
-    part = (h - y - pad) * 52 / 100;
-    y += mv(CTL(ID_ENC_TEXT), pad, y, iw, part) + gap;
+    y = pad + mv(CTL(ID_ENC_INTRO), pad, pad, iw, text_height(CTL(ID_ENC_INTRO), iw)) + gap;
+    y += flow(g_enc_btns, COUNT_OF(g_enc_btns), pad, y, iw) + gap;
+    {
+        /* The table as tall as its rows, within reason; the folders get the rest. */
+        int room = h - y - pad;
+        part = enc_state_need();
+        if (part > room * 60 / 100) part = room * 60 / 100;
+        if (part < room * 30 / 100) part = room * 30 / 100;
+    }
+    y += mv(CTL(ID_ENC_STATE), pad, y, iw, part) + gap;
+    lv_fit_all(CTL(ID_ENC_STATE), 2);
     y += mv(CTL(ID_ENC_LABEL), pad, y, iw, text_height(CTL(ID_ENC_LABEL), iw)) + S(2);
     y += flow(g_enc_btns2, COUNT_OF(g_enc_btns2), pad, y, iw) + gap;
     mv(CTL(ID_ENC_LIST), pad, y, iw, h - y - pad);
@@ -9849,7 +9859,13 @@ static void create_pages(HWND hwnd)
     page_button(TAB_ENCRYPT, T(L"Print the recovery sheet..."), ID_ENC_SHEET);
     page_button(TAB_ENCRYPT, T(L"Set up an encrypted drive..."), ID_ENC_DRIVE);
     page_check(TAB_ENCRYPT, T(L"Encrypt the database file"), ID_ENC_CATALOG);
-    page_text(TAB_ENCRYPT, ID_ENC_TEXT);
+    page_label(TAB_ENCRYPT, ID_ENC_INTRO, L"");
+    {
+        static const wchar_t *cols[] = {N_(L"What"), N_(L"State"), N_(L"What it means")};
+        static const int widths[] = {260, 160, 640};
+        page_list(TAB_ENCRYPT, ID_ENC_STATE, cols, widths, 3);
+        ListView_SetExtendedListViewStyle(CTL(ID_ENC_STATE), LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    }
     page_label(TAB_ENCRYPT, ID_ENC_LABEL, T(L"Folders encrypted on every drive and extra place they are copied to:"));
     page_button(TAB_ENCRYPT, T(L"Encrypt what is selected in Primary Database"), ID_ENC_ADD);
     page_button(TAB_ENCRYPT, T(L"Choose a folder to encrypt..."), ID_ENC_PICK);
@@ -10880,6 +10896,57 @@ static void fill_starred(void)
 
 typedef struct { HWND lv; int64_t bps; } enc_fill;
 
+/* The tab's table: what can be encrypted, and whether it is. By row: is it
+ * on (drawn in colour), the drive it is about, what a double-click does. */
+#define ENC_STATE_MAX 80
+static int g_enc_state_n, g_enc_state_on[ENC_STATE_MAX], g_enc_state_cmd[ENC_STATE_MAX];
+static int64_t g_enc_state_drive[ENC_STATE_MAX];
+
+static void enc_state_row(HWND lv, const wchar_t *what, const wchar_t *state, int on, const wchar_t *means, int64_t drive, int cmd)
+{
+    if (g_enc_state_n >= ENC_STATE_MAX) return;
+    const wchar_t *cells[] = {what, state, means};
+    lv_row(lv, cells, 3);
+    g_enc_state_on[g_enc_state_n] = on;
+    g_enc_state_drive[g_enc_state_n] = drive;
+    g_enc_state_cmd[g_enc_state_n] = cmd;
+    g_enc_state_n++;
+}
+
+static int enc_state_need(void)
+{
+    HWND lv = CTL(ID_ENC_STATE);
+    int rowh = line_height() + S(6);
+    RECT ir;
+    if (ListView_GetItemCount(lv) > 0 && ListView_GetItemRect(lv, 0, &ir, LVIR_BOUNDS)) rowh = ir.bottom - ir.top;
+    RECT hr = {0, 0, 0, 0};
+    HWND hd = ListView_GetHeader(lv);
+    if (hd) GetWindowRect(hd, &hr);
+    int head = hr.bottom - hr.top;
+    if (head <= 0) head = S(26);
+    return head + (g_enc_state_n ? g_enc_state_n : 4) * rowh + S(8);
+}
+
+/* The State column in colour: blue for what is on, grey for what is not. */
+static LRESULT enc_state_draw(NMLVCUSTOMDRAW *cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: return CDRF_NOTIFYSUBITEMDRAW;
+    case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+        HWND lv = cd->nmcd.hdr.hwndFrom;
+        int item = (int)cd->nmcd.dwItemSpec, r = lv_index(lv, item);
+        int selected = (ListView_GetItemState(lv, item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+        if (cd->iSubItem == 1 && !g_hc && !selected && r >= 0 && r < g_enc_state_n)
+            cd->clrText = g_enc_state_on[r] ? tone_text(TONE_WORK) : theme_gray();
+        else
+            cd->clrText = ListView_GetTextColor(lv);
+        return CDRF_NEWFONT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
 static int enc_row_cb(void *ctx, const bd_mark_info *m)
 {
     enc_fill *f = ctx;
@@ -10899,17 +10966,20 @@ static int enc_row_cb(void *ctx, const bd_mark_info *m)
 
 static void fill_encrypt(void)
 {
-    HWND ed = CTL(ID_ENC_TEXT), lv = CTL(ID_ENC_LIST);
-    int r = lv_selected(ID_ENC_LIST), sel = -1;
+    HWND sl = CTL(ID_ENC_STATE), lv = CTL(ID_ENC_LIST);
+    int r = lv_selected(ID_ENC_LIST), sel = -1, was_rows = g_enc_state_n;
     mark_key keep = {0, NULL};
     if (r >= 0 && r < g_enc_nrows) { keep.source_id = g_enc_rows[r].source_id; keep.rel = xstrdup(g_enc_rows[r].rel); }
     g_filling++;
     SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(sl, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(lv);
+    ListView_DeleteAllItems(sl);
+    g_enc_state_n = 0;
     rows_free(&g_enc_rows, &g_enc_nrows);
     if (!g_cat) {
-        SetWindowTextW(ed, L"");
         SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+        SendMessageW(sl, WM_SETREDRAW, TRUE, 0);
         free(keep.rel);
         g_filling--;
         return;
@@ -10923,78 +10993,101 @@ static void fill_encrypt(void)
     if (keep.rel) sel = row_of(g_enc_rows, g_enc_nrows, keep.source_id, keep.rel);
     free(keep.rel);
 
-    wtext t = {NULL, 0, 0};
-    wchar_t a[64];
-    wadd(&t, T(L"Nothing is encrypted unless you choose it, and every kind below is optional: use none, any one of them, or all "
-             L"of them together.\r\n\r\n"));
-    wadd(&t, T(L"Passphrase\r\n"));
+    /* The table: the passphrase, this file, every drive and extra place. */
     if (!has)
-        wadd(&t, T(L"    None set. Each kind of encryption needs one: Set a passphrase... above. Write it down somewhere safe: "
-                 L"without it, encrypted copies cannot be read, by you or anyone.\r\n"));
+        enc_state_row(sl, T(L"Passphrase"), T(L"Not set"), 0, T(L"Each kind of encryption needs one: Set a passphrase... above."), 0, ID_ENC_PASS);
     else {
-        wadd(&t, T(L"    Set. %ls\r\n"), unlocked ? T(L"Entered for now: BRODALF can encrypt, and read encrypted copies, until you press "
-                                                L"Forget the passphrase or close it.")
-                                              : T(L"Not entered now: BRODALF asks for it when a job needs it."));
-        wadd(&t, T(L"    Recovery key: %ls\r\n"), bd_catalog_has_recovery_key(g_cat)
-                                                   ? T(L"made. It is on the recovery sheet, and opens your encrypted backups if the "
-                                                     L"passphrase is ever forgotten.")
-                                                   : T(L"none yet. Make a new recovery key... puts one on a recovery sheet to print."));
+        enc_state_row(sl, T(L"Passphrase"), unlocked ? T(L"Set, entered for now") : T(L"Set"), 1,
+                      unlocked ? T(L"BRODALF can encrypt, and read encrypted copies, until you press Forget the passphrase or close it.")
+                               : T(L"Not entered now: BRODALF asks for it when a job needs it."),
+                      0, ID_ENC_PASS);
+        int key = bd_catalog_has_recovery_key(g_cat);
+        enc_state_row(sl, T(L"Recovery key"), key ? T(L"Made") : T(L"None yet"), key,
+                      key ? T(L"It is on the recovery sheet, and opens your encrypted backups if the passphrase is ever forgotten.")
+                          : T(L"Make a new recovery key... puts one on a recovery sheet to print."),
+                      0, 0);
     }
-    wadd(&t, T(L"\r\nThis database file (the list of your files and where their copies are)\r\n    %ls\r\n"),
-         bd_catalog_file_encrypted(g_cat) ? T(L"Encrypted: BRODALF asks for the passphrase when it opens it.")
-                                          : T(L"Not encrypted. Tick Encrypt the database file above to encrypt it."));
-    wadd(&t, T(L"\r\nWhole drives and extra places\r\n"));
+    int file_enc = bd_catalog_file_encrypted(g_cat);
+    enc_state_row(sl, T(L"This database file"), file_enc ? T(L"Encrypted") : T(L"Not encrypted"), file_enc,
+                  file_enc ? T(L"The list of your files and where their copies are. BRODALF asks for the passphrase when it opens it.")
+                           : T(L"The list of your files and where their copies are. Tick Encrypt the database file above to encrypt it."),
+                  0, 0);
     drive_list dl = load_drives();
-    int n_enc = 0;
+    int n_drives = 0;
     for (int i = 0; i < dl.n; i++) {
         const drive_snap *d = &dl.items[i];
-        if (!d->encrypted || strcmp(d->kind, "drive") != 0) continue;
-        wchar_t name[600];
+        if (strcmp(d->kind, "drive") != 0) continue;
+        wchar_t name[600], what[700];
         drive_name(d->label, d->location, name, 600);
-        wadd(&t, T(L"    %ls%ls: every copy on it is encrypted\r\n"), name, d->secondary ? T(L" (extra place)") : L"");
-        n_enc++;
+        swprintf(what, 700, L"%ls%ls", name, d->secondary ? T(L" (extra place)") : L"");
+        enc_state_row(sl, what, !d->encrypted ? T(L"Not encrypted") : d->hide_names ? T(L"Encrypted, names hidden") : T(L"Encrypted"),
+                      d->encrypted,
+                      !d->encrypted ? T(L"Plain copies, except the folders you chose below. It stays as it was set up.")
+                      : d->hide_names ? T(L"Every copy on it is encrypted, and the names of its files and folders are hidden.")
+                                      : T(L"Every copy on it is encrypted. Its file and folder names stay readable."),
+                      d->id, 0);
+        n_drives++;
     }
     free(dl.items);
-    if (!n_enc)
-        wadd(&t, T(L"    None. You choose it when you set up a drive (Set up an encrypted drive... above) or add an extra place: every "
-                 L"copy on it is then encrypted. A drive already set up stays as it is.\r\n"));
-    wadd(&t, T(L"\r\nOnly the folders you choose (listed below)\r\n"));
+    if (!n_drives)
+        enc_state_row(sl, T(L"Drives and extra places"), T(L"No drives yet"), 0,
+                      T(L"Set up an encrypted drive... above sets up a drive with every copy on it encrypted."), 0, ID_ENC_DRIVE);
+
+    /* Above the buttons: that it is all optional, and the time it takes when
+     * no folders are chosen; with folders, the time goes with them. */
+    wchar_t a[64], cost[1600];
+    encrypt_cost_text(g_enc_nrows ? es.bytes : 0, cost, 1600);
+    wtext t = {NULL, 0, 0};
+    wadd(&t, L"%ls", T(L"Nothing is encrypted unless you choose it, and every kind is optional: use none, any one of them, or all of them together."));
+    if (!g_enc_nrows) wadd(&t, L" %ls", cost);
+    int changed = 0;
+    set_text_if(ID_ENC_INTRO, t.p ? t.p : L"", &changed);
+    free(t.p);
+
+    /* Over the folders' table: what is in them, how far it got, the time. */
+    wtext lb = {NULL, 0, 0};
+    wadd(&lb, L"%ls", T(L"Folders encrypted on every drive and extra place they are copied to:"));
     if (!g_enc_nrows)
-        wadd(&t, T(L"    None. Choose a folder below to encrypt just it, on every drive and extra place it is copied to, also drives "
-                 L"that are not encrypted. Everything else stays plain, which is quicker to back up and to restore.\r\n"));
+        wadd(&lb, L" %ls", T(L"none yet. Choose a folder to encrypt just it, also on drives that are not encrypted. Everything else stays "
+                             L"plain, which is quicker to back up and to restore."));
     else {
         format_bytes(es.bytes, a, 64);
-        wadd(&t, TN(es.files, L"    %lld file (%ls) in them is encrypted wherever it is copied. Names stay readable: a copy is the "
-                              L"file's name with .bdenc after it.\r\n",
-                    L"    %lld files (%ls) in them are encrypted wherever they are copied. Names stay readable: a copy is the "
-                    L"file's name with .bdenc after it.\r\n"),
+        wadd(&lb, L" ");
+        wadd(&lb, TN(es.files, L"%lld file (%ls), encrypted wherever it is copied. Its name stays readable, with .bdenc after it.",
+                     L"%lld files (%ls), encrypted wherever they are copied. Their names stay readable, with .bdenc after them."),
              (long long)es.files, a);
-        wchar_t sealed[200], waiting[300];
+        wchar_t sealed[200];
         swprintf(sealed, 200, TN(es.sealed_copies, L"%lld encrypted copy so far", L"%lld encrypted copies so far"), (long long)es.sealed_copies);
-        swprintf(waiting, 300, TN(es.files_waiting, L"%lld file still waits for a first encrypted copy, which the next backups make.",
-                                  L"%lld files still wait for a first encrypted copy, which the next backups make."),
-                 (long long)es.files_waiting);
-        wadd(&t, L"    %ls; %ls\r\n", sealed, waiting);
-        if (es.plain_copies)
-            wadd(&t, TN(es.plain_copies, L"    %lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF "
-                                         L"never overwrites or deletes anything on a drive.\r\n",
-                        L"    %lld plain copies were made before you chose to encrypt them. They stay as they are, since BRODALF "
-                        L"never overwrites or deletes anything on a drive.\r\n"),
+        wadd(&lb, L" %ls.", sealed);
+        if (es.files_waiting) {
+            wchar_t waiting[300];
+            swprintf(waiting, 300, TN(es.files_waiting, L"%lld file still waits for a first encrypted copy, which the next backups make.",
+                                      L"%lld files still wait for a first encrypted copy, which the next backups make."),
+                     (long long)es.files_waiting);
+            wadd(&lb, L" %ls", waiting);
+        }
+        if (es.plain_copies) {
+            wadd(&lb, L" ");
+            wadd(&lb, TN(es.plain_copies, L"%lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF "
+                                          L"never overwrites or deletes anything on a drive.",
+                         L"%lld plain copies were made before you chose to encrypt them. They stay as they are, since BRODALF "
+                         L"never overwrites or deletes anything on a drive."),
                  (long long)es.plain_copies);
+        }
+        wadd(&lb, L"\r\n%ls", cost);
     }
-    wadd(&t, T(L"\r\nWhat it means for time\r\n"));
-    wchar_t cost[1600];
-    encrypt_cost_text(es.bytes, cost, 1600);
-    wadd(&t, L"    %ls\r\n", cost);
-    if (has && !unlocked && (g_enc_nrows || n_enc))
-        wadd(&t, T(L"    Backing up, checking and restoring what is encrypted need the passphrase entered; BRODALF asks for it.\r\n"));
-    SetWindowTextW(ed, t.p ? t.p : L"");
-    free(t.p);
+    set_text_if(ID_ENC_LABEL, lb.p ? lb.p : L"", &changed);
+    free(lb.p);
+
     if (sel < 0 && g_enc_nrows) sel = 0;
     lv_select(lv, sel);
     SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+    SendMessageW(sl, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(lv, NULL, TRUE);
+    InvalidateRect(sl, NULL, TRUE);
     g_filling--;
+    if (changed || was_rows != g_enc_state_n) layout_pages();
+    else lv_fit_all(sl, 2);
 }
 
 /* Restore --------------------------------------------------------------- */
@@ -11942,6 +12035,14 @@ static int page_notify(NMHDR *nh)
         edit_drive(g_local_rows[r].id);
     } else if (id == ID_PLACE_LIST && r >= 0 && r < g_place_n) {
         edit_drive(g_place_rows[r].id);
+    } else if (id == ID_ENC_STATE && r >= 0 && r < g_enc_state_n) {
+        if (g_enc_state_drive[r]) edit_drive(g_enc_state_drive[r]);
+        else if (g_enc_state_cmd[r] == ID_ENC_PASS) set_passphrase_ui();
+        else if (g_enc_state_cmd[r] == ID_ENC_DRIVE) {
+            g_label_encrypt_default = 1;
+            add_disk();
+            g_label_encrypt_default = 0;
+        }
     } else if (id == ID_REST_LIST && r >= 0 && r < g_n_conflicts && g_conflicts[r].dest) {
         show_in_explorer(g_conflicts[r].dest);
     }
@@ -14436,6 +14537,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (nh->idFrom == ID_NEXT_LIST && nh->hwndFrom == CTL(ID_NEXT_LIST) && nh->code == NM_CUSTOMDRAW)
             return next_custom_draw((NMLVCUSTOMDRAW *)lp);
+        if (nh->idFrom == ID_ENC_STATE && nh->hwndFrom == CTL(ID_ENC_STATE) && nh->code == NM_CUSTOMDRAW)
+            return enc_state_draw((NMLVCUSTOMDRAW *)lp);
         if (nh->idFrom == ID_LOCAL_LIST && nh->hwndFrom == CTL(ID_LOCAL_LIST)) {
             if (nh->code == NM_CUSTOMDRAW) return local_custom_draw((NMLVCUSTOMDRAW *)lp);
             if (nh->code == LVN_GETINFOTIPW) {

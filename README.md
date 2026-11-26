@@ -461,7 +461,10 @@ There are four kinds, each on its own, all on the **Encryption** tab:
 The first time, BRODALF asks you to choose a passphrase. File contents are
 encrypted (XChaCha20-Poly1305, key from Argon2id). File and folder names
 stay readable so you can still find things in Explorer, unless you choose
-otherwise (below). Encrypted copies end in `.bdenc`. The tab also changes the passphrase, makes BRODALF
+otherwise (below). Encrypted copies end in `.bdenc`. The **Encryption** tab's table says at a glance what is
+encrypted and what is not: the passphrase and its recovery key, this database file, and each drive and
+extra place (double-click one for its details). Under it are the folders you chose to encrypt, with how
+far their encrypted copies got and what it costs in time. The tab also changes the passphrase, makes BRODALF
 forget it until it is needed, makes a new recovery key and prints the
 recovery sheet (**File > Print a recovery sheet**), which lists your drives
 and a recovery key that opens your encrypted copies if the passphrase is

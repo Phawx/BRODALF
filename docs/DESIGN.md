@@ -323,8 +323,19 @@ leaves out is marked deleted, for the user to keep tracking or forget.
 ## The .brodalf file
 
 16-byte header (`BRODALF\x1a`, format version, flags) followed by one zstd
-stream of a SQLite database. While open it is unpacked to a working copy in the
-temp folder. On Windows a named mutex, `Local\BRODALF-catalog-<hash>` (the
+stream of a SQLite database. While open, a plain catalog is unpacked to a
+working copy in the temp folder (WAL mode). An encrypted one is unpacked into
+memory instead (`sqlite3_deserialize`), so nothing of it is ever written to the
+disk unencrypted, not even by a crash: the save serializes it under the
+connection's mutex (refused while a write transaction is open) and seals it
+straight from memory, `PRAGMA secure_delete` keeps its free pages zeroed (so
+they compress away without a VACUUM), and the memory database's 1 GiB limit is
+lifted. Turning encryption on moves an open catalog into memory and deletes its
+working copy. For every catalog SQLite keeps its scratch data in memory
+(`temp_store=MEMORY`; a memory database's journal is in memory too). The key's
+memory is locked out of the page file, and a process with a catalog in memory
+leaves the heap out of Windows Error Reporting's dumps (no core files
+elsewhere). On Windows a named mutex, `Local\BRODALF-catalog-<hash>` (the
 first 16 bytes of the BLAKE3 hash of the catalog's full path, made long,
 upper-cased and without the `\\?\` prefix), keeps a second BRODALF on the
 same PC from opening it, and `<file>.lock` is held open without sharing and

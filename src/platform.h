@@ -132,6 +132,19 @@ extern const char *bd_test_walk_fail;
 char *bd_fold_case(const char *s);
 
 int bd_random_bytes(void *buf, size_t n);
+
+/* Keep secret bytes (an encryption key) out of the swap file: lock the
+ * memory they are in, until bd_secret_unlock. Best effort; nothing happens
+ * when the system refuses. */
+void bd_secret_lock(void *p, size_t n);
+void bd_secret_unlock(void *p, size_t n);
+
+/* This process holds a database that must not reach the disk unencrypted:
+ * a crash report leaves out the memory it lives in (Windows: no heap in
+ * Windows Error Reporting's dumps; elsewhere: no core file). Lasts until
+ * the process ends. */
+void bd_no_crash_dumps_of_memory(void);
+
 int64_t bd_now_ms(void);
 void bd_sleep_ms(int ms);
 

@@ -10,8 +10,12 @@
  * the 96-byte block wrapping it by the recovery key, and the zstd stream is
  * sealed with the master key.
  *
- * While open, the database lives in a working copy in the temp folder and a
- * "<file>.lock" file sits next to the catalog. On Windows a named mutex
+ * While open, a plain catalog's database lives in a working copy in the
+ * temp folder. An encrypted catalog's lives only in memory: nothing of it
+ * is ever written to the disk unencrypted, not while it is open, not when
+ * it is saved, and so not after a crash or a power cut either. SQLite
+ * keeps its scratch data (TEMP tables, sorting, journals) in memory for
+ * every catalog. A "<file>.lock" file sits next to the catalog. On Windows a named mutex
  * derived from the catalog's full path is held too, and the lock file is
  * kept open without sharing, so both are released by Windows if BRODALF
  * crashes; elsewhere a lock file left by a crash has to be removed by hand. */
@@ -31,6 +35,8 @@
 #define BD_SCHEMA_PLAIN 8
 #define BD_STR2(x) #x
 #define BD_STR(x) BD_STR2(x)
+
+int bd_test_work_on_disk = 0;
 
 static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -256,6 +262,8 @@ static bd_catalog *catalog_alloc(const char *path)
 {
     bd_catalog *cat = calloc(1, sizeof(*cat));
     if (!cat) return NULL;
+    /* The master key stays out of the swap file. */
+    bd_secret_lock(cat->key, sizeof(cat->key));
     cat->path = bd_strdup(path);
     cat->lock_path = bd_sprintf("%s.lock", path);
     char tmp[1024], id[37];
@@ -269,6 +277,7 @@ static bd_catalog *catalog_alloc(const char *path)
         free(cat->lock_path);
         free(cat->work_path);
         free(cat->owner_path);
+        bd_secret_unlock(cat->key, sizeof(cat->key));
         free(cat);
         return NULL;
     }
@@ -297,8 +306,15 @@ static void catalog_free(bd_catalog *cat, int owns_lock)
     if (cat) bd_catalog_set_progress(cat, NULL, NULL);
     if (!cat) return;
     bd_cancel_forget(cat);
+    if (cat->db && cat->in_memory) {
+        /* Its pages, so they do not linger in freed memory. */
+        sqlite3_int64 n = 0;
+        unsigned char *p = sqlite3_serialize(cat->db, "main", &n, SQLITE_SERIALIZE_NOCOPY);
+        if (p && n > 0) bd_wipe(p, (size_t)n);
+    }
     if (cat->db) sqlite3_close(cat->db);
     bd_wipe(cat->key, sizeof(cat->key));
+    bd_secret_unlock(cat->key, sizeof(cat->key));
     remove_work_files(cat);
     if (owns_lock && cat->lock) bd_catalog_lock_release(cat->lock, cat->lock_path);
     free(cat->path);
@@ -395,13 +411,59 @@ static int schema_cookie(bd_catalog *cat)
     return v;
 }
 
-static bd_status open_db(bd_catalog *cat)
+/* An in-memory database may grow as far as memory allows (SQLite's own
+ * limit is 1 GiB). */
+static int lift_memory_limit(bd_catalog *cat)
 {
-    if (sqlite3_open_v2(cat->work_path, &cat->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK)
+    sqlite3_int64 limit = (sqlite3_int64)1 << 42;
+    return sqlite3_file_control(cat->db, "main", SQLITE_FCNTL_SIZE_LIMIT, &limit) == SQLITE_OK ? 0 : -1;
+}
+
+/* A database written from a working copy in WAL mode says so in its header
+ * (bytes 18 and 19), and an in-memory database cannot be in WAL mode: it is
+ * marked as an ordinary one. The file format is the same either way. */
+static void image_not_wal(unsigned char *image, sqlite3_int64 len)
+{
+    if (len >= 100 && memcmp(image, "SQLite format 3", 16) == 0) {
+        if (image[18] == 2) image[18] = 1;
+        if (image[19] == 2) image[19] = 1;
+    }
+}
+
+/* What an in-memory database sets: rows deleted are overwritten with
+ * zeros, so they do not linger in memory, and the free pages a save writes
+ * out (it does not compact the database as VACUUM INTO does) compress to
+ * almost nothing. Its journal is in memory by itself. */
+#define MEMORY_PRAGMAS "PRAGMA main.secure_delete=ON;"
+
+/* Open the working database: the working copy in the temp folder, or, when
+ * image is set, that unpacked database in memory (SQLite takes it over,
+ * also when this fails). */
+static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 len, sqlite3_int64 cap)
+{
+    if (image) {
+        image_not_wal(image, len);
+        if (sqlite3_open_v2(":memory:", &cat->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
+            bd_wipe(image, (size_t)len);
+            sqlite3_free(image);
+            return bd_fail_db(cat, "cannot open the database in memory");
+        }
+        if (sqlite3_deserialize(cat->db, "main", image, len, cap,
+                                SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE) != SQLITE_OK)
+            return bd_fail_db(cat, "cannot open the database in memory");
+        cat->in_memory = 1;
+        if (lift_memory_limit(cat) != 0) return bd_fail_db(cat, "cannot open the database in memory");
+    } else if (sqlite3_open_v2(cat->work_path, &cat->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
         return bd_fail_db(cat, "cannot open working database");
+    }
     sqlite3_busy_timeout(cat->db, 5000);
     sqlite3_commit_hook(cat->db, on_commit, cat);
-    if (bd_exec(cat, "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") != 0)
+    /* SQLite's scratch data stays in memory, for every catalog: the TEMP
+     * tables below (drives plugged in, files in use, a restore's
+     * conflicts), sorting and temporary indexes. Set before the first TEMP
+     * table, as changing it later would drop them. */
+    if (bd_exec(cat, "PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY;") != 0 ||
+        bd_exec(cat, cat->in_memory ? MEMORY_PRAGMAS : "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") != 0)
         return bd_fail_db(cat, "cannot configure database");
     /* What opening changes is saved with the next save; when it changes
      * nothing (the fix-ups below find nothing to fix), the catalog counts
@@ -525,15 +587,45 @@ static int meta_set(bd_catalog *cat, const char *key, const char *value)
     return rc;
 }
 
-static bd_status decompress_to(bd_catalog *cat, bd_source *in, const char *out_path)
+/* The database unpacked into memory, in a buffer SQLite can take over. */
+typedef struct {
+    unsigned char *buf;
+    sqlite3_int64 len, cap;
+} bd_image;
+
+static int image_reserve(bd_image *m, sqlite3_int64 need)
 {
-    FILE *out = bd_fopen(out_path, "wb");
-    if (!out) return bd_fail(cat, BD_ERR_IO, "cannot create working copy %s", out_path);
+    if (need <= m->cap) return 0;
+    sqlite3_int64 cap = m->cap ? m->cap : (sqlite3_int64)1 << 20;
+    while (cap < need) cap *= 2;
+    unsigned char *p = sqlite3_realloc64(m->buf, (sqlite3_uint64)cap);
+    if (!p) return -1;
+    m->buf = p;
+    m->cap = cap;
+    return 0;
+}
+
+static void image_free(bd_image *m)
+{
+    if (m->buf) bd_wipe(m->buf, (size_t)m->len);
+    sqlite3_free(m->buf);
+    m->buf = NULL;
+    m->len = m->cap = 0;
+}
+
+/* Unpack the catalog's database to the working copy at out_path, or, with
+ * out_path NULL, into mem. */
+static bd_status decompress_to(bd_catalog *cat, bd_source *in, const char *out_path, bd_image *mem)
+{
+    FILE *out = NULL;
+    if (out_path && !(out = bd_fopen(out_path, "wb")))
+        return bd_fail(cat, BD_ERR_IO, "cannot create working copy %s", out_path);
     ZSTD_DCtx *dctx = ZSTD_createDCtx();
     size_t in_cap = ZSTD_DStreamInSize(), out_cap = ZSTD_DStreamOutSize();
     void *ibuf = malloc(in_cap), *obuf = malloc(out_cap);
     bd_status status = BD_OK;
     size_t last = 1;
+    int first = 1;
     if (!dctx || !ibuf || !obuf) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
     for (;;) {
         long got = bd_source_read(in, ibuf, in_cap);
@@ -541,15 +633,32 @@ static bd_status decompress_to(bd_catalog *cat, bd_source *in, const char *out_p
         if (got < 0) { status = bd_fail(cat, BD_ERR_IO, "cannot read %s", cat->path); goto done; }
         if (got == 0) break;
         size_t n = (size_t)got;
+        /* A catalog saved from memory says how big it is unpacked: room
+         * for all of it at once. Others grow as they unpack. */
+        if (mem && first) {
+            unsigned long long size = ZSTD_getFrameContentSize(ibuf, n);
+            if (size != ZSTD_CONTENTSIZE_UNKNOWN && size != ZSTD_CONTENTSIZE_ERROR && size < ((unsigned long long)1 << 42))
+                image_reserve(mem, (sqlite3_int64)size);
+        }
+        first = 0;
         ZSTD_inBuffer ib = {ibuf, n, 0};
         while (ib.pos < ib.size) {
             ZSTD_outBuffer ob = {obuf, out_cap, 0};
+            if (mem) {
+                if (image_reserve(mem, mem->len + (sqlite3_int64)out_cap) != 0) {
+                    status = bd_fail(cat, BD_ERR_NOMEM, "not enough memory to open %s", cat->path);
+                    goto done;
+                }
+                ob.dst = mem->buf + mem->len; /* straight into the image */
+            }
             last = ZSTD_decompressStream(dctx, &ob, &ib);
             if (ZSTD_isError(last)) {
                 status = bd_fail(cat, BD_ERR_FORMAT, "%s is damaged: %s", cat->path, ZSTD_getErrorName(last));
                 goto done;
             }
-            if (fwrite(obuf, 1, ob.pos, out) != ob.pos) {
+            if (mem) {
+                mem->len += (sqlite3_int64)ob.pos;
+            } else if (fwrite(obuf, 1, ob.pos, out) != ob.pos) {
                 status = bd_fail(cat, BD_ERR_IO, "cannot write working copy %s", out_path);
                 goto done;
             }
@@ -560,27 +669,45 @@ done:
     ZSTD_freeDCtx(dctx);
     free(ibuf);
     free(obuf);
-    if (fclose(out) != 0 && status == BD_OK) status = bd_fail(cat, BD_ERR_IO, "cannot write working copy %s", out_path);
+    if (out && fclose(out) != 0 && status == BD_OK)
+        status = bd_fail(cat, BD_ERR_IO, "cannot write working copy %s", out_path);
+    if (status != BD_OK && mem) image_free(mem);
     return status;
 }
 
-static bd_status compress_to(bd_catalog *cat, const char *in_path, bd_sink *out)
+/* Pack the snapshot file at in_path, or, with in_path NULL, the image of
+ * an in-memory database. */
+static bd_status compress_to(bd_catalog *cat, const char *in_path, const unsigned char *image, sqlite3_int64 image_len,
+                             bd_sink *out)
 {
-    FILE *in = bd_fopen(in_path, "rb");
-    if (!in) return bd_fail(cat, BD_ERR_IO, "cannot read snapshot %s", in_path);
+    FILE *in = NULL;
+    if (in_path && !(in = bd_fopen(in_path, "rb"))) return bd_fail(cat, BD_ERR_IO, "cannot read snapshot %s", in_path);
     ZSTD_CCtx *cctx = ZSTD_createCCtx();
     size_t in_cap = ZSTD_CStreamInSize(), out_cap = ZSTD_CStreamOutSize();
     void *ibuf = malloc(in_cap), *obuf = malloc(out_cap);
     bd_status status = BD_OK;
+    sqlite3_int64 pos = 0;
     if (!cctx || !ibuf || !obuf) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
     ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 9);
     ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1);
+    /* Recorded in the frame, so opening knows how much memory it needs.
+     * Every zstd reader takes it; older BRODALFs ignore it. */
+    if (!in) ZSTD_CCtx_setPledgedSrcSize(cctx, (unsigned long long)image_len);
     for (;;) {
-        size_t n = fread(ibuf, 1, in_cap, in);
+        size_t n;
+        const void *from = ibuf;
+        if (in) {
+            n = fread(ibuf, 1, in_cap, in);
+        } else {
+            sqlite3_int64 left = image_len - pos;
+            n = left < (sqlite3_int64)in_cap ? (size_t)left : in_cap;
+            from = image + pos;
+            pos += (sqlite3_int64)n;
+        }
         int last = n < in_cap;
-        if (last && ferror(in)) { status = bd_fail(cat, BD_ERR_IO, "cannot read snapshot %s", in_path); goto done; }
+        if (last && in && ferror(in)) { status = bd_fail(cat, BD_ERR_IO, "cannot read snapshot %s", in_path); goto done; }
         ZSTD_EndDirective mode = last ? ZSTD_e_end : ZSTD_e_continue;
-        ZSTD_inBuffer ib = {ibuf, n, 0};
+        ZSTD_inBuffer ib = {from, n, 0};
         int finished;
         do {
             ZSTD_outBuffer ob = {obuf, out_cap, 0};
@@ -598,8 +725,67 @@ done:
     ZSTD_freeCCtx(cctx);
     free(ibuf);
     free(obuf);
-    fclose(in);
+    if (in) fclose(in);
     return status;
+}
+
+/* A copy of the in-memory database as it stands, for a save. Taken holding
+ * the connection's mutex, so no other thread changes it meanwhile (SQLite
+ * does not lock an in-memory database for this by itself), and refused
+ * while a transaction is writing to it, whose pages may be half written:
+ * a save from the working copy (VACUUM INTO) refuses that too. */
+static bd_status memory_snapshot(bd_catalog *cat, unsigned char **image, sqlite3_int64 *len)
+{
+    *image = NULL;
+    *len = 0;
+    sqlite3_mutex *m = sqlite3_db_mutex(cat->db);
+    sqlite3_mutex_enter(m);
+    int writing = sqlite3_txn_state(cat->db, "main") == SQLITE_TXN_WRITE;
+    if (!writing) *image = sqlite3_serialize(cat->db, "main", len, 0);
+    sqlite3_mutex_leave(m);
+    if (writing) return bd_fail(cat, BD_ERR_DB, "cannot snapshot catalog: a change to it is still being made");
+    if (!*image) return bd_fail(cat, BD_ERR_NOMEM, "not enough memory to save the catalog");
+    return BD_OK;
+}
+
+bd_status bd_catalog_keep_in_memory(bd_catalog *cat)
+{
+    if (!cat || !cat->db) return BD_ERR_INVALID;
+    if (cat->in_memory || bd_test_work_on_disk) return BD_OK;
+    /* Swapping the database under a statement another thread is running
+     * would pull it from under that statement: wait for none to be running
+     * (holding the connection's mutex, no new one starts meanwhile). */
+    sqlite3_mutex *m = sqlite3_db_mutex(cat->db);
+    bd_status s = BD_OK;
+    for (int tries = 0;; tries++) {
+        sqlite3_mutex_enter(m);
+        int busy = sqlite3_txn_state(cat->db, "main") != SQLITE_TXN_NONE;
+        for (sqlite3_stmt *st = NULL; !busy && (st = sqlite3_next_stmt(cat->db, st)) != NULL;) busy = sqlite3_stmt_busy(st);
+        if (!busy) {
+            sqlite3_int64 len = 0;
+            unsigned char *image = sqlite3_serialize(cat->db, "main", &len, 0);
+            if (!image) {
+                s = bd_fail(cat, BD_ERR_NOMEM, "not enough memory to keep the database in memory");
+            } else {
+                image_not_wal(image, len);
+                /* This closes the working copy (SQLite frees image if it fails). */
+                int rc = sqlite3_deserialize(cat->db, "main", image, len, len,
+                                             SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
+                if (rc == SQLITE_OK) cat->in_memory = 1;
+                if (rc != SQLITE_OK || lift_memory_limit(cat) != 0 || bd_exec(cat, MEMORY_PRAGMAS) != 0)
+                    s = bd_fail_db(cat, "cannot move the database into memory");
+            }
+        }
+        sqlite3_mutex_leave(m);
+        if (!busy) break;
+        if (tries == 250) return bd_fail(cat, BD_ERR_DB, "the database is busy: try again once the running job has finished");
+        bd_sleep_ms(20);
+    }
+    if (cat->in_memory) {
+        remove_work_files(cat);
+        bd_no_crash_dumps_of_memory();
+    }
+    return s;
 }
 
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
@@ -609,20 +795,28 @@ bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
     if (encrypt && (!cat->have_key || bd_catalog_key_block(cat, block) != 0))
         return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to save an encrypted catalog");
     int with_recovery = encrypt && bd_catalog_recovery_block(cat, recovery) == 0;
-    char *snapshot = bd_sprintf("%s.snapshot", cat->work_path);
+    /* The snapshot to save: a file beside the working copy, or, for a
+     * catalog in memory, a copy in memory. */
+    char *snapshot = cat->in_memory ? NULL : bd_sprintf("%s.snapshot", cat->work_path);
     char *saving = bd_sprintf("%s.saving", dest);
+    unsigned char *image = NULL;
+    sqlite3_int64 image_len = 0;
     bd_status status = BD_OK;
     FILE *out = NULL;
     bd_sink sink = {NULL, NULL};
-    if (!snapshot || !saving) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
-    bd_remove(snapshot);
+    if ((!cat->in_memory && !snapshot) || !saving) { status = bd_fail(cat, BD_ERR_NOMEM, "out of memory"); goto done; }
 
-    sqlite3_stmt *st;
-    if (sqlite3_prepare_v2(cat->db, "VACUUM INTO ?", -1, &st, NULL) != SQLITE_OK) { status = bd_fail_db(cat, "cannot snapshot catalog"); goto done; }
-    sqlite3_bind_text(st, 1, snapshot, -1, SQLITE_STATIC);
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) { status = bd_fail_db(cat, "cannot snapshot catalog"); goto done; }
+    if (cat->in_memory) {
+        if ((status = memory_snapshot(cat, &image, &image_len)) != BD_OK) goto done;
+    } else {
+        bd_remove(snapshot);
+        sqlite3_stmt *st;
+        if (sqlite3_prepare_v2(cat->db, "VACUUM INTO ?", -1, &st, NULL) != SQLITE_OK) { status = bd_fail_db(cat, "cannot snapshot catalog"); goto done; }
+        sqlite3_bind_text(st, 1, snapshot, -1, SQLITE_STATIC);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) { status = bd_fail_db(cat, "cannot snapshot catalog"); goto done; }
+    }
 
     out = bd_fopen(saving, "wb");
     if (!out) { status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving); goto done; }
@@ -641,7 +835,7 @@ bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt)
         status = bd_fail(cat, BD_ERR_IO, "cannot encrypt %s: out of memory, or the system gave no random numbers", dest);
         goto done;
     }
-    status = compress_to(cat, snapshot, &sink);
+    status = compress_to(cat, snapshot, image, image_len, &sink);
     if (sink.sealer) {
         if (bd_seal_end(sink.sealer) != 0 && status == BD_OK) status = bd_fail(cat, BD_ERR_IO, "cannot write %s", saving);
         sink.sealer = NULL;
@@ -657,6 +851,7 @@ done:
     if (out) fclose(out);
     if (status != BD_OK && saving) bd_remove(saving);
     if (snapshot) { bd_remove(snapshot); free(snapshot); }
+    if (image) { bd_wipe(image, (size_t)image_len); sqlite3_free(image); }
     free(saving);
     return status;
 }
@@ -711,7 +906,7 @@ bd_status bd_catalog_create(const char *path, bd_catalog **out)
     bd_status s = take_lock(cat);
     if (s != BD_OK) return fail_open(cat, s, 0);
     bd_remove(cat->work_path);
-    s = open_db(cat);
+    s = open_db(cat, NULL, 0, 0);
     if (s == BD_OK) {
         char buf[32];
         bd_uuid_v4(cat->uuid);
@@ -792,6 +987,11 @@ static bd_status open_with_secret(const char *path, const char *secret, int reco
         fclose(in);
         return fail_open(cat, bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format this build cannot read", path), 1);
     }
+    /* An encrypted catalog is unpacked into memory, so it has no working
+     * copy for the marker to stand for: the marker goes at once, before
+     * the key is worked out (which takes a moment). */
+    int in_memory = (flags & 1u) && !bd_test_work_on_disk;
+    if (in_memory) remove_work_files(cat);
     bd_source src = {in, NULL};
     uint8_t key[32];
     if (flags & 1u) {
@@ -826,10 +1026,12 @@ static bd_status open_with_secret(const char *path, const char *secret, int reco
         bd_catalog_set_key(cat, key);
         bd_wipe(key, sizeof(key));
     }
-    s = decompress_to(cat, &src, cat->work_path);
+    bd_image image = {NULL, 0, 0};
+    if (in_memory) bd_no_crash_dumps_of_memory();
+    s = decompress_to(cat, &src, in_memory ? NULL : cat->work_path, in_memory ? &image : NULL);
     bd_open_end(src.opener);
     fclose(in);
-    if (s == BD_OK) s = open_db(cat);
+    if (s == BD_OK) s = open_db(cat, image.buf, image.len, image.cap);
     if (s == BD_OK && !meta_get(cat, "catalog_uuid", cat->uuid, sizeof(cat->uuid)))
         s = bd_fail(cat, BD_ERR_FORMAT, "%s has no catalog id", path);
     if (s == BD_OK) {
@@ -841,6 +1043,9 @@ static bd_status open_with_secret(const char *path, const char *secret, int reco
         else if (!meta_get(cat, "schema_version", now, sizeof(now)) || strcmp(now, v) != 0)
             cat->open_upgraded = 1;
     }
+    /* A plain file whose next save is to be encrypted: in memory from now
+     * on (not made by BRODALF, which encrypts the file as it saves this). */
+    if (s == BD_OK && !cat->in_memory && bd_catalog_file_encrypted(cat)) s = bd_catalog_keep_in_memory(cat);
     if (s != BD_OK) return fail_open(cat, s, 1);
     /* The file holds what is open now, unless opening changed something. */
     if (!cat->open_upgraded) cat->saved_changes = cat->changes;

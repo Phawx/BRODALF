@@ -2092,7 +2092,7 @@ static void job_progress(void *ctx, const bd_progress *p)
     if (!m) return;
     const char *ph = p->phase;
     const wchar_t *verb = strcmp(ph, "scan") == 0 ? T(L"Scanning") : strcmp(ph, "backup") == 0 ? T(L"Backing up")
-                        : strcmp(ph, "restore") == 0 ? T(L"Restoring") : strcmp(ph, "verify") == 0 ? T(L"Reading back copies")
+                        : strcmp(ph, "restore") == 0 ? T(L"Restoring") : strcmp(ph, "verify") == 0 ? T(L"Checking copies")
                         : T(L"Checking copies");
     const wchar_t *unit = strcmp(ph, "scan") == 0 ? T(L"files looked at") : strcmp(ph, "backup") == 0 ? T(L"files copied")
                         : strcmp(ph, "restore") == 0 ? T(L"files restored") : T(L"copies read");
@@ -2500,15 +2500,15 @@ static DWORD WINAPI worker(LPVOID arg)
             wchar_t name[600];
             media_name(j->media_id, name, 600);
             if (cs.rehashed == 0 && s == BD_OK)
-                swprintf(j->summary, SUMMARY_LEN, T(L"Read back what was written to %ls: every copy on it had been read back already."), name);
+                swprintf(j->summary, SUMMARY_LEN, T(L"Checked what was just written to %ls: every copy on it had been checked already."), name);
             else
-                swprintf(j->summary, SUMMARY_LEN, T(L"Read back what was written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"),
+                swprintf(j->summary, SUMMARY_LEN, T(L"Checked what was just written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"),
                          name, (long long)cs.rehashed, (long long)cs.ok, (long long)cs.bad, (long long)cs.missing,
                          cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
         } else if (cs.rehashed == 0 && s == BD_OK)
-            swprintf(j->summary, SUMMARY_LEN, T(L"Read back: every copy on the drive was read back within the last %d days."), days);
+            swprintf(j->summary, SUMMARY_LEN, T(L"Check done: every copy on the drive was checked within the last %d days."), days);
         else
-            swprintf(j->summary, SUMMARY_LEN, T(L"Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls"),
+            swprintf(j->summary, SUMMARY_LEN, T(L"Check done: %lld copies checked, %lld good, %lld damaged, %lld missing.%ls"),
                      (long long)cs.rehashed, (long long)cs.ok, (long long)cs.bad, (long long)cs.missing,
                      cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
         if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
@@ -2519,9 +2519,9 @@ static DWORD WINAPI worker(LPVOID arg)
         bd_check_stats cs;
         memset(&cs, 0, sizeof(cs));
         s = bd_media_check(g_cat, j->media_id, &cs, job_log, j);
-        swprintf(j->summary, SUMMARY_LEN, T(L"Check done: %lld copies read, %lld good, %lld missing, %lld damaged.%ls"),
-                 (long long)cs.copies, (long long)cs.ok, (long long)cs.missing,
-                 (long long)cs.bad, cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
+        swprintf(j->summary, SUMMARY_LEN, T(L"Check done: %lld copies checked, %lld good, %lld damaged, %lld missing.%ls"),
+                 (long long)cs.copies, (long long)cs.ok, (long long)cs.bad,
+                 (long long)cs.missing, cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
         if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
         j->n_problems = j->n_tell = cs.bad + cs.missing;
         break;
@@ -2730,7 +2730,7 @@ static void set_busy(int busy)
  * what holds up a shutdown, and for the note after one cut a job short. */
 static const wchar_t *g_job_doing[] = {N_(L"Looking for BRODALF drives..."), N_(L"Scanning your backup roots..."),
                                        N_(L"Backing up..."), N_(L"Checking every copy on the drive..."), N_(L"Restoring..."),
-                                       N_(L"Reading back copies not read lately..."), N_(L"Reading files that are in use from a shadow copy..."),
+                                       N_(L"Checking copies not checked lately..."), N_(L"Reading files that are in use from a shadow copy..."),
                                        N_(L"Compressing the copies on the drive..."), N_(L"Saving your changes and updating the figures...")};
 
 static void start_next_job(void)
@@ -2753,7 +2753,7 @@ static void start_next_job(void)
     if (j->kind == JOB_VERIFY && j->just_written) {
         wchar_t name[600];
         media_name(j->media_id, name, 600); /* the worker has not started yet */
-        swprintf(what_buf, 700, T(L"Reading back what was just written to %ls..."), name);
+        swprintf(what_buf, 700, T(L"Checking what was just written to %ls..."), name);
         what = what_buf;
     }
     SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)what);
@@ -3623,7 +3623,7 @@ static int add_copy_row(void *ctx, const bd_copy_info *c)
     else if (strcmp(c->copy_state, "ok") != 0) swprintf(buf, 512, strcmp(c->copy_state, "missing") == 0 ? T(L"Missing from drive") : T(L"Damaged"));
     else if (c->media_lost) swprintf(buf, 512, T(L"Drive marked lost or broken: does not count"));
     else if (!c->read_back)
-        swprintf(buf, 512, c->connected ? T(L"Good, plugged in; not read back yet") : T(L"Good, drive not plugged in; not read back yet"));
+        swprintf(buf, 512, c->connected ? T(L"Good, plugged in; not checked yet") : T(L"Good, drive not plugged in; not checked yet"));
     else swprintf(buf, 512, c->connected ? T(L"Good, plugged in") : T(L"Good, drive not plugged in"));
     it.iSubItem = 2;
     it.pszText = buf;
@@ -4023,11 +4023,11 @@ static void add_drive_heading(wtext *t, const drive_snap *d, const wchar_t *inde
         /* A copy never read back is not "read back" when it was written. */
         if (d->oldest_unread_ms) {
             format_time_ms(d->oldest_unread_ms, checked, 64);
-            wadd(t, T(L"%ls    Holds %ls of good copies; some were never read back since they were written (the oldest %ls)%ls\r\n"),
+            wadd(t, T(L"%ls    Holds %ls of good copies; some were never checked since they were written (the oldest %ls)%ls\r\n"),
                  indent, held, checked, d->check_due ? T(L" (due for a check)") : L"");
         } else {
             format_time_ms(d->oldest_check_ms, checked, 64);
-            wadd(t, T(L"%ls    Holds %ls of good copies; the oldest was last read back %ls%ls\r\n"), indent, held, checked,
+            wadd(t, T(L"%ls    Holds %ls of good copies; the oldest was last checked %ls%ls\r\n"), indent, held, checked,
                  d->check_due ? T(L" (due for a check)") : L"");
         }
     }
@@ -4277,7 +4277,7 @@ static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
     if (ms.last_check_ms) {
         format_time_ms(ms.last_check_ms, when, 64);
         /* The kind is "check" (or "quick check", "full check" before 0.7.0) or "read back". */
-        wadd(t, strcmp(ms.last_check_kind, "read back") == 0 ? T(L"%ls    Last read back %ls: %ls\r\n") : T(L"%ls    Last check %ls: %ls\r\n"),
+        wadd(t, strcmp(ms.last_check_kind, "read back") == 0 ? T(L"%ls    Last check of the copies not checked lately %ls: %ls\r\n") : T(L"%ls    Last check %ls: %ls\r\n"),
              indent, when, job_end_words(ms.last_check_status, ms.last_check_ms));
     } else
         wadd(t, T(L"%ls    Its copies were never checked (Check drive...)\r\n"), indent);
@@ -4285,7 +4285,7 @@ static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
         wadd(t, T(L"%ls    %lld copies were missing or damaged when last checked: the next backup to it writes them again\r\n"), indent,
              (long long)ms.copies_bad);
     if (ms.copies_never_read)
-        wadd(t, T(L"%ls    %lld copies were never read back since they were written (Check drive..., Read back)\r\n"), indent,
+        wadd(t, T(L"%ls    %lld copies were never checked since they were written (Check drive...)\r\n"), indent,
              (long long)ms.copies_never_read);
 }
 
@@ -4358,8 +4358,8 @@ static void no_drive_message(void)
         if (strcmp(dl.items[i].kind, "drive") == 0 && !dl.items[i].secondary) any = 1;
     free(dl.items);
     MessageBoxW(g_main, any ? T(L"Plug in a backup drive first.")
-                            : T(L"You have no backup drives yet. Set one up with Local backups > Set up a disk..., or Back up > Set "
-                                L"up an external or removable disk..."),
+                            : T(L"You have no backup drives yet. Set one up with Local backups > Set up a drive..., or Back up > Set "
+                                L"up an external or removable drive..."),
                 APP_NAME, MB_ICONINFORMATION);
 }
 
@@ -5054,7 +5054,7 @@ static void table_drives(HWND lv)
         if (ms.last_check_ms) {
             wchar_t when[64];
             format_time_ms(ms.last_check_ms, when, 64);
-            swprintf(check, 128, L"%ls, %ls", when, strcmp(ms.last_check_kind, "read back") == 0 ? T(L"read back") : T(L"check"));
+            swprintf(check, 128, L"%ls, %ls", when, strcmp(ms.last_check_kind, "read back") == 0 ? T(L"copies not checked lately") : T(L"every copy"));
         }
         if (d->lost_ms) {
             swprintf(probs, 160, L"%ls", strcmp(d->lost_why, "broken") == 0 ? T(L"marked broken: its copies no longer count")
@@ -5063,7 +5063,7 @@ static void table_drives(HWND lv)
             if (ms.copies_bad) swprintf(probs, 160, T(L"%lld missing or damaged"), (long long)ms.copies_bad);
             if (ms.copies_never_read) {
                 size_t len = wcslen(probs);
-                swprintf(probs + len, 160 - len, T(L"%ls%lld never read back"), len ? L", " : L"", (long long)ms.copies_never_read);
+                swprintf(probs + len, 160 - len, T(L"%ls%lld never checked"), len ? L", " : L"", (long long)ms.copies_never_read);
             }
             if (d->check_due) {
                 size_t len = wcslen(probs);
@@ -5146,7 +5146,7 @@ static void table_damaged(HWND lv)
     bd_list_damaged(g_cat, table_damaged_cb, &t);
     g_table_n = t.rows;
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    t.rows ? T(L"These files changed although their size and modified time did not: that is what a failing disk or bit rot "
+                    t.rows ? T(L"These files changed although their size and modified time did not: that is what a failing drive or bit rot "
                              L"looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... "
                              L"to get it back. If you changed one on purpose, pick it and choose Keep as it is now.")
                            : T(L"No damaged files. A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them."));
@@ -5373,7 +5373,7 @@ static void job_headline(const job *j, wchar_t *out, size_t cap)
         swprintf(out, cap, TN(n, L"Check finished with %lld problem.", L"Check finished with %lld problems."), n);
         break;
     case JOB_VERIFY:
-        swprintf(out, cap, TN(n, L"Read-back finished with %lld problem.", L"Read-back finished with %lld problems."), n);
+        swprintf(out, cap, TN(n, L"Check finished with %lld problem.", L"Check finished with %lld problems."), n);
         break;
     case JOB_RESTORE:
         swprintf(out, cap, TN(n, L"Restore finished with %lld problem.", L"Restore finished with %lld problems."), n);
@@ -5802,10 +5802,10 @@ static void offer_read_back(const job *j)
     g_n_readback = n;
     if (n)
         swprintf(g_readback_tip, 2400,
-                 TN(n, L"Reads back the copies on %ls that were not read back since they were written, and compares each one with its "
-                       L"checksum, to be sure they were written right. It changes nothing on the drive, and starts only when you press it.",
-                    L"Reads back the copies on %ls that were not read back since they were written, and compares each one with its "
-                    L"checksum, to be sure they were written right. It changes nothing on the drives, and starts only when you press it."),
+                 TN(n, L"Checks the copies on %ls that were not checked since they were written: it reads each one and compares it with its "
+                       L"checksum, to be sure it was written right. It changes nothing on the drive, and starts only when you press it.",
+                    L"Checks the copies on %ls that were not checked since they were written: it reads each one and compares it with its "
+                    L"checksum, to be sure it was written right. It changes nothing on the drives, and starts only when you press it."),
                  names.p ? names.p : L"");
     /* A read straight after the backup may come from what Windows still
      * holds in memory rather than from the drive itself. */
@@ -5847,7 +5847,7 @@ static void read_back_new(void)
         queued++;
     }
     if (!queued && !declined)
-        MessageBoxW(g_main, T(L"The drive is not plugged in any more. Plug it in, then press Check drive... to read back its copies."), APP_NAME,
+        MessageBoxW(g_main, T(L"The drive is not plugged in any more. Plug it in, then press Check drive... to check its copies."), APP_NAME,
                     MB_ICONINFORMATION);
 }
 
@@ -5876,10 +5876,10 @@ static void check_drive(int64_t id)
         swprintf(content, 1400, T(L"Checking reads the copies on %ls and compares each one with its checksum. It changes nothing on the drive."), name);
     int days = bd_option_get(g_cat, "verify_days");
     if (days > 0)
-        swprintf(verify, 400, T(L"Read back copies not read lately\nReads the copies not read back in the last %d days, and new ones. "
+        swprintf(verify, 400, T(L"Check copies not checked lately\nReads the copies not checked in the last %d days, and new ones. "
                               L"A full check spread over time."), days);
     else
-        swprintf(verify, 400, T(L"Read back every copy\nThe same as checking every copy (Settings has read-back set to every copy)."));
+        swprintf(verify, 400, T(L"Check copies not checked lately\nSettings has this set to every copy, so it is the same as checking every copy."));
     TASKDIALOG_BUTTON b[2] = {
         {611, T(L"Check every copy\nReads every copy and compares its size, time and checksum. Takes a while on a big drive.")},
         {612, verify},
@@ -6239,15 +6239,15 @@ static void offer_new_disk(const wchar_t *root)
     ULARGE_INTEGER total;
     if (GetDiskFreeSpaceExW(root, NULL, &total, NULL)) format_bytes((int64_t)total.QuadPart, size, 64);
     if (*vname) swprintf(content, 900, T(L"\"%ls\" (%ls) was plugged in. It is not one of your backup drives."), vname, root);
-    else swprintf(content, 900, T(L"The disk at %ls was plugged in. It is not one of your backup drives."), root);
+    else swprintf(content, 900, T(L"The drive at %ls was plugged in. It is not one of your backup drives."), root);
     if (*size) {
         size_t len = wcslen(content);
         swprintf(content + len, 900 - len, T(L" It holds %ls."), size);
     }
     TASKDIALOG_BUTTON b[3] = {
-        {640, T(L"Set it up as a backup drive\nBRODALF makes its own folder on it and backs up to it. Nothing else on the disk is touched.")},
+        {640, T(L"Set it up as a backup drive\nBRODALF makes its own folder on it and backs up to it. Nothing else on the drive is touched.")},
         {641, T(L"Not now")},
-        {642, T(L"Never ask about this disk")},
+        {642, T(L"Never ask about this drive")},
     };
     TASKDIALOGCONFIG tc;
     memset(&tc, 0, sizeof(tc));
@@ -6256,7 +6256,7 @@ static void offer_new_disk(const wchar_t *root)
     tc.hInstance = g_inst;
     tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
     tc.pszWindowTitle = APP_NAME;
-    tc.pszMainInstruction = T(L"Use this disk for backups?");
+    tc.pszMainInstruction = T(L"Use this drive for backups?");
     tc.pszContent = content;
     tc.cButtons = *serial ? 3 : 2;
     tc.pButtons = b;
@@ -6460,11 +6460,11 @@ static void cmd_security(void)
     AppendMenuW(m, MF_POPUP, (UINT_PTR)remind, T(L"A plugged-in drive offers a check after"));
     HMENU verify = CreatePopupMenu();
     int vd = bd_option_get(g_cat, "verify_days");
-    AppendMenuW(verify, MF_STRING | (vd == 7 ? MF_CHECKED : 0), ID_M_VERIFY_7, T(L"Copies not read back in a week"));
-    AppendMenuW(verify, MF_STRING | (vd == 30 ? MF_CHECKED : 0), ID_M_VERIFY_30, T(L"Copies not read back in a month"));
-    AppendMenuW(verify, MF_STRING | (vd == 90 ? MF_CHECKED : 0), ID_M_VERIFY_90, T(L"Copies not read back in 3 months"));
+    AppendMenuW(verify, MF_STRING | (vd == 7 ? MF_CHECKED : 0), ID_M_VERIFY_7, T(L"Copies not checked in a week"));
+    AppendMenuW(verify, MF_STRING | (vd == 30 ? MF_CHECKED : 0), ID_M_VERIFY_30, T(L"Copies not checked in a month"));
+    AppendMenuW(verify, MF_STRING | (vd == 90 ? MF_CHECKED : 0), ID_M_VERIFY_90, T(L"Copies not checked in 3 months"));
     AppendMenuW(verify, MF_STRING | (vd == 0 ? MF_CHECKED : 0), ID_M_VERIFY_NEVER, T(L"Every copy"));
-    AppendMenuW(m, MF_POPUP, (UINT_PTR)verify, T(L"Check drive, Read back: which copies"));
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)verify, T(L"Check copies not checked lately: which copies"));
     HMENU reserve = CreatePopupMenu();
     int rmb = bd_option_get(g_cat, "reserve_mb");
     AppendMenuW(reserve, MF_STRING | (rmb == 256 ? MF_CHECKED : 0), ID_MENU_RESERVE_256, T(L"256 MB"));
@@ -6511,8 +6511,8 @@ static void settings_command(int cmd)
         int d = choice[cmd - ID_M_VERIFY_7];
         if (bd_option_set(g_cat, "verify_days", d) == BD_OK && ui_save() == BD_OK) {
             wchar_t line[200];
-            if (d) swprintf(line, 200, T(L"Read back now reads the copies not read back in %d days, and new ones."), d);
-            else wcscpy(line, T(L"Read back now reads every copy on the drive."));
+            if (d) swprintf(line, 200, T(L"Check copies not checked lately now reads the copies not checked in %d days, and new ones."), d);
+            else wcscpy(line, T(L"Check copies not checked lately now reads every copy on the drive."));
             log_append(line);
         }
     } else if (cmd >= ID_MENU_CHECK_90 && cmd <= ID_MENU_CHECK_NEVER) {
@@ -7774,7 +7774,7 @@ static int fill_menu_cb(void *ctx, const bd_media_info *m)
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
     AppendMenuW(sub, MF_STRING | (m->connected && !lost ? 0 : MF_GRAYED), base + 0, T(L"Back up to it now"));
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 2, T(L"Check every copy on it"));
-    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, T(L"Read back copies not read lately"));
+    AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, T(L"Check copies not checked lately"));
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 6, T(L"Open in Explorer"));
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 4, T(L"Compress the copies on it..."));
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
@@ -7796,14 +7796,14 @@ static void fill_storage_menus(void)
     if (!g_cat) return;
     fill_menus f = {g_menu_local, 0};
     bd_list_media(g_cat, fill_menu_cb, &f);
-    if (!f.n_local) AppendMenuW(g_menu_local, MF_STRING | MF_GRAYED, 0, T(L"No backup disks yet"));
+    if (!f.n_local) AppendMenuW(g_menu_local, MF_STRING | MF_GRAYED, 0, T(L"No backup drives yet"));
     AppendMenuW(g_menu_local, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_DISK, T(L"Set up an external or removable disk..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_DISK, T(L"Set up an external or removable drive..."));
     AppendMenuW(g_menu_local, MF_STRING, ID_M_ADD_PLACE, T(L"Add an extra place for starred files..."));
     AppendMenuW(g_menu_local, MF_STRING, ID_M_BACKUP_ALL, T(L"Back up to every plugged-in drive"));
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_DRIVES, T(L"All disks..."));
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every disk..."));
-    AppendMenuW(g_menu_local, MF_STRING, ID_M_RISK, T(L"What needs backing up, and which disk to plug in..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_DRIVES, T(L"All drives..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every drive..."));
+    AppendMenuW(g_menu_local, MF_STRING, ID_M_RISK, T(L"Files at risk, and which drive to plug in..."));
 }
 
 static void create_menu_bar(HWND hwnd)
@@ -7834,7 +7834,7 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(g_menu_view, MF_SEPARATOR, 0, NULL);
     menu_keyed(g_menu_view, ID_M_FIND, T(L"&Find a file or folder"), 1, 0, L"F");
     AppendMenuW(g_menu_view, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every &drive..."));
-    AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, T(L"Files short of your &copies, and which drive to plug in..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, T(L"Files at ris&k, and which drive to plug in..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_LARGEST, T(L"Lar&gest files..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_DELETED, T(L"Deleted f&iles..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_DAMAGED, T(L"Da&maged files (found by a bit-rot scan)..."));
@@ -7870,7 +7870,7 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(tools, MF_STRING, ID_M_RESTORE, T(L"&Restore what is selected..."));
     AppendMenuW(tools, MF_STRING, ID_M_RESTORE_DELETED, T(L"Restore &deleted files..."));
     AppendMenuW(tools, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(tools, MF_STRING, ID_M_ADD_DISK, T(L"Set up an e&xternal or removable disk..."));
+    AppendMenuW(tools, MF_STRING, ID_M_ADD_DISK, T(L"Set up an e&xternal or removable drive..."));
     AppendMenuW(tools, MF_STRING, ID_M_ADD_PLACE, T(L"Add an extra &place for starred files..."));
     AppendMenuW(tools, MF_STRING, ID_M_STAR, T(L"S&tar or unstar what is selected"));
     AppendMenuW(tools, MF_STRING, ID_M_ENCRYPT, T(L"E&ncrypt what is selected, or stop..."));
@@ -9091,22 +9091,22 @@ static void create_pages(HWND hwnd)
     page_primary(TAB_NEXT, T(L"Back up..."), ID_NEXT_BACKUP);
     page_button(TAB_NEXT, T(L"Back up to every plugged-in drive"), ID_NEXT_ALL);
     page_button(TAB_NEXT, T(L"Changed since its last backup..."), ID_NEXT_CHANGED);
-    page_button(TAB_NEXT, T(L"Which drive to plug in..."), ID_NEXT_RISK);
+    page_button(TAB_NEXT, T(L"Files at risk..."), ID_NEXT_RISK);
     page_button(TAB_NEXT, T(L"Refresh"), ID_NEXT_REFRESH);
     page_list(TAB_NEXT, ID_NEXT_LIST, NULL, NULL, 0);
 
-    page_button(TAB_LOCAL, T(L"Set up a disk..."), ID_LOCAL_ADD);
+    page_button(TAB_LOCAL, T(L"Set up a drive..."), ID_LOCAL_ADD);
     page_primary(TAB_LOCAL, T(L"Back up to it"), ID_LOCAL_BACKUP);
     page_button(TAB_LOCAL, T(L"Back up to every plugged-in drive"), ID_LOCAL_ALL);
     page_button(TAB_LOCAL, T(L"Check every copy"), ID_LOCAL_CHECK);
-    page_button(TAB_LOCAL, T(L"Read back copies not read lately"), ID_LOCAL_VERIFY);
+    page_button(TAB_LOCAL, T(L"Check copies not checked lately"), ID_LOCAL_VERIFY);
     page_button(TAB_LOCAL, T(L"Open in Explorer"), ID_LOCAL_OPEN);
     page_button(TAB_LOCAL, T(L"Compress copies..."), ID_LOCAL_COMPRESS);
     page_button(TAB_LOCAL, T(L"Changed since its last backup..."), ID_LOCAL_CHANGED);
     page_button(TAB_LOCAL, T(L"Name and where it is kept..."), ID_LOCAL_EDIT);
     page_button(TAB_LOCAL, T(L"Mark lost or broken..."), ID_LOCAL_LOST);
-    page_button(TAB_LOCAL, T(L"Where every drive stands..."), ID_LOCAL_STATUS);
-    page_button(TAB_LOCAL, T(L"Which drive to plug in..."), ID_LOCAL_RISK);
+    page_button(TAB_LOCAL, T(L"Status of every drive..."), ID_LOCAL_STATUS);
+    page_button(TAB_LOCAL, T(L"Files at risk..."), ID_LOCAL_RISK);
     page_check(TAB_LOCAL, T(L"Back up to several drives at once"), ID_LOCAL_PARALLEL);
     {
         static const int widths[] = {220, 170, 150, 170, 170, 160};
@@ -9976,7 +9976,7 @@ static void local_detail(void)
     if (!g_cat) { SetWindowTextW(ed, L""); return; }
     if (r < 0 || r >= g_local_n) {
         SetWindowTextW(ed, g_local_n ? T(L"Select a drive to see where it stands, its space and its health.")
-                                     : T(L"No backup drives yet. Set up a disk... makes one: an external or removable disk, or a "
+                                     : T(L"No backup drives yet. Set up a drive... makes one: an external or removable drive, or a "
                                        L"folder on one."));
         return;
     }
@@ -11513,7 +11513,7 @@ static void header_refresh(void)
         g_verdict_glyph = GLYPH_BANG;
         swprintf(g_verdict, 400, L"%ls", T(L"No backup drive yet"));
         swprintf(g_verdict_sub, 600, L"%ls",
-                 T(L"Your files have no copies yet. Set up a USB drive or another disk, and BRODALF copies every file to it."));
+                 T(L"Your files have no copies yet. Set up a USB stick or another drive, and BRODALF copies every file to it."));
         swprintf(btn, 200, L"%ls", T(L"Set up a drive..."));
         g_next_kind = NEXT_ADD_DRIVE;
     } else if (!f->has_risk) {
@@ -13904,7 +13904,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_busy) {
             static const wchar_t *ask[] = {N_(L"Stop looking for drives and close?"), N_(L"Stop the scan and close?"),
                                            N_(L"Stop the backup and close?"), N_(L"Stop the check and close?"),
-                                           N_(L"Stop the restore and close?"), N_(L"Stop reading back the copies and close?"),
+                                           N_(L"Stop the restore and close?"), N_(L"Stop checking the copies and close?"),
                                            N_(L"Stop reading the files in use and close?"),
                                            N_(L"Stop compressing the drive and close?")};
             if (g_close_after) return 0; /* already stopping; closes when the job returns */

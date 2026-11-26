@@ -255,11 +255,7 @@ msgstr "Sichern"
 msgid "Restoring"
 msgstr "Wiederherstellen"
 
-#: gui/main.c:2095
-msgid "Reading back copies"
-msgstr "Kopien zurücklesen"
-
-#: gui/main.c:2096
+#: gui/main.c:2095 gui/main.c:2096
 msgid "Checking copies"
 msgstr "Kopien prüfen"
 
@@ -530,16 +526,16 @@ msgstr[1] ""
 #: gui/main.c:2503
 #, c-format
 msgid ""
-"Read back what was written to %ls: every copy on it had been read back already."
+"Checked what was just written to %ls: every copy on it had been checked already."
 msgstr ""
-"Zurücklesen auf %ls: Alle Kopien darauf wurden seit dem Schreiben bereits zurückgelesen."
+"Gerade auf %ls Geschriebenes geprüft: Alle Kopien darauf waren schon geprüft."
 
 #: gui/main.c:2505
 #, c-format
 msgid ""
-"Read back what was written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"
+"Checked what was just written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"
 msgstr ""
-"Zurückgelesen, was auf %ls geschrieben wurde: %lld Kopien, %lld intakt, %lld beschädigt, %lld fehlen.%ls"
+"Gerade auf %ls Geschriebenes geprüft: %lld Kopien, %lld intakt, %lld beschädigt, %lld fehlen.%ls"
 
 #: gui/main.c:2507 gui/main.c:2513 gui/main.c:2524
 msgid " The next backup to this drive writes them again."
@@ -548,27 +544,21 @@ msgstr " Die nächste Sicherung auf dieses Laufwerk schreibt sie neu."
 #: gui/main.c:2509
 #, c-format
 msgid ""
-"Read back: every copy on the drive was read back within the last %d days."
+"Check done: every copy on the drive was checked within the last %d days."
 msgstr ""
-"Zurücklesen: Alle Kopien auf dem Laufwerk wurden in den letzten %d Tagen bereits zurückgelesen."
+"Prüfung abgeschlossen: Alle Kopien auf dem Laufwerk wurden in den letzten %d Tagen geprüft."
 
-#: gui/main.c:2511
+#: gui/main.c:2511 gui/main.c:2522
 #, c-format
-msgid "Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls"
+msgid ""
+"Check done: %lld copies checked, %lld good, %lld damaged, %lld missing.%ls"
 msgstr ""
-"%lld Kopien zurückgelesen: %lld intakt, %lld beschädigt, %lld fehlen.%ls"
+"Prüfung abgeschlossen: %lld Kopien geprüft, %lld intakt, %lld beschädigt, %lld fehlen.%ls"
 
 #: gui/main.c:2514 gui/main.c:2525
 #, c-format
 msgid " %lld encrypted copies need the passphrase to check."
 msgstr " %lld verschlüsselte Kopien brauchen zum Prüfen die Passphrase."
-
-#: gui/main.c:2522
-#, c-format
-msgid ""
-"Check done: %lld copies read, %lld good, %lld missing, %lld damaged.%ls"
-msgstr ""
-"Prüfung abgeschlossen: %lld Kopien gelesen, %lld intakt, %lld fehlen, %lld beschädigt.%ls"
 
 #: gui/main.c:2534
 msgid "Your changes are saved."
@@ -721,8 +711,8 @@ msgid "Restoring..."
 msgstr "Wird wiederhergestellt..."
 
 #: gui/main.c:2733
-msgid "Reading back copies not read lately..."
-msgstr "Länger nicht gelesene Kopien werden zurückgelesen..."
+msgid "Checking copies not checked lately..."
+msgstr "Länger nicht geprüfte Kopien werden geprüft..."
 
 #: gui/main.c:2733
 msgid "Reading files that are in use from a shadow copy..."
@@ -746,8 +736,8 @@ msgstr "Die Kopien auf dem Laufwerk werden dekomprimiert..."
 
 #: gui/main.c:2756
 #, c-format
-msgid "Reading back what was just written to %ls..."
-msgstr "Was gerade auf %ls geschrieben wurde, wird zurückgelesen..."
+msgid "Checking what was just written to %ls..."
+msgstr "Was gerade auf %ls geschrieben wurde, wird geprüft..."
 
 #: gui/main.c:2764
 #, c-format
@@ -1013,12 +1003,12 @@ msgid "Drive marked lost or broken: does not count"
 msgstr "Laufwerk als verloren oder defekt gemeldet: zählt nicht"
 
 #: gui/main.c:3626
-msgid "Good, plugged in; not read back yet"
-msgstr "Intakt, angeschlossen; noch nicht zurückgelesen"
+msgid "Good, plugged in; not checked yet"
+msgstr "Intakt, angeschlossen; noch nicht geprüft"
 
 #: gui/main.c:3626
-msgid "Good, drive not plugged in; not read back yet"
-msgstr "Intakt, Laufwerk nicht angeschlossen; noch nicht zurückgelesen"
+msgid "Good, drive not plugged in; not checked yet"
+msgstr "Intakt, Laufwerk nicht angeschlossen; noch nicht geprüft"
 
 #: gui/main.c:3627
 msgid "Good, plugged in"
@@ -1203,9 +1193,9 @@ msgstr "verloren"
 #: gui/main.c:4026
 #, c-format
 msgid ""
-"%ls    Holds %ls of good copies; some were never read back since they were written (the oldest %ls)%ls\r\n"
+"%ls    Holds %ls of good copies; some were never checked since they were written (the oldest %ls)%ls\r\n"
 msgstr ""
-"%ls    Enthält %ls an intakten Kopien; einige wurden seit dem Schreiben nie zurückgelesen (die älteste vom %ls)%ls\r\n"
+"%ls    Enthält %ls an intakten Kopien; einige wurden seit dem Schreiben nie geprüft (die älteste vom %ls)%ls\r\n"
 
 #: gui/main.c:4027 gui/main.c:4031
 msgid " (due for a check)"
@@ -1214,9 +1204,9 @@ msgstr " (Prüfung fällig)"
 #: gui/main.c:4030
 #, c-format
 msgid ""
-"%ls    Holds %ls of good copies; the oldest was last read back %ls%ls\r\n"
+"%ls    Holds %ls of good copies; the oldest was last checked %ls%ls\r\n"
 msgstr ""
-"%ls    Enthält %ls an intakten Kopien; die älteste wurde zuletzt zurückgelesen: %ls%ls\r\n"
+"%ls    Enthält %ls an intakten Kopien; die älteste wurde zuletzt geprüft: %ls%ls\r\n"
 
 #: gui/main.c:4118
 #, c-format
@@ -1388,8 +1378,8 @@ msgstr "%ls    Noch nie darauf gesichert\r\n"
 
 #: gui/main.c:4280
 #, c-format
-msgid "%ls    Last read back %ls: %ls\r\n"
-msgstr "%ls    Zuletzt zurückgelesen %ls: %ls\r\n"
+msgid "%ls    Last check of the copies not checked lately %ls: %ls\r\n"
+msgstr "%ls    Letzte Prüfung der länger nicht geprüften Kopien %ls: %ls\r\n"
 
 #: gui/main.c:4280
 #, c-format
@@ -1411,9 +1401,9 @@ msgstr ""
 #: gui/main.c:4288
 #, c-format
 msgid ""
-"%ls    %lld copies were never read back since they were written (Check drive..., Read back)\r\n"
+"%ls    %lld copies were never checked since they were written (Check drive...)\r\n"
 msgstr ""
-"%ls    %lld Kopien wurden seit dem Schreiben nie zurückgelesen (Laufwerk prüfen..., Zurücklesen)\r\n"
+"%ls    %lld Kopien wurden seit dem Schreiben nie geprüft (Laufwerk prüfen...)\r\n"
 
 #: gui/main.c:4308
 #, c-format
@@ -1446,9 +1436,9 @@ msgstr "Schließen Sie zuerst ein Sicherungslaufwerk an."
 
 #: gui/main.c:4361
 msgid ""
-"You have no backup drives yet. Set one up with Local backups > Set up a disk..., or Back up > Set up an external or removable disk..."
+"You have no backup drives yet. Set one up with Local backups > Set up a drive..., or Back up > Set up an external or removable drive..."
 msgstr ""
-"Sie haben noch keine Sicherungslaufwerke. Richten Sie eines über Lokale Sicherungen > Datenträger einrichten... ein, oder über Sichern > Externen Datenträger oder Wechseldatenträger einrichten..."
+"Sie haben noch keine Sicherungslaufwerke. Richten Sie eines über Lokale Sicherungen > Laufwerk einrichten... ein, oder über Sichern > Externes Laufwerk oder Wechsellaufwerk einrichten..."
 
 #: gui/main.c:4379 gui/main.c:7784
 msgid "  - extra place for starred files"
@@ -1861,12 +1851,12 @@ msgid ", failed"
 msgstr ", fehlgeschlagen"
 
 #: gui/main.c:5057
-msgid "read back"
-msgstr "Zurücklesen"
+msgid "copies not checked lately"
+msgstr "länger nicht geprüfte Kopien"
 
 #: gui/main.c:5057
-msgid "check"
-msgstr "Prüfung"
+msgid "every copy"
+msgstr "alle Kopien"
 
 #: gui/main.c:5060
 msgid "marked broken: its copies no longer count"
@@ -1883,8 +1873,8 @@ msgstr "%lld fehlend oder beschädigt"
 
 #: gui/main.c:5066
 #, c-format
-msgid "%ls%lld never read back"
-msgstr "%ls%lld nie zurückgelesen"
+msgid "%ls%lld never checked"
+msgstr "%ls%lld nie geprüft"
 
 #: gui/main.c:5070
 #, c-format
@@ -1922,9 +1912,9 @@ msgstr ""
 
 #: gui/main.c:5149
 msgid ""
-"These files changed although their size and modified time did not: that is what a failing disk or bit rot looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... to get it back. If you changed one on purpose, pick it and choose Keep as it is now."
+"These files changed although their size and modified time did not: that is what a failing drive or bit rot looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... to get it back. If you changed one on purpose, pick it and choose Keep as it is now."
 msgstr ""
-"Diese Dateien haben sich geändert, obwohl Größe und Änderungszeit gleich blieben: So sieht ein ausfallender Datenträger oder Bit-Rot aus. Die Kopien auf Ihren Laufwerken sind die guten: Wählen Sie eine Datei aus und klicken Sie auf „Gute Kopie wiederherstellen...“, um sie zurückzubekommen. Wenn Sie eine Datei absichtlich geändert haben, wählen Sie sie aus und klicken Sie auf „So behalten“."
+"Diese Dateien haben sich geändert, obwohl Größe und Änderungszeit gleich blieben: So sieht ein ausfallendes Laufwerk oder Bit-Rot aus. Die Kopien auf Ihren Laufwerken sind die guten: Wählen Sie eine Datei aus und klicken Sie auf „Gute Kopie wiederherstellen...“, um sie zurückzubekommen. Wenn Sie eine Datei absichtlich geändert haben, wählen Sie sie aus und klicken Sie auf „So behalten“."
 
 #: gui/main.c:5152
 msgid ""
@@ -2080,19 +2070,12 @@ msgid_plural "%ls finished with %lld problems."
 msgstr[0] "%ls mit %lld Problem abgeschlossen."
 msgstr[1] "%ls mit %lld Problemen abgeschlossen."
 
-#: gui/main.c:5373
+#: gui/main.c:5373 gui/main.c:5376
 #, c-format
 msgid "Check finished with %lld problem."
 msgid_plural "Check finished with %lld problems."
 msgstr[0] "Prüfung mit %lld Problem abgeschlossen."
 msgstr[1] "Prüfung mit %lld Problemen abgeschlossen."
-
-#: gui/main.c:5376
-#, c-format
-msgid "Read-back finished with %lld problem."
-msgid_plural "Read-back finished with %lld problems."
-msgstr[0] "Zurücklesen mit %lld Problem abgeschlossen."
-msgstr[1] "Zurücklesen mit %lld Problemen abgeschlossen."
 
 #: gui/main.c:5379
 #, c-format
@@ -2253,13 +2236,13 @@ msgstr ""
 #: gui/main.c:5805
 #, c-format
 msgid ""
-"Reads back the copies on %ls that were not read back since they were written, and compares each one with its checksum, to be sure they were written right. It changes nothing on the drive, and starts only when you press it."
+"Checks the copies on %ls that were not checked since they were written: it reads each one and compares it with its checksum, to be sure it was written right. It changes nothing on the drive, and starts only when you press it."
 msgid_plural ""
-"Reads back the copies on %ls that were not read back since they were written, and compares each one with its checksum, to be sure they were written right. It changes nothing on the drives, and starts only when you press it."
+"Checks the copies on %ls that were not checked since they were written: it reads each one and compares it with its checksum, to be sure it was written right. It changes nothing on the drives, and starts only when you press it."
 msgstr[0] ""
-"Liest die Kopien auf %ls zurück, die seit dem Schreiben noch nicht zurückgelesen wurden, und vergleicht jede mit ihrer Prüfsumme, um sicherzugehen, dass sie richtig geschrieben wurden. Auf dem Laufwerk wird nichts geändert, und es beginnt erst, wenn Sie darauf klicken."
+"Prüft die Kopien auf %ls, die seit dem Schreiben noch nicht geprüft wurden: Es liest jede und vergleicht sie mit ihrer Prüfsumme, um sicherzugehen, dass sie richtig geschrieben wurde. Auf dem Laufwerk wird nichts geändert, und es beginnt erst, wenn Sie darauf klicken."
 msgstr[1] ""
-"Liest die Kopien auf %ls zurück, die seit dem Schreiben noch nicht zurückgelesen wurden, und vergleicht jede mit ihrer Prüfsumme, um sicherzugehen, dass sie richtig geschrieben wurden. Auf den Laufwerken wird nichts geändert, und es beginnt erst, wenn Sie darauf klicken."
+"Prüft die Kopien auf %ls, die seit dem Schreiben noch nicht geprüft wurden: Es liest jede und vergleicht sie mit ihrer Prüfsumme, um sicherzugehen, dass sie richtig geschrieben wurde. Auf den Laufwerken wird nichts geändert, und es beginnt erst, wenn Sie darauf klicken."
 
 #: gui/main.c:5815
 msgid ""
@@ -2269,9 +2252,9 @@ msgstr ""
 
 #: gui/main.c:5850
 msgid ""
-"The drive is not plugged in any more. Plug it in, then press Check drive... to read back its copies."
+"The drive is not plugged in any more. Plug it in, then press Check drive... to check its copies."
 msgstr ""
-"Das Laufwerk ist nicht mehr angeschlossen. Schließen Sie es an und klicken Sie dann auf „Laufwerk prüfen...“, um seine Kopien zurückzulesen."
+"Das Laufwerk ist nicht mehr angeschlossen. Schließen Sie es an und klicken Sie dann auf „Laufwerk prüfen...“, um seine Kopien zu prüfen."
 
 #: gui/main.c:5868
 #, c-format
@@ -2302,19 +2285,19 @@ msgstr ""
 #: gui/main.c:5879
 #, c-format
 msgid ""
-"Read back copies not read lately\n"
-"Reads the copies not read back in the last %d days, and new ones. A full check spread over time."
+"Check copies not checked lately\n"
+"Reads the copies not checked in the last %d days, and new ones. A full check spread over time."
 msgstr ""
-"Länger nicht gelesene Kopien zurücklesen\n"
-"Liest die Kopien, die in den letzten %d Tagen nicht zurückgelesen wurden, sowie neue. Eine vollständige Prüfung, über die Zeit verteilt."
+"Länger nicht geprüfte Kopien prüfen\n"
+"Liest die Kopien, die in den letzten %d Tagen nicht geprüft wurden, sowie neue. Eine vollständige Prüfung, über die Zeit verteilt."
 
 #: gui/main.c:5882
 msgid ""
-"Read back every copy\n"
-"The same as checking every copy (Settings has read-back set to every copy)."
+"Check copies not checked lately\n"
+"Settings has this set to every copy, so it is the same as checking every copy."
 msgstr ""
-"Jede Kopie zurücklesen\n"
-"Dasselbe wie das Prüfen jeder Kopie (in den Einstellungen ist das Zurücklesen auf jede Kopie eingestellt)."
+"Länger nicht geprüfte Kopien prüfen\n"
+"In den Einstellungen ist dies auf alle Kopien gestellt, also dasselbe wie „Alle Kopien prüfen“."
 
 #: gui/main.c:5884
 msgid ""
@@ -2507,9 +2490,9 @@ msgstr ""
 
 #: gui/main.c:6242
 #, c-format
-msgid "The disk at %ls was plugged in. It is not one of your backup drives."
+msgid "The drive at %ls was plugged in. It is not one of your backup drives."
 msgstr ""
-"Der Datenträger unter %ls wurde angeschlossen. Er gehört nicht zu Ihren Sicherungslaufwerken."
+"Das Laufwerk unter %ls wurde angeschlossen. Es gehört nicht zu Ihren Sicherungslaufwerken."
 
 #: gui/main.c:6245
 #, c-format
@@ -2519,18 +2502,18 @@ msgstr " Darauf liegen %ls."
 #: gui/main.c:6248
 msgid ""
 "Set it up as a backup drive\n"
-"BRODALF makes its own folder on it and backs up to it. Nothing else on the disk is touched."
+"BRODALF makes its own folder on it and backs up to it. Nothing else on the drive is touched."
 msgstr ""
 "Als Sicherungslaufwerk einrichten\n"
-"BRODALF legt darauf einen eigenen Ordner an und sichert dorthin. Alles andere auf dem Datenträger bleibt unberührt."
+"BRODALF legt darauf einen eigenen Ordner an und sichert dorthin. Alles andere auf dem Laufwerk bleibt unberührt."
 
 #: gui/main.c:6250
-msgid "Never ask about this disk"
-msgstr "Für diesen Datenträger nie mehr fragen"
+msgid "Never ask about this drive"
+msgstr "Für dieses Laufwerk nie mehr fragen"
 
 #: gui/main.c:6259
-msgid "Use this disk for backups?"
-msgstr "Diesen Datenträger für Sicherungen verwenden?"
+msgid "Use this drive for backups?"
+msgstr "Dieses Laufwerk für Sicherungen verwenden?"
 
 #: gui/main.c:6296
 #, c-format
@@ -2646,24 +2629,24 @@ msgid "A plugged-in drive offers a check after"
 msgstr "Prüfung für angeschlossene Laufwerke anbieten"
 
 #: gui/main.c:6463
-msgid "Copies not read back in a week"
-msgstr "Nicht zurückgelesen seit 1 Woche"
+msgid "Copies not checked in a week"
+msgstr "Nicht geprüft seit 1 Woche"
 
 #: gui/main.c:6464
-msgid "Copies not read back in a month"
-msgstr "Nicht zurückgelesen seit 1 Monat"
+msgid "Copies not checked in a month"
+msgstr "Nicht geprüft seit 1 Monat"
 
 #: gui/main.c:6465
-msgid "Copies not read back in 3 months"
-msgstr "Nicht zurückgelesen seit 3 Monaten"
+msgid "Copies not checked in 3 months"
+msgstr "Nicht geprüft seit 3 Monaten"
 
 #: gui/main.c:6466
 msgid "Every copy"
 msgstr "Jede Kopie"
 
 #: gui/main.c:6467
-msgid "Check drive, Read back: which copies"
-msgstr "Laufwerk prüfen, Zurücklesen: welche Kopien"
+msgid "Check copies not checked lately: which copies"
+msgstr "Länger nicht geprüfte Kopien prüfen: welche Kopien"
 
 #: gui/main.c:6470
 msgid "256 MB"
@@ -2723,13 +2706,14 @@ msgstr ""
 #: gui/main.c:6514
 #, c-format
 msgid ""
-"Read back now reads the copies not read back in %d days, and new ones."
+"Check copies not checked lately now reads the copies not checked in %d days, and new ones."
 msgstr ""
-"Zurücklesen liest jetzt die seit %d Tagen nicht zurückgelesenen Kopien sowie neue."
+"„Länger nicht geprüfte Kopien prüfen“ liest jetzt die seit %d Tagen nicht geprüften Kopien sowie neue."
 
 #: gui/main.c:6515
-msgid "Read back now reads every copy on the drive."
-msgstr "Zurücklesen liest jetzt jede Kopie auf dem Laufwerk."
+msgid "Check copies not checked lately now reads every copy on the drive."
+msgstr ""
+"„Länger nicht geprüfte Kopien prüfen“ liest jetzt jede Kopie auf dem Laufwerk."
 
 #: gui/main.c:6523
 #, c-format
@@ -3380,8 +3364,8 @@ msgid "Check every copy on it"
 msgstr "Alle Kopien darauf prüfen"
 
 #: gui/main.c:7777 gui/main.c:9102
-msgid "Read back copies not read lately"
-msgstr "Länger nicht gelesene Kopien zurücklesen"
+msgid "Check copies not checked lately"
+msgstr "Länger nicht geprüfte Kopien prüfen"
 
 #: gui/main.c:7779
 msgid "Compress the copies on it..."
@@ -3408,12 +3392,12 @@ msgid "  - found"
 msgstr "  - gefunden"
 
 #: gui/main.c:7799
-msgid "No backup disks yet"
-msgstr "Noch keine Sicherungsdatenträger"
+msgid "No backup drives yet"
+msgstr "Noch keine Sicherungslaufwerke"
 
 #: gui/main.c:7801
-msgid "Set up an external or removable disk..."
-msgstr "Externen Datenträger oder Wechseldatenträger einrichten..."
+msgid "Set up an external or removable drive..."
+msgstr "Externes Laufwerk oder Wechsellaufwerk einrichten..."
 
 #: gui/main.c:7802
 msgid "Add an extra place for starred files..."
@@ -3424,16 +3408,16 @@ msgid "Back up to every plugged-in drive"
 msgstr "Auf alle angeschlossenen Laufwerke sichern"
 
 #: gui/main.c:7804
-msgid "All disks..."
-msgstr "Alle Datenträger..."
+msgid "All drives..."
+msgstr "Alle Laufwerke..."
 
-#: gui/main.c:7805
-msgid "Status of every disk..."
-msgstr "Status aller Datenträger..."
+#: gui/main.c:7805 gui/main.c:9108
+msgid "Status of every drive..."
+msgstr "Stand aller Laufwerke..."
 
 #: gui/main.c:7806
-msgid "What needs backing up, and which disk to plug in..."
-msgstr "Was zu sichern ist und welcher Datenträger anzuschließen ist..."
+msgid "Files at risk, and which drive to plug in..."
+msgstr "Gefährdete Dateien und welches Laufwerk anzuschließen ist..."
 
 #: gui/main.c:7814 gui/main.c:12779
 msgid "&New database..."
@@ -3504,9 +3488,8 @@ msgid "Status of every &drive..."
 msgstr "Stat&us aller Laufwerke..."
 
 #: gui/main.c:7837
-msgid "Files short of your &copies, and which drive to plug in..."
-msgstr ""
-"Dateien mit zu wenigen &Kopien und welches Laufwerk anzuschließen ist..."
+msgid "Files at ris&k, and which drive to plug in..."
+msgstr "&Gefährdete Dateien und welches Laufwerk anzuschließen ist..."
 
 #: gui/main.c:7838
 msgid "Lar&gest files..."
@@ -3597,8 +3580,8 @@ msgid "Restore &deleted files..."
 msgstr "&Gelöschte Dateien wiederherstellen..."
 
 #: gui/main.c:7873
-msgid "Set up an e&xternal or removable disk..."
-msgstr "E&xternen Datenträger oder Wechseldatenträger einrichten..."
+msgid "Set up an e&xternal or removable drive..."
+msgstr "E&xternes Laufwerk oder Wechsellaufwerk einrichten..."
 
 #: gui/main.c:7874
 msgid "Add an extra &place for starred files..."
@@ -4079,17 +4062,17 @@ msgstr "Sichern..."
 msgid "Changed since its last backup..."
 msgstr "Seit der letzten Sicherung geändert..."
 
-#: gui/main.c:9094 gui/main.c:9109 gui/main.c:11568
-msgid "Which drive to plug in..."
-msgstr "Welches Laufwerk anschließen..."
+#: gui/main.c:9094 gui/main.c:9109
+msgid "Files at risk..."
+msgstr "Gefährdete Dateien..."
 
 #: gui/main.c:9095
 msgid "Refresh"
 msgstr "Aktualisieren"
 
-#: gui/main.c:9098
-msgid "Set up a disk..."
-msgstr "Datenträger einrichten..."
+#: gui/main.c:9098 gui/main.c:11517
+msgid "Set up a drive..."
+msgstr "Laufwerk einrichten..."
 
 #: gui/main.c:9099 gui/brodalf.rc:58
 msgid "Back up to it"
@@ -4106,10 +4089,6 @@ msgstr "Kopien komprimieren..."
 #: gui/main.c:9106
 msgid "Name and where it is kept..."
 msgstr "Name und Aufbewahrungsort..."
-
-#: gui/main.c:9108
-msgid "Where every drive stands..."
-msgstr "Stand aller Laufwerke..."
 
 #: gui/main.c:9122
 msgid ""
@@ -4628,9 +4607,9 @@ msgstr ""
 
 #: gui/main.c:9979
 msgid ""
-"No backup drives yet. Set up a disk... makes one: an external or removable disk, or a folder on one."
+"No backup drives yet. Set up a drive... makes one: an external or removable drive, or a folder on one."
 msgstr ""
-"Noch keine Sicherungslaufwerke. „Datenträger einrichten...“ richtet eines ein: einen externen Datenträger, einen Wechseldatenträger oder einen Ordner darauf."
+"Noch keine Sicherungslaufwerke. „Laufwerk einrichten...“ richtet eines ein: ein externes Laufwerk, ein Wechsellaufwerk oder einen Ordner darauf."
 
 #: gui/main.c:9990
 #, c-format
@@ -5430,13 +5409,9 @@ msgstr "Noch kein Sicherungslaufwerk"
 
 #: gui/main.c:11516
 msgid ""
-"Your files have no copies yet. Set up a USB drive or another disk, and BRODALF copies every file to it."
+"Your files have no copies yet. Set up a USB stick or another drive, and BRODALF copies every file to it."
 msgstr ""
-"Ihre Dateien haben noch keine Kopien. Richten Sie ein USB-Laufwerk oder einen anderen Datenträger ein, und BRODALF kopiert jede Datei darauf."
-
-#: gui/main.c:11517
-msgid "Set up a drive..."
-msgstr "Laufwerk einrichten..."
+"Ihre Dateien haben noch keine Kopien. Richten Sie einen USB-Stick oder ein anderes Laufwerk ein, und BRODALF kopiert jede Datei darauf."
 
 #: gui/main.c:11522
 msgid "BRODALF could not tell how many copies your files have"
@@ -5509,6 +5484,10 @@ msgid ""
 "The drives plugged in already have them. Plug in another drive to give them their next copy."
 msgstr ""
 "Die angeschlossenen Laufwerke haben sie bereits. Schließen Sie ein weiteres Laufwerk an, um ihnen die nächste Kopie zu geben."
+
+#: gui/main.c:11568
+msgid "Which drive to plug in..."
+msgstr "Welches Laufwerk anschließen..."
 
 #: gui/main.c:11573
 #, c-format
@@ -5884,8 +5863,8 @@ msgid "Stop the restore and close?"
 msgstr "Wiederherstellung abbrechen und schließen?"
 
 #: gui/main.c:13907
-msgid "Stop reading back the copies and close?"
-msgstr "Zurücklesen der Kopien abbrechen und schließen?"
+msgid "Stop checking the copies and close?"
+msgstr "Prüfung der Kopien abbrechen und schließen?"
 
 #: gui/main.c:13908
 msgid "Stop reading the files in use and close?"

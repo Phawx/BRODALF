@@ -243,11 +243,7 @@ msgstr ""
 msgid "Restoring"
 msgstr ""
 
-#: gui/main.c:2095
-msgid "Reading back copies"
-msgstr ""
-
-#: gui/main.c:2096
+#: gui/main.c:2095 gui/main.c:2096
 msgid "Checking copies"
 msgstr ""
 
@@ -500,13 +496,13 @@ msgstr[1] ""
 #: gui/main.c:2503
 #, c-format
 msgid ""
-"Read back what was written to %ls: every copy on it had been read back already."
+"Checked what was just written to %ls: every copy on it had been checked already."
 msgstr ""
 
 #: gui/main.c:2505
 #, c-format
 msgid ""
-"Read back what was written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"
+"Checked what was just written to %ls: %lld copies, %lld good, %lld damaged, %lld missing.%ls"
 msgstr ""
 
 #: gui/main.c:2507 gui/main.c:2513 gui/main.c:2524
@@ -516,23 +512,18 @@ msgstr ""
 #: gui/main.c:2509
 #, c-format
 msgid ""
-"Read back: every copy on the drive was read back within the last %d days."
+"Check done: every copy on the drive was checked within the last %d days."
 msgstr ""
 
-#: gui/main.c:2511
+#: gui/main.c:2511 gui/main.c:2522
 #, c-format
-msgid "Read back %lld copies: %lld good, %lld damaged, %lld missing.%ls"
+msgid ""
+"Check done: %lld copies checked, %lld good, %lld damaged, %lld missing.%ls"
 msgstr ""
 
 #: gui/main.c:2514 gui/main.c:2525
 #, c-format
 msgid " %lld encrypted copies need the passphrase to check."
-msgstr ""
-
-#: gui/main.c:2522
-#, c-format
-msgid ""
-"Check done: %lld copies read, %lld good, %lld missing, %lld damaged.%ls"
 msgstr ""
 
 #: gui/main.c:2534
@@ -680,7 +671,7 @@ msgid "Restoring..."
 msgstr ""
 
 #: gui/main.c:2733
-msgid "Reading back copies not read lately..."
+msgid "Checking copies not checked lately..."
 msgstr ""
 
 #: gui/main.c:2733
@@ -705,7 +696,7 @@ msgstr ""
 
 #: gui/main.c:2756
 #, c-format
-msgid "Reading back what was just written to %ls..."
+msgid "Checking what was just written to %ls..."
 msgstr ""
 
 #: gui/main.c:2764
@@ -938,11 +929,11 @@ msgid "Drive marked lost or broken: does not count"
 msgstr ""
 
 #: gui/main.c:3626
-msgid "Good, plugged in; not read back yet"
+msgid "Good, plugged in; not checked yet"
 msgstr ""
 
 #: gui/main.c:3626
-msgid "Good, drive not plugged in; not read back yet"
+msgid "Good, drive not plugged in; not checked yet"
 msgstr ""
 
 #: gui/main.c:3627
@@ -1118,7 +1109,7 @@ msgstr ""
 #: gui/main.c:4026
 #, c-format
 msgid ""
-"%ls    Holds %ls of good copies; some were never read back since they were written (the oldest %ls)%ls\r\n"
+"%ls    Holds %ls of good copies; some were never checked since they were written (the oldest %ls)%ls\r\n"
 msgstr ""
 
 #: gui/main.c:4027 gui/main.c:4031
@@ -1128,7 +1119,7 @@ msgstr ""
 #: gui/main.c:4030
 #, c-format
 msgid ""
-"%ls    Holds %ls of good copies; the oldest was last read back %ls%ls\r\n"
+"%ls    Holds %ls of good copies; the oldest was last checked %ls%ls\r\n"
 msgstr ""
 
 #: gui/main.c:4118
@@ -1281,7 +1272,7 @@ msgstr ""
 
 #: gui/main.c:4280
 #, c-format
-msgid "%ls    Last read back %ls: %ls\r\n"
+msgid "%ls    Last check of the copies not checked lately %ls: %ls\r\n"
 msgstr ""
 
 #: gui/main.c:4280
@@ -1303,7 +1294,7 @@ msgstr ""
 #: gui/main.c:4288
 #, c-format
 msgid ""
-"%ls    %lld copies were never read back since they were written (Check drive..., Read back)\r\n"
+"%ls    %lld copies were never checked since they were written (Check drive...)\r\n"
 msgstr ""
 
 #: gui/main.c:4308
@@ -1333,7 +1324,7 @@ msgstr ""
 
 #: gui/main.c:4361
 msgid ""
-"You have no backup drives yet. Set one up with Local backups > Set up a disk..., or Back up > Set up an external or removable disk..."
+"You have no backup drives yet. Set one up with Local backups > Set up a drive..., or Back up > Set up an external or removable drive..."
 msgstr ""
 
 #: gui/main.c:4379 gui/main.c:7784
@@ -1727,11 +1718,11 @@ msgid ", failed"
 msgstr ""
 
 #: gui/main.c:5057
-msgid "read back"
+msgid "copies not checked lately"
 msgstr ""
 
 #: gui/main.c:5057
-msgid "check"
+msgid "every copy"
 msgstr ""
 
 #: gui/main.c:5060
@@ -1749,7 +1740,7 @@ msgstr ""
 
 #: gui/main.c:5066
 #, c-format
-msgid "%ls%lld never read back"
+msgid "%ls%lld never checked"
 msgstr ""
 
 #: gui/main.c:5070
@@ -1785,7 +1776,7 @@ msgstr ""
 
 #: gui/main.c:5149
 msgid ""
-"These files changed although their size and modified time did not: that is what a failing disk or bit rot looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... to get it back. If you changed one on purpose, pick it and choose Keep as it is now."
+"These files changed although their size and modified time did not: that is what a failing drive or bit rot looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... to get it back. If you changed one on purpose, pick it and choose Keep as it is now."
 msgstr ""
 
 #: gui/main.c:5152
@@ -1937,17 +1928,10 @@ msgid_plural "%ls finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
-#: gui/main.c:5373
+#: gui/main.c:5373 gui/main.c:5376
 #, c-format
 msgid "Check finished with %lld problem."
 msgid_plural "Check finished with %lld problems."
-msgstr[0] ""
-msgstr[1] ""
-
-#: gui/main.c:5376
-#, c-format
-msgid "Read-back finished with %lld problem."
-msgid_plural "Read-back finished with %lld problems."
 msgstr[0] ""
 msgstr[1] ""
 
@@ -2098,9 +2082,9 @@ msgstr ""
 #: gui/main.c:5805
 #, c-format
 msgid ""
-"Reads back the copies on %ls that were not read back since they were written, and compares each one with its checksum, to be sure they were written right. It changes nothing on the drive, and starts only when you press it."
+"Checks the copies on %ls that were not checked since they were written: it reads each one and compares it with its checksum, to be sure it was written right. It changes nothing on the drive, and starts only when you press it."
 msgid_plural ""
-"Reads back the copies on %ls that were not read back since they were written, and compares each one with its checksum, to be sure they were written right. It changes nothing on the drives, and starts only when you press it."
+"Checks the copies on %ls that were not checked since they were written: it reads each one and compares it with its checksum, to be sure it was written right. It changes nothing on the drives, and starts only when you press it."
 msgstr[0] ""
 msgstr[1] ""
 
@@ -2111,7 +2095,7 @@ msgstr ""
 
 #: gui/main.c:5850
 msgid ""
-"The drive is not plugged in any more. Plug it in, then press Check drive... to read back its copies."
+"The drive is not plugged in any more. Plug it in, then press Check drive... to check its copies."
 msgstr ""
 
 #: gui/main.c:5868
@@ -2139,14 +2123,14 @@ msgstr ""
 #: gui/main.c:5879
 #, c-format
 msgid ""
-"Read back copies not read lately\n"
-"Reads the copies not read back in the last %d days, and new ones. A full check spread over time."
+"Check copies not checked lately\n"
+"Reads the copies not checked in the last %d days, and new ones. A full check spread over time."
 msgstr ""
 
 #: gui/main.c:5882
 msgid ""
-"Read back every copy\n"
-"The same as checking every copy (Settings has read-back set to every copy)."
+"Check copies not checked lately\n"
+"Settings has this set to every copy, so it is the same as checking every copy."
 msgstr ""
 
 #: gui/main.c:5884
@@ -2308,7 +2292,7 @@ msgstr ""
 
 #: gui/main.c:6242
 #, c-format
-msgid "The disk at %ls was plugged in. It is not one of your backup drives."
+msgid "The drive at %ls was plugged in. It is not one of your backup drives."
 msgstr ""
 
 #: gui/main.c:6245
@@ -2319,15 +2303,15 @@ msgstr ""
 #: gui/main.c:6248
 msgid ""
 "Set it up as a backup drive\n"
-"BRODALF makes its own folder on it and backs up to it. Nothing else on the disk is touched."
+"BRODALF makes its own folder on it and backs up to it. Nothing else on the drive is touched."
 msgstr ""
 
 #: gui/main.c:6250
-msgid "Never ask about this disk"
+msgid "Never ask about this drive"
 msgstr ""
 
 #: gui/main.c:6259
-msgid "Use this disk for backups?"
+msgid "Use this drive for backups?"
 msgstr ""
 
 #: gui/main.c:6296
@@ -2435,15 +2419,15 @@ msgid "A plugged-in drive offers a check after"
 msgstr ""
 
 #: gui/main.c:6463
-msgid "Copies not read back in a week"
+msgid "Copies not checked in a week"
 msgstr ""
 
 #: gui/main.c:6464
-msgid "Copies not read back in a month"
+msgid "Copies not checked in a month"
 msgstr ""
 
 #: gui/main.c:6465
-msgid "Copies not read back in 3 months"
+msgid "Copies not checked in 3 months"
 msgstr ""
 
 #: gui/main.c:6466
@@ -2451,7 +2435,7 @@ msgid "Every copy"
 msgstr ""
 
 #: gui/main.c:6467
-msgid "Check drive, Read back: which copies"
+msgid "Check copies not checked lately: which copies"
 msgstr ""
 
 #: gui/main.c:6470
@@ -2510,11 +2494,11 @@ msgstr ""
 #: gui/main.c:6514
 #, c-format
 msgid ""
-"Read back now reads the copies not read back in %d days, and new ones."
+"Check copies not checked lately now reads the copies not checked in %d days, and new ones."
 msgstr ""
 
 #: gui/main.c:6515
-msgid "Read back now reads every copy on the drive."
+msgid "Check copies not checked lately now reads every copy on the drive."
 msgstr ""
 
 #: gui/main.c:6523
@@ -3069,7 +3053,7 @@ msgid "Check every copy on it"
 msgstr ""
 
 #: gui/main.c:7777 gui/main.c:9102
-msgid "Read back copies not read lately"
+msgid "Check copies not checked lately"
 msgstr ""
 
 #: gui/main.c:7779
@@ -3097,11 +3081,11 @@ msgid "  - found"
 msgstr ""
 
 #: gui/main.c:7799
-msgid "No backup disks yet"
+msgid "No backup drives yet"
 msgstr ""
 
 #: gui/main.c:7801
-msgid "Set up an external or removable disk..."
+msgid "Set up an external or removable drive..."
 msgstr ""
 
 #: gui/main.c:7802
@@ -3113,15 +3097,15 @@ msgid "Back up to every plugged-in drive"
 msgstr ""
 
 #: gui/main.c:7804
-msgid "All disks..."
+msgid "All drives..."
 msgstr ""
 
-#: gui/main.c:7805
-msgid "Status of every disk..."
+#: gui/main.c:7805 gui/main.c:9108
+msgid "Status of every drive..."
 msgstr ""
 
 #: gui/main.c:7806
-msgid "What needs backing up, and which disk to plug in..."
+msgid "Files at risk, and which drive to plug in..."
 msgstr ""
 
 #: gui/main.c:7814 gui/main.c:12779
@@ -3193,7 +3177,7 @@ msgid "Status of every &drive..."
 msgstr ""
 
 #: gui/main.c:7837
-msgid "Files short of your &copies, and which drive to plug in..."
+msgid "Files at ris&k, and which drive to plug in..."
 msgstr ""
 
 #: gui/main.c:7838
@@ -3285,7 +3269,7 @@ msgid "Restore &deleted files..."
 msgstr ""
 
 #: gui/main.c:7873
-msgid "Set up an e&xternal or removable disk..."
+msgid "Set up an e&xternal or removable drive..."
 msgstr ""
 
 #: gui/main.c:7874
@@ -3722,16 +3706,16 @@ msgstr ""
 msgid "Changed since its last backup..."
 msgstr ""
 
-#: gui/main.c:9094 gui/main.c:9109 gui/main.c:11568
-msgid "Which drive to plug in..."
+#: gui/main.c:9094 gui/main.c:9109
+msgid "Files at risk..."
 msgstr ""
 
 #: gui/main.c:9095
 msgid "Refresh"
 msgstr ""
 
-#: gui/main.c:9098
-msgid "Set up a disk..."
+#: gui/main.c:9098 gui/main.c:11517
+msgid "Set up a drive..."
 msgstr ""
 
 #: gui/main.c:9099 gui/brodalf.rc:58
@@ -3748,10 +3732,6 @@ msgstr ""
 
 #: gui/main.c:9106
 msgid "Name and where it is kept..."
-msgstr ""
-
-#: gui/main.c:9108
-msgid "Where every drive stands..."
 msgstr ""
 
 #: gui/main.c:9122
@@ -4233,7 +4213,7 @@ msgstr ""
 
 #: gui/main.c:9979
 msgid ""
-"No backup drives yet. Set up a disk... makes one: an external or removable disk, or a folder on one."
+"No backup drives yet. Set up a drive... makes one: an external or removable drive, or a folder on one."
 msgstr ""
 
 #: gui/main.c:9990
@@ -4938,11 +4918,7 @@ msgstr ""
 
 #: gui/main.c:11516
 msgid ""
-"Your files have no copies yet. Set up a USB drive or another disk, and BRODALF copies every file to it."
-msgstr ""
-
-#: gui/main.c:11517
-msgid "Set up a drive..."
+"Your files have no copies yet. Set up a USB stick or another drive, and BRODALF copies every file to it."
 msgstr ""
 
 #: gui/main.c:11522
@@ -5011,6 +4987,10 @@ msgstr[1] ""
 #: gui/main.c:11567
 msgid ""
 "The drives plugged in already have them. Plug in another drive to give them their next copy."
+msgstr ""
+
+#: gui/main.c:11568
+msgid "Which drive to plug in..."
 msgstr ""
 
 #: gui/main.c:11573
@@ -5380,7 +5360,7 @@ msgid "Stop the restore and close?"
 msgstr ""
 
 #: gui/main.c:13907
-msgid "Stop reading back the copies and close?"
+msgid "Stop checking the copies and close?"
 msgstr ""
 
 #: gui/main.c:13908

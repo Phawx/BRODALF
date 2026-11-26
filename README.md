@@ -92,8 +92,10 @@ and says which drives to plug in.
 ### The main window
 
 Along the top are the buttons **Add backup root**, **Scan now**, **Back
-up**, **Check drive**, **Restore**, **Drives**, **Settings** and **At
-risk**. Beside them, one line says, for each drive that is plugged in, what
+up**, **Check drive**, **Restore**, **Drives**, **Settings** and **Files
+at risk**. The **Back up** menu says, for each plugged-in drive, how many
+files a backup to it would copy, and the **Check drive** menu how many
+copies a check reads and when the drive was last checked. Beside them, one line says, for each drive that is plugged in, what
 a backup to it would copy right now, or that it is up to date, and how
 your extra places stand. Under them, one bar per full copy of your backup
 roots: copy 1 is done when every file has at least one good copy, copy 2
@@ -221,7 +223,9 @@ its date.
 If many of the files whose copies on that drive were up to date have
 changed at once, BRODALF stops and asks first, since that is what
 ransomware encrypting your files looks like. **Show the changed files**
-lists them; **Back up anyway** goes ahead, and the copies already on the
+lists each one with what happened to it and when; if the changes are
+yours, **Back up these changes** in that list goes ahead. **Back up
+anyway** says how many files it copies, and the copies already on the
 drive stay as they are.
 
 A backup never fills a drive to the last byte: it leaves room for the
@@ -268,7 +272,11 @@ restored, but they never count toward the copies you want or the full
 copies, and BRODALF never suggests plugging one in to get there. The tab
 lists what is starred, and for each extra place whether it is found now,
 its limit, how many starred files are there as they are now, what is
-waiting, what would go past the limit and the space it uses.
+waiting, what would go past the limit and the space it uses. **It is
+gone** marks an extra place that is no longer there: BRODALF stops copying
+to it, and your full copies do not change, since it never counted toward
+them. Its details window is called **Extra place details** and asks for a
+description instead of a name.
 
 A scan leaves out BRODALF's own copies when an extra place sits inside a
 backup root (a Dropbox folder in your home folder, say), so they are not
@@ -282,10 +290,10 @@ kept" says (so "Box A" and "Office shelf" are two places), and drives with
 no place set count together as one. A copy counts when BRODALF last saw it
 good, whether or not the drive is plugged in right now.
 
-The **At risk** button shows how many files fall short. It opens a list of
-those files, fewest copies first, and the drives that would help most, with
-where each is kept. **Files at risk** on the **Next backup** and
-**Local backups** tabs opens the same list. **View > Largest files**
+The **Files at risk** button shows how many files fall short, or "none".
+It opens a list of those files, fewest copies first, and the drives that
+would help most, with where each is kept. **Files at risk** on the
+**Next backup** and **Local backups** tabs opens the same list. **View > Largest files**
 lists the biggest files, which BRODALF backs up like any other.
 
 ![Files at risk](docs/images/gui-at-risk.png)
@@ -293,10 +301,14 @@ lists the biggest files, which BRODALF backs up like any other.
 ### Drives
 
 A drive is recognised by the `BRODALF.media` file on it, not by its letter.
-When a disk BRODALF does not know is plugged in, it asks whether to set it
-up as a backup drive: **Set it up as a backup drive**, **Not now**, or **Never ask about
-this disk**. Setting it up makes BRODALF's own folder on it and touches nothing
-else on the disk.
+When a disk BRODALF does not know is plugged in, it says its name, its size
+and how much of it is used, and asks whether to set it up as a backup
+drive: **Set it up as a backup drive**, **Not now**, or **Never ask about
+this drive**. Setting it up asks for a name (the disk's own label to start
+with) and where it is kept, then makes BRODALF's own folder on it, touches
+nothing else on the disk and backs up to it. Whether the drive is encrypted
+is chosen then and cannot be changed later. **Settings > Ask again about
+the drives you said never to ask about** undoes **Never ask**.
 
 Each time a drive is plugged in BRODALF reads what the disk says about
 itself and keeps the latest reading in the database: make, model, serial
@@ -304,7 +316,8 @@ number, firmware, bus and size; the volume name, serial and file system;
 and SMART health (the drive's own failure prediction, temperature, hours
 powered on, power cycles, bad sectors and SSD wear), where the disk passes
 it through. Every drive can also have a free-text **where it is kept**
-label, such as "Box 3, garage shelf".
+label, such as "Box 3, garage shelf"; the places other drives already have
+are offered in a list, so drives kept together get the same words.
 
 ![Drive details](docs/images/gui-drive-details.png)
 

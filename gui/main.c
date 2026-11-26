@@ -4577,13 +4577,18 @@ static LRESULT CALLBACK detail_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT
 {
     (void)id;
     (void)ref;
-    if (msg == WM_PAINT && g_detail_empty[0] && ListView_GetItemCount(h) == 0) {
+    if (msg == WM_PAINT && ListView_GetItemCount(h) == 0) {
+        /* Plain, with no column lines (the dark theme draws them), then the words. */
         LRESULT res = DefSubclassProc(h, msg, wp, lp);
         RECT rc;
         GetClientRect(h, &rc);
-        InflateRect(&rc, -S(12), -S(10));
         HDC dc = GetDC(h);
-        draw_str(dc, (HFONT)SendMessageW(h, WM_GETFONT, 0, 0), theme_gray(), g_detail_empty, rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        HBRUSH br = CreateSolidBrush(ListView_GetBkColor(h));
+        FillRect(dc, &rc, br);
+        DeleteObject(br);
+        InflateRect(&rc, -S(12), -S(10));
+        if (g_detail_empty[0])
+            draw_str(dc, (HFONT)SendMessageW(h, WM_GETFONT, 0, 0), theme_gray(), g_detail_empty, rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
         ReleaseDC(h, dc);
         return res;
     }
@@ -10383,17 +10388,18 @@ static int button_width(HWND b)
 {
     wchar_t text[200];
     int n = GetWindowTextW(b, text, 200);
+    /* Drawn by BRODALF: the primary button's words are semibold (measured
+     * so), a toggle has its star or lock before them. */
+    int owner = (GetWindowLongW(b, GWL_STYLE) & BS_TYPEMASK) == BS_OWNERDRAW;
+    int toggle = owner && (GetWindowLongPtrW(b, GWLP_USERDATA) & BTN_TOGGLE);
     HDC dc = GetDC(b);
-    HFONT old = (HFONT)SelectObject(dc, font_of(b));
+    HFONT old = (HFONT)SelectObject(dc, owner && !toggle && g_font_semi ? g_font_semi : font_of(b));
     RECT r = {0, 0, 0, 0};
     DrawTextW(dc, text, n, &r, DT_CALCRECT | DT_SINGLELINE);
     SelectObject(dc, old);
     ReleaseDC(b, dc);
     int w = r.right + S(24);
-    /* Drawn by BRODALF: the primary button's words are semibold, a toggle
-     * has its star or lock before them. */
-    if ((GetWindowLongW(b, GWL_STYLE) & BS_TYPEMASK) == BS_OWNERDRAW)
-        w += (GetWindowLongPtrW(b, GWLP_USERDATA) & BTN_TOGGLE) ? S(24) : S(14);
+    if (owner) w += toggle ? S(24) : S(8);
     return w < S(64) ? S(64) : w;
 }
 

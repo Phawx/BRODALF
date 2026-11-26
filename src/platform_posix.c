@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/statvfs.h>
 #ifdef __linux__
 #include <sys/vfs.h>
@@ -348,6 +350,22 @@ char *bd_fold_case(const char *s)
     for (char *p = r; *p; p++)
         if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
     return r;
+}
+
+void bd_secret_lock(void *p, size_t n)
+{
+    mlock(p, n);
+}
+
+void bd_secret_unlock(void *p, size_t n)
+{
+    munlock(p, n);
+}
+
+void bd_no_crash_dumps_of_memory(void)
+{
+    struct rlimit none = {0, 0};
+    setrlimit(RLIMIT_CORE, &none);
 }
 
 int bd_random_bytes(void *buf, size_t n)

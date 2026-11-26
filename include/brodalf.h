@@ -50,7 +50,9 @@ bd_status bd_catalog_create(const char *path, bd_catalog **out);
 bd_status bd_catalog_open(const char *path, bd_catalog **out);
 
 /* Open with a passphrase. For an encrypted catalog file the catalog comes
- * back unlocked; for a plain one the passphrase is ignored. */
+ * back unlocked, and it is unpacked into memory instead of the temp folder:
+ * nothing of it is written to the disk unencrypted while it is open. For a
+ * plain one the passphrase is ignored. */
 bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
 
 /* Start again on a new PC from a copy of the catalog a drive holds
@@ -87,7 +89,7 @@ bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *c
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
-/* Write the working copy back to the .brodalf file atomically, as a new
+/* Write the catalog back to the .brodalf file atomically, as a new
  * revision of the catalog, when anything changed since the catalog was
  * opened or last saved; with nothing to save it does nothing (no new
  * revision, the file is not rewritten) and returns BD_OK. Every committed
@@ -105,7 +107,7 @@ void bd_catalog_mark_changed(bd_catalog *cat);
  * drive keeps every revision it was given. */
 int64_t bd_catalog_revision(bd_catalog *cat);
 
-/* Close without saving, remove the working copy and the lock. */
+/* Close without saving, remove the working copy (if any) and the lock. */
 void bd_catalog_close(bd_catalog *cat);
 
 const char *bd_catalog_error(const bd_catalog *cat);
@@ -148,7 +150,10 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
 /* Forget the master key until the next unlock. */
 void bd_catalog_lock_key(bd_catalog *cat);
 /* Encrypt the .brodalf file from the next save on. Needs an unlocked
- * catalog to turn on. */
+ * catalog to turn on. Turned on, the open catalog moves into memory at
+ * once and its working copy is deleted (BD_ERR_DB if a job keeps the
+ * database busy for more than a few seconds); turned off, it stays in
+ * memory until it is closed. */
 bd_status bd_catalog_set_file_encrypted(bd_catalog *cat, int on);
 int bd_catalog_file_encrypted(bd_catalog *cat);
 
@@ -727,6 +732,13 @@ typedef struct {
     int active;              /* 0: no longer backed up (bd_source_set_active) */
     int missing;             /* the last scan could not find it: ask where it is now, or offer to restore it */
     int64_t last_scan_ms;
+    /* Where its files' copies are: the drives and extra places holding a
+     * good copy of the current version of any live file in it, names
+     * sorted, ", " between them ("" if none; drives marked lost or broken
+     * are left out), and those of them plugged in now. */
+    const char *copies_on;
+    const char *copies_on_plugged;
+    int64_t files_backed_up; /* live files with a good copy of the current version on a drive that counts */
 } bd_source_info;
 
 typedef struct {
@@ -742,6 +754,17 @@ typedef struct {
     int64_t files_total;     /* folders only: live files inside, at any depth */
     int64_t files_available; /* folders only */
     const char *offline_media_label; /* OFFLINE files: a drive to plug in */
+    int64_t mtime_ns;        /* files: the current version's time; folders: as last scanned; 0 if not known */
+    /* Where its copies are, so a database opened on a PC without the files
+     * still says where each one is: the drives and extra places holding a
+     * good copy of the current version (folders: of any file inside, or of
+     * any file at all in a deleted folder), names sorted, ", " between
+     * them, "" if none. Drives marked lost or broken are left out. */
+    const char *copies_on;
+    const char *copies_on_plugged; /* those of them plugged in now, the same way */
+    const char *older_on;    /* files with no good copy of the current version: where an older one is; "" if none */
+    int64_t files_backed_up; /* folders: files inside with a good copy of the current version on a drive that counts */
+    int64_t subfolders;      /* folders: how many folders are directly in it, deleted ones too */
 } bd_node_info;
 
 typedef struct {

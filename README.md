@@ -19,12 +19,11 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.10.1** (2026-11-26) fixes twelve window problems that
-screenshots of 0.10.0 showed: a backup now says which drive it is writing
-and the full-copy bars move and name their drives, the warnings agree with
-each other, a damaged file or a broken drive shows where you look, and the
-lists that tell you to restore have a button that does it. 0.10.0
-(2026-11-25) fixed what two independent reviews of 0.9.0 found; see
+Version **0.10.2** (2026-11-26) keeps an encrypted database in memory
+while it is open, so nothing of it is ever written to the disk
+unencrypted, not even by a crash or a power cut. 0.10.1 (2026-11-26) fixed
+twelve window problems that screenshots of 0.10.0 showed, and 0.10.0
+(2026-11-25) what two independent reviews of 0.9.0 found; see
 [History](#history). Builds are
 on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
@@ -483,7 +482,9 @@ There are four kinds, each on its own, all on the **Encryption** tab:
   everything else stays plain files. Copies made before stay as they are,
   since nothing on a drive is overwritten; new copies and new versions are
   encrypted. **Stop encrypting it** makes the next new copies plain again.
-- **The database file itself** (**Encrypt the database file**).
+- **The database file itself** (**Encrypt the database file**). While
+  BRODALF has it open it stays in memory, so nothing of it is written to
+  the disk unencrypted, not even by a crash or a power cut.
 - **The database copies on the drives**, which are always encrypted on an
   encrypted drive.
 
@@ -643,6 +644,7 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `cli/main.c` | `brodalf-cli` |
 | `tests/test_core.c` | End-to-end test |
 | `tests/test_crypto.c` | Encryption test |
+| `tests/test_memory.c` | An encrypted database is never on the disk unencrypted |
 | `tests/test_blake3.c` | Checksum test vectors |
 | `tests/bench_many.c` | Many files: timings and counts (`bench_many 1000000` by hand) |
 | `installer/brodalf.nsi` | The NSIS installer |
@@ -782,6 +784,18 @@ on a local machine needs to pick the work up without the chat history.
   printed over. Dark list headers are readable, and the encryption
   question, file filters and leave-out comments are translated. No
   change to the database format.
+- v0.10.2 (2026-11-26, built on the `encrypted-in-memory` branch first):
+  an encrypted database is unpacked into memory (`sqlite3_deserialize`)
+  instead of a working copy in the temp folder, and saved straight from
+  memory instead of from a `VACUUM INTO` snapshot, so nothing of it is
+  written to the disk unencrypted, while it is open or after a crash.
+  Turning encryption on moves an open database into memory and deletes
+  its working copy. SQLite keeps its scratch data in memory for every
+  database (`temp_store=MEMORY`). The key's memory is locked out of the
+  page file, and Windows Error Reporting's dumps leave out the heap while
+  a database is in memory. `tests/test_memory.c` checks that SQLite opens
+  no file and the temp folder stays empty, also after a crash. No change
+  to the database format: 0.10.1 opens the files 0.10.2 saves.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -937,13 +951,19 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. Everything new in 0.10.1: it was seen only in automated screenshots
+1. The encrypted database in memory (0.10.2), tested on Linux and by the
+   Windows CI build only: **Encrypt the database file** turned on and off
+   while a database is open, with `%TEMP%` holding no `brodalf-*.db`
+   files meanwhile; a backup and a save of a large encrypted database,
+   and the memory it takes; a crash report (Windows Error Reporting) with
+   an encrypted database open.
+2. Everything new in 0.10.1: it was seen only in automated screenshots
    on a Windows CI runner, never used by a person. In particular a real
    USB drive for Recover the database (the screenshots used folder
    drives), the restore buttons in Damaged files, Changed since the copy
    and Left alone by the last restore, and the bars during a backup to
    several drives.
-2. Everything new in 0.10.0, which was only compiled and tested by the
+3. Everything new in 0.10.0, which was only compiled and tested by the
    Windows CI build and never run on a PC: the keyboard (Tab order, the &
    letters in German and Spanish, the shortcuts), job results with
    problems and Show what went wrong, the window staying responsive on a
@@ -955,7 +975,7 @@ in 0.4.0 came from the code review of the same day and this test:
    damaged copy on one of two drives; a FAT32 stick with a file of 4 GB
    or more; a network-share backup root; the shadow helper's access
    check; the installer's question with BRODALF open.
-3. Everything new in 0.9.0, none of which has run on Windows (it was built
+4. Everything new in 0.9.0, none of which has run on Windows (it was built
    for Windows and the Windows CI build passes, but the window has not been
    looked at): dark mode in every tab and dialog, and switching while
    BRODALF is open; the German and Spanish window, above all whether longer
@@ -967,7 +987,7 @@ in 0.4.0 came from the code review of the same day and this test:
    and the refusal on exFAT; the start-up choice with the last
    database from `%LOCALAPPDATA%`, and the window greyed out until one is
    open.
-4. Everything new in 0.8.0, none of which has run on Windows, and the
+5. Everything new in 0.8.0, none of which has run on Windows, and the
    window has not been looked at since the tabs went in: the six tabs and
    their buttons and tables, the File, View, Tools and Help menus, the tab
    remembered between runs; starring and encrypting from the tree, ★ and
@@ -976,11 +996,11 @@ in 0.4.0 came from the code review of the same day and this test:
    to it; an encrypted folder on a plain drive, and the time it says
    encrypting takes against a real backup; backing up to two or more USB
    drives at once against one after another.
-5. Plugging in a known disk while BRODALF is open: the device-change
+6. Plugging in a known disk while BRODALF is open: the device-change
    notification should only add a line to the log ("... is plugged in") and
    light up its files; nothing else should start. The test had the stick
    plugged in before launch, so this never fired.
-6. Everything new in 0.7.0, none of which has run on Windows: the menus
+7. Everything new in 0.7.0, none of which has run on Windows: the menus
    and right-click menus; New database, Open and Recover from a drive; the
    scan on open and the question about a backup root that moved; the line
    beside the buttons and the three kinds of progress bar; backing up with
@@ -991,29 +1011,29 @@ in 0.4.0 came from the code review of the same day and this test:
    the bit-rot scan and damaged files; restores that never overwrite, Files
    the last restore left alone, restoring one version and the deleted
    files; backups at low priority; the installer's desktop shortcut.
-7. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
+8. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
    accented names, the leading-quote guard against formulas), and OneDrive
    online-only files left alone.
-8. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+9. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
    the temperature comes from property 52 and the ATA table is only read
    from ATA disks.
-9. Everything new in 0.5.0, none of which has run on Windows:
-   - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
-     thread, and how much the scan pool and batched fsyncs gain on real
-     disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on
-     NTFS, FAT32 and exFAT);
-   - Stop while a job runs, and Close during a job and during end-of-job
-     questions;
-   - modified times on copies and restores (NTFS, FAT32, exFAT);
-   - a case-only rename (Photo.JPG to photo.jpg) on NTFS and exFAT;
-   - a second BRODALF on the same catalog is refused, and the catalog opens
-     again after a crash (named mutex);
-   - the recovery sheet in a browser and printed, unlocking with the
-     recovery key;
-   - the installer: install, Start menu entry, uninstall, the Installed apps
-     entry.
+10. Everything new in 0.5.0, none of which has run on Windows:
+    - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
+      thread, and how much the scan pool and batched fsyncs gain on real
+      disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on
+      NTFS, FAT32 and exFAT);
+    - Stop while a job runs, and Close during a job and during end-of-job
+      questions;
+    - modified times on copies and restores (NTFS, FAT32, exFAT);
+    - a case-only rename (Photo.JPG to photo.jpg) on NTFS and exFAT;
+    - a second BRODALF on the same catalog is refused, and the catalog opens
+      again after a crash (named mutex);
+    - the recovery sheet in a browser and printed, unlocking with the
+      recovery key;
+    - the installer: install, Start menu entry, uninstall, the Installed apps
+      entry.
 
 ### Known issues
 
@@ -1031,9 +1051,13 @@ limits of the new work:
   drive holds the data. The read-back offer after a backup says to unplug
   and replug the drive first; Check drive's read back on a later day does
   prove it.
-- While an encrypted database is open, its working copy in the temp folder
-  is not encrypted. A crashed BRODALF's working copy is removed the next
-  time it starts.
+- An encrypted database is kept in memory while it is open, never on the
+  disk unencrypted, but Windows may still write memory to its page file,
+  or to `hiberfil.sys` when the PC hibernates. BitLocker on the system
+  drive covers both. Encrypting a database that was plain deletes its
+  unencrypted working copy, but, as with any deleted file, does not
+  overwrite the space it took on the disk. The database takes about its
+  own size in memory, and twice that for a moment while it is saved.
 - `brodalf-cli` errors that end the program (`die()`) do not save the
   catalog; Ctrl+C does.
 - 0.4.0 and earlier refuse an encrypted catalog that has a recovery key, as

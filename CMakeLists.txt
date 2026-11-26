@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(brodalf VERSION 0.10.1 LANGUAGES C)
+project(brodalf VERSION 0.10.2 LANGUAGES C)
 
 # Link the C runtime statically so brodalf.exe runs on a PC without the
 # Visual C++ redistributable.
@@ -142,6 +142,10 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_misc PRIVATE brodalf_core)
     target_include_directories(test_misc PRIVATE src)
     add_test(NAME misc COMMAND test_misc)
+    add_executable(test_memory tests/test_memory.c)
+    target_link_libraries(test_memory PRIVATE brodalf_core)
+    target_include_directories(test_memory PRIVATE src)
+    add_test(NAME memory COMMAND test_memory)
     add_test(NAME cli_exit_codes
              COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:brodalf-cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli-exit-codes
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_exit_codes.cmake)
@@ -158,7 +162,7 @@ if(BRODALF_BUILD_TESTS)
     add_test(NAME test_tmp_remove COMMAND ${CMAKE_COMMAND} -E remove_directory ${BRODALF_TEST_TMP})
     set_tests_properties(test_tmp_make PROPERTIES FIXTURES_SETUP brodalf_test_tmp)
     set_tests_properties(test_tmp_remove PROPERTIES FIXTURES_CLEANUP brodalf_test_tmp)
-    set_tests_properties(core crypto blake3 misc many_files PROPERTIES
+    set_tests_properties(core crypto blake3 misc memory many_files PROPERTIES
                          FIXTURES_REQUIRED brodalf_test_tmp
                          ENVIRONMENT "TMPDIR=${BRODALF_TEST_TMP};TMP=${BRODALF_TEST_TMP};TEMP=${BRODALF_TEST_TMP}")
 endif()

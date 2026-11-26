@@ -19,8 +19,12 @@ struct bd_catalog {
     char *path;       /* the .brodalf file */
     char *lock_path;
     void *lock;       /* bd_catalog_lock_take's handle while this catalog holds the lock */
-    char *work_path;  /* unpacked SQLite working copy */
+    char *work_path;  /* unpacked SQLite working copy (a plain catalog) */
     char *owner_path; /* work_path + ".owner": names the process the working copy belongs to */
+    /* An encrypted catalog is unpacked into memory, never to the disk:
+     * cat->db is then an in-memory database (sqlite3_deserialize), and
+     * work_path and owner_path name files that are not there. */
+    int in_memory;
     void *owner;      /* bd_work_owner_begin's handle */
     char uuid[37];
     char err[1024];
@@ -98,6 +102,9 @@ extern int64_t bd_test_free_bytes;
 /* Tests only: a backup saves the catalog between batches this often (ms;
  * 0: every 5 minutes). */
 extern int64_t bd_test_save_every_ms;
+/* Tests only: an encrypted catalog is unpacked to the temp folder as 0.10.1
+ * and earlier did, to write and read files the way they did. */
+extern int bd_test_work_on_disk;
 /* Tests only: every drive's file system has this name, and with
  * bd_test_fat_limit > 0 a FAT drive holds files up to that many bytes
  * (instead of 4 GiB less one). */
@@ -202,6 +209,10 @@ extern int bd_test_random_fail;
 int bd_catalog_recovery_block(bd_catalog *cat, uint8_t block[BD_KEY_BLOCK]);
 int bd_unwrap_recovery_block(const char *recovery_key, const uint8_t block[BD_KEY_BLOCK], uint8_t key[32]); /* -1 nomem, -3 wrong */
 void bd_catalog_set_key(bd_catalog *cat, const uint8_t key[32]);
+/* Move an open catalog's database from its working copy in the temp folder
+ * into memory, and remove the working copy (when the catalog file is to be
+ * encrypted from now on). BD_OK if it is in memory already. */
+bd_status bd_catalog_keep_in_memory(bd_catalog *cat);
 void bd_wipe(void *p, size_t n);
 
 int bd_media_encrypted(bd_catalog *cat, int64_t media_id);

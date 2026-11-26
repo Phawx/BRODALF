@@ -5537,7 +5537,8 @@ static void after_drives(job *j)
         if (!o.found) continue;
         wchar_t name[600], line[1400];
         drive_name(o.label, o.location, name, 600);
-        swprintf(line, 1400, T(L"%ls is plugged in."), name);
+        if (o.info.secondary) swprintf(line, 1400, T(L"Extra place found: %ls."), name);
+        else swprintf(line, 1400, T(L"%ls is plugged in."), name);
         if (o.info.lost_ms)
             wcsncat(line, T(L" It is marked lost or broken, so its copies do not count: if it is back and working, open Drives..., "
                           L"choose it and press Found it."), 1399 - wcslen(line));
@@ -8018,7 +8019,8 @@ static void encrypt_cost_text(int64_t bytes, wchar_t *out, size_t cap)
     double crypt_s = (double)bytes / (double)bps, write_s = (double)bytes / drive;
     format_bytes(bps, speed, 64);
     format_bytes(bytes, size, 64);
-    format_duration(crypt_s, work, 64);
+    /* "about under a second" reads badly: round a sub-second cost up. */
+    format_duration(crypt_s < 1 ? 1 : crypt_s, work, 64);
     if (bytes <= 0)
         swprintf(out, cap, T(L"This PC encrypts about %ls a second. Encrypting runs while each copy is written, so on a USB hard drive a "
                            L"backup takes about as long as before. Checking and restoring an encrypted copy decrypt it at about the same "
@@ -8031,7 +8033,7 @@ static void encrypt_cost_text(int64_t bytes, wchar_t *out, size_t cap)
                            L"0.1%% more space and need the passphrase to restore."),
                  speed, size, work, work);
     else {
-        format_duration(crypt_s - write_s, extra, 64);
+        format_duration(crypt_s - write_s < 1 ? 1 : crypt_s - write_s, extra, 64);
         swprintf(out, cap, T(L"This PC encrypts about %ls a second, slower than a USB hard drive writes, so the %ls you picked add about %ls "
                            L"to a full backup of them (%ls of work in all). Checking and restoring them decrypt at about the same "
                            L"speed. Encrypted copies take about 0.1%% more space and need the passphrase to restore."),

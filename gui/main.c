@@ -13196,6 +13196,7 @@ static int header_busy(void) { return g_busy && g_running_kind != JOB_REFRESH; }
 
 static RECT g_hd_icon, g_hd_title, g_hd_sub, g_hd_bars, g_hd_goal;
 static int g_hd_label_w, g_hd_right_w, g_hd_bar_row, g_hd_compact;
+static int g_hd_small; /* a low window (under about 760 px): one-line drive cards, less padding */
 static int g_card_tools; /* tooltips added for the cards */
 static int g_card_hot = -1;
 
@@ -13302,13 +13303,13 @@ static void goal_text(wchar_t *out, size_t cap)
  * header leaves the tabs more room. */
 static int header_measure(int w, int place)
 {
-    int pad = g_hd_compact ? S(10) : S(14), x = pad, y = pad, gap = g_hd_compact ? S(8) : S(12);
+    int pad = g_hd_small ? S(10) : S(14), x = pad, y = pad, gap = g_hd_small ? S(8) : S(12);
     int th = font_h(g_font_title), line = font_h(g_font);
     int icon = S(32);
     int row_h = th + S(2) + line;
     if (row_h < icon) row_h = icon;
     /* In a low window each card is one line: its icon, name and state. */
-    int cw = w >= S(1400) ? S(260) : S(224), ch = g_hd_compact ? S(36) : S(64), cg = g_hd_compact ? S(8) : S(10);
+    int cw = w >= S(1400) ? S(260) : S(224), ch = g_hd_small ? S(36) : S(64), cg = g_hd_small ? S(8) : S(10);
     int side = g_cat && g_ncards > 0 && w >= S(1000);
     int side_w = side ? (g_ncards == 1 ? cw : cw * 2 + cg) : 0;
     int left_r = side ? w - pad - side_w - S(20) : w - pad;
@@ -13350,13 +13351,13 @@ static int header_measure(int w, int place)
         ReleaseDC(NULL, dc);
         g_hd_right_w = S(260);
         if (g_hd_right_w > (left_r - x) / 3) g_hd_right_w = (left_r - x) / 3;
-        g_hd_bar_row = g_hd_compact ? S(20) : S(24);
+        g_hd_bar_row = g_hd_small ? S(20) : S(24);
         SetRect(&g_hd_bars, x, y, left_r, y + g_hd_bar_row * g_nhbars);
         y += g_hd_bar_row * g_nhbars;
     } else
         SetRectEmpty(&g_hd_bars);
     /* The goal, with a link to change it. */
-    if (!g_hd_compact) {
+    if ((!g_hd_compact || side) && !g_hd_small) {
         y += S(4);
         SetRect(&g_hd_goal, x, y, left_r, y + line);
         y += line;
@@ -14546,13 +14547,14 @@ static void layout(void)
     int jh = g_jobpanel ? jobpanel_height(hw) : 0;
     /* Until the user opens or closes the log, it is closed in a low window. */
     if (g_log_auto && g_log_btn) {
-        int open = h >= S(740);
+        int open = h >= S(725);
         if (open != g_log_open) {
             g_log_open = open;
             SetWindowTextW(g_log_btn, g_log_open ? T(L"Hide the log") : T(L"Show the log"));
         }
     }
     int log_h = g_log_open ? S(g_log_h ? g_log_h : 110) : 0, want = S(340), hh = 0, wh = 0, body_h = 0;
+    g_hd_small = h < S(690);
     for (int pass = 0; pass < 2; pass++) {
         g_hd_compact = pass == 1 || h < S(720);
         hh = g_header ? header_height(hw) : 0;
@@ -14703,6 +14705,22 @@ static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int
     if (r->files_total <= 0) return NULL;
     swprintf(buf, cap, T(L"%lld of %lld available"), (long long)r->files_available, (long long)r->files_total);
     return buf;
+}
+
+/* The tree's state and size sit at its right edge: when it gets narrower
+ * (a scroll bar appears), every row draws again, or they are cut off. */
+static LRESULT CALLBACK tree_size_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (msg == WM_SIZE) {
+        static int last_w;
+        if (LOWORD(lp) != last_w) {
+            last_w = LOWORD(lp);
+            InvalidateRect(h, NULL, FALSE);
+        }
+    }
+    return DefSubclassProc(h, msg, wp, lp);
 }
 
 static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
@@ -15069,6 +15087,7 @@ static void create_children(HWND hwnd)
                              0, 0, 10, 10, g_page[TAB_DB], (HMENU)ID_TREE, g_inst, NULL);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)g_font, TRUE);
     TreeView_SetExtendedStyle(g_tree, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+    SetWindowSubclass(g_tree, tree_size_proc, 6, 0);
     tree_icons_init();
     tree_metrics();
 

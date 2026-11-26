@@ -72,6 +72,9 @@ enum {
     ID_BTN_JOB1,
     ID_BTN_JOB2,
     ID_BTN_LOGTOGGLE,
+    ID_FILES,
+    ID_ADDRESS,
+    ID_FILES_INFO,
     ID_WARN_BTN0, /* and the next 11: two buttons on each of six warnings */
     ID_TABS = 150,
     /* The controls on the tab pages. */
@@ -237,7 +240,8 @@ enum {
     WM_APP_PROGRESS,          /* lParam: malloc'd prog_msg */
     WM_APP_DONE,              /* lParam: job* */
     WM_APP_KICK,              /* start the next job, once the command that asked for it is done */
-    WM_APP_SETS               /* lParam: malloc'd sets_msg, the full copies read during a backup */
+    WM_APP_SETS,              /* lParam: malloc'd sets_msg, the full copies read during a backup */
+    WM_APP_FILESEL            /* what is selected in the file list changed: show its details once */
 };
 
 /* ---- Languages -----------------------------------------------------------
@@ -651,6 +655,7 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
 
 static HINSTANCE g_inst;
 static HWND g_main, g_tree, g_list, g_log, g_status, g_detail, g_search, g_results;
+static HWND g_files, g_address, g_files_info; /* the Primary Database tab's file list, the folder's path, and the line under the list */
 /* The bar for the file being copied, and one bar per full copy the user
  * wants (the target's copies): how far each set of copies has got. */
 #define MAX_SET_BARS 6
@@ -1115,6 +1120,7 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
 }
 
 static void tree_metrics(void);
+static void files_metrics(void);
 
 /* A text box's frame: the dark theme draws it white, so dark mode draws
  * it again in the border colour. */
@@ -1340,9 +1346,10 @@ static void theme_control(HWND h)
         TreeView_SetTextColor(h, g_dark ? DARK_TEXT : (COLORREF)-1);
         tree_metrics();
     } else if (_wcsicmp(cls, WC_LISTVIEWW) == 0) {
-        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        int explorer = h == g_files; /* as Explorer's own list */
+        SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : explorer ? L"Explorer" : NULL, NULL);
         HWND header = ListView_GetHeader(h);
-        if (header) SetWindowTheme(header, g_dark ? L"DarkMode_ItemsView" : NULL, NULL);
+        if (header) SetWindowTheme(header, g_dark ? L"DarkMode_ItemsView" : explorer ? L"ItemsView" : NULL, NULL);
         SetWindowSubclass(h, dark_lv_proc, 2, 0);
         if (header) InvalidateRect(header, NULL, TRUE);
         COLORREF bg = g_dark ? DARK_FIELD : GetSysColor(COLOR_WINDOW);
@@ -3391,6 +3398,14 @@ typedef struct {
     wchar_t *drive;        /* the drive that holds its copies, when it is not plugged in */
     wchar_t *path;         /* roots: where it is */
     wchar_t *tip;          /* all of it in words, for its tooltip and screen readers */
+    /* What the file list shows (Explorer's columns, and where the copies are). */
+    wchar_t *name;
+    int64_t mtime_ns;                 /* when it was last changed (files: the newest version) */
+    int64_t files_backed_up;          /* folders: files in it with a copy of their newest version */
+    int64_t subfolders;               /* folders: the folders directly in it */
+    wchar_t *copies_on, *copies_plugged, *older_on; /* drives and extra places, ", " between: see bd_node_info */
+    int away;  /* not on this PC: its backup root is not there now, or it was deleted from its folder */
+    int ghost; /* not on this PC, and no drive that is plugged in has it: faded, as Explorer fades a file whose tape is not loaded */
 } node_ref;
 
 static void free_node_ref(node_ref *r)
@@ -3400,13 +3415,27 @@ static void free_node_ref(node_ref *r)
     free(r->drive);
     free(r->path);
     free(r->tip);
+    free(r->name);
+    free(r->copies_on);
+    free(r->copies_plugged);
+    free(r->older_on);
     free(r);
 }
 
 typedef struct {
     bd_node_info info;
-    char *name, *rel, *label;
+    char *name, *rel, *label, *on, *plugged, *older;
 } child;
+
+static void free_child(child *c)
+{
+    free(c->name);
+    free(c->rel);
+    free(c->label);
+    free(c->on);
+    free(c->plugged);
+    free(c->older);
+}
 
 typedef struct { child *items; int n, cap; } child_list;
 
@@ -3425,6 +3454,9 @@ static int collect_child(void *ctx, const bd_node_info *info)
     c->name = xstrdup(info->name);
     c->rel = xstrdup(info->rel_path);
     c->label = xstrdup(info->offline_media_label);
+    c->on = xstrdup(info->copies_on);
+    c->plugged = xstrdup(info->copies_on_plugged);
+    c->older = xstrdup(info->older_on);
     return 0;
 }
 
@@ -3570,6 +3602,7 @@ static void add_marks(wchar_t *text, size_t cap, int64_t source_id, const char *
 typedef struct { wchar_t ext[16]; int icon; } ext_icon;
 static ext_icon g_ext_icons[96];
 static int g_n_ext_icons, g_icon_folder = -1, g_icon_folder_open = -1;
+static HIMAGELIST g_sys_il; /* Windows' small icons, which the file list draws from */
 
 static int shell_icon(const wchar_t *name, DWORD attrs, UINT extra)
 {
@@ -3587,6 +3620,7 @@ static void tree_icons_init(void)
     HIMAGELIST il = (HIMAGELIST)SHGetFileInfoW(L"folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
                                                SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
     if (!il) return;
+    g_sys_il = il;
     TreeView_SetImageList(g_tree, il, TVSIL_NORMAL);
     g_icon_folder = sfi.iIcon;
     g_icon_folder_open = shell_icon(L"folder", FILE_ATTRIBUTE_DIRECTORY, SHGFI_OPENICON);
@@ -3635,11 +3669,13 @@ static HTREEITEM insert_item(HTREEITEM parent, const wchar_t *text, node_ref *re
         }
 #endif
     }
-    /* A root's name in bold; a deleted file's icon faded. */
-    if (ref && (ref->root || ref->state == BD_STATE_DELETED)) {
+    /* A root's name in bold; the icon faded when it is not on this PC and
+     * no drive that is plugged in has it, as Explorer fades a file whose
+     * tape is not loaded. */
+    if (ref && (ref->root || ref->ghost)) {
         tv.item.mask |= TVIF_STATE;
         tv.item.stateMask = TVIS_BOLD | TVIS_CUT;
-        tv.item.state = ref->root ? TVIS_BOLD : TVIS_CUT;
+        tv.item.state = (ref->root ? TVIS_BOLD : 0) | (ref->ghost ? TVIS_CUT : 0);
     }
     return (HTREEITEM)SendMessageW(g_tree, TVM_INSERTITEMW, 0, (LPARAM)&tv);
 }
@@ -3654,40 +3690,99 @@ static node_ref *item_ref(HTREEITEM h)
     return (node_ref *)it.lParam;
 }
 
+/* Not on this PC, and no drive that is plugged in has it: what the tree
+ * and the file list fade. An older version on a plugged-in drive counts. */
+static void set_ghost(node_ref *r)
+{
+    int reachable = (r->copies_plugged && *r->copies_plugged) || r->state == BD_STATE_AVAILABLE_OLDER;
+    r->ghost = r->away && !reachable;
+}
+
+/* In a name's tooltip: where its copies are, and when it is not on this PC. */
+static void add_where(wchar_t *text, size_t cap, const node_ref *r)
+{
+    size_t n = wcslen(text);
+    if (r->copies_on && *r->copies_on && n < cap) {
+        if (!r->copies_plugged || !*r->copies_plugged)
+            swprintf(text + n, cap - n, T(L"   - copies on %ls (not plugged in)"), r->copies_on);
+        else if (wcscmp(r->copies_on, r->copies_plugged) == 0)
+            swprintf(text + n, cap - n, T(L"   - copies on %ls (plugged in)"), r->copies_on);
+        else
+            swprintf(text + n, cap - n, T(L"   - copies on %ls (plugged in: %ls)"), r->copies_on, r->copies_plugged);
+    } else if (r->older_on && *r->older_on && n < cap)
+        swprintf(text + n, cap - n, T(L"   - an older version is on %ls"), r->older_on);
+    n = wcslen(text);
+    if (r->away && r->state != BD_STATE_DELETED && n < cap) swprintf(text + n, cap - n, L"%ls", T(L"   - not on this PC"));
+}
+
+/* Whether a backup root's folder is on this PC now. A network folder is
+ * not asked (that can take long): it counts as there unless the last scan
+ * did not find it. */
+static int folder_here(const wchar_t *path)
+{
+    if (!path || !*path) return 0;
+    if (path[0] == L'\\' && path[1] == L'\\') return 1;
+    if (path[1] == L':') {
+        wchar_t drv[4] = {path[0], L':', L'\\', 0};
+        if (GetDriveTypeW(drv) == DRIVE_REMOTE) return 1;
+    }
+    UINT old = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+    DWORD a = GetFileAttributesW(path);
+    SetErrorMode(old);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* A file or folder from bd_list_children, for the tree or the file list. */
+static node_ref *ref_of_child(const node_ref *parent, const child *c)
+{
+    node_ref *r = calloc(1, sizeof(node_ref));
+    if (!r) return NULL;
+    r->source_id = parent->source_id;
+    r->node_id = c->info.node_id;
+    r->is_dir = c->info.is_dir;
+    r->state = c->info.state;
+    r->rel = xstrdup(c->rel);
+    r->name = widen(c->name);
+    r->size = c->info.size;
+    r->mtime_ns = c->info.mtime_ns;
+    r->files_total = c->info.files_total;
+    r->files_available = c->info.files_available;
+    r->files_backed_up = c->info.files_backed_up;
+    r->subfolders = c->info.subfolders;
+    r->copies_on = widen(c->on);
+    r->copies_plugged = widen(c->plugged);
+    r->older_on = widen(c->older);
+    if (c->label && *c->label && c->info.state == BD_STATE_OFFLINE) r->drive = widen(c->label);
+    r->away = parent->away || c->info.state == BD_STATE_DELETED;
+    set_ghost(r);
+    set_marks(r);
+    wchar_t text[1600];
+    item_text(&c->info, c->name, NULL, text, COUNT_OF(text));
+    add_marks(text, COUNT_OF(text), r->source_id, r->rel, r->is_dir);
+    add_where(text, COUNT_OF(text), r);
+    r->tip = _wcsdup(text);
+    return r;
+}
+
+/* The tree holds the folders; the file list shows what is in the one
+ * selected. */
 static void load_children(HTREEITEM parent, node_ref *pref)
 {
     child_list l = {0};
     bd_list_children(g_cat, pref->source_id, pref->node_id, collect_child, &l);
+    int added = 0;
     for (int i = 0; i < l.n; i++) {
         child *c = &l.items[i];
-        node_ref *r = calloc(1, sizeof(node_ref));
-        wchar_t text[1024];
-        item_text(&c->info, c->name, c->label, text, 1024);
-        if (r) {
-            r->source_id = pref->source_id;
-            r->node_id = c->info.node_id;
-            r->is_dir = c->info.is_dir;
-            r->state = c->info.state;
-            r->rel = c->rel;
-            c->rel = NULL;
-            r->size = c->info.size;
-            r->files_total = c->info.files_total;
-            r->files_available = c->info.files_available;
-            if (c->label && *c->label && c->info.state == BD_STATE_OFFLINE) r->drive = widen(c->label);
-            set_marks(r);
-            add_marks(text, 1024, r->source_id, r->rel, r->is_dir);
-            r->tip = _wcsdup(text);
+        if (c->info.is_dir) {
+            node_ref *r = ref_of_child(pref, c);
+            insert_item(parent, r && r->name ? r->name : L"", r, c->info.subfolders > 0);
+            added++;
         }
-        wchar_t *name = widen(c->name);
-        insert_item(parent, name ? name : L"", r, c->info.is_dir && (c->info.files_total > 0 || 1));
-        free(name);
-        free(c->name);
-        free(c->rel);
-        free(c->label);
+        free_child(c);
     }
     free(l.items);
     pref->loaded = 1;
-    if (l.n == 0) {
+    if (!added) {
         TVITEMW it;
         memset(&it, 0, sizeof(it));
         it.mask = TVIF_CHILDREN;
@@ -3765,15 +3860,27 @@ static int collect_source(void *ctx, const bd_source_info *info)
     l->names[l->n] = xstrdup(info->name);
     l->paths[l->n] = xstrdup(info->path);
     l->labels[l->n] = xstrdup(info->offline_media_label);
+    /* Its own copies of these (the caller frees them with the labels). */
+    l->items[l->n].copies_on = xstrdup(info->copies_on);
+    l->items[l->n].copies_on_plugged = xstrdup(info->copies_on_plugged);
     l->n++;
     return 0;
 }
+
+static int g_tree_building; /* rebuild_tree is at work: what the tree selects meanwhile fills nothing */
+static void fill_files(const node_ref *folder, int64_t select_node);
+static void show_detail(void);
+static node_ref *files_selected(void);
+static int g_files_active; /* what is selected is a row of the file list, not the tree's folder */
 
 static void rebuild_tree(void)
 {
     load_marks();
     if (!g_cat) {
+        g_tree_building++;
         TreeView_DeleteAllItems(g_tree);
+        g_tree_building--;
+        fill_files(NULL, 0);
         return;
     }
     key_set expanded = {0};
@@ -3782,7 +3889,10 @@ static void rebuild_tree(void)
     collect_expanded(TreeView_GetRoot(g_tree), &expanded);
     node_ref *sr = item_ref(TreeView_GetSelection(g_tree));
     if (sr) { sel.source_id = sr->source_id; sel.node_id = sr->node_id; }
+    node_ref *fr = g_files_active ? files_selected() : NULL;
+    int64_t file_sel = fr ? fr->node_id : 0;
 
+    g_tree_building++;
     SendMessageW(g_tree, WM_SETREDRAW, FALSE, 0);
     TreeView_DeleteAllItems(g_tree);
     source_list l = {0};
@@ -3795,12 +3905,21 @@ static void rebuild_tree(void)
             r->root = 1;
             r->state = l.items[i].state;
             r->rel = xstrdup("");
+            r->name = widen(l.names[i]);
             r->missing = l.items[i].missing;
             r->inactive = !l.items[i].active;
             r->size = l.items[i].bytes_total;
             r->files_total = l.items[i].files_total;
             r->files_available = l.items[i].files_available;
+            r->files_backed_up = l.items[i].files_backed_up;
             r->path = widen(l.paths[i]);
+            r->copies_on = widen(l.items[i].copies_on);
+            r->copies_plugged = widen(l.items[i].copies_on_plugged);
+            r->older_on = widen("");
+            /* Not here when the last scan did not find it, or when this PC
+             * does not have it now (a database opened on another PC). */
+            r->away = l.items[i].missing || !folder_here(r->path);
+            set_ghost(r);
             if (l.labels[i] && *l.labels[i] && l.items[i].state == BD_STATE_OFFLINE) r->drive = widen(l.labels[i]);
             set_marks(r);
         }
@@ -3810,25 +3929,28 @@ static void rebuild_tree(void)
         as_folder.state = l.items[i].state;
         as_folder.files_total = l.items[i].files_total;
         as_folder.files_available = l.items[i].files_available;
-        wchar_t counts[512], text[1024];
-        item_text(&as_folder, l.names[i], l.labels[i], counts, 512);
+        wchar_t counts[512], text[1600];
+        item_text(&as_folder, l.names[i], NULL, counts, 512);
         wchar_t *wp = widen(l.paths[i]);
         wchar_t bytes[64];
         format_bytes(l.items[i].bytes_total, bytes, 64);
-        swprintf(text, 1024, L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
+        swprintf(text, COUNT_OF(text), L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
                  l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
                  : !l.items[i].active ? T(L"   - no longer backed up") : L"");
-        add_marks(text, 1024, l.items[i].source_id, "", 1);
-        if (r) r->tip = _wcsdup(text);
-        wchar_t *wname = widen(l.names[i]);
-        HTREEITEM h = insert_item(TVI_ROOT, wname ? wname : L"", r, 1);
-        free(wname);
+        add_marks(text, COUNT_OF(text), l.items[i].source_id, "", 1);
+        if (r) {
+            add_where(text, COUNT_OF(text), r);
+            r->tip = _wcsdup(text);
+        }
+        HTREEITEM h = insert_item(TVI_ROOT, r && r->name ? r->name : L"", r, 1);
         if (first_build) keys_add(&expanded, r ? r->source_id : 0, 0);
         (void)h;
         free(wp);
         free(l.names[i]);
         free(l.paths[i]);
         free(l.labels[i]);
+        free((char *)l.items[i].copies_on);
+        free((char *)l.items[i].copies_on_plugged);
     }
     free(l.items);
     free(l.names);
@@ -3837,10 +3959,411 @@ static void rebuild_tree(void)
 
     g_reselect = NULL;
     reexpand(TreeView_GetRoot(g_tree), &expanded, sel);
+    /* A folder is always selected, as in Explorer: the first root at first. */
+    if (!g_reselect) g_reselect = TreeView_GetRoot(g_tree);
     if (g_reselect) TreeView_SelectItem(g_tree, g_reselect);
     free(expanded.k);
+    g_tree_building--;
     SendMessageW(g_tree, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_tree, NULL, TRUE);
+    fill_files(item_ref(TreeView_GetSelection(g_tree)), file_sel);
+    if (!g_busy) show_detail();
+}
+
+/* ---- File list -------------------------------------------------------------
+ * What is in the folder selected in the tree, as Explorer shows a folder:
+ * its folders, then its files, each with its state, the drives its copies
+ * are on, when it was changed, its type and its size. Each row owns its
+ * node_ref; a row's lParam is its place in g_file_refs, which sorting
+ * leaves alone. */
+
+enum { FC_NAME, FC_STATUS, FC_COPIES, FC_DATE, FC_TYPE, FC_SIZE, FC_COUNT };
+
+static node_ref **g_file_refs;
+static int g_file_n;
+static int g_files_filling;  /* the list is being filled: its changes are not the user's */
+static int g_filesel_posted; /* WM_APP_FILESEL is on its way */
+static int g_files_sort = FC_NAME, g_files_desc;
+static wchar_t g_files_empty[300]; /* what the list says when it has no rows */
+
+static const wchar_t *list_chip(const node_ref *r, wchar_t *buf, size_t cap, int *tone);
+static wchar_t *where_text(int64_t source_id, const char *rel);
+
+/* Windows' own name for a kind of file, as Explorer's Type column says it
+ * (in Windows' language): from the extension only, kept by extension. */
+typedef struct { wchar_t ext[16]; wchar_t name[80]; } ext_type;
+static ext_type g_ext_types[96];
+static int g_n_ext_types;
+static wchar_t g_folder_type[80];
+
+static const wchar_t *file_type(const node_ref *r)
+{
+    SHFILEINFOW sfi;
+    if (r->is_dir) {
+        if (!g_folder_type[0]) {
+            memset(&sfi, 0, sizeof(sfi));
+            if (SHGetFileInfoW(L"folder", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi), SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES))
+                swprintf(g_folder_type, COUNT_OF(g_folder_type), L"%ls", sfi.szTypeName);
+        }
+        return g_folder_type;
+    }
+    const wchar_t *name = r->name ? r->name : L"", *dot = wcsrchr(name, L'.');
+    wchar_t ext[16] = L"";
+    if (dot && (int)wcslen(dot) < COUNT_OF(ext)) {
+        for (int i = 0; dot[i]; i++) ext[i] = (wchar_t)towlower(dot[i]);
+        ext[wcslen(dot)] = 0;
+    }
+    for (int i = 0; i < g_n_ext_types; i++)
+        if (wcscmp(g_ext_types[i].ext, ext) == 0) return g_ext_types[i].name;
+    static wchar_t fresh[80];
+    fresh[0] = 0;
+    wchar_t probe[24];
+    swprintf(probe, COUNT_OF(probe), L"file%ls", ext);
+    memset(&sfi, 0, sizeof(sfi));
+    if (SHGetFileInfoW(probe, FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi), SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES))
+        swprintf(fresh, COUNT_OF(fresh), L"%ls", sfi.szTypeName);
+    if (g_n_ext_types < COUNT_OF(g_ext_types)) {
+        ext_type *t = &g_ext_types[g_n_ext_types++];
+        wcscpy(t->ext, ext);
+        swprintf(t->name, COUNT_OF(t->name), L"%ls", fresh);
+        return t->name;
+    }
+    return fresh;
+}
+
+static node_ref *files_ref(int pos)
+{
+    if (!g_files || pos < 0) return NULL;
+    LVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_PARAM;
+    it.iItem = pos;
+    if (!SendMessageW(g_files, LVM_GETITEMW, 0, (LPARAM)&it)) return NULL;
+    return it.lParam >= 0 && it.lParam < g_file_n ? g_file_refs[it.lParam] : NULL;
+}
+
+static node_ref *files_selected(void) { return g_files ? files_ref(ListView_GetNextItem(g_files, -1, LVNI_SELECTED)) : NULL; }
+
+/* What is selected: a row of the file list, or else the folder in the tree. */
+static node_ref *sel_ref(void)
+{
+    node_ref *r = g_files_active ? files_selected() : NULL;
+    return r ? r : item_ref(TreeView_GetSelection(g_tree));
+}
+
+static void clear_files(void)
+{
+    g_files_filling++;
+    if (g_files) ListView_DeleteAllItems(g_files);
+    g_files_filling--;
+    for (int i = 0; i < g_file_n; i++) free_node_ref(g_file_refs[i]);
+    free(g_file_refs);
+    g_file_refs = NULL;
+    g_file_n = 0;
+    g_files_active = 0;
+}
+
+static void files_insert(int idx)
+{
+    node_ref *r = g_file_refs[idx];
+    LVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_TEXT | LVIF_PARAM;
+    it.iItem = ListView_GetItemCount(g_files);
+    it.pszText = r->name ? r->name : (wchar_t *)L"";
+    it.lParam = idx;
+    int pos = (int)SendMessageW(g_files, LVM_INSERTITEMW, 0, (LPARAM)&it);
+    if (pos < 0) return;
+    /* The words of each column, for screen readers: the rows are drawn. */
+    wchar_t buf[300], when[64] = L"", size[64] = L"";
+    int tone;
+    const wchar_t *chip = list_chip(r, buf, COUNT_OF(buf), &tone);
+    ListView_SetItemText(g_files, pos, FC_STATUS, (wchar_t *)(chip ? chip : L""));
+    ListView_SetItemText(g_files, pos, FC_COPIES, r->copies_on && *r->copies_on ? r->copies_on : (wchar_t *)L"");
+    if (r->mtime_ns > 0) format_ns(r->mtime_ns, when, COUNT_OF(when));
+    ListView_SetItemText(g_files, pos, FC_DATE, when);
+    ListView_SetItemText(g_files, pos, FC_TYPE, (wchar_t *)file_type(r));
+    if (!r->is_dir) format_bytes(r->size, size, COUNT_OF(size));
+    ListView_SetItemText(g_files, pos, FC_SIZE, size);
+    if (r->ghost) ListView_SetItemState(g_files, pos, LVIS_CUT, LVIS_CUT);
+}
+
+/* The worse its state, the earlier it sorts. */
+static int status_rank(const node_ref *r)
+{
+    if (r->state == BD_STATE_BAD) return 0;
+    if (r->damaged && r->state != BD_STATE_DELETED) return 1;
+    switch (r->state) {
+    case BD_STATE_NO_COPY: return 2;
+    case BD_STATE_AVAILABLE_OLDER: return 3;
+    case BD_STATE_PARTIAL: return 4;
+    case BD_STATE_OFFLINE: return 5;
+    case BD_STATE_DELETED: return 6;
+    default: return 7;
+    }
+}
+
+#ifndef SORT_DIGITSASNUMBERS
+#define SORT_DIGITSASNUMBERS 0x00000008
+#endif
+
+/* Folders first, as in Explorer; names in the order Explorer gives them
+ * (2 before 10), which also settles a tie in any other column. */
+static int CALLBACK files_cmp(LPARAM a, LPARAM b, LPARAM unused)
+{
+    (void)unused;
+    if (a < 0 || b < 0 || a >= g_file_n || b >= g_file_n) return 0;
+    const node_ref *x = g_file_refs[a], *y = g_file_refs[b];
+    if (x->is_dir != y->is_dir) return x->is_dir ? -1 : 1;
+    int d = 0;
+    switch (g_files_sort) {
+    case FC_STATUS: d = status_rank(x) - status_rank(y); break;
+    case FC_COPIES: d = _wcsicmp(x->copies_on ? x->copies_on : L"", y->copies_on ? y->copies_on : L""); break;
+    case FC_DATE: d = x->mtime_ns < y->mtime_ns ? -1 : x->mtime_ns > y->mtime_ns; break;
+    case FC_TYPE: {
+        wchar_t tx[80];
+        swprintf(tx, COUNT_OF(tx), L"%ls", file_type(x)); /* file_type may reuse its buffer */
+        d = _wcsicmp(tx, file_type(y));
+        break;
+    }
+    case FC_SIZE: d = x->size < y->size ? -1 : x->size > y->size; break;
+    default: break;
+    }
+    if (!d) d = CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE | SORT_DIGITSASNUMBERS, x->name ? x->name : L"", -1,
+                               y->name ? y->name : L"", -1) - CSTR_EQUAL;
+    return g_files_desc ? -d : d;
+}
+
+static void files_sort(void)
+{
+    if (!g_files) return;
+    ListView_SortItems(g_files, files_cmp, 0);
+    HWND hd = ListView_GetHeader(g_files);
+    for (int c = 0; hd && c < FC_COUNT; c++) {
+        HDITEMW hi;
+        memset(&hi, 0, sizeof(hi));
+        hi.mask = HDI_FORMAT;
+        if (!SendMessageW(hd, HDM_GETITEMW, c, (LPARAM)&hi)) continue;
+        hi.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+        if (c == g_files_sort) hi.fmt |= g_files_desc ? HDF_SORTDOWN : HDF_SORTUP;
+        SendMessageW(hd, HDM_SETITEMW, c, (LPARAM)&hi);
+    }
+    int sel = ListView_GetNextItem(g_files, -1, LVNI_SELECTED);
+    if (sel >= 0) ListView_EnsureVisible(g_files, sel, FALSE);
+}
+
+/* The columns fill the list: each as wide as what it holds, the name the
+ * rest; in a narrow list they all give up some room, the name least. */
+static void files_fit_cols(void)
+{
+    if (!g_files) return;
+    RECT rc;
+    GetClientRect(g_files, &rc);
+    int w = rc.right, want[FC_COUNT];
+    HDC dc = GetDC(g_files);
+    const wchar_t *probe[] = {T(L"Changed since backup"), T(L"Not backed up"), T(L"Copy damaged"), T(L"May be damaged"),
+                              T(L"Drive not plugged in"), T(L"Deleted")};
+    want[FC_STATUS] = S(100);
+    for (int i = 0; i < COUNT_OF(probe); i++) {
+        int t = text_w(dc, g_font, probe[i]) + S(26);
+        if (t > want[FC_STATUS]) want[FC_STATUS] = t;
+    }
+    wchar_t sample[64];
+    format_ns(INT64_C(1795000000) * 1000000000, sample, COUNT_OF(sample));
+    want[FC_DATE] = text_w(dc, g_font, sample) + S(18);
+    want[FC_COPIES] = S(120);
+    want[FC_TYPE] = S(130);
+    want[FC_SIZE] = text_w(dc, g_font, L"999.9 MB") + S(20);
+    HWND hd = ListView_GetHeader(g_files);
+    for (int c = 1; c < FC_COUNT && hd; c++) {
+        wchar_t name[100] = L"";
+        HDITEMW hi;
+        memset(&hi, 0, sizeof(hi));
+        hi.mask = HDI_TEXT;
+        hi.pszText = name;
+        hi.cchTextMax = COUNT_OF(name);
+        SendMessageW(hd, HDM_GETITEMW, c, (LPARAM)&hi);
+        int t = text_w(dc, g_font, name) + S(26);
+        if (t > want[c]) want[c] = t;
+    }
+    ReleaseDC(g_files, dc);
+    int rest = 0, name_min = w * 30 / 100;
+    if (name_min < S(140)) name_min = S(140);
+    for (int c = 1; c < FC_COUNT; c++) rest += want[c];
+    if (rest > w - name_min && w - name_min > 0) {
+        int room = w - name_min, total = rest;
+        rest = 0;
+        for (int c = 1; c < FC_COUNT; c++) {
+            want[c] = (int)((long long)want[c] * room / total);
+            if (want[c] < S(44)) want[c] = S(44);
+            rest += want[c];
+        }
+    }
+    want[FC_NAME] = w - rest > name_min ? w - rest : name_min;
+    for (int c = 0; c < FC_COUNT; c++) ListView_SetColumnWidth(g_files, c, want[c]);
+}
+
+/* The folder's place on this PC above the list, and under it how many
+ * there are and what the faded ones mean. */
+static void files_place(const node_ref *folder)
+{
+    wchar_t *where = folder && g_cat && !g_busy ? where_text(folder->source_id, folder->rel) : NULL;
+    if (g_address) SetWindowTextW(g_address, where ? where : L"");
+    free(where);
+    wchar_t info[700] = L"";
+    if (folder && g_cat && !g_busy) {
+        int ghosts = 0;
+        for (int i = 0; i < g_file_n; i++) ghosts += g_file_refs[i]->ghost;
+        swprintf(info, COUNT_OF(info), TN(g_file_n, L"%d item", L"%d items"), g_file_n);
+        size_t n = wcslen(info);
+        if (folder->state == BD_STATE_DELETED)
+            swprintf(info + n, COUNT_OF(info) - n, L"   \x00B7   %ls", T(L"Deleted from its folder; its copies are kept"));
+        else if (folder->away)
+            swprintf(info + n, COUNT_OF(info) - n, L"   \x00B7   %ls", T(L"Not on this PC: restore it from the drives its copies are on"));
+        if (ghosts) {
+            wchar_t faded[300];
+            swprintf(faded, COUNT_OF(faded), TN(ghosts, L"%d faded: no drive that is plugged in has it", L"%d faded: no drive that is plugged in has them"),
+                     ghosts);
+            n = wcslen(info);
+            swprintf(info + n, COUNT_OF(info) - n, L"   \x00B7   %ls", faded);
+        }
+    }
+    if (g_files_info) SetWindowTextW(g_files_info, info);
+}
+
+/* Fill the list with what is in a folder (none: empty), selecting the row
+ * of select_node if it is there. */
+static void fill_files(const node_ref *folder, int64_t select_node)
+{
+    if (!g_files) return;
+    g_files_filling++;
+    SendMessageW(g_files, WM_SETREDRAW, FALSE, 0);
+    clear_files();
+    g_files_empty[0] = 0;
+    if (folder && g_cat && g_busy) {
+        swprintf(g_files_empty, COUNT_OF(g_files_empty), L"%ls", T(L"What is in this folder shows when the current job finishes."));
+    } else if (folder && g_cat) {
+        child_list l = {0};
+        bd_list_children(g_cat, folder->source_id, folder->node_id, collect_child, &l);
+        g_file_refs = calloc((size_t)(l.n ? l.n : 1), sizeof(node_ref *));
+        for (int i = 0; i < l.n; i++) {
+            node_ref *r = g_file_refs ? ref_of_child(folder, &l.items[i]) : NULL;
+            if (r) {
+                g_file_refs[g_file_n] = r;
+                files_insert(g_file_n);
+                g_file_n++;
+            }
+            free_child(&l.items[i]);
+        }
+        free(l.items);
+        files_sort();
+        if (!g_file_n) swprintf(g_files_empty, COUNT_OF(g_files_empty), L"%ls", T(L"This folder is empty."));
+        for (int pos = 0; select_node && pos < g_file_n; pos++) {
+            node_ref *r = files_ref(pos);
+            if (r && r->node_id == select_node) {
+                ListView_SetItemState(g_files, pos, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(g_files, pos, FALSE);
+                g_files_active = 1;
+                break;
+            }
+        }
+    }
+    files_fit_cols();
+    SendMessageW(g_files, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_files, NULL, TRUE);
+    g_files_filling--;
+    files_place(folder);
+}
+
+/* Select a row (none: -1) as the user would. */
+static void files_select_pos(int pos)
+{
+    if (!g_files) return;
+    ListView_SetItemState(g_files, -1, 0, LVIS_SELECTED);
+    if (pos >= 0) {
+        ListView_SetItemState(g_files, pos, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(g_files, pos, FALSE);
+    }
+    g_files_active = pos >= 0;
+}
+
+static void files_select_where(int64_t node_id, const char *rel)
+{
+    for (int pos = 0; pos < ListView_GetItemCount(g_files); pos++) {
+        node_ref *r = files_ref(pos);
+        if (r && ((node_id && r->node_id == node_id) || (rel && r->rel && strcmp(r->rel, rel) == 0))) {
+            files_select_pos(pos);
+            return;
+        }
+    }
+}
+
+/* Open a folder of the list: select it in the tree, which shows what is in it. */
+static void files_open(int pos)
+{
+    node_ref *r = files_ref(pos);
+    if (!r || !r->is_dir || g_busy) return;
+    HTREEITEM h = TreeView_GetSelection(g_tree);
+    node_ref *pr = item_ref(h);
+    if (!h || !pr) return;
+    if (!pr->loaded) load_children(h, pr);
+    int64_t want = r->node_id; /* r goes when the list is filled again */
+    for (HTREEITEM c = TreeView_GetChild(g_tree, h); c; c = TreeView_GetNextSibling(g_tree, c)) {
+        node_ref *cr = item_ref(c);
+        if (cr && cr->node_id == want) {
+            TreeView_Expand(g_tree, h, TVE_EXPAND);
+            TreeView_SelectItem(g_tree, c);
+            TreeView_EnsureVisible(g_tree, c);
+            break;
+        }
+    }
+}
+
+/* Up to the folder above (Backspace), with the folder it came from selected. */
+static void files_up(void)
+{
+    HTREEITEM h = TreeView_GetSelection(g_tree), up = h ? TreeView_GetParent(g_tree, h) : NULL;
+    node_ref *r = item_ref(h);
+    if (!up || !r || g_busy) return;
+    int64_t from = r->node_id;
+    TreeView_SelectItem(g_tree, up);
+    TreeView_EnsureVisible(g_tree, up);
+    files_select_where(from, NULL);
+}
+
+/* The list's words when it has no rows, drawn in its empty space. */
+static LRESULT CALLBACK files_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (msg == WM_PAINT && ListView_GetItemCount(h) == 0 && g_files_empty[0]) {
+        LRESULT res = DefSubclassProc(h, msg, wp, lp);
+        RECT rc, hr = {0, 0, 0, 0};
+        GetClientRect(h, &rc);
+        HWND hd = ListView_GetHeader(h);
+        if (hd && IsWindowVisible(hd)) GetClientRect(hd, &hr);
+        rc.top += hr.bottom;
+        HDC dc = GetDC(h);
+        HBRUSH br = CreateSolidBrush(ListView_GetBkColor(h));
+        FillRect(dc, &rc, br);
+        DeleteObject(br);
+        rc.top += S(16);
+        InflateRect(&rc, -S(12), 0);
+        draw_str(dc, g_font, theme_gray(), g_files_empty, rc, DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        ReleaseDC(h, dc);
+        return res;
+    }
+    if (msg == WM_SIZE) {
+        static int last_w;
+        LRESULT res = DefSubclassProc(h, msg, wp, lp);
+        if (ListView_GetItemCount(h) == 0) InvalidateRect(h, NULL, TRUE);
+        if (h == g_files && LOWORD(lp) != last_w) {
+            last_w = LOWORD(lp);
+            files_fit_cols(); /* a scroll bar came or went */
+        }
+        return res;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
 }
 
 /* ---- Detail panel ------------------------------------------------------- */
@@ -4502,18 +5025,16 @@ static void version_note(const node_ref *r, wchar_t *out, size_t cap)
 
 /* The full name of what is selected: its backup root, then its path, the
  * way Windows writes paths. */
-static void node_full_name(HTREEITEM h, const node_ref *r, wchar_t *out, size_t cap)
+static void node_full_name(const node_ref *r, wchar_t *out, size_t cap)
 {
-    HTREEITEM root = h, up;
-    while (root && (up = TreeView_GetParent(g_tree, root)) != NULL) root = up;
     wchar_t name[300] = L"";
-    TVITEMW it;
-    memset(&it, 0, sizeof(it));
-    it.mask = TVIF_TEXT;
-    it.hItem = root;
-    it.pszText = name;
-    it.cchTextMax = 300;
-    if (root) SendMessageW(g_tree, TVM_GETITEMW, 0, (LPARAM)&it);
+    for (HTREEITEM h = TreeView_GetRoot(g_tree); h; h = TreeView_GetNextSibling(g_tree, h)) {
+        node_ref *rr = item_ref(h);
+        if (rr && rr->source_id == r->source_id) {
+            swprintf(name, COUNT_OF(name), L"%ls", rr->name ? rr->name : L"");
+            break;
+        }
+    }
     wchar_t *rel = widen(r->rel ? r->rel : "");
     if (rel && *rel) swprintf(out, cap, L"%ls\\%ls", name, rel);
     else swprintf(out, cap, L"%ls", name);
@@ -4620,11 +5141,11 @@ static void show_detail(void)
     SendMessageW(g_list, LVM_DELETEALLITEMS, 0, 0);
     clear_copy_rows();
     if (!g_cat) { detail_say(L""); return; }
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref *r = sel_ref();
     if (!r) {
         if (TreeView_GetCount(g_tree) == 0)
-            detail_say(T(L"Nothing to show yet. Add backup root... picks a folder to back up; every file in it is then listed on "
-                         L"the left, and this side shows which drives hold its copies."));
+            detail_say(T(L"Nothing to show yet. Add backup root... picks a folder to back up; its folders and files are then "
+                         L"listed here, with the drives that hold their copies."));
         else
             detail_say(T(L"Select a file or folder to see its versions and which drives hold them. Help > What the file list shows "
                          L"draws what each name and state means."));
@@ -4634,7 +5155,7 @@ static void show_detail(void)
     SendMessageW(g_detail, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(g_detail);
     wchar_t full[1400];
-    node_full_name(TreeView_GetSelection(g_tree), r, full, 1400);
+    node_full_name(r, full, 1400);
     {
         /* Its name as the heading, then the folder it is in. */
         wchar_t *slash = wcsrchr(full, L'\\');
@@ -4647,8 +5168,28 @@ static void show_detail(void)
             kv_row(g_detail, KV_HEAD, full, NULL);
     }
     kv_row(g_detail, KV_FACT, T(L"State"), L"%ls", state_words(r->state));
-    if (r->is_dir && r->files_total > 0)
+    if (r->away)
+        kv_row(g_detail, KV_FACT, T(L"On this PC"), L"%ls",
+               r->state == BD_STATE_DELETED ? T(L"No: it was deleted from its folder") : T(L"No: its backup root is not on this PC now"));
+    if (r->is_dir && r->files_total > 0) {
         kv_row(g_detail, KV_FACT, T(L"Files"), T(L"%lld of %lld available"), (long long)r->files_available, (long long)r->files_total);
+        kv_row(g_detail, KV_FACT, T(L"Backed up"),
+               TN(r->files_total, L"%lld of %lld file has a copy of its newest version", L"%lld of %lld files have a copy of their newest version"),
+               (long long)r->files_backed_up, (long long)r->files_total);
+    }
+    if (r->is_dir && r->copies_on && *r->copies_on) {
+        kv_row(g_detail, KV_FACT, T(L"Copies on"), L"%ls", r->copies_on);
+        kv_row(g_detail, KV_FACT, T(L"Plugged in"), L"%ls", r->copies_plugged && *r->copies_plugged ? r->copies_plugged : T(L"None of them"));
+    }
+    if (r->ghost) {
+        /* Faded: what brings it back. */
+        if (r->copies_on && *r->copies_on)
+            kv_row(g_detail, KV_FACT, T(L"To get it back"), T(L"Plug in a drive it is on (%ls), then restore it"), r->copies_on);
+        else if (r->older_on && *r->older_on)
+            kv_row(g_detail, KV_FACT, T(L"To get it back"), T(L"Plug in %ls to restore an older version"), r->older_on);
+        else
+            kv_row(g_detail, KV_FACT, T(L"To get it back"), L"%ls", T(L"No drive has a copy of it"));
+    }
     {
         const char *mr = r->rel ? r->rel : "";
         int st = bd_starred(g_cat, r->source_id, mr), en = bd_encrypt_marked(g_cat, r->source_id, mr);
@@ -8210,7 +8751,7 @@ static void cmd_relocate_one(int64_t source_id)
 
 static void cmd_relocate(void)
 {
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref *r = sel_ref();
     source_places l;
     memset(&l, 0, sizeof(l));
     bd_list_sources(g_cat, source_place_cb, &l);
@@ -8424,7 +8965,7 @@ static int root_count(void)
  * one root with whole and source_id), as it is now. */
 static void restore_selection(int whole, int64_t source_id)
 {
-    node_ref all = {0}, *r = whole ? &all : item_ref(TreeView_GetSelection(g_tree));
+    node_ref all = {0}, *r = whole ? &all : sel_ref();
     all.source_id = source_id;
     if (!r) {
         MessageBoxW(g_main, T(L"Select a backup root, a folder inside it, or a file to restore."), APP_NAME, MB_ICONINFORMATION);
@@ -9745,6 +10286,8 @@ static void cmd_relocate_one(int64_t source_id);
 /* Right-click on the tree: open the file or folder, restore it, and for a
  * backup root stop or resume backing it up, its own skip list, or where it
  * is now. */
+static void node_menu(node_ref *r, int x, int y);
+
 static void tree_context_menu(int x, int y)
 {
     HTREEITEM h;
@@ -9768,6 +10311,58 @@ static void tree_context_menu(int x, int y)
     }
     node_ref *r = item_ref(h);
     if (!r) return;
+    if (g_files_active) {
+        /* The folder, not the row of the list that was selected. */
+        files_select_pos(-1);
+        show_detail();
+        page_buttons_state();
+    }
+    node_menu(r, x, y);
+}
+
+/* Right-click on the file list: the same menu for the row under the
+ * pointer, or for the folder when it is not on a row. */
+static void files_context_menu(int x, int y)
+{
+    int pos = ListView_GetNextItem(g_files, -1, LVNI_SELECTED);
+    if (x == -1 && y == -1) {
+        RECT ir;
+        if (pos < 0 || !ListView_GetItemRect(g_files, pos, &ir, LVIR_LABEL)) {
+            tree_context_menu(-1, -1);
+            return;
+        }
+        POINT pt = {ir.left + S(16), ir.bottom};
+        ClientToScreen(g_files, &pt);
+        x = pt.x;
+        y = pt.y;
+    } else {
+        LVHITTESTINFO hit;
+        memset(&hit, 0, sizeof(hit));
+        hit.pt.x = x;
+        hit.pt.y = y;
+        ScreenToClient(g_files, &hit.pt);
+        pos = ListView_HitTest(g_files, &hit);
+        if (pos < 0) {
+            HTREEITEM h = TreeView_GetSelection(g_tree);
+            node_ref *fr = item_ref(h);
+            if (!fr) return;
+            files_select_pos(-1);
+            show_detail();
+            page_buttons_state();
+            node_menu(fr, x, y);
+            return;
+        }
+        files_select_pos(pos);
+        show_detail();
+        page_buttons_state();
+    }
+    node_ref *r = files_ref(pos);
+    if (r) node_menu(r, x, y);
+}
+
+/* The menu for one file or folder (or backup root). */
+static void node_menu(node_ref *r, int x, int y)
+{
     /* The source's own path and state. */
     source_list l = {0};
     bd_list_sources(g_cat, collect_source, &l);
@@ -9786,6 +10381,8 @@ static void tree_context_menu(int x, int y)
         free(l.names[i]);
         free(l.paths[i]);
         free(l.labels[i]);
+        free((char *)l.items[i].copies_on);
+        free((char *)l.items[i].copies_on_plugged);
     }
     free(l.items);
     free(l.names);
@@ -9793,7 +10390,7 @@ static void tree_context_menu(int x, int y)
     free(l.labels);
     int is_root = r->node_id == 0;
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING | (missing || r->state == BD_STATE_DELETED ? MF_GRAYED : 0), ID_CTX_OPEN, T(L"Open in Explorer"));
+    AppendMenuW(m, MF_STRING | (missing || r->away || r->state == BD_STATE_DELETED ? MF_GRAYED : 0), ID_CTX_OPEN, T(L"Open in Explorer"));
     AppendMenuW(m, MF_STRING, ID_CTX_RESTORE, T(L"Restore..."));
     {
         const char *mr = r->rel ? r->rel : "";
@@ -10019,8 +10616,9 @@ static void run_search(void)
     if (!*p) {
         SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
         ShowWindow(g_results, SW_HIDE);
-        ShowWindow(g_tree, SW_SHOW);
-        show_detail(); /* the tree's own selection again */
+        ShowWindow(g_files, SW_SHOW);
+        ShowWindow(g_files_info, SW_SHOW);
+        show_detail(); /* what is selected again */
         return;
     }
     if (g_busy) {
@@ -10029,7 +10627,8 @@ static void run_search(void)
         lv_row(g_results, cells, 4);
         SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
         InvalidateRect(g_results, NULL, TRUE);
-        ShowWindow(g_tree, SW_HIDE);
+        ShowWindow(g_files, SW_HIDE);
+        ShowWindow(g_files_info, SW_HIDE);
         ShowWindow(g_results, SW_SHOW);
         return;
     }
@@ -10057,12 +10656,13 @@ static void run_search(void)
     search_fit_cols();
     SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_results, NULL, TRUE);
-    ShowWindow(g_tree, SW_HIDE);
+    ShowWindow(g_files, SW_HIDE);
+    ShowWindow(g_files_info, SW_HIDE);
     ShowWindow(g_results, SW_SHOW);
 }
 
-/* Open the tree down to a file or folder and select it, which also shows
- * its details. */
+/* Open the tree down to a folder and select it; a file, in the folder it
+ * is in, is then selected in the file list. Either shows its details. */
 static void reveal_node(int64_t source_id, const char *rel)
 {
     if (g_busy) return;
@@ -10077,17 +10677,22 @@ static void reveal_node(int64_t source_id, const char *rel)
         if (rel[i] != '/' && rel[i] != '\0') continue;
         node_ref *pr = item_ref(h);
         if (pr && !pr->loaded) load_children(h, pr);
-        TreeView_Expand(g_tree, h, TVE_EXPAND);
         HTREEITEM c = TreeView_GetChild(g_tree, h);
         for (; c; c = TreeView_GetNextSibling(g_tree, c)) {
             node_ref *cr = item_ref(c);
             if (cr && cr->rel && strlen(cr->rel) == i && strncmp(cr->rel, rel, i) == 0) break;
         }
-        if (!c) break;
+        if (!c) break; /* a file: it is in h */
+        TreeView_Expand(g_tree, h, TVE_EXPAND);
         h = c;
     }
-    TreeView_SelectItem(g_tree, h);
+    if (TreeView_GetSelection(g_tree) != h) TreeView_SelectItem(g_tree, h);
     TreeView_EnsureVisible(g_tree, h);
+    node_ref *hr = item_ref(h);
+    if (hr && strcmp(hr->rel ? hr->rel : "", rel) != 0) files_select_where(0, rel);
+    else if (g_files_active) files_select_pos(-1);
+    show_detail();
+    page_buttons_state();
 }
 
 /* Leave the results for the tree, keeping what was picked selected. */
@@ -10097,9 +10702,11 @@ static void end_search(void)
     SetWindowTextW(g_search, L"");
     KillTimer(g_main, ID_SEARCH_TIMER);
     run_search();
-    SetFocus(g_tree);
     HTREEITEM sel = TreeView_GetSelection(g_tree);
     if (sel) TreeView_EnsureVisible(g_tree, sel);
+    int pos = g_files_active ? ListView_GetNextItem(g_files, -1, LVNI_SELECTED) : -1;
+    if (pos >= 0) ListView_EnsureVisible(g_files, pos, FALSE);
+    SetFocus(pos >= 0 ? g_files : g_tree);
 }
 
 /* ---- Tabs ------------------------------------------------------------------ */
@@ -10185,9 +10792,14 @@ static LRESULT CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_CTLCOLORSTATIC: {
         LRESULT r;
+        HDC dc = (HDC)wp;
+        if ((HWND)lp == g_files_info) { /* how many, and what faded means: in grey */
+            SetTextColor(dc, theme_gray());
+            SetBkColor(dc, g_dark ? DARK_BG : GetSysColor(COLOR_WINDOW));
+            return (LRESULT)(g_dark ? g_br_bg : GetSysColorBrush(COLOR_WINDOW));
+        }
         if (theme_ctlcolor(msg, wp, lp, &r)) return r;
         /* Labels, check boxes and read-only text on the page's own colour. */
-        HDC dc = (HDC)wp;
         SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
         SetBkColor(dc, GetSysColor(COLOR_WINDOW));
         return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
@@ -10488,15 +11100,39 @@ static void layout_pages(void)
     GetClientRect(g_page[0], &rc);
     int w = rc.right, h = rc.bottom, pad = S(8), gap = S(6), iw = w - pad * 2, y, part;
 
-    /* Primary Database: its buttons, then the tree (or the search
-     * results) beside the details of what is selected and its versions. */
+    /* Primary Database, as Explorer: its buttons; the folder's place on
+     * this PC and the search box; the folders, what is in the one selected
+     * (or the search results) and the details of what is selected, side by
+     * side, or the details under the list when the window is narrow. */
     y = pad + flow(g_db_btns, COUNT_OF(g_db_btns), pad, pad, iw) + gap;
-    int body = h - y - pad, tree_w = (w - pad * 3) * 55 / 100, search_h = S(24), below = search_h + gap;
-    mv(g_search, pad, y, tree_w, search_h);
-    mv(g_tree, pad, y + below, tree_w, body - below);
-    mv(g_results, pad, y + below, tree_w, body - below);
-    SetRect(&g_detail_area, pad * 2 + tree_w, y, w - pad, y + body);
-    layout_detail();
+    {
+        int bar_h = S(24), search_w = iw * 30 / 100;
+        if (search_w < S(180)) search_w = S(180);
+        if (search_w > S(340)) search_w = S(340);
+        mv(g_address, pad, y, iw - search_w - gap, bar_h);
+        mv(g_search, pad + iw - search_w, y, search_w, bar_h);
+        y += bar_h + gap;
+        int body = h - y - pad, tree_w = iw * 20 / 100, info_h = font_h(g_font) + S(6);
+        if (tree_w < S(170)) tree_w = S(170);
+        if (tree_w > S(300)) tree_w = S(300);
+        int mid_x = pad + tree_w + gap, mid_w = iw - tree_w - gap, mid_h = body;
+        mv(g_tree, pad, y, tree_w, body);
+        if (iw >= S(980)) {
+            int det_w = iw * 28 / 100;
+            if (det_w < S(280)) det_w = S(280);
+            if (det_w > S(460)) det_w = S(460);
+            mid_w -= det_w + gap;
+            SetRect(&g_detail_area, mid_x + mid_w + gap, y, pad + iw, y + body);
+        } else {
+            mid_h = body * 58 / 100;
+            SetRect(&g_detail_area, mid_x, y + mid_h + gap, pad + iw, y + body);
+        }
+        mv(g_files, mid_x, y, mid_w, mid_h - info_h);
+        mv(g_files_info, mid_x + S(4), y + mid_h - info_h + S(4), mid_w - S(4), info_h - S(4));
+        mv(g_results, mid_x, y, mid_w, mid_h);
+        layout_detail();
+        files_fit_cols();
+    }
 
     /* Next backup */
     int lw = button_width(CTL(ID_NEXT_FOR_LABEL)) - S(18);
@@ -11919,6 +12555,8 @@ static wchar_t *where_text(int64_t source_id, const char *rel)
         free(l.names[i]);
         free(l.paths[i]);
         free(l.labels[i]);
+        free((char *)l.items[i].copies_on);
+        free((char *)l.items[i].copies_on_plugged);
     }
     free(l.items);
     free(l.names);
@@ -11941,7 +12579,7 @@ static void fill_restore(void)
         return;
     }
     wtext t = {NULL, 0, 0};
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref *r = sel_ref();
     if (!r)
         wadd(&t, T(L"Select a backup root, a folder or a file on the Primary Database tab to see which drives restoring it needs.\n"));
     else {
@@ -12023,7 +12661,7 @@ static void page_buttons_state(void)
         if (g_ctl_btn[id - ID_PAGE_FIRST] && CTL(id)) EnableWindow(CTL(id), on);
     if (!on) return;
     int changed = 0;
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref *r = sel_ref();
     const char *rel = r && r->rel ? r->rel : "";
     int st = r ? bd_starred(g_cat, r->source_id, rel) : 0, en = r ? bd_encrypt_marked(g_cat, r->source_id, rel) : 0;
     /* Down while it is starred or encrypted; down and greyed when that
@@ -12122,7 +12760,7 @@ static void show_in_db(int64_t source_id, const char *rel)
     show_tab(TAB_DB);
     if (GetWindowTextLengthW(g_search) > 0) end_search();
     reveal_node(source_id, rel ? rel : "");
-    SetFocus(g_tree);
+    SetFocus(g_files_active ? g_files : g_tree);
 }
 
 /* Which backup root a folder is in, and its path there; 0 if none. */
@@ -12153,6 +12791,8 @@ static int path_to_source(const char *path, int64_t *source_id, char **rel)
         free(l.names[i]);
         free(l.paths[i]);
         free(l.labels[i]);
+        free((char *)l.items[i].copies_on);
+        free((char *)l.items[i].copies_on_plugged);
     }
     free(l.items);
     free(l.names);
@@ -12211,7 +12851,7 @@ static void set_star(int64_t source_id, const char *rel, int on)
 
 static void toggle_star_selected(void)
 {
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref *r = sel_ref();
     if (!r) {
         MessageBoxW(g_main, T(L"Select a backup root, a folder or a file on the Primary Database tab first."), APP_NAME, MB_ICONINFORMATION);
         return;
@@ -12308,7 +12948,7 @@ static void set_encrypt(int64_t source_id, const char *rel, int on)
 
 static void toggle_encrypt_selected(void)
 {
-    node_ref *r = item_ref(TreeView_GetSelection(g_tree));
+    node_ref *r = sel_ref();
     if (!r) {
         MessageBoxW(g_main, T(L"Select a backup root, a folder or a file on the Primary Database tab first."), APP_NAME, MB_ICONINFORMATION);
         return;
@@ -14627,10 +15267,9 @@ static void layout(void)
     RedrawWindow(g_main, &below, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
-/* The tree paints two columns on the right of each row: its state, as a
- * chip, and its size. After the name come a star when it is starred, a
- * lock when it is encrypted, and a root's path in grey. */
-static int g_tree_state_w, g_tree_size_w;
+/* The tree has the folders, as Explorer's: after a name come a star when
+ * it is starred and a lock when it is encrypted; a backup root that is not
+ * on this PC has a red cross on its folder. */
 
 /* The theme's parts and states for a tree row (vssym32.h). */
 enum { TREE_PART_ITEM = 1, TREE_HOT = 2, TREE_SELECTED = 3, TREE_SELECTED_NOFOCUS = 5, TREE_HOT_SELECTED = 6 };
@@ -14713,8 +15352,218 @@ static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int
     return buf;
 }
 
-/* The tree's state and size sit at its right edge: when it gets narrower
- * (a scroll bar appears), every row draws again, or they are cut off. */
+/* What the Status column of the file list says: as the tree's state, but a
+ * file's drives are under Copies on, so it does not name one. */
+static const wchar_t *list_chip(const node_ref *r, wchar_t *buf, size_t cap, int *tone)
+{
+    node_ref t = *r;
+    if (!r->root && r->state == BD_STATE_OFFLINE) t.drive = NULL;
+    return tree_chip(&t, buf, cap, tone);
+}
+
+/* One of Windows' small icons; faded (as Explorer fades a file that is not
+ * there) when asked. */
+static void draw_shell_icon(HDC dc, int icon, int x, int y, int faded)
+{
+    if (!g_sys_il || icon < 0) return;
+    IMAGELISTDRAWPARAMS p;
+    memset(&p, 0, sizeof(p));
+    p.cbSize = sizeof(p);
+    p.himl = g_sys_il;
+    p.i = icon;
+    p.hdcDst = dc;
+    p.x = x;
+    p.y = y;
+    p.rgbBk = CLR_NONE;
+    p.rgbFg = CLR_NONE;
+    p.fStyle = ILD_TRANSPARENT;
+    if (faded) {
+        p.fState = ILS_ALPHA;
+        p.Frame = 100; /* of 255 */
+    }
+    ImageList_DrawIndirect(&p);
+}
+
+/* The drives a copy is on, as a list of names: those plugged in in the
+ * text's colour, the others in grey. Returns where it ended. */
+static int draw_drive_names(HDC dc, RECT r, const wchar_t *all, const wchar_t *plugged, COLORREF on, COLORREF off)
+{
+    int x = r.left;
+    const wchar_t *p = all;
+    while (p && *p && x < r.right) {
+        const wchar_t *e = wcsstr(p, L", ");
+        size_t n = e ? (size_t)(e - p) : wcslen(p);
+        wchar_t name[200];
+        if (n >= COUNT_OF(name)) n = COUNT_OF(name) - 1;
+        wmemcpy(name, p, n);
+        name[n] = 0;
+        int is_on = 0;
+        for (const wchar_t *q = plugged; q && *q;) {
+            const wchar_t *qe = wcsstr(q, L", ");
+            size_t qn = qe ? (size_t)(qe - q) : wcslen(q);
+            if (qn == n && wcsncmp(q, name, n) == 0) {
+                is_on = 1;
+                break;
+            }
+            q = qe ? qe + 2 : NULL;
+        }
+        if (e) wcscat(name, L",");
+        RECT nr = {x, r.top, r.right, r.bottom};
+        draw_str(dc, g_font, is_on ? on : off, name, nr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        x += text_w(dc, g_font, name) + text_w(dc, g_font, L" ");
+        p = e ? e + 2 : NULL;
+    }
+    return x;
+}
+
+/* The cells of one row of the file list, or of a sample in the legend: in
+ * columns of the widths given, from the row's left; a width of 0 is a
+ * column not shown. */
+static void files_paint_cells(HDC dc, RECT row, const node_ref *r, const int *cw, int sel)
+{
+    int rh = row.bottom - row.top, hc_sel = sel && g_hc, gh = font_h(g_font);
+    COLORREF text = hc_sel ? GetSysColor(COLOR_HIGHLIGHTTEXT) : tree_fg();
+    COLORREF sub = hc_sel ? GetSysColor(COLOR_HIGHLIGHTTEXT) : theme_gray();
+    int ch = gh + S(4);
+    if (ch > rh - S(2)) ch = rh - S(2);
+    int cy = row.top + (rh - ch) / 2, x = row.left;
+    for (int c = 0; c < FC_COUNT; c++) {
+        int w = cw[c];
+        if (w <= 0) continue;
+        RECT cell = {x + S(6), row.top, x + w - S(6), row.bottom};
+        x += w;
+        if (cell.right <= cell.left) continue;
+        switch (c) {
+        case FC_NAME: {
+            int iw = S(16), ih = S(16);
+            if (g_sys_il) ImageList_GetIconSize(g_sys_il, &iw, &ih);
+            int icon = r->is_dir ? g_icon_folder : file_icon(r->name ? r->name : L"");
+            if (cell.left + iw <= cell.right) draw_shell_icon(dc, icon, cell.left, row.top + (rh - ih) / 2, r->ghost);
+            RECT nr = {cell.left + iw + S(6), row.top, cell.right, row.bottom};
+            const wchar_t *name = r->name ? r->name : L"";
+            int deleted = r->state == BD_STATE_DELETED;
+            HFONT f = deleted ? g_font_strike : g_font;
+            COLORREF nc = hc_sel ? text : r->ghost || deleted ? theme_gray() : text;
+            /* The star and the lock after the name, which gives them room. */
+            int marks = (r->starred ? text_w(dc, g_font, L"\x2605") + S(5) : 0) + (r->encrypted ? gh * 3 / 4 + S(6) : 0);
+            int nw = text_w(dc, f, name), room = nr.right - nr.left - marks;
+            if (room < S(24)) room = nr.right - nr.left, marks = 0;
+            RECT tr = nr;
+            if (nw > room) tr.right = tr.left + room;
+            draw_str(dc, f, nc, name, tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            if (!marks) break;
+            int mx = tr.left + (nw < room ? nw : room) + S(6);
+            if (r->starred) {
+                RECT sr = {mx, row.top, nr.right, row.bottom};
+                draw_str(dc, g_font, hc_sel ? text : star_color(), L"\x2605", sr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                mx += text_w(dc, g_font, L"\x2605") + S(5);
+            }
+            if (r->encrypted) {
+                int ls = gh * 3 / 4;
+                draw_lock(dc, mx, row.top + (rh - ls) / 2, ls, hc_sel ? text : ui_link());
+            }
+            break;
+        }
+        case FC_STATUS: {
+            wchar_t buf[300];
+            int tone;
+            const wchar_t *chip = list_chip(r, buf, COUNT_OF(buf), &tone);
+            if (chip) draw_chip_fit(dc, cell.left, cy, ch, chip, tone, cell.right - cell.left);
+            break;
+        }
+        case FC_COPIES:
+            if (r->copies_on && *r->copies_on)
+                draw_drive_names(dc, cell, r->copies_on, r->copies_plugged, text, sub);
+            else if (r->older_on && *r->older_on) {
+                wchar_t s[300];
+                swprintf(s, COUNT_OF(s), T(L"older version on %ls"), r->older_on);
+                draw_str(dc, g_font, sub, s, cell, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
+            break;
+        case FC_DATE:
+            if (r->mtime_ns > 0) {
+                wchar_t when[64];
+                format_ns(r->mtime_ns, when, COUNT_OF(when));
+                draw_str(dc, g_font, sub, when, cell, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            break;
+        case FC_TYPE:
+            draw_str(dc, g_font, sub, file_type(r), cell, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            break;
+        case FC_SIZE:
+            if (!r->is_dir) {
+                wchar_t bytes[64];
+                format_bytes(r->size, bytes, COUNT_OF(bytes));
+                draw_str(dc, g_font, sub, bytes, cell, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            }
+            break;
+        }
+    }
+}
+
+/* A row's background: as Explorer's, the accent at its left while the list
+ * has the focus. */
+static void files_paint_bg(HDC dc, RECT row, int sel, int focus)
+{
+    COLORREF bg = tree_bg();
+    if (sel) {
+        if (g_hc) bg = GetSysColor(COLOR_HIGHLIGHT);
+        else if (focus) bg = g_dark ? RGB(0x26, 0x4F, 0x78) : RGB(0xCC, 0xE4, 0xF7);
+        else bg = g_dark ? RGB(0x2E, 0x3B, 0x48) : RGB(0xE5, 0xF0, 0xFA);
+    }
+    fill_color(dc, &row, bg);
+    if (sel && focus && !g_hc) {
+        RECT ab = {row.left + S(1), row.top + S(4), row.left + S(4), row.bottom - S(4)};
+        round_box(dc, &ab, S(3), ui_link(), CLR_INVALID);
+    }
+}
+
+static LRESULT files_custom_draw(NMLVCUSTOMDRAW *cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: {
+        HWND lv = cd->nmcd.hdr.hwndFrom;
+        int pos = (int)cd->nmcd.dwItemSpec;
+        LPARAM idx = cd->nmcd.lItemlParam;
+        if (idx < 0 || idx >= g_file_n) return CDRF_DODEFAULT;
+        RECT row;
+        if (!ListView_GetItemRect(lv, pos, &row, LVIR_BOUNDS)) return CDRF_SKIPDEFAULT;
+        int sel = (ListView_GetItemState(lv, pos, LVIS_SELECTED) & LVIS_SELECTED) != 0, focus = GetFocus() == lv;
+        files_paint_bg(cd->nmcd.hdc, row, sel, focus);
+        int cw[FC_COUNT];
+        for (int c = 0; c < FC_COUNT; c++) cw[c] = ListView_GetColumnWidth(lv, c);
+        files_paint_cells(cd->nmcd.hdc, row, g_file_refs[idx], cw, sel);
+        if ((ListView_GetItemState(lv, pos, LVIS_FOCUSED) & LVIS_FOCUSED) && focus && !sel &&
+            !(SendMessageW(lv, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)) {
+            RECT fr = row;
+            InflateRect(&fr, -S(1), -S(1));
+            SetTextColor(cd->nmcd.hdc, tree_fg());
+            DrawFocusRect(cd->nmcd.hdc, &fr);
+        }
+        return CDRF_SKIPDEFAULT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
+/* Rows as tall as the tree's: a table's rows are as tall as its images,
+ * so it has a list of blank images that tall. */
+static HIMAGELIST g_files_il;
+static void files_metrics(void)
+{
+    if (!g_files) return;
+    int h = font_h(g_font) + S(10);
+    if (h < S(24)) h = S(24);
+    HIMAGELIST il = ImageList_Create(1, h, ILC_COLOR32, 1, 0);
+    ListView_SetImageList(g_files, il, LVSIL_SMALL);
+    if (g_files_il) ImageList_Destroy(g_files_il);
+    g_files_il = il;
+    HWND tip = ListView_GetToolTips(g_files);
+    if (tip) SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, S(480));
+}
+
+/* When the tree gets narrower (a scroll bar appears), every row draws again. */
 static LRESULT CALLBACK tree_size_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
 {
     (void)id;
@@ -14734,74 +15583,24 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
     HDC dc = cd->nmcd.hdc;
     HWND tv = cd->nmcd.hdr.hwndFrom;
     HTREEITEM h = (HTREEITEM)cd->nmcd.dwItemSpec;
-    RECT row = cd->nmcd.rc, cr, tr;
-    GetClientRect(tv, &cr);
+    RECT row = cd->nmcd.rc, tr;
     if (!TreeView_GetItemRect(tv, h, &tr, TRUE)) return;
-    int rh = row.bottom - row.top, right = cr.right - S(8);
-    int show_size = cr.right >= S(380), show_state = cr.right >= S(260);
-    int size_l = show_size ? right - g_tree_size_w : right;
-    int state_l = show_state ? size_l - (show_size ? S(12) : 0) - g_tree_state_w : size_l;
-    if (show_state && state_l < tr.left + S(48)) { /* deep in the tree and narrow: the tooltip says it */
-        show_state = 0;
-        state_l = size_l;
+    int rh = row.bottom - row.top, gh = font_h(g_font);
+    if (r->root && r->away) {
+        int iw = S(16), ih = S(16), cs = S(10);
+        if (g_sys_il) ImageList_GetIconSize(g_sys_il, &iw, &ih);
+        int ix = tr.left - S(3) - iw, iy = row.top + (rh - ih) / 2;
+        draw_state_icon(dc, ix + iw - cs + S(2), iy + ih - cs + S(2), cs, TONE_BAD, GLYPH_CROSS);
     }
-    int cols_l = state_l - S(8);
-    if (cols_l < tr.left + S(24)) cols_l = tr.left + S(24);
-
-    /* A name too long for the room left: cut where the columns start. */
-    int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0, hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
-    COLORREF fg = tree_fg();
-    if (!sel) {
-        if (r->state == BD_STATE_OFFLINE || r->state == BD_STATE_NO_COPY || r->state == BD_STATE_DELETED) fg = theme_gray();
-    }
-    if (tr.right > cols_l) {
-        int ell = text_w(dc, g_font, L"\x2026") + S(2);
-        RECT clip = {cols_l - ell, row.top, row.right, row.bottom};
-        fill_color(dc, &clip, tree_bg());
-        if (sel || hot) {
-            HTHEME th = OpenThemeData(tv, L"TreeView");
-            if (th) {
-                int st = sel ? (GetFocus() == tv ? (hot ? TREE_HOT_SELECTED : TREE_SELECTED) : TREE_SELECTED_NOFOCUS) : TREE_HOT;
-                DrawThemeBackground(th, dc, TREE_PART_ITEM, st, &row, &clip);
-                CloseThemeData(th);
-            }
-        }
-        RECT er = {cols_l - ell, row.top, cols_l, row.bottom};
-        draw_str(dc, g_font, fg, L"\x2026", er, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        tr.right = cols_l;
-    }
-
-    /* After the name: the star, the lock, and where a root is. */
-    int x = tr.right + S(6), gh = font_h(g_font);
-    if (r->starred && x + gh < cols_l) {
-        RECT sr = {x, row.top, cols_l, row.bottom};
+    int x = tr.right + S(6);
+    if (r->starred) {
+        RECT sr = {x, row.top, x + gh * 2, row.bottom};
         draw_str(dc, g_font, star_color(), L"\x2605", sr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         x += text_w(dc, g_font, L"\x2605") + S(5);
     }
-    if (r->encrypted && x + gh < cols_l) {
+    if (r->encrypted) {
         int ls = gh * 3 / 4;
-        x += draw_lock(dc, x, row.top + (rh - ls) / 2, ls, ui_link()) + S(6);
-    }
-    if (r->root && r->path && x + S(24) < cols_l) {
-        RECT pr = {x + S(2), row.top, cols_l, row.bottom};
-        draw_str(dc, g_font, theme_gray(), r->path, pr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
-    }
-
-    /* The columns. */
-    int ch = gh + S(4);
-    if (ch > rh - S(2)) ch = rh - S(2);
-    int cy = row.top + (rh - ch) / 2;
-    if (show_state) {
-        wchar_t buf[300];
-        int tone;
-        const wchar_t *chip = tree_chip(r, buf, COUNT_OF(buf), &tone);
-        if (chip) draw_chip_fit(dc, state_l, cy, ch, chip, tone, g_tree_state_w);
-    }
-    if (show_size && r->size > 0 && (!r->is_dir || r->root)) {
-        wchar_t bytes[64];
-        format_bytes(r->size, bytes, 64);
-        RECT zr = {size_l, row.top, right, row.bottom};
-        draw_str(dc, g_font, sel ? tree_fg() : theme_gray(), bytes, zr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        draw_lock(dc, x, row.top + (rh - ls) / 2, ls, ui_link());
     }
 }
 
@@ -14858,40 +15657,16 @@ static void draw_page_button(const DRAWITEMSTRUCT *di)
 static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
 {
     switch (cd->nmcd.dwDrawStage) {
-    case CDDS_PREPAINT: {
-        /* The State column is as wide as its longest word, in this language. */
-        const wchar_t *probe[] = {T(L"Changed since backup"), T(L"Not backed up"), T(L"Copy damaged"), T(L"May be damaged"),
-                                  T(L"Cannot be found"), T(L"No longer backed up"), T(L"Drive not plugged in")};
-        int w = S(120);
-        for (int i = 0; i < COUNT_OF(probe); i++) {
-            int t = text_w(cd->nmcd.hdc, g_font, probe[i]) + S(12);
-            if (t > w) w = t;
-        }
-        g_tree_state_w = w;
-        g_tree_size_w = text_w(cd->nmcd.hdc, g_font, L"999.9 MB") + S(6);
-        return CDRF_NOTIFYITEMDRAW;
-    }
+    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
     case CDDS_ITEMPREPAINT: {
         node_ref *r = (node_ref *)cd->nmcd.lItemlParam;
         if (!r) return CDRF_DODEFAULT;
         int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
         HFONT font = NULL;
-        switch (r->state) {
-        case BD_STATE_OFFLINE:
-            if (!sel) cd->clrText = theme_gray();
-            break;
-        case BD_STATE_NO_COPY:
-            if (!sel) cd->clrText = theme_gray();
-            if (!r->is_dir) font = g_font_italic;
-            break;
-        case BD_STATE_DELETED:
-            if (!sel) cd->clrText = theme_gray();
-            font = g_font_strike;
-            break;
-        default:
-            break;
-        }
-        if (r->root && r->missing && !sel) cd->clrText = theme_gray();
+        /* Faded, as its icon is: not on this PC, and no drive that is
+         * plugged in has it. Struck through: deleted from its folder. */
+        if ((r->ghost || r->state == BD_STATE_DELETED) && !sel) cd->clrText = theme_gray();
+        if (r->state == BD_STATE_DELETED) font = g_font_strike;
         LRESULT ret = CDRF_NOTIFYPOSTPAINT;
         if (font && !r->root) {
             SelectObject(cd->nmcd.hdc, font);
@@ -14912,44 +15687,50 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
  * Sample rows, drawn by the same code as the list of files, each with a line
  * under it that says what it means. */
 
-static HTREEITEM legend_item(HWND tv, HTREEITEM parent, const wchar_t *text, node_ref *r)
+#define LEGEND_N 10
+static node_ref g_legend_refs[LEGEND_N];
+static const wchar_t *g_legend_says[LEGEND_N];
+
+/* The columns of a sample: the name, its state, the drives its copies are
+ * on, its size. */
+static void legend_cols(HWND lv, int *cw)
 {
-    TVINSERTSTRUCTW t;
-    memset(&t, 0, sizeof(t));
-    t.hParent = parent;
-    t.hInsertAfter = TVI_LAST;
-    t.item.mask = TVIF_TEXT | TVIF_PARAM;
-    t.item.pszText = (LPWSTR)text;
-    t.item.lParam = (LPARAM)r;
-    if (r) {
-        int icon = r->is_dir ? g_icon_folder : file_icon(text);
-        if (icon >= 0) {
-            t.item.mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
-            t.item.iImage = t.item.iSelectedImage = icon;
-        }
-    }
-    return (HTREEITEM)SendMessageW(tv, TVM_INSERTITEMW, 0, (LPARAM)&t);
+    RECT rc;
+    GetClientRect(lv, &rc);
+    int w = rc.right;
+    memset(cw, 0, sizeof(int) * FC_COUNT);
+    cw[FC_SIZE] = S(80);
+    cw[FC_COPIES] = (w - cw[FC_SIZE]) * 22 / 100;
+    cw[FC_STATUS] = (w - cw[FC_SIZE]) * 34 / 100;
+    cw[FC_NAME] = w - cw[FC_SIZE] - cw[FC_COPIES] - cw[FC_STATUS];
 }
 
-/* The line under a sample: plain words, lined up under its name. */
-static LRESULT legend_says_draw(NMTVCUSTOMDRAW *cd)
+/* Even rows are samples, drawn by the same code as the file list; under
+ * each, what it means in plain words, lined up under its name. */
+static LRESULT legend_custom_draw(NMLVCUSTOMDRAW *cd)
 {
-    HWND tv = cd->nmcd.hdr.hwndFrom;
-    HTREEITEM h = (HTREEITEM)cd->nmcd.dwItemSpec, parent = TreeView_GetParent(tv, h);
-    RECT row = cd->nmcd.rc, pr;
-    int x = row.left + S(28);
-    if (parent && TreeView_GetItemRect(tv, parent, &pr, TRUE)) x = pr.left + S(2);
-    fill_color(cd->nmcd.hdc, &row, tree_bg());
-    wchar_t text[400] = L"";
-    TVITEMW it;
-    memset(&it, 0, sizeof(it));
-    it.mask = TVIF_TEXT;
-    it.hItem = h;
-    it.pszText = text;
-    it.cchTextMax = 400;
-    SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&it);
-    RECT tr = {x, row.top, row.right - S(8), row.bottom - S(6)};
-    draw_str(cd->nmcd.hdc, g_font, tree_fg(), text, tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+    if (cd->nmcd.dwDrawStage != CDDS_ITEMPREPAINT) return CDRF_DODEFAULT;
+    HWND lv = cd->nmcd.hdr.hwndFrom;
+    HDC dc = cd->nmcd.hdc;
+    int pos = (int)cd->nmcd.dwItemSpec, i = pos / 2;
+    RECT row, rc;
+    if (!ListView_GetItemRect(lv, pos, &row, LVIR_BOUNDS) || i >= LEGEND_N) return CDRF_SKIPDEFAULT;
+    GetClientRect(lv, &rc);
+    row.right = rc.right;
+    fill_color(dc, &row, tree_bg());
+    if (pos % 2 == 0) {
+        int cw[FC_COUNT];
+        legend_cols(lv, cw);
+        files_paint_cells(dc, row, &g_legend_refs[i], cw, 0);
+    } else {
+        int iw = S(16), ih = S(16);
+        if (g_sys_il) ImageList_GetIconSize(g_sys_il, &iw, &ih);
+        RECT tr = {row.left + S(6) + iw + S(6), row.top, row.right - S(8), row.bottom - S(4)};
+        draw_str(dc, g_font, tree_fg(), g_legend_says[i], tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        RECT ln = {row.left + S(6), row.bottom - 1, row.right - S(6), row.bottom};
+        if (i < LEGEND_N - 1) fill_color(dc, &ln, g_hc ? GetSysColor(COLOR_GRAYTEXT) : ui_border());
+    }
     return CDRF_SKIPDEFAULT;
 }
 
@@ -14957,86 +15738,105 @@ static INT_PTR CALLBACK legend_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     INT_PTR themed;
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
-    static node_ref refs[10];
-    static wchar_t drive[128], path[300];
+    static wchar_t on[128], off[128];
+    static HIMAGELIST il;
     switch (msg) {
     case WM_INITDIALOG: {
-        HWND tv = GetDlgItem(dlg, IDC_LEGEND_TREE);
-        SendMessageW(tv, WM_SETFONT, (WPARAM)g_font, FALSE);
-        TreeView_SetExtendedStyle(tv, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
-        HIMAGELIST il = g_tree ? TreeView_GetImageList(g_tree, TVSIL_NORMAL) : NULL;
-        if (il) TreeView_SetImageList(tv, il, TVSIL_NORMAL);
+        HWND lv = GetDlgItem(dlg, IDC_LEGEND_LIST);
+        SendMessageW(lv, WM_SETFONT, (WPARAM)g_font, FALSE);
+        ListView_SetExtendedListViewStyle(lv, LVS_EX_DOUBLEBUFFER);
         int ih = font_h(g_font) + S(10);
-        TreeView_SetItemHeight(tv, ih < S(24) ? S(24) : ih);
-        /* A drive of theirs to name, if there is one. */
-        swprintf(drive, 128, L"%ls", T(L"Blue"));
+        if (il) ImageList_Destroy(il);
+        il = ImageList_Create(1, ih < S(24) ? S(24) : ih, ILC_COLOR32, 1, 0);
+        ListView_SetImageList(lv, il, LVSIL_SMALL);
+        RECT rc;
+        GetClientRect(lv, &rc);
+        LVCOLUMNW c;
+        memset(&c, 0, sizeof(c));
+        c.mask = LVCF_WIDTH;
+        c.cx = rc.right;
+        SendMessageW(lv, LVM_INSERTCOLUMNW, 0, (LPARAM)&c);
+        /* Drives of theirs to name, if there are: one plugged in, one not. */
+        swprintf(on, 128, L"%ls", T(L"Blue"));
+        swprintf(off, 128, L"%ls", T(L"Red"));
         {
             drive_list dl = load_drives();
-            for (int i = 0; i < dl.n; i++)
-                if (!dl.items[i].secondary && strcmp(dl.items[i].kind, "drive") == 0) {
-                    wchar_t *w = widen(dl.items[i].label);
-                    if (w && *w) swprintf(drive, 128, L"%ls", w);
-                    free(w);
-                    break;
+            int got_on = 0, got_off = 0;
+            for (int i = 0; i < dl.n; i++) {
+                if (dl.items[i].secondary || strcmp(dl.items[i].kind, "drive") != 0 || dl.items[i].lost_ms) continue;
+                wchar_t *w = widen(dl.items[i].label);
+                if (w && *w) {
+                    if (dl.items[i].connected && !got_on) got_on = 1, swprintf(on, 128, L"%ls", w);
+                    else if (!dl.items[i].connected && !got_off) got_off = 1, swprintf(off, 128, L"%ls", w);
                 }
+                free(w);
+            }
             free(dl.items);
+            if (wcscmp(on, off) == 0) swprintf(off, 128, L"%ls", wcscmp(on, T(L"Red")) ? T(L"Red") : T(L"Blue"));
         }
-        swprintf(path, 300, L"%ls", L"C:\\Users\\Documents");
-        memset(refs, 0, sizeof(refs));
-        struct { const wchar_t *name, *says; } rows[10] = {
+        memset(g_legend_refs, 0, sizeof(g_legend_refs));
+        struct { const wchar_t *name, *says; } rows[LEGEND_N] = {
             {T(L"Letter.docx"), T(L"No state: a good copy is on a drive that is plugged in.")},
-            {T(L"Taxes 2025.pdf"), T(L"Name in grey: its copy is on a drive that is not plugged in.")},
-            {T(L"Notes.txt"), T(L"Name in grey italics: it has no copy yet.")},
+            {T(L"Taxes 2025.pdf"), T(L"Its copy is on a drive that is not plugged in: in grey under Copies on.")},
+            {T(L"Thesis.docx"), T(L"Faded: not on this PC, and no drive that is plugged in has it.")},
+            {T(L"Notes.txt"), T(L"It has no copy yet: the next backup copies it.")},
             {T(L"Budget.xlsx"), T(L"Only an older version is backed up; the next backup copies it.")},
             {T(L"Holiday.jpg"), T(L"Its copy on the plugged-in drive is missing or damaged; back up again to fix it.")},
             {T(L"Old plan.docx"), T(L"Name struck through: gone from its folder; its copies are still kept.")},
             {T(L"Song.mp3"), T(L"A bit-rot scan found it changed while its size and time stayed the same.")},
             {T(L"Photos"), T(L"A folder: how many files in it have a good copy on a plugged-in drive.")},
             {T(L"Passport.pdf"), T(L"Star: also copied to your extra places. Lock: encrypted wherever it is copied.")},
-            {T(L"Documents"), T(L"A backup root that was not there at the last scan, and where it was.")},
         };
-        refs[0].state = BD_STATE_AVAILABLE; refs[0].size = 24900;
-        refs[1].state = BD_STATE_OFFLINE; refs[1].size = 182000; refs[1].drive = drive;
-        refs[2].state = BD_STATE_NO_COPY; refs[2].size = 3100;
-        refs[3].state = BD_STATE_AVAILABLE_OLDER; refs[3].size = 48200;
-        refs[4].state = BD_STATE_BAD; refs[4].size = 2400000;
-        refs[5].state = BD_STATE_DELETED; refs[5].size = 19700;
-        refs[6].state = BD_STATE_AVAILABLE; refs[6].damaged = 1; refs[6].size = 5300000;
-        refs[7].state = BD_STATE_AVAILABLE; refs[7].is_dir = 1; refs[7].files_total = 10; refs[7].files_available = 3;
-        refs[8].state = BD_STATE_AVAILABLE; refs[8].starred = 1; refs[8].encrypted = 1; refs[8].size = 310000;
-        refs[9].state = BD_STATE_AVAILABLE; refs[9].is_dir = 1; refs[9].root = 1; refs[9].missing = 1; refs[9].path = path;
-        for (int i = 0; i < 10; i++) {
-            HTREEITEM it = legend_item(tv, TVI_ROOT, rows[i].name, &refs[i]);
-            legend_item(tv, it, rows[i].says, NULL);
-            TreeView_Expand(tv, it, TVE_EXPAND);
+        node_ref *r = g_legend_refs;
+        r[0].state = BD_STATE_AVAILABLE; r[0].size = 24900; r[0].copies_on = r[0].copies_plugged = on;
+        r[1].state = BD_STATE_OFFLINE; r[1].size = 182000; r[1].copies_on = off;
+        r[2].state = BD_STATE_OFFLINE; r[2].size = 1250000; r[2].copies_on = off; r[2].away = r[2].ghost = 1;
+        r[3].state = BD_STATE_NO_COPY; r[3].size = 3100;
+        r[4].state = BD_STATE_AVAILABLE_OLDER; r[4].size = 48200; r[4].older_on = on;
+        r[5].state = BD_STATE_BAD; r[5].size = 2400000; r[5].copies_on = r[5].copies_plugged = on;
+        r[6].state = BD_STATE_DELETED; r[6].size = 19700; r[6].copies_on = r[6].copies_plugged = on;
+        r[7].state = BD_STATE_AVAILABLE; r[7].damaged = 1; r[7].size = 5300000; r[7].copies_on = r[7].copies_plugged = on;
+        r[8].state = BD_STATE_AVAILABLE; r[8].is_dir = 1; r[8].files_total = 10; r[8].files_available = 3; r[8].copies_on = r[8].copies_plugged = on;
+        r[9].state = BD_STATE_AVAILABLE; r[9].starred = 1; r[9].encrypted = 1; r[9].size = 310000; r[9].copies_on = r[9].copies_plugged = on;
+        for (int i = 0; i < LEGEND_N; i++) {
+            r[i].name = (wchar_t *)rows[i].name;
+            g_legend_says[i] = rows[i].says;
+            /* The words of each row, for screen readers: the rows are drawn. */
+            for (int k = 0; k < 2; k++) {
+                LVITEMW it;
+                memset(&it, 0, sizeof(it));
+                it.mask = LVIF_TEXT;
+                it.iItem = i * 2 + k;
+                it.pszText = (wchar_t *)(k ? rows[i].says : rows[i].name);
+                SendMessageW(lv, LVM_INSERTITEMW, 0, (LPARAM)&it);
+            }
         }
-        TreeView_SelectSetFirstVisible(tv, TreeView_GetRoot(tv));
-        SetDlgItemTextW(dlg, IDC_LEGEND_TEXT, T(L"Each file and folder shows its name, then on the right its state and its size. Point at a "
-                                                L"name for all of it in words; a file's versions are in its details."));
+        ListView_SetColumnWidth(lv, 0, LVSCW_AUTOSIZE_USEHEADER); /* as wide as it is, less its scroll bar */
+        SetDlgItemTextW(dlg, IDC_LEGEND_TEXT, T(L"Each file and folder shows its name, its state, the drives its copies are on (in grey when "
+                                                L"not plugged in), when it was changed, its type and its size. Point at a name for all of it "
+                                                L"in words; a file's versions are in its details."));
         SetFocus(GetDlgItem(dlg, IDCANCEL));
         return FALSE;
     }
     case WM_NOTIFY: {
         NMHDR *nh = (NMHDR *)lp;
-        if (nh->idFrom != IDC_LEGEND_TREE) break;
+        if (nh->idFrom != IDC_LEGEND_LIST) break;
         if (nh->code == NM_CUSTOMDRAW) {
-            NMTVCUSTOMDRAW *cd = (NMTVCUSTOMDRAW *)lp;
-            LRESULT r = cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT && !cd->nmcd.lItemlParam ? legend_says_draw(cd) : tree_custom_draw(cd);
-            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, r);
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, legend_custom_draw((NMLVCUSTOMDRAW *)lp));
             return TRUE;
         }
-        if (nh->code == TVN_ITEMEXPANDINGW) {
-            /* The lines under the samples stay open. */
-            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, ((NMTREEVIEWW *)lp)->action == TVE_COLLAPSE);
-            return TRUE;
-        }
-        if (nh->code == TVN_SELCHANGINGW) {
+        if (nh->code == LVN_ITEMCHANGING) {
             /* Nothing to choose here. */
-            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, TRUE);
+            NMLISTVIEW *ch = (NMLISTVIEW *)lp;
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, (ch->uChanged & LVIF_STATE) && (ch->uNewState & (LVIS_SELECTED | LVIS_FOCUSED)) ? TRUE : FALSE);
             return TRUE;
         }
         break;
     }
+    case WM_DESTROY:
+        if (il) ImageList_Destroy(il);
+        il = NULL;
+        break;
     case WM_COMMAND:
         if (LOWORD(wp) == IDCANCEL || LOWORD(wp) == IDOK) {
             EndDialog(dlg, 0);
@@ -15097,12 +15897,42 @@ static void create_children(HWND hwnd)
     tree_icons_init();
     tree_metrics();
 
+    /* What is in the folder selected in the tree, as Explorer's details view. */
+    g_files = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0, 0, 10, 10,
+                              g_page[TAB_DB], (HMENU)ID_FILES, g_inst, NULL);
+    SendMessageW(g_files, WM_SETFONT, (WPARAM)g_font, TRUE);
+    ListView_SetExtendedListViewStyle(g_files, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
+    SetWindowSubclass(g_files, files_proc, 7, 0);
+    files_metrics();
+    {
+        const wchar_t *cols[FC_COUNT] = {T(L"Name"), T(L"Status"), T(L"Copies on"), T(L"Date modified"), T(L"Type"), T(L"Size")};
+        for (int i = 0; i < FC_COUNT; i++) {
+            LVCOLUMNW c;
+            memset(&c, 0, sizeof(c));
+            c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+            c.fmt = i == FC_SIZE ? LVCFMT_RIGHT : LVCFMT_LEFT;
+            c.pszText = (wchar_t *)cols[i];
+            c.cx = S(100);
+            SendMessageW(g_files, LVM_INSERTCOLUMNW, i, (LPARAM)&c);
+        }
+    }
+    g_files_info = CreateWindowExW(0, WC_STATICW, L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 0, 0, 10, 10,
+                                   g_page[TAB_DB], (HMENU)ID_FILES_INFO, g_inst, NULL);
+    SendMessageW(g_files_info, WM_SETFONT, (WPARAM)g_font, TRUE);
+
+    /* The folder's place on this PC, as Explorer's address bar (it can be copied). */
+    g_address = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_READONLY, 0, 0,
+                                10, 10, g_page[TAB_DB], (HMENU)ID_ADDRESS, g_inst, NULL);
+    SendMessageW(g_address, WM_SETFONT, (WPARAM)g_font, TRUE);
+    SetWindowPos(g_address, CTL(ID_DB_EXPORT), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
     g_search = CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10,
                                g_page[TAB_DB], (HMENU)ID_SEARCH, g_inst, NULL);
     SendMessageW(g_search, WM_SETFONT, (WPARAM)g_font, TRUE);
     SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)T(L"Search files and folders by name"));
-    /* Tab reaches the search box before the tree under it. */
-    SetWindowPos(g_search, CTL(ID_DB_EXPORT), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    /* Tab reaches the place and the search box before the tree under them. */
+    SetWindowPos(g_search, g_address, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     g_results = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0, 0,
                                 10, 10, g_page[TAB_DB], (HMENU)ID_RESULTS, g_inst, NULL);
@@ -15198,6 +16028,10 @@ static void enter_or_esc(int esc)
         if (g_hit_n) end_search();
         return;
     }
+    if (f == g_files) {
+        files_open(ListView_GetNextItem(g_files, -1, LVNI_SELECTED));
+        return;
+    }
     wchar_t cls[64];
     int id = GetDlgCtrlID(f);
     if (id >= ID_PAGE_FIRST && id < ID_PAGE_LAST && f == CTL(id) && GetClassNameW(f, cls, 64) && wcscmp(cls, WC_LISTVIEWW) == 0) {
@@ -15280,6 +16114,7 @@ static void dpi_changed(HWND hwnd, int dpi, const RECT *want)
         r.to[3] = g_font_bold;
         EnumChildWindows(hwnd, refont_child, (LPARAM)&r);
         tree_metrics();
+        files_metrics();
         local_metrics();
         if (g_tip) {
             SendMessageW(g_tip, WM_SETFONT, (WPARAM)g_font, FALSE);
@@ -15501,10 +16336,11 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             DestroyMenu(pm);
             return 0;
         }
-        if (((HWND)wp == g_tree || (HWND)wp == g_list) && g_cat && !g_busy && !g_ui_depth) {
+        if (((HWND)wp == g_tree || (HWND)wp == g_list || (HWND)wp == g_files) && g_cat && !g_busy && !g_ui_depth) {
             int x = (int)(short)LOWORD(lp), y = (int)(short)HIWORD(lp);
             g_ui_depth++;
             if ((HWND)wp == g_tree) tree_context_menu(x, y);
+            else if ((HWND)wp == g_files) files_context_menu(x, y);
             else list_context_menu(x, y);
             g_ui_depth--;
             start_next_job();
@@ -15668,8 +16504,61 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             return 0;
         }
+        if (nh->idFrom == ID_FILES && nh->hwndFrom == g_files) {
+            switch (nh->code) {
+            case NM_CUSTOMDRAW: return files_custom_draw((NMLVCUSTOMDRAW *)lp);
+            case LVN_ITEMCHANGED: {
+                NMLISTVIEW *lv = (NMLISTVIEW *)lp;
+                if (!g_files_filling && (lv->uChanged & LVIF_STATE) && ((lv->uNewState ^ lv->uOldState) & LVIS_SELECTED) && !g_filesel_posted) {
+                    g_filesel_posted = 1;
+                    PostMessageW(hwnd, WM_APP_FILESEL, 0, 0);
+                }
+                return 0;
+            }
+            case NM_DBLCLK: files_open(((NMITEMACTIVATE *)lp)->iItem); return 0;
+            case NM_SETFOCUS:
+            case NM_KILLFOCUS:
+                /* As Explorer's details pane: what is selected in the part
+                 * that has the focus. */
+                InvalidateRect(g_files, NULL, FALSE);
+                if (nh->code == NM_SETFOCUS && !g_files_active && files_selected()) {
+                    g_files_active = 1;
+                    if (!g_busy) show_detail();
+                    g_page_stale[TAB_RESTORE] = 1;
+                    page_buttons_state();
+                }
+                return 0;
+            case LVN_KEYDOWN:
+                if (((NMLVKEYDOWN *)lp)->wVKey == VK_BACK) files_up();
+                return 0;
+            case LVN_COLUMNCLICK: {
+                int col = ((NMLISTVIEW *)lp)->iSubItem;
+                if (col == g_files_sort) g_files_desc = !g_files_desc;
+                else {
+                    g_files_sort = col;
+                    g_files_desc = col == FC_DATE; /* newest first, as Explorer */
+                }
+                files_sort();
+                return 0;
+            }
+            case LVN_GETINFOTIPW: {
+                NMLVGETINFOTIPW *tip = (NMLVGETINFOTIPW *)lp;
+                node_ref *r = files_ref(tip->iItem);
+                if (r && r->tip && tip->pszText && tip->cchTextMax > 0) lstrcpynW(tip->pszText, r->tip, tip->cchTextMax);
+                return 0;
+            }
+            }
+            return 0;
+        }
         if (nh->idFrom == ID_TREE) {
             if (nh->code == NM_CUSTOMDRAW) return tree_custom_draw((NMTVCUSTOMDRAW *)lp);
+            if (nh->code == NM_SETFOCUS && g_files_active) {
+                g_files_active = 0; /* the folder's details again */
+                if (!g_busy) show_detail();
+                g_page_stale[TAB_RESTORE] = 1;
+                page_buttons_state();
+                return 0;
+            }
             if (nh->code == TVN_ITEMEXPANDINGW) {
                 NMTREEVIEWW *tv = (NMTREEVIEWW *)lp;
                 node_ref *r = (node_ref *)tv->itemNew.lParam;
@@ -15680,6 +16569,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 return FALSE;
             }
             if (nh->code == TVN_SELCHANGEDW) {
+                if (g_tree_building) return 0; /* rebuild_tree fills the list itself */
+                fill_files((node_ref *)((NMTREEVIEWW *)lp)->itemNew.lParam, 0);
                 if (!g_busy) show_detail();
                 g_page_stale[TAB_RESTORE] = 1;
                 page_buttons_state();
@@ -15706,6 +16597,13 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         free(text);
         return 0;
     }
+    case WM_APP_FILESEL:
+        g_filesel_posted = 0;
+        g_files_active = files_selected() != NULL;
+        if (!g_busy) show_detail();
+        g_page_stale[TAB_RESTORE] = 1;
+        page_buttons_state();
+        return 0;
     case WM_APP_SETS: {
         sets_msg *m = (sets_msg *)lp;
         if (!g_figs) g_figs = calloc(1, sizeof(*g_figs));

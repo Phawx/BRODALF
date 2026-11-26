@@ -8,6 +8,8 @@
 #   Drives\Gray                                  one marked broken afterwards
 #   Cloud\OneDrive                               an extra place for starred files
 #   My backups.brodalf                           the database
+#   Empty.brodalf                                a database with nothing in it yet
+#   Damaged.brodalf                              a copy of the database, damaged
 # and two virtual disks under C:\BrodalfVHD, both left unplugged:
 #   red.vhdx    a backup drive (R:), backed up to, then unplugged
 #   spare.vhdx  a disk BRODALF has never seen (N:)
@@ -124,6 +126,12 @@ New-File "$photos\2024\Birthday\Birthday party.mp4" 300MB
 Run-Cli @("scan", $Db, "--bitrot") @(0, 2)
 Run-Cli @("status", $Db) @(0, 2)
 Remove-Item Env:\BRODALF_PASSPHRASE
+
+# ---- A database with nothing in it, and a damaged one ----------------------------
+Run-Cli @("new", (Join-Path $Root "Empty.brodalf"))
+$bad = [System.IO.File]::ReadAllBytes($Db)
+for ($i = [int]($bad.Length / 3); $i -lt [int]($bad.Length * 2 / 3); $i++) { $bad[$i] = [byte]($Rng.Next(256)) }
+[System.IO.File]::WriteAllBytes((Join-Path $Root "Damaged.brodalf"), $bad)
 
 Diskpart "detach-red-now.txt" @("select vdisk file=`"$red`"", "detach vdisk")
 

@@ -447,12 +447,14 @@ static class Shots {
 
     // ---- The app -------------------------------------------------------------
 
-    static void Registry(string lastTab) {
+    static void Registry(string lastTab) { Registry(lastTab, db); }
+
+    static void Registry(string lastTab, string lastDb) {
         using (RegistryKey k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\BRODALF")) {
             k.SetValue("Language", lang, RegistryValueKind.String);
             k.SetValue("Appearance", theme == "dark" ? 2 : 1, RegistryValueKind.DWord);
             k.SetValue("LastTab", int.Parse(lastTab), RegistryValueKind.DWord);
-            k.SetValue("LastCatalog", db, RegistryValueKind.String);
+            k.SetValue("LastCatalog", lastDb, RegistryValueKind.String);
             k.DeleteValue("Interrupted", false);
         }
         try { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\BRODALF\IgnoredDisks"); } catch (Exception) { }
@@ -538,6 +540,58 @@ static class Shots {
         WaitIdle("before-" + Slug(id), 30000);
         IntPtr b = Control(Id(id), null);
         Post(main, WM_COMMAND, Id(id) | (0 /* BN_CLICKED */ << 16), b);
+    }
+
+    // A button pressed at once, even while a job runs (Stop).
+    static void ClickNow(string id) {
+        IntPtr b = Control(Id(id), null);
+        Post(main, WM_COMMAND, Id(id) | (0 /* BN_CLICKED */ << 16), b);
+    }
+
+    // The right-click menu of a control, opened from the keyboard (Shift+F10 sends the same message).
+    static void ContextMenu(string name, string id, string cls) {
+        try {
+            WaitIdle(name, 30000);
+            Foreground(main);
+            IntPtr c = Control(Id(id), cls);
+            if (c == IntPtr.Zero) { Log("no control for " + name); return; }
+            N.PostMessage(main, 0x007B /* WM_CONTEXTMENU */, c, (IntPtr)(-1));
+            Stopwatch sw = Stopwatch.StartNew();
+            while (Windows("#32768").Count == 0 && sw.ElapsedMilliseconds < 5000) Thread.Sleep(100);
+            if (Windows("#32768").Count == 0) { Log("no right-click menu for " + name); return; }
+            ShotWithMenus(name);
+            CloseMenus();
+            WaitIdle(name + "-after", 10000);
+        } catch (Exception e) { Log(name + " failed: " + e.Message); CloseMenus(); }
+    }
+
+    // Every tab, one screenshot each.
+    static readonly string[] tabNames = { "primary-database", "next-backup", "local-backups", "starred", "encryption", "restore" };
+    static void AllTabs(string prefix) {
+        for (int i = 0; i < 6; i++) { Tab(i); Shot(main, prefix + "tab-" + (i + 1) + "-" + tabNames[i]); }
+        Tab(0);
+    }
+
+    // Start BRODALF on a database (or none), capture what it says on the way in, close what it asks.
+    static void OpenAndCapture(string name, string arg, string lastDb) {
+        try {
+            Registry("0", lastDb);
+            Start(arg);
+            Stopwatch sw = Stopwatch.StartNew();
+            int n = 0;
+            while (sw.ElapsedMilliseconds < 25000 && n < 4) {
+                IntPtr d = WaitDialog(4000, IntPtr.Zero);
+                if (d == IntPtr.Zero) break;
+                Shot(d, name + (n == 0 ? "" : "-then-" + (n + 1)));
+                if (n == 0) ShotTogether(main, d, name + "-over-the-window");
+                n++;
+                Dismiss(d);
+                Thread.Sleep(800);
+            }
+            WaitIdle(name, 30000);
+            Shot(main, name + "-the-window-after");
+        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+        Stop();
     }
 
     // A command that opens a dialog: capture it and what follows it (up to
@@ -798,6 +852,28 @@ static class Shots {
         MenuBar("no-database-", 1);
         Stop();
 
+        // 1b. What goes wrong on the way in: the last database was moved
+        //     away, a database file that is damaged.
+        string here = Path.GetDirectoryName(db);
+        OpenAndCapture("error-last-database-moved-away", null, Path.Combine(here, "Moved away.brodalf"));
+        OpenAndCapture("error-a-damaged-database-file", Path.Combine(here, "Damaged.brodalf"), db);
+
+        // 1c. A database with nothing in it yet: every tab empty.
+        string empty = Path.Combine(here, "Empty.brodalf");
+        if (File.Exists(empty)) {
+            Registry("0", empty);
+            Start(empty);
+            WaitIdle("empty-on-opening", 60000);
+            Foreground(main);
+            AllTabs("empty-");
+            ButtonMenu("empty-button-back-up", "ID_BTN_BACKUP", false);
+            ButtonMenu("empty-button-check-drive", "ID_BTN_CHECK", false);
+            ButtonMenu("empty-button-drives", "ID_BTN_DRIVES", false);
+            DialogStep("empty-view-status-of-every-drive", "ID_M_STATUS_ALL", false);
+            DialogStep("empty-view-files-short-of-copies", "ID_M_RISK", false);
+            Stop();
+        } else Log("no empty database at " + empty);
+
         // 2. Started with the sample database.
         Registry("0");
         Start(db);
@@ -814,6 +890,9 @@ static class Shots {
             SetText(search, "");
             Thread.Sleep(1000);
         }
+        if (TreeSelect("Documents", "Letters")) ContextMenu("tab-1-right-click-a-folder", "ID_TREE", "SysTreeView32");
+        if (TreeSelect("Photos", "2023", "Holiday", "IMG_0001")) ContextMenu("tab-1-right-click-a-changed-file", "ID_TREE", "SysTreeView32");
+        Tab(0);
         string[] tabs = { "primary-database", "next-backup", "local-backups", "starred", "encryption", "restore" };
         for (int i = 1; i < 6; i++) {
             Tab(i);
@@ -855,6 +934,10 @@ static class Shots {
         if (TreeSelect("Photos")) DialogStep("tools-change-where-a-root-is", "ID_M_RELOCATE", false);
         if (TreeSelect("Photos", "2024")) DialogStep("tools-encrypt-what-is-selected", "ID_M_ENCRYPT", false);
         if (TreeSelect("Documents", "Letters")) DialogStep("tools-restore-what-is-selected", "ID_M_RESTORE", false);
+        DialogStep("file-open-a-database", "ID_M_OPEN_DB", false);
+        DialogStep("tools-check-a-drive", "ID_M_CHECK", false);
+        DialogStep("tools-all-disks", "ID_M_DRIVES", false);
+        DialogStep("tools-restore-deleted-files", "ID_M_RESTORE_DELETED", false);
         DialogStep("help-what-the-file-list-shows", "ID_M_LEGEND", false);
         DialogStep("help-about", "ID_M_ABOUT", false);
 
@@ -867,6 +950,7 @@ static class Shots {
         ComboSelect("ID_NEXT_FOR", "Blue");
         DialogStep("tab-2-files-changed-on-it", "ID_NEXT_CHANGED", true);
         DialogStep("tab-2-short-of-copies", "ID_NEXT_RISK", true);
+        DialogStep("tab-2-back-up-to-blue-the-preview", "ID_NEXT_BACKUP", true);
         Tab(2);
         if (ListSelect("ID_LOCAL_LIST", "Blue")) {
             DialogStep("tab-3-name-and-where-it-is-kept", "ID_LOCAL_EDIT", true);
@@ -881,6 +965,7 @@ static class Shots {
             DialogStep("tab-4-change-its-size-limit", "ID_PLACE_LIMIT", true);
             DialogStep("tab-4-description-and-details", "ID_PLACE_EDIT", true);
             DialogStep("tab-4-mark-lost", "ID_PLACE_LOST", true);
+            DialogStep("tab-4-back-up-to-it-the-preview", "ID_PLACE_BACKUP", true);
         }
         DialogStep("tab-4-add-an-extra-place", "ID_PLACE_ADD", true);
         Tab(4);
@@ -888,7 +973,12 @@ static class Shots {
         DialogStep("tab-5-recovery-sheet", "ID_ENC_SHEET", true);
         DialogStep("tab-5-encrypt-the-database-file", "ID_ENC_CATALOG", true);
         DialogStep("tab-5-set-up-an-encrypted-drive", "ID_ENC_DRIVE", true);
+        DialogStep("tab-5-encrypt-a-folder", "ID_ENC_PICK", true);
+        WrongPassphrase();
         ChangePassphrase();
+        Tab(5);
+        DialogStep("tab-6-restore-everything", "ID_REST_ALL", true);
+        DialogStep("tab-6-restore-deleted-files", "ID_REST_DELETED", true);
         Tab(0);
 
         // Plugging in: the red drive (known, not plugged in so far), then a new disk.
@@ -921,6 +1011,16 @@ static class Shots {
         // Then a backup to every plugged-in drive, to show the window while a job runs.
         BackupAll();
 
+        // A full check of the red drive, now that it holds more, to see one running.
+        Tab(2);
+        if (ListSelect("ID_LOCAL_LIST", "Red")) JobStep("full-check-of-red", delegate { Click("ID_LOCAL_CHECK"); });
+        // A job stopped with the Stop button.
+        Tab(2);
+        if (ListSelect("ID_LOCAL_LIST", "Blue")) StoppedJob("check-of-blue-stopped");
+        // The red drive pulled out while it is being checked.
+        Tab(2);
+        if (ListSelect("ID_LOCAL_LIST", "Red")) PulledOut("red-pulled-out-during-a-check");
+
         // A restore into a folder that already holds a different IMG_0001.jpg.
         Restore("restore-photos", @"C:\BrodalfRestore", "Photos");
         DialogStep("after-restore-files-left-alone", "ID_M_CONFLICTS", false);
@@ -929,6 +1029,90 @@ static class Shots {
         // A bit-rot scan, to show a scan running.
         JobStep("bit-rot-scan", delegate { Command("ID_M_BITROT"); });
         Stop();
+
+        // 4. A backup root that is not where it was (moved, or its drive not plugged in).
+        string projects = Path.Combine(Path.GetDirectoryName(db), @"Data\Projects");
+        string moved = projects + " (moved)";
+        try {
+            if (Directory.Exists(projects)) Directory.Move(projects, moved);
+            OpenAndCapture("error-a-backup-root-is-missing", db, db);
+        } catch (Exception e) { Log("missing-root step failed: " + e.Message); }
+        try { if (Directory.Exists(moved)) Directory.Move(moved, projects); } catch (Exception) { }
+    }
+
+    static void WrongPassphrase() {
+        try {
+            Click("ID_ENC_PASS");
+            IntPtr d = WaitDialog(8000, IntPtr.Zero);
+            if (d == IntPtr.Zero) { Log("no passphrase dialog"); return; }
+            if (!IsPassphrase(d)) { Dismiss(d); return; }
+            SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), "not the passphrase");
+            Thread.Sleep(300);
+            Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+            WaitGone(d, 5000);
+            IntPtr e = WaitDialog(6000, IntPtr.Zero);
+            for (int i = 1; i <= 3 && e != IntPtr.Zero; i++) {
+                Shot(e, "tab-5-wrong-passphrase" + (i > 1 ? "-" + i : ""));
+                Dismiss(e);
+                e = WaitDialog(1500, IntPtr.Zero);
+            }
+            WaitIdle("after-wrong-passphrase", 20000);
+        } catch (Exception e) { Log("wrong passphrase step failed: " + e.Message); }
+    }
+
+    // Start a check, capture it running, press Stop, capture what it says.
+    static void StoppedJob(string name) {
+        try {
+            WaitIdle("before-" + name, 30000);
+            Foreground(main);
+            Click("ID_LOCAL_CHECK");
+            IntPtr d = NextDialogOrBusy(5000);
+            for (int i = 1; i <= 3 && d != IntPtr.Zero; i++) {
+                if (IsPassphrase(d)) { SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass); Post(d, WM_COMMAND, IDOK, IntPtr.Zero); }
+                else { Shot(d, name + "-question-" + i); if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero); else Dismiss(d); }
+                WaitGone(d, 5000);
+                d = NextDialogOrBusy(3000);
+            }
+            if (!Busy()) { Log(name + ": over before Stop could be pressed"); Shot(main, name + "-over-too-soon"); return; }
+            Thread.Sleep(150);
+            Shot(main, name + "-running");
+            ClickNow("ID_BTN_STOP");
+            Thread.Sleep(400);
+            Shot(main, name + "-stopping");
+            WaitIdle(name, 60000);
+            Shot(main, name + "-after");
+        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+    }
+
+    // Start a check of the selected drive (the red one), unplug it under the check.
+    static void PulledOut(string name) {
+        try {
+            WaitIdle("before-" + name, 30000);
+            Foreground(main);
+            Click("ID_LOCAL_CHECK");
+            IntPtr d = NextDialogOrBusy(5000);
+            for (int i = 1; i <= 3 && d != IntPtr.Zero; i++) {
+                if (IsPassphrase(d)) { SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass); Post(d, WM_COMMAND, IDOK, IntPtr.Zero); }
+                else { if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero); else Dismiss(d); }
+                WaitGone(d, 5000);
+                d = NextDialogOrBusy(3000);
+            }
+            Diskpart("detach-red.txt");
+            WaitDrive(@"R:\", false, 15000);
+            Thread.Sleep(1500);
+            Shot(main, name);
+            WaitIdle(name, 120000);
+            Shot(main, name + "-after");
+            Tab(2);
+            Shot(main, "tab-3-red-unplugged-again");
+            ListSelect("ID_LOCAL_LIST", "Red");
+            Shot(main, "tab-3-red-unplugged-selected");
+            Tab(1);
+            ComboSelect("ID_NEXT_FOR", "Red");
+            Shot(main, "tab-2-next-backup-for-red-unplugged");
+            Tab(0);
+            Shot(main, "tab-1-with-red-unplugged");
+        } catch (Exception e) { Log(name + " failed: " + e.Message); }
     }
 
     static void ChangePassphrase() {
@@ -1043,7 +1227,7 @@ static class Shots {
     static void Running(string name) {
         Stopwatch sw = Stopwatch.StartNew();
         int shots = 0;
-        long[] at = { 300, 1500, 4000 };
+        long[] at = { 150, 1200, 3500 };
         while (sw.ElapsedMilliseconds < 60000 && shots < at.Length) {
             if (TopDialog() != IntPtr.Zero) break;
             if (!Busy() && sw.ElapsedMilliseconds > 1500) break;

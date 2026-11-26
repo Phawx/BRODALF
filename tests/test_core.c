@@ -1809,6 +1809,101 @@ static void test_lost_drive(void)
     bd_catalog_close(cat);
 }
 
+typedef struct { const char *name; char on[256], plugged[256], older[256]; int64_t backed_up, mtime; int found; } where_ctx;
+
+static int find_where(void *ctx, const bd_node_info *n)
+{
+    where_ctx *w = ctx;
+    if (strcmp(n->name, w->name) != 0) return 0;
+    snprintf(w->on, sizeof(w->on), "%s", n->copies_on ? n->copies_on : "(null)");
+    snprintf(w->plugged, sizeof(w->plugged), "%s", n->copies_on_plugged ? n->copies_on_plugged : "(null)");
+    snprintf(w->older, sizeof(w->older), "%s", n->older_on ? n->older_on : "(null)");
+    w->backed_up = n->files_backed_up;
+    w->mtime = n->mtime_ns;
+    w->found = 1;
+    return 1;
+}
+
+static where_ctx where_of(bd_catalog *cat, int64_t source, int64_t parent, const char *name)
+{
+    where_ctx w;
+    memset(&w, 0, sizeof(w));
+    w.name = name;
+    bd_list_children(cat, source, parent, find_where, &w);
+    return w;
+}
+
+static int source_where(void *ctx, const bd_source_info *s)
+{
+    where_ctx *w = ctx;
+    snprintf(w->on, sizeof(w->on), "%s", s->copies_on ? s->copies_on : "(null)");
+    snprintf(w->plugged, sizeof(w->plugged), "%s", s->copies_on_plugged ? s->copies_on_plugged : "(null)");
+    w->backed_up = s->files_backed_up;
+    w->found = 1;
+    return 1;
+}
+
+/* Where each file's copies are: the drives named for a file, a folder and
+ * a whole root, which of them are plugged in, and where an older version
+ * is when the newest has no copy. */
+static void test_copies_on(void)
+{
+    write_file(at("co/Src/one.txt"), "one");
+    write_file(at("co/Src/sub/two.txt"), "two");
+    write_file(at("co/Src/sub/three.txt"), "three");
+    bd_mkdirs(at("co/blue"));
+    bd_mkdirs(at("co/red"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("co/c.brodalf"), &cat), NULL);
+    int64_t src, blue, red;
+    REQUIRE_OK(bd_source_add(cat, at("co/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    where_ctx w = where_of(cat, src, 0, "one.txt");
+    CHECK(w.found && strcmp(w.on, "") == 0 && strcmp(w.plugged, "") == 0 && strcmp(w.older, "") == 0 && w.mtime > 0);
+    w = where_of(cat, src, 0, "sub");
+    CHECK(w.found && strcmp(w.on, "") == 0 && w.backed_up == 0);
+
+    REQUIRE_OK(bd_media_init(cat, at("co/red"), "Red", 0, &red), cat);
+    REQUIRE_OK(bd_media_init(cat, at("co/blue"), "Blue", 0, &blue), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, red, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, blue, 0, &bs, quiet, NULL), cat);
+    w = where_of(cat, src, 0, "one.txt");
+    CHECK(strcmp(w.on, "Blue, Red") == 0 && strcmp(w.plugged, "Blue, Red") == 0 && strcmp(w.older, "") == 0);
+    w = where_of(cat, src, 0, "sub");
+    CHECK(strcmp(w.on, "Blue, Red") == 0 && w.backed_up == 2);
+    where_ctx sw;
+    memset(&sw, 0, sizeof(sw));
+    bd_list_sources(cat, source_where, &sw);
+    CHECK(sw.found && strcmp(sw.on, "Blue, Red") == 0 && sw.backed_up == 3);
+
+    /* Red unplugged: still named, no longer plugged in. */
+    bd_media_disconnect(cat, red);
+    w = where_of(cat, src, 0, "one.txt");
+    CHECK(strcmp(w.on, "Blue, Red") == 0 && strcmp(w.plugged, "Blue") == 0);
+    memset(&sw, 0, sizeof(sw));
+    bd_list_sources(cat, source_where, &sw);
+    CHECK(strcmp(sw.plugged, "Blue") == 0);
+
+    /* Changed since: no copy of the new version, an older one on both. */
+    write_file(at("co/Src/one.txt"), "one, changed and longer");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    w = where_of(cat, src, 0, "one.txt");
+    CHECK(strcmp(w.on, "") == 0 && strcmp(w.older, "Blue, Red") == 0);
+    memset(&sw, 0, sizeof(sw));
+    bd_list_sources(cat, source_where, &sw);
+    CHECK(sw.backed_up == 2);
+
+    /* A drive marked lost no longer counts. */
+    REQUIRE_OK(bd_media_mark_lost(cat, blue, "lost"), cat);
+    w = where_of(cat, src, 0, "sub");
+    CHECK(strcmp(w.on, "Red") == 0 && strcmp(w.plugged, "") == 0 && w.backed_up == 2);
+    w = where_of(cat, src, 0, "one.txt");
+    CHECK(strcmp(w.older, "Red") == 0);
+    bd_catalog_close(cat);
+}
+
 typedef struct { int n; char first[256]; char drives[256]; int connected; int64_t last_seen; int backed_up; int64_t never_id; } deleted_list;
 
 static int collect_deleted(void *ctx, const bd_deleted_info *d)
@@ -3419,6 +3514,7 @@ int main(void)
 #endif
     test_recover_and_relocate();
     test_lost_drive();
+    test_copies_on();
     test_deleted_files();
     test_bitrot_and_sizes();
     test_multi_copy();

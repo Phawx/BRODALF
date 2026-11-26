@@ -103,8 +103,9 @@ when every file has two, and so on up to the number of copies you want.
 The rest of the window is six tabs. BRODALF opens on the tab you used
 last, and **View** lists them too.
 
-- **Primary Database**: the tree of everything in your backup roots, the
-  search box and the details of what is selected (below).
+- **Primary Database**: your backup roots laid out as in Windows Explorer:
+  the folders, the files in the folder you pick, and the details of what
+  is selected, with a search box (below).
 - **Next backup**: what the next backup copies, as a table.
 - **Local backups**: every drive BRODALF knows, plugged in or not.
 - **Starred files and extra places**: see
@@ -115,18 +116,31 @@ last, and **View** lists them too.
 Each tab has its own buttons for everything it shows, so nothing needs a
 menu.
 
-**Primary Database.** The tree shows everything in your backup roots: each
-name with its file icon, then on the right its state and its size. Names in
-grey have no copy on a drive that is plugged in (the state says **On**
-and the drive that holds them, if any); grey italics have no copy yet;
-struck through means deleted from your folder. The state is an amber
-**Changed since backup** or **Not backed up**, a red **Copy damaged**, or
-nothing when a good copy is plugged in. Starred files and folders show a
-★ after their name, and ones you chose to encrypt a lock. Folders show how
-many files inside are available. **Help > What the file list shows** draws
-a sample of each, with what it means under it. Select a
-file to see every version and where each copy is, even when none of those
-drives are plugged in, so you know which box to go and get. Its details read
+**Primary Database.** It looks like Windows Explorer: the folders of your
+backup roots on the left, the files and folders in the one you pick in the
+middle, with a line above them saying where you are, and the details of
+what is selected on the right (under the list in a narrow window).
+Double-click a folder to open it; Backspace goes up. The list has the
+columns **Name**, **Status**, **Copies on**, **Date modified**, **Type** and
+**Size**; click a heading to sort by it. **Copies on** names the drives that
+hold a copy of the newest version, in grey for those not plugged in.
+
+A file or folder that is not on this PC (its backup root is not here, or it
+was deleted from its folder) and that no plugged-in drive holds is drawn
+faded, the way Explorer shows a file kept offline, and its name is grey;
+deleted ones are also struck through. A backup root that is not on this PC
+has a red cross on its icon. So a database opened on a PC with none of its
+files and no drive plugged in still shows every file and folder, faded,
+with the drives each one is on: plug one in and what it holds comes back
+to full colour. The status is an amber **Changed since backup** or
+**Not backed up**, a red **Copy damaged**, or nothing when a good copy is
+plugged in. Starred files and folders show a ★ after their name, and ones
+you chose to encrypt a lock. Point at a name to read all of this in words.
+**Help > What the file list shows** draws a sample of each, with what it
+means beside it. Select a file to see every version and where each copy is,
+even when none of those drives are plugged in, so you know which box to go
+and get; its details also say whether it is on this PC and, when it is
+not, which drive to plug in to get it back. Its details read
 like a form: the name, the folder it is in, its state, size, version and
 checksum, then one row for each drive with a copy, saying whether the copy
 is good and where that drive is (plugged in, or last seen and where it is
@@ -173,7 +187,7 @@ scan, the bit-rot scan, change where a root is, back up, back up to every
 plugged-in drive, check a drive, restore, set up a drive, add an extra
 place, star or encrypt what is selected, every drive and extra place BRODALF
 knows with its own submenu, and Settings) and **Help**. Right-click a file
-or folder in the tree to open it in Explorer, restore it, star it or
+or folder, in the folders or the file list, to open it in Explorer, restore it, star it or
 encrypt it; right-click a backup root to stop or resume backing it up,
 change what it leaves out, or say where it is now; right-click a version to
 restore just that version or open its copy on the drive.
@@ -192,8 +206,10 @@ high contrast on, BRODALF always uses the high-contrast colours.
 **View > Language** is **Like Windows** (its display language), English,
 Deutsch or Español, and takes effect the next time BRODALF opens. The
 German and Spanish text is a machine translation that a native speaker has
-not checked yet; error messages from deep inside BRODALF, the command line
-and the installer stay in English. To add or correct a language, see
+not checked yet. The app log shows BRODALF's own lines in the window's
+language too, with paths and names as they are; error details from SQLite
+and the database itself, the command line and the installer stay in
+English. To add or correct a language, see
 `gui/lang/` and `tools/lang.py`.
 
 ### Nothing else starts by itself
@@ -533,10 +549,12 @@ longer open the database.
 
 ### Search
 
-Type in the box above the tree to find files and folders by name anywhere
-in your backup roots (every word must match, so `party 2024` works). Each
-result shows whether it is available and which drives hold it, with where
-each drive is kept. Double-click a result to go to it in the tree.
+Type in the box at the top right of the Primary Database tab to find files
+and folders by name anywhere in your backup roots (every word must match,
+so `party 2024` works). The results take the place of the file list while
+you search. Each result shows whether it is available and which drives
+hold it, with where each drive is kept. Double-click a result to go to its
+folder, with the file selected.
 
 ![Search](docs/images/gui-search.png)
 

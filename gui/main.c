@@ -1082,6 +1082,19 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
                     FillRect(dc, &e, br);
                 }
             }
+            /* A list with no header is a form (label, value): no lines
+             * between its columns either, except on the selected row. */
+            if ((GetWindowLongW(h, GWL_STYLE) & LVS_NOCOLUMNHEADER) && cols > 1) {
+                for (int i = ListView_GetTopIndex(h); i <= last; i++) {
+                    if (ListView_GetItemState(h, i, LVIS_SELECTED) & LVIS_SELECTED) continue;
+                    for (int c = 1; c < cols; c++) {
+                        RECT sr;
+                        if (!ListView_GetSubItemRect(h, i, c, LVIR_BOUNDS, &sr)) continue;
+                        RECT e = {sr.left - S(3), sr.top, sr.left + S(3), sr.bottom};
+                        FillRect(dc, &e, br);
+                    }
+                }
+            }
             DeleteObject(br);
             ReleaseDC(h, dc);
         }

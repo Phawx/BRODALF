@@ -1061,6 +1061,70 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
 
 static void tree_metrics(void);
 
+/* A text box's frame: the dark theme draws it white, so dark mode draws
+ * it again in the border colour. */
+static LRESULT CALLBACK dark_edit_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    if (msg == WM_NCPAINT && g_dark && !g_hc) {
+        LRESULT r = DefSubclassProc(h, msg, wp, lp);
+        LONG ex = GetWindowLongW(h, GWL_EXSTYLE), st = GetWindowLongW(h, GWL_STYLE);
+        int bw = (ex & WS_EX_CLIENTEDGE) ? GetSystemMetrics(SM_CXEDGE) : (st & WS_BORDER) ? 1 : 0;
+        if (bw > 0) {
+            HDC dc = GetWindowDC(h);
+            RECT rc;
+            GetWindowRect(h, &rc);
+            OffsetRect(&rc, -rc.left, -rc.top);
+            FrameRect(dc, &rc, g_br_border);
+            for (int i = 1; i < bw; i++) {
+                InflateRect(&rc, -1, -1);
+                FrameRect(dc, &rc, g_br_field);
+            }
+            ReleaseDC(h, dc);
+        }
+        return r;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
+/* A push button that is turned off: the dark theme draws it like one that
+ * is on, so dark mode draws it itself, flat, with grey text. */
+static LRESULT CALLBACK dark_button_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    LONG kind = GetWindowLongW(h, GWL_STYLE) & BS_TYPEMASK;
+    if (msg == WM_PAINT && g_dark && !g_hc && !IsWindowEnabled(h) && (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON)) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        GetClientRect(h, &rc);
+        HWND parent = GetParent(h);
+        HBRUSH under = parent == g_main ? g_br_bg : (HBRUSH)SendMessageW(parent, WM_CTLCOLORBTN, (WPARAM)dc, (LPARAM)h);
+        FillRect(dc, &rc, under ? under : g_br_bg);
+        HBRUSH face = CreateSolidBrush(RGB(38, 38, 38));
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(61, 61, 61));
+        HGDIOBJ ob = SelectObject(dc, face), op = SelectObject(dc, pen);
+        RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, S(6), S(6));
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(face);
+        DeleteObject(pen);
+        wchar_t text[256];
+        GetWindowTextW(h, text, 256);
+        HFONT f = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+        HGDIOBJ of = f ? SelectObject(dc, f) : NULL;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(110, 110, 110));
+        DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_HIDEPREFIX);
+        if (of) SelectObject(dc, of);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
 static void theme_control(HWND h)
 {
     wchar_t cls[64];
@@ -1069,12 +1133,19 @@ static void theme_control(HWND h)
     LONG style = GetWindowLongW(h, GWL_STYLE);
     if (_wcsicmp(cls, WC_BUTTONW) == 0) {
         LONG kind = style & BS_TYPEMASK;
-        if (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON) SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        if (kind == BS_PUSHBUTTON || kind == BS_DEFPUSHBUTTON) {
+            SetWindowTheme(h, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+            SetWindowSubclass(h, dark_button_proc, 3, 0);
+        }
         /* A themed check box or group box draws its text black whatever
          * colour it is given: unthemed it takes the colour. */
         else SetWindowTheme(h, g_dark ? L"" : NULL, g_dark ? L"" : NULL);
     } else if (_wcsicmp(cls, WC_EDITW) == 0) {
         SetWindowTheme(h, g_dark ? (style & ES_MULTILINE ? L"DarkMode_Explorer" : L"DarkMode_CFD") : NULL, NULL);
+        if (style & ES_MULTILINE) {
+            SetWindowSubclass(h, dark_edit_proc, 2, 0);
+            RedrawWindow(h, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+        }
     } else if (_wcsicmp(cls, WC_COMBOBOXW) == 0) {
         SetWindowTheme(h, g_dark ? L"DarkMode_CFD" : NULL, NULL);
     } else if (_wcsicmp(cls, WC_TREEVIEWW) == 0) {
@@ -2288,6 +2359,10 @@ static int conflict_cb(void *ctx, const bd_conflict_info *c)
     r->where = widen(where);
     free(where);
     r->dest = widen(c->dest);
+    for (wchar_t *q = r->where; q && *q; q++)
+        if (*q == L'/') *q = L'\\';
+    for (wchar_t *q = r->dest; q && *q; q++)
+        if (*q == L'/') *q = L'\\';
     r->want_size = c->want_size;
     r->want_mtime_ns = c->want_mtime_ns;
     r->have_size = c->have_size;
@@ -5863,12 +5938,12 @@ static void check_drive(int64_t id)
     drive_name(o.label, o.location, name, 600);
     if (o.info.oldest_unread_ms > 0) {
         format_time_ms(o.info.oldest_unread_ms, since, 64);
-        swprintf(content, 1400, T(L"Some copies on %ls were never read back since they were written (the oldest %ls).%ls Checking changes "
+        swprintf(content, 1400, T(L"Some copies on %ls were never checked since they were written (the oldest %ls).%ls Checking changes "
                                 L"nothing on the drive."), name,
                  since, o.info.check_due ? T(L" That is longer than Settings asks for, so a check is due.") : L"");
     } else if (o.info.oldest_check_ms > 0) {
         format_time_ms(o.info.oldest_check_ms, since, 64);
-        swprintf(content, 1400, T(L"Some copies on %ls have not been read back since %ls.%ls Checking changes nothing on the drive."), name,
+        swprintf(content, 1400, T(L"Some copies on %ls have not been checked since %ls.%ls Checking changes nothing on the drive."), name,
                  since, o.info.check_due ? T(L" That is longer than Settings asks for, so a check is due.") : L"");
     } else
         swprintf(content, 1400, T(L"Checking reads the copies on %ls and compares each one with its checksum. It changes nothing on the drive."), name);
@@ -6313,7 +6388,7 @@ static void after_drives(job *j)
         wchar_t name[600], since[64], msg[1200];
         drive_name(o.label, o.location, name, 600);
         format_time_ms(o.info.oldest_check_ms, since, 64);
-        swprintf(msg, 1200, T(L"%ls is due for a check: some of its copies have not been read back since %ls.\n\n"
+        swprintf(msg, 1200, T(L"%ls is due for a check: some of its copies have not been checked since %ls.\n\n"
                             L"Check every copy on it now? It changes nothing on the drive. (No: BRODALF does not ask again until "
                             L"it is opened again.)"), name, since);
         if (ask_verbs(g_main, msg, MB_ICONQUESTION | MB_YESNO, T(L"Check it now"), T(L"Not now")) == IDYES) enqueue_check(due[i]);
@@ -6518,7 +6593,7 @@ static void settings_command(int cmd)
         int d = choice[cmd - ID_MENU_CHECK_90];
         if (bd_option_set(g_cat, "check_days", d) == BD_OK && ui_save() == BD_OK) {
             wchar_t line[200];
-            if (d) swprintf(line, 200, T(L"A plugged-in drive whose copies have not been read back in %d days offers a check."), d);
+            if (d) swprintf(line, 200, T(L"A plugged-in drive whose copies have not been checked in %d days offers a check."), d);
             else wcscpy(line, T(L"Drives never offer a check by themselves."));
             log_append(line);
             update_drives_label();
@@ -9010,9 +9085,10 @@ static void layout_pages(void)
     y = pad + flow(g_local_btns, COUNT_OF(g_local_btns), pad, pad, iw) + gap;
     {
         int room = h - y - pad;
+        int text_min = font_h(g_font) * 4 + S(12);
         part = local_list_need();
-        if (part > room * 65 / 100) part = room * 65 / 100;
-        if (part < room * 35 / 100) part = room * 35 / 100;
+        if (part > room - text_min) part = room - text_min;
+        if (part < room * 40 / 100) part = room * 40 / 100;
     }
     y += mv(CTL(ID_LOCAL_LIST), pad, y, iw, part) + gap;
     mv(CTL(ID_LOCAL_TEXT), pad, y, iw, h - y - pad);
@@ -9702,7 +9778,7 @@ static void local_view_fill(local_view *v, const drive_snap *d)
         } else
             swprintf(v->checked, 96, L"%ls", T(L"Never"));
         if (d->oldest_unread_ms) {
-            swprintf(v->checked2, 96, L"%ls", T(L"Some copies never read back"));
+            swprintf(v->checked2, 96, L"%ls", T(L"Some copies never checked"));
             v->checked2_tone = TONE_WARN;
         } else if (d->check_due) {
             swprintf(v->checked2, 96, L"%ls", T(L"Due for a check"));

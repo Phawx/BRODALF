@@ -1059,6 +1059,21 @@ static class Shots {
             Click("ID_ENC_PASS");
             IntPtr d = WaitDialog(8000, IntPtr.Zero);
             if (d == IntPtr.Zero) { Log("no passphrase dialog"); return; }
+            IntPtr cur = N.GetDlgItem(d, Id("IDC_PASS_CUR"));
+            if (cur != IntPtr.Zero && N.IsWindowVisible(cur)) {
+                // One dialog asks for the current passphrase (wrong here) and the new one twice;
+                // it says in place that the current one is not right.
+                SetText(cur, "not the passphrase");
+                SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), "a new passphrase");
+                SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT2")), "a new passphrase");
+                Thread.Sleep(300);
+                Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                Thread.Sleep(4000);
+                Shot(d, "tab-5-wrong-passphrase");
+                Dismiss(d);
+                WaitIdle("after-wrong-passphrase", 20000);
+                return;
+            }
             if (!IsPassphrase(d)) { Dismiss(d); return; }
             SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), "not the passphrase");
             Thread.Sleep(300);
@@ -1135,6 +1150,26 @@ static class Shots {
             IntPtr d = WaitDialog(8000, IntPtr.Zero);
             if (d == IntPtr.Zero) { Log("no passphrase dialog"); return; }
             Shot(d, "tab-5-change-passphrase-enter-the-current-one");
+            IntPtr cur = N.GetDlgItem(d, Id("IDC_PASS_CUR"));
+            if (cur != IntPtr.Zero && N.GetDlgItem(d, Id("IDC_PASS_EDIT2")) != IntPtr.Zero) {
+                // The ticks under the new one as it is typed, and Show.
+                SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), "too short");
+                Thread.Sleep(400);
+                Shot(d, "tab-5-change-passphrase-too-short");
+                SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), "four unrelated words");
+                SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT2")), "four unrelated words");
+                Thread.Sleep(400);
+                Shot(d, "tab-5-change-passphrase-ready");
+                IntPtr show = N.GetDlgItem(d, Id("IDC_PASS_SHOW"));
+                if (show != IntPtr.Zero) {
+                    Post(show, 0x00F5, 0, IntPtr.Zero); // BM_CLICK
+                    Thread.Sleep(400);
+                    Shot(d, "tab-5-change-passphrase-shown");
+                }
+                Dismiss(d);
+                WaitIdle("after-passphrase", 20000);
+                return;
+            }
             IntPtr edit = N.GetDlgItem(d, Id("IDC_PASS_EDIT"));
             if (edit != IntPtr.Zero && N.GetDlgItem(d, Id("IDC_PASS_EDIT2")) == IntPtr.Zero) {
                 SetText(edit, pass);

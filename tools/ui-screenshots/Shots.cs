@@ -1090,7 +1090,7 @@ static class Shots {
 
     static void NoLocalData() {
         string here = Path.GetDirectoryName(db);
-        string[] away = { "Data", @"Drives\Blue", @"Cloud\OneDrive" };
+        string[] away = { "Data", @"Drives\Blue", @"Drives\Gray", @"Cloud\OneDrive" };
         List<string> moved = new List<string>();
         try {
             foreach (string a in away) {

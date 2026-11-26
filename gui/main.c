@@ -14156,8 +14156,8 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
     if (!TreeView_GetItemRect(tv, h, &tr, TRUE)) return;
     int rh = row.bottom - row.top, right = cr.right - S(8);
     int show_size = cr.right >= S(380), show_state = cr.right >= S(260);
-    int size_l = show_size ? right - tv_size_w : right;
-    int state_l = show_state ? size_l - (show_size ? S(12) : 0) - tv_state_w : size_l;
+    int size_l = show_size ? right - g_tree_size_w : right;
+    int state_l = show_state ? size_l - (show_size ? S(12) : 0) - g_tree_state_w : size_l;
     if (show_state && state_l < tr.left + S(48)) { /* deep in the tree and narrow: the tooltip says it */
         show_state = 0;
         state_l = size_l;
@@ -14212,7 +14212,7 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
         wchar_t buf[300];
         int tone;
         const wchar_t *chip = tree_chip(r, buf, COUNT_OF(buf), &tone);
-        if (chip) draw_chip_fit(dc, state_l, cy, ch, chip, tone, tv_state_w);
+        if (chip) draw_chip_fit(dc, state_l, cy, ch, chip, tone, g_tree_state_w);
     }
     if (show_size && r->size > 0 && (!r->is_dir || r->root)) {
         wchar_t bytes[64];

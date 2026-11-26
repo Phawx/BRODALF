@@ -1905,6 +1905,7 @@ static void jp_start(const wchar_t *what);
 static void jp_stopping(void);
 static void goal_text(wchar_t *out, size_t cap);
 static void status_bar_refresh(void);
+static void friendly_time(int64_t ms, wchar_t *out, size_t cap);
 static void status_state(const wchar_t *s);
 static void select_media_row(int64_t id, int secondary);
 static void drive_popup(int64_t id, int x, int y);
@@ -4654,9 +4655,11 @@ static void update_drives_label(void)
     /* The button says how many files are short of the target; it is as
      * wide as its text. */
     wchar_t risk[64];
-    wcscpy(risk, T(L"At ris&k..."));
+    wcscpy(risk, T(L"Files at ris&k..."));
     if (g_figs && g_figs->has_risk && g_figs->risk.files_at_risk > 0)
-        swprintf(risk, 64, T(L"At ris&k (%lld)..."), (long long)g_figs->risk.files_at_risk);
+        swprintf(risk, 64, T(L"Files at ris&k (%lld)..."), (long long)g_figs->risk.files_at_risk);
+    else if (g_figs && g_figs->has_risk)
+        wcscpy(risk, T(L"Files at ris&k (none)..."));
     int changed = set_text_changed(g_buttons[7], risk);
     if (g_header && header_height(hr.right) != hr.bottom) changed = 1;
     if (g_warnbar && warn_height() != wr.bottom) changed = 1;
@@ -7027,17 +7030,60 @@ static void cmd_add_folder(void)
     free(folder);
 }
 
-typedef struct { HMENU menu; int count, greyed_lost, usable; } menu_ctx;
+typedef struct {
+    HMENU menu;
+    int count, greyed_lost, usable;
+    int64_t to_copy;     /* backup menus: files every usable drive would get, together */
+    wchar_t names[400];  /* and their names, in the order they are backed up */
+} menu_ctx;
 
+/* One drive in the Back up or Check menu, saying what choosing it does:
+ * how much a backup would copy, or how many copies a check reads and when
+ * they were last checked. The drive's folder goes on the right. */
 static int drive_menu_cb(void *ctx, const bd_media_info *m)
 {
     menu_ctx *c = ctx;
     if (!m->connected || strcmp(m->kind, "drive") != 0) return 0; /* a cloud account from an earlier version is never listed */
-    wchar_t *l = widen(m->label), *root = widen(m->last_root), text[512], freeb[64];
+    wchar_t *l = widen(m->label), *root = widen(m->last_root), text[600], freeb[64], what[400];
+    const drive_fig *g = fig_of(m->media_id);
+    int backup = c->greyed_lost;
     format_bytes(m->free_bytes, freeb, 64);
-    swprintf(text, 512, T(L"%ls (%ls), %ls free%ls%ls%ls"), l, root, freeb, m->hide_names ? T(L", encrypted, names hidden") : m->encrypted ? T(L", encrypted") : L"",
-             m->secondary ? T(L", extra place for starred files") : L"", m->lost_ms ? T(L" - marked lost or broken") : L"");
-    if (!m->lost_ms) c->usable++;
+    if (m->lost_ms) {
+        swprintf(what, 400, L"%ls", strcmp(m->lost_why ? m->lost_why : "", "broken") == 0 ? T(L"marked broken") : T(L"marked lost"));
+    } else if (!backup) {
+        wchar_t when[96];
+        if (g && g->has_ms && g->ms.last_check_ms) friendly_time(g->ms.last_check_ms, when, 96);
+        swprintf(what, 400, TN(m->copies, L"%lld copy, last checked %ls", L"%lld copies, last checked %ls"), (long long)m->copies,
+                 g && g->has_ms && g->ms.last_check_ms ? when : T(L"never"));
+    } else if (m->secondary) {
+        if (g && g->has_ps && g->ps.waiting_files > 0) {
+            wchar_t size[64];
+            format_bytes(g->ps.waiting_bytes, size, 64);
+            swprintf(what, 400, TN(g->ps.waiting_files, L"extra place, %lld starred file to copy (%ls)", L"extra place, %lld starred files to copy (%ls)"),
+                     (long long)g->ps.waiting_files, size);
+            c->to_copy += g->ps.waiting_files;
+        } else {
+            swprintf(what, 400, L"%ls", T(L"extra place, its starred files are up to date"));
+        }
+    } else if (g && g->has_pv && g->pv.files_to_copy > 0) {
+        wchar_t size[64];
+        format_bytes(g->pv.bytes_to_copy, size, 64);
+        swprintf(what, 400, TN(g->pv.files_to_copy, L"%lld file to copy, %ls (%ls free)", L"%lld files to copy, %ls (%ls free)"),
+                 (long long)g->pv.files_to_copy, size, freeb);
+        c->to_copy += g->pv.files_to_copy;
+    } else if (g && g->has_pv) {
+        swprintf(what, 400, T(L"up to date (%ls free)"), freeb);
+    } else {
+        swprintf(what, 400, T(L"%ls free"), freeb);
+    }
+    swprintf(text, 600, L"%ls: %ls%ls\t%ls", l, what, m->hide_names ? T(L", encrypted, names hidden") : m->encrypted ? T(L", encrypted") : L"",
+             root ? root : L"");
+    if (!m->lost_ms) {
+        c->usable++;
+        size_t len = wcslen(c->names);
+        int parallel = bd_option_get(g_cat, "parallel_copies") > 0;
+        if (len < 300) swprintf(c->names + len, 400 - len, L"%ls%ls", len ? (parallel ? L", " : T(L", then ")) : L"", l);
+    }
     /* A drive marked lost or broken takes no backups: shown greyed. */
     AppendMenuW(c->menu, MF_STRING | (m->lost_ms && c->greyed_lost ? MF_GRAYED : 0), (UINT_PTR)(ID_MENU_DRIVE_BASE + m->media_id), text);
     c->count++;
@@ -7050,12 +7096,20 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
  * allow_other 2 also offers every plugged-in drive at once: -2. */
 static int64_t choose_drive(HWND button, int allow_other)
 {
-    menu_ctx c = {CreatePopupMenu(), 0, allow_other, 0};
+    menu_ctx c;
+    memset(&c, 0, sizeof(c));
+    c.menu = CreatePopupMenu();
+    c.greyed_lost = allow_other;
     bd_list_media(g_cat, drive_menu_cb, &c);
     if (allow_other == 2 && c.usable >= 2) {
-        wchar_t every[200];
-        swprintf(every, 200, T(L"All %d of them, %ls"), c.usable,
-                 bd_option_get(g_cat, "parallel_copies") > 0 ? T(L"at once") : T(L"one after another"));
+        wchar_t every[600];
+        if (bd_option_get(g_cat, "parallel_copies") > 0)
+            swprintf(every, 600, TN(c.to_copy, L"Every plugged-in drive at once (%ls): %lld file to copy", L"Every plugged-in drive at once (%ls): %lld files to copy"),
+                     c.names, (long long)c.to_copy);
+        else
+            swprintf(every, 600, TN(c.to_copy, L"Every plugged-in drive, one after another (%ls): %lld file to copy",
+                                    L"Every plugged-in drive, one after another (%ls): %lld files to copy"),
+                     c.names, (long long)c.to_copy);
         AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(c.menu, MF_STRING, ID_MENU_EVERY, every);
     }
@@ -13438,7 +13492,7 @@ static void create_children(HWND hwnd)
     g_buttons[4] = make_button(T(L"&Restore..."), ID_BTN_RESTORE);
     g_buttons[5] = make_button(T(L"&Drives..."), ID_BTN_DRIVES);
     g_buttons[6] = make_button(T(L"Settin&gs..."), ID_BTN_SECURITY);
-    g_buttons[7] = make_button(T(L"At ris&k..."), ID_BTN_RISK);
+    g_buttons[7] = make_button(T(L"Files at ris&k..."), ID_BTN_RISK);
     /* What the files' state is, each drive, and what to look at first. */
     create_panels(hwnd);
 

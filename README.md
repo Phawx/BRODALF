@@ -92,8 +92,10 @@ and says which drives to plug in.
 ### The main window
 
 Along the top are the buttons **Add backup root**, **Scan now**, **Back
-up**, **Check drive**, **Restore**, **Drives**, **Settings** and **At
-risk**. Beside them, one line says, for each drive that is plugged in, what
+up**, **Check drive**, **Restore**, **Drives**, **Settings** and **Files
+at risk**. The **Back up** menu says, for each plugged-in drive, how many
+files a backup to it would copy, and the **Check drive** menu how many
+copies a check reads and when the drive was last checked. Beside them, one line says, for each drive that is plugged in, what
 a backup to it would copy right now, or that it is up to date, and how
 your extra places stand. Under them, one bar per full copy of your backup
 roots: copy 1 is done when every file has at least one good copy, copy 2
@@ -282,10 +284,10 @@ kept" says (so "Box A" and "Office shelf" are two places), and drives with
 no place set count together as one. A copy counts when BRODALF last saw it
 good, whether or not the drive is plugged in right now.
 
-The **At risk** button shows how many files fall short. It opens a list of
-those files, fewest copies first, and the drives that would help most, with
-where each is kept. **Files at risk** on the **Next backup** and
-**Local backups** tabs opens the same list. **View > Largest files**
+The **Files at risk** button shows how many files fall short, or "none".
+It opens a list of those files, fewest copies first, and the drives that
+would help most, with where each is kept. **Files at risk** on the
+**Next backup** and **Local backups** tabs opens the same list. **View > Largest files**
 lists the biggest files, which BRODALF backs up like any other.
 
 ![Files at risk](docs/images/gui-at-risk.png)

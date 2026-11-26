@@ -138,15 +138,14 @@ whether it is starred or encrypted. The buttons back up to that drive or
 to every plugged-in drive, list the files changed on it, and say which
 drive to plug in.
 
-**Local backups.** One row per drive: whether it is plugged in, its size
-and free space, how much of it is BRODALF's copies and how much other
-files, the space kept free, its health (SMART, temperature, hours powered
-on and SSD wear, where the disk passes them through), its oldest
-read-back, its copies and its problems. The buttons set up a disk, back up
-to the selected drive or to every plugged-in one, check it, open it in
-Explorer, list what changed since its last backup, change its name and
-where it is kept, mark it lost or broken, show where every drive stands
-and say which drive to plug in. **Back up to several drives at once** is
+**Local backups.** One row per drive, grouped by whether it is plugged in,
+not plugged in, or marked lost or broken: its name, whether it is plugged
+in, its copies, its space, its health (SMART, temperature, hours powered
+on and SSD wear, where the drive passes them through) and when it was last
+checked. The buttons set up a drive, back up to the selected drive or to
+every plugged-in one, check it, open it in Explorer, list what changed
+since its last backup, change its name and where it is kept, mark it lost
+or broken, show the status of every drive and the files at risk. **Back up to several drives at once** is
 here too (see [Backing up](#backing-up)).
 
 Below the tabs, BRODALF shows the **job** that is running (scan, backup,
@@ -160,7 +159,7 @@ drive, files at risk, the largest, deleted, damaged and in-use files, the
 files the last restore left alone, Refresh, **Appearance** and
 **Language**), **Tools** (add a backup root,
 scan, the bit-rot scan, change where a root is, back up, back up to every
-plugged-in drive, check a drive, restore, set up a disk, add an extra
+plugged-in drive, check a drive, restore, set up a drive, add an extra
 place, star or encrypt what is selected, every drive and extra place BRODALF
 knows with its own submenu, and Settings) and **Help**. Right-click a file
 or folder in the tree to open it in Explorer, restore it, star it or
@@ -285,8 +284,8 @@ good, whether or not the drive is plugged in right now.
 
 The **At risk** button shows how many files fall short. It opens a list of
 those files, fewest copies first, and the drives that would help most, with
-where each is kept. **Which drive to plug in** on the **Next backup** and
-**Local backups** tabs says the same in one go. **View > Largest files**
+where each is kept. **Files at risk** on the **Next backup** and
+**Local backups** tabs opens the same list. **View > Largest files**
 lists the biggest files, which BRODALF backs up like any other.
 
 ![Files at risk](docs/images/gui-at-risk.png)
@@ -342,13 +341,13 @@ reads the copies on a plugged-in drive and compares each one's size, time
 and checksum. It offers two choices:
 
 - **Check every copy**: reads every copy. Takes a while on a big drive.
-- **Read back copies not read lately**: the copies not read back in the
+- **Check copies not checked lately**: the copies not checked in the
   last 30 days, and new ones, so a full check can be spread over time.
 
-When a plugged-in drive's oldest read-back is older than **Settings > A
+When a plugged-in drive's oldest check is older than **Settings > A
 plugged-in drive offers a check after** (6 months by default), BRODALF
-offers a check. A copy never read back since it was written comes due a
-week after it was written. After a backup, **Read back what was just
+offers a check. A copy never checked since it was written comes due a
+week after it was written. After a backup, **Check what was just
 written** reads just those copies; Windows may still hold some of them in
 memory, so unplug the drive and plug it in again first to read them from
 the drive itself. A copy found damaged is written again by the next backup

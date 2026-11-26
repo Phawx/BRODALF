@@ -377,6 +377,21 @@ static class Shots {
 
     static void ClickTask(IntPtr d, int button) { Post(d, TDM_CLICK_BUTTON, button, IntPtr.Zero); }
 
+    // Say yes to one of BRODALF's questions: Yes on a message box, or the
+    // yes button of a task dialog (BRODALF gives it the ID IDYES). With no
+    // yes to press: OK if ok, else close it as Dismiss does.
+    static void Yes(IntPtr d, bool ok) {
+        if (IsTaskDialog(d)) {
+            ClickTask(d, IDYES);
+            if (WaitGone(d, 1500)) return;
+        } else if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) {
+            Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
+            return;
+        }
+        if (ok) Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+        else Dismiss(d);
+    }
+
     // Close a dialog without saying yes to anything: Cancel, else No, else
     // (a message box with one button) OK, else the close box.
     static void Dismiss(IntPtr d) {
@@ -490,8 +505,7 @@ static class Shots {
             IntPtr d = TopDialog();
             if (d != IntPtr.Zero && n < 3) {
                 Shot(d, "closing-question-" + (++n));
-                if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
-                else Dismiss(d);
+                Yes(d, false);
             }
             Thread.Sleep(300);
         }
@@ -1069,7 +1083,7 @@ static class Shots {
             IntPtr d = NextDialogOrBusy(5000);
             for (int i = 1; i <= 3 && d != IntPtr.Zero; i++) {
                 if (IsPassphrase(d)) { SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass); Post(d, WM_COMMAND, IDOK, IntPtr.Zero); }
-                else { Shot(d, name + "-question-" + i); if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero); else Dismiss(d); }
+                else { Shot(d, name + "-question-" + i); Yes(d, false); }
                 WaitGone(d, 5000);
                 d = NextDialogOrBusy(3000);
             }
@@ -1093,7 +1107,7 @@ static class Shots {
             IntPtr d = NextDialogOrBusy(5000);
             for (int i = 1; i <= 3 && d != IntPtr.Zero; i++) {
                 if (IsPassphrase(d)) { SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass); Post(d, WM_COMMAND, IDOK, IntPtr.Zero); }
-                else { if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero); else Dismiss(d); }
+                else { Yes(d, false); }
                 WaitGone(d, 5000);
                 d = NextDialogOrBusy(3000);
             }
@@ -1212,8 +1226,7 @@ static class Shots {
                     Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
                 } else {
                     Shot(d, name + "-question-" + i);
-                    if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
-                    else Dismiss(d);
+                    Yes(d, false);
                 }
                 WaitGone(d, 5000);
                 d = NextDialogOrBusy(3000);
@@ -1262,8 +1275,7 @@ static class Shots {
                     Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
                 } else {
                     Shot(d, name + "-question-" + i);
-                    if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
-                    else Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                    Yes(d, true);
                 }
                 WaitGone(d, 5000);
                 d = NextDialogOrBusy(3000);
@@ -1290,8 +1302,7 @@ static class Shots {
                     ClickTask(d, 620); // Back up anyway
                 } else {
                     Shot(d, "back-up-to-every-drive-question-" + i);
-                    if (N.GetDlgItem(d, IDYES) != IntPtr.Zero) Post(d, WM_COMMAND, IDYES, IntPtr.Zero);
-                    else Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                    Yes(d, true);
                 }
                 WaitGone(d, 5000);
                 d = NextDialogOrBusy(3000);

@@ -1049,6 +1049,44 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
 {
     (void)id;
     (void)ref;
+    if (msg == WM_PAINT && g_dark && (GetWindowLongW(h, GWL_STYLE) & LVS_TYPEMASK) == LVS_REPORT && !ListView_IsGroupViewEnabled(h)) {
+        /* The dark theme draws the column lines down into the empty space
+         * under the rows and right of the last column; paint that space
+         * plain. An empty list keeps its own words there. */
+        LRESULT res = DefSubclassProc(h, msg, wp, lp);
+        int n = ListView_GetItemCount(h);
+        if (n > 0) {
+            RECT rc;
+            GetClientRect(h, &rc);
+            HWND hd = ListView_GetHeader(h);
+            RECT hb = {0, 0, 0, 0};
+            if (hd && IsWindowVisible(hd)) {
+                GetWindowRect(hd, &hb);
+                MapWindowPoints(NULL, h, (POINT *)&hb, 2);
+            }
+            HDC dc = GetDC(h);
+            HBRUSH br = CreateSolidBrush(ListView_GetBkColor(h));
+            int last = ListView_GetTopIndex(h) + ListView_GetCountPerPage(h);
+            if (last >= n) last = n - 1;
+            RECT item;
+            if (ListView_GetItemRect(h, last, &item, LVIR_BOUNDS) && item.bottom < rc.bottom) {
+                RECT e = {rc.left, item.bottom, rc.right, rc.bottom};
+                FillRect(dc, &e, br);
+            }
+            int cols = hd ? Header_GetItemCount(hd) : 0;
+            RECT hr;
+            if (cols > 0 && Header_GetItemRect(hd, Header_OrderToIndex(hd, cols - 1), &hr)) {
+                MapWindowPoints(hd, h, (POINT *)&hr, 2);
+                if (hr.right < rc.right) {
+                    RECT e = {hr.right, hb.bottom > rc.top ? hb.bottom : rc.top, rc.right, rc.bottom};
+                    FillRect(dc, &e, br);
+                }
+            }
+            DeleteObject(br);
+            ReleaseDC(h, dc);
+        }
+        return res;
+    }
     if (msg == WM_NOTIFY && g_dark) {
         NMHDR *nh = (NMHDR *)lp;
         if (nh->code == NM_CUSTOMDRAW && nh->hwndFrom == ListView_GetHeader(h)) {
@@ -6119,6 +6157,31 @@ static void dialog_drop_rows(HWND dlg, int first_id, int next_id)
         ScreenToClient(dlg, &pt);
         if (pt.y >= below.y) SetWindowPos(c, NULL, pt.x, pt.y - dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         else if (pt.y >= top.y) ShowWindow(c, SW_HIDE);
+    }
+    RECT w;
+    GetWindowRect(dlg, &w);
+    SetWindowPos(dlg, NULL, w.left, w.top + dy / 2, w.right - w.left, w.bottom - w.top - dy, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+static int text_height(HWND h, int w);
+
+/* Make a text control as tall as its words, and pull up what is below it. */
+static void dialog_fit_text(HWND dlg, int id)
+{
+    HWND t = GetDlgItem(dlg, id);
+    if (!t) return;
+    RECT r;
+    GetWindowRect(t, &r);
+    MapWindowPoints(NULL, dlg, (POINT *)&r, 2);
+    int h = text_height(t, r.right - r.left), dy = (r.bottom - r.top) - h;
+    if (dy <= 0) return;
+    SetWindowPos(t, NULL, 0, 0, r.right - r.left, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    for (HWND c = GetWindow(dlg, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        RECT cr;
+        GetWindowRect(c, &cr);
+        POINT pt = {cr.left, cr.top};
+        ScreenToClient(dlg, &pt);
+        if (c != t && pt.y >= r.bottom) SetWindowPos(c, NULL, pt.x, pt.y - dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
     RECT w;
     GetWindowRect(dlg, &w);
@@ -11808,10 +11871,14 @@ static INT_PTR CALLBACK place_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(dlg, IDC_PLACE_LIMIT, gb);
         }
         if (g_place_mode == 1) {
+            /* Only the limit: no description to read, no boxes to tick and
+             * no gap where they were. */
             SetWindowTextW(dlg, T(L"Size limit of an extra place"));
             SendDlgItemMessageW(dlg, IDC_PLACE_LABEL, EM_SETREADONLY, TRUE, 0);
-            ShowWindow(GetDlgItem(dlg, IDC_PLACE_ENCRYPT), SW_HIDE);
-            ShowWindow(GetDlgItem(dlg, IDC_PLACE_HIDE), SW_HIDE);
+            SetDlgItemTextW(dlg, IDC_PLACE_LIMIT_TEXT, T(L"Most it may take (leave empty for no limit):"));
+            dialog_drop_rows(dlg, IDC_PLACE_ENCRYPT, IDOK);
+            dialog_drop_rows(dlg, IDC_PLACE_LABEL_TEXT, IDC_PLACE_LIMIT_TEXT);
+            dialog_fit_text(dlg, IDC_PLACE_TEXT);
             SetDlgItemTextW(dlg, IDOK, T(L"Save"));
             SetFocus(GetDlgItem(dlg, IDC_PLACE_LIMIT));
             SendDlgItemMessageW(dlg, IDC_PLACE_LIMIT, EM_SETSEL, 0, -1);
@@ -11935,9 +12002,9 @@ static void cmd_place_limit(int64_t id)
     free(l);
     g_place_limit = d->limit_bytes;
     free(dl.items);
-    swprintf(g_place_text, 1600, T(L"How much of your starred files may go to this extra place in all, so a small free account does not "
-                                 L"fill up. Files that would go over it are not copied there; your drives still get them. Copies "
-                                 L"already there stay."));
+    swprintf(g_place_text, 1600, T(L"How much of your starred files %ls may hold in all, so a small free account does not fill up. "
+                                 L"Files that would go over it are not copied there; your drives still get them."),
+             g_place_label);
     g_place_mode = 1;
     if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_PLACE), g_main, place_proc) != IDOK) return;
     if (save_or_say(bd_place_set_limit(g_cat, id, g_place_limit), T(L"Could not change the size limit."))) {

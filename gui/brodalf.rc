@@ -157,10 +157,11 @@ CAPTION "Extra place for starred files"
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
     LTEXT "", IDC_PLACE_TEXT, 8, 8, 254, 58
-    LTEXT "Describe it, so you can tell later what it is and where it lives (at least two words), like ""Dropbox folder on the laptop"":", -1, 8, 70, 254, 18
+    LTEXT "Describe it, so you can tell later what it is and where it lives (at least two words), like ""Dropbox folder on the laptop"":", IDC_PLACE_LABEL_TEXT, 8, 70, 254, 18
     EDITTEXT IDC_PLACE_LABEL, 8, 90, 254, 14, ES_AUTOHSCROLL
-    LTEXT "Most it may take, in GB (leave empty for no limit), so a small free account does not fill up:", IDC_PLACE_LIMIT_TEXT, 8, 110, 254, 18
+    LTEXT "Most it may take, so a small free account does not fill up (leave empty for no limit):", IDC_PLACE_LIMIT_TEXT, 8, 110, 254, 18
     EDITTEXT IDC_PLACE_LIMIT, 8, 130, 60, 14, ES_AUTOHSCROLL
+    LTEXT "GB", IDC_PLACE_GB, 72, 133, 40, 10
     AUTOCHECKBOX "Encrypt every copy there (needs a passphrase)", IDC_PLACE_ENCRYPT, 8, 150, 254, 12
     AUTOCHECKBOX "Also hide the names of the files and folders there", IDC_PLACE_HIDE, 20, 164, 242, 12
     DEFPUSHBUTTON "Add it", IDOK, 148, 180, 60, 14

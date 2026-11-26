@@ -33,9 +33,9 @@ CAPTION "Drive details"
 FONT 9, "Segoe UI", 0, 0, 1
 BEGIN
     EDITTEXT IDC_DRIVE_INFO, 8, 8, 284, 150, ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL
-    LTEXT "Name:", -1, 8, 166, 284, 10
+    LTEXT "Name:", IDC_DRIVE_NAME_TEXT, 8, 166, 284, 10
     EDITTEXT IDC_DRIVE_NAME, 8, 178, 284, 14, ES_AUTOHSCROLL
-    LTEXT "Where it is kept (optional). Drives kept in the same place count as one place:", -1, 8, 198, 284, 10
+    LTEXT "Where it is kept (optional). Drives kept in the same place count as one place:", IDC_DRIVE_LOC_TEXT, 8, 198, 284, 10
     COMBOBOX IDC_DRIVE_LOCATION, 8, 210, 284, 80, CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_SORT | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON "Mark lost or broken...", IDC_DRIVE_LOST, 8, 230, 100, 14
     DEFPUSHBUTTON "Save", IDOK, 178, 230, 54, 14

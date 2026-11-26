@@ -272,7 +272,11 @@ restored, but they never count toward the copies you want or the full
 copies, and BRODALF never suggests plugging one in to get there. The tab
 lists what is starred, and for each extra place whether it is found now,
 its limit, how many starred files are there as they are now, what is
-waiting, what would go past the limit and the space it uses.
+waiting, what would go past the limit and the space it uses. **It is
+gone** marks an extra place that is no longer there: BRODALF stops copying
+to it, and your full copies do not change, since it never counted toward
+them. Its details window is called **Extra place details** and asks for a
+description instead of a name.
 
 A scan leaves out BRODALF's own copies when an extra place sits inside a
 backup root (a Dropbox folder in your home folder, say), so they are not

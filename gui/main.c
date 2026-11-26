@@ -1705,14 +1705,17 @@ static void draw_str(HDC dc, HFONT f, COLORREF c, const wchar_t *s, RECT r, UINT
     SelectObject(dc, o);
 }
 
-/* A chip: a word on a tinted, rounded background. Returns its width. */
-static int draw_chip(HDC dc, int x, int y, int h, const wchar_t *s, int tone)
+/* A chip: a word on a tinted, rounded background, at most maxw wide (0:
+ * any), its words ending in "..." when they do not fit. Returns its width. */
+static int draw_chip(HDC dc, int x, int y, int h, const wchar_t *s, int tone, int maxw)
 {
     int w = text_w(dc, g_font, s) + S(12);
+    if (maxw > 0 && w > maxw) w = maxw;
     RECT r = {x, y, x + w, y + h};
     if (g_hc) round_box(dc, &r, S(6), GetSysColor(COLOR_WINDOW), GetSysColor(COLOR_WINDOWTEXT));
     else round_box(dc, &r, S(6), tone_tint(tone), CLR_INVALID);
-    draw_str(dc, g_font, tone_text(tone), s, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    RECT tr = {r.left + S(6), r.top, r.right - S(6), r.bottom};
+    draw_str(dc, g_font, tone_text(tone), s, tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     return w;
 }
 
@@ -4444,12 +4447,22 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             add_drive_status(&t, d->id, L"");
             wadd(&t, L"\r\n");
         }
-        add_drive_lines(&t, d, L"");
-        if (d->lost_ms)
+        /* An extra place is a folder: the disk under it says nothing about it. */
+        if (!d->secondary) add_drive_lines(&t, d, L"");
+        if (d->lost_ms && d->secondary)
+            wadd(&t, T(L"\r\nBRODALF no longer copies starred files there. Your full copies do not change: extra places never count "
+                     L"toward them. If it is back, choose Found it.\r\n"));
+        else if (d->lost_ms)
             wadd(&t, T(L"\r\nIts copies still restore if it turns up, but they no longer count toward your full copies, so the "
                      L"files it held are backed up again to your other drives. If you find it, choose Found it.\r\n"));
         SetDlgItemTextW(dlg, IDC_DRIVE_INFO, t.p ? t.p : L"");
-        SetDlgItemTextW(dlg, IDC_DRIVE_LOST, d->lost_ms ? T(L"Found it") : T(L"Mark lost or broken..."));
+        SetDlgItemTextW(dlg, IDC_DRIVE_LOST, d->lost_ms ? T(L"Found it") : d->secondary ? T(L"It is gone...") : T(L"Mark lost or broken..."));
+        if (d->secondary) {
+            /* An extra place, not a drive: its own words. */
+            SetWindowTextW(dlg, T(L"Extra place details"));
+            SetDlgItemTextW(dlg, IDC_DRIVE_NAME_TEXT, T(L"Description (at least two words, like \"Dropbox folder on the laptop\"):"));
+            SetDlgItemTextW(dlg, IDC_DRIVE_LOC_TEXT, T(L"Where it is (optional):"));
+        }
         EnableWindow(GetDlgItem(dlg, IDC_DRIVE_LOST), strcmp(d->kind, "drive") == 0);
         free(t.p);
         wchar_t *name = widen(d->label), *loc = widen(d->location);
@@ -8394,6 +8407,40 @@ static void mark_lost_ui(const drive_snap *d)
     wchar_t name[600], head[700];
     drive_name(d->label, d->location, name, 600);
     swprintf(head, 700, T(L"What happened to %ls?"), name);
+    if (d->secondary) {
+        TASKDIALOG_BUTTON pb[2] = {
+            {650, T(L"It is gone\nThe folder or the account is no longer there.")},
+            {651, T(L"It is broken\nIts files cannot be read.")},
+        };
+        TASKDIALOGCONFIG pc;
+        memset(&pc, 0, sizeof(pc));
+        pc.cbSize = sizeof(pc);
+        pc.hwndParent = g_main;
+        pc.hInstance = g_inst;
+        pc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+        pc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+        pc.pszWindowTitle = APP_NAME;
+        pc.pszMainInstruction = head;
+        pc.pszContent = T(L"BRODALF stops copying starred files there. Your full copies do not change: extra places never count toward "
+                          L"them. Nothing there is deleted, and Found it undoes this.");
+        pc.cButtons = 2;
+        pc.pButtons = pb;
+        int pp = IDCANCEL;
+        if (FAILED(TaskDialogIndirect(&pc, &pp, NULL, NULL)) || (pp != 650 && pp != 651)) return;
+        if (bd_media_mark_lost(g_cat, d->id, pp == 651 ? "broken" : "lost") != BD_OK) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(g_main, e ? e : T(L"The drive could not be marked."), APP_NAME, MB_ICONWARNING);
+            free(e);
+            return;
+        }
+        if (ui_save() == BD_OK) {
+            wchar_t line[800];
+            swprintf(line, 800, pp == 651 ? T(L"%ls is marked broken. BRODALF no longer copies starred files there.")
+                                          : T(L"%ls is marked gone. BRODALF no longer copies starred files there."), name);
+            log_append(line);
+        }
+        return;
+    }
     wchar_t first[1200];
     swprintf(first, 1200, T(L"BRODALF stops counting its copies, so your full copies show what you really have, and backs up its files "
                           L"again to your other drives. Nothing on any drive is deleted, and you can undo this with Found it."));
@@ -8465,8 +8512,10 @@ static void mark_found_ui(const drive_snap *d)
     wchar_t name[600], line[800];
     drive_name(d->label, d->location, name, 600);
     if (bd_media_found(g_cat, d->id) == BD_OK && ui_save() == BD_OK) {
-        swprintf(line, 800, T(L"%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are "
-                            L"still good."), name);
+        if (d->secondary) swprintf(line, 800, T(L"%ls is back: BRODALF copies starred files there again."), name);
+        else
+            swprintf(line, 800, T(L"%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are "
+                                L"still good."), name);
         log_append(line);
     }
 }
@@ -9578,7 +9627,7 @@ static void create_pages(HWND hwnd)
     page_button(TAB_STARRED, T(L"Change its size limit..."), ID_PLACE_LIMIT);
     page_button(TAB_STARRED, T(L"Open in Explorer"), ID_PLACE_OPEN);
     page_button(TAB_STARRED, T(L"Description and details..."), ID_PLACE_EDIT);
-    page_button(TAB_STARRED, T(L"Mark lost or broken..."), ID_PLACE_LOST);
+    page_button(TAB_STARRED, T(L"It is gone..."), ID_PLACE_LOST);
     {
         static const wchar_t *cols[] = {N_(L"Extra place"), N_(L"Folder"), N_(L"Found now"), N_(L"Size limit"), N_(L"Starred files there"),
                                         N_(L"Waiting"), N_(L"Over the limit"), N_(L"Space used"), N_(L"Encrypted")};
@@ -10915,7 +10964,7 @@ static void page_buttons_state(void)
     EnableWindow(CTL(ID_PLACE_OPEN), p && p->connected);
     EnableWindow(CTL(ID_PLACE_EDIT), p != NULL);
     EnableWindow(CTL(ID_PLACE_LOST), p != NULL);
-    set_text_if(ID_PLACE_LOST, p && p->lost ? T(L"Found it") : T(L"Mark lost or broken..."), &changed);
+    set_text_if(ID_PLACE_LOST, p && p->lost ? T(L"Found it") : T(L"It is gone..."), &changed);
 
     int has = bd_catalog_has_passphrase(g_cat);
     set_text_if(ID_ENC_PASS, has ? T(L"Change the passphrase...") : T(L"Set a passphrase..."), &changed);
@@ -12398,11 +12447,7 @@ static void paint_card(HDC dc, int i)
     int chip_y = nr.bottom + S(3), chip_h = S(20);
     const wchar_t *chip = job_uses(c->id) ? job_chip() : c->chip;
     int tone = job_uses(c->id) ? TONE_WORK : c->tone;
-    HRGN clip = CreateRectRgn(tx, chip_y, tr_, chip_y + chip_h);
-    SelectClipRgn(dc, clip);
-    int cw = draw_chip(dc, tx, chip_y, chip_h, chip, tone);
-    SelectClipRgn(dc, NULL);
-    DeleteObject(clip);
+    int cw = draw_chip(dc, tx, chip_y, chip_h, chip, tone, tr_ - tx);
     if (c->where[0] && tx + cw + S(30) < tr_) {
         RECT wr = {tx + cw + S(6), chip_y, tr_, chip_y + chip_h};
         draw_str(dc, g_font, ui_sub(), c->where, wr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);

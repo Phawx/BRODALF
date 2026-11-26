@@ -167,7 +167,9 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
                            " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label AS label FROM copies c"
                            "   JOIN versions v ON v.id=c.version_id JOIN media m ON m.id=c.media_id"
                            "   WHERE v.node_id=n.id AND v.id<>COALESCE(n.current_version_id,0) AND c.state='ok'"
-                           "   AND m.retired_ms IS NULL ORDER BY m.label COLLATE NOCASE))"
+                           "   AND m.retired_ms IS NULL ORDER BY m.label COLLATE NOCASE)),"
+                           " CASE WHEN n.is_dir THEN (SELECT COUNT(*) FROM nodes d WHERE d.source_id=n.source_id AND d.parent_id=n.id"
+                           "   AND d.is_dir=1) ELSE 0 END"
                            " FROM nodes n WHERE n.source_id=? AND n.parent_id IS ?"
                            " ORDER BY n.is_dir DESC, n.name COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK) {
@@ -208,6 +210,7 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
         info.version_count = sqlite3_column_int(q, 7);
         info.offline_media_label = (const char *)sqlite3_column_text(q, 12);
 
+        info.subfolders = sqlite3_column_int64(q, 18);
         info.mtime_ns = sqlite3_column_int64(q, info.is_dir ? 13 : 14);
         if (!info.mtime_ns) info.mtime_ns = sqlite3_column_int64(q, 13);
         char *label_copy = NULL, *all = NULL, *plugged = NULL;

@@ -764,6 +764,7 @@ typedef struct {
     const char *copies_on_plugged; /* those of them plugged in now, the same way */
     const char *older_on;    /* files with no good copy of the current version: where an older one is; "" if none */
     int64_t files_backed_up; /* folders: files inside with a good copy of the current version on a drive that counts */
+    int64_t subfolders;      /* folders: how many folders are directly in it, deleted ones too */
 } bd_node_info;
 
 typedef struct {

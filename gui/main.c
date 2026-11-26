@@ -4395,21 +4395,73 @@ static void kv_row(HWND lv, int kind, const wchar_t *label, const wchar_t *fmt, 
 }
 
 /* Headings in semibold, labels in grey, values in the text colour. */
+/* Each row drawn whole: a heading across the row in the semibold font, a
+ * fact as a grey label and its value. One inset for all of them, so they
+ * line up. */
 static LRESULT kv_draw(NMLVCUSTOMDRAW *cd)
 {
     switch (cd->nmcd.dwDrawStage) {
     case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
-    case CDDS_ITEMPREPAINT: return CDRF_NOTIFYSUBITEMDRAW;
-    case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+    case CDDS_ITEMPREPAINT: {
         HWND lv = cd->nmcd.hdr.hwndFrom;
+        HDC dc = cd->nmcd.hdc;
         int item = (int)cd->nmcd.dwItemSpec, kind = lv_index(lv, item);
-        int selected = (ListView_GetItemState(lv, item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-        SelectObject(cd->nmcd.hdc, kind == KV_HEAD && g_font_semi ? g_font_semi : (HFONT)SendMessageW(lv, WM_GETFONT, 0, 0));
-        cd->clrText = g_hc || selected || kind == KV_HEAD || cd->iSubItem != 0 ? ListView_GetTextColor(lv) : theme_gray();
-        return CDRF_NEWFONT;
+        int selected = (ListView_GetItemState(lv, item, LVIS_SELECTED) & LVIS_SELECTED) != 0, focused = GetFocus() == lv;
+        RECT b;
+        if (!ListView_GetItemRect(lv, item, &b, LVIR_BOUNDS)) return CDRF_DODEFAULT;
+        COLORREF bg = ListView_GetBkColor(lv), fg = ListView_GetTextColor(lv), label = theme_gray();
+        if (selected) {
+            bg = g_hc ? GetSysColor(focused ? COLOR_HIGHLIGHT : COLOR_BTNFACE)
+               : g_dark ? (focused ? RGB(38, 79, 120) : RGB(56, 56, 56))
+                        : (focused ? RGB(204, 228, 247) : RGB(229, 229, 229));
+            if (g_hc) fg = label = GetSysColor(focused ? COLOR_HIGHLIGHTTEXT : COLOR_BTNTEXT);
+        }
+        fill_color(dc, &b, bg);
+        if (kind == KV_SPACE) return CDRF_SKIPDEFAULT;
+        wchar_t a[600] = L"", v[1200] = L"";
+        ListView_GetItemText(lv, item, 0, a, COUNT_OF(a));
+        ListView_GetItemText(lv, item, 1, v, COUNT_OF(v));
+        HFONT font = (HFONT)SendMessageW(lv, WM_GETFONT, 0, 0);
+        int pad = S(7);
+        UINT f = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS;
+        if (kind == KV_HEAD) {
+            RECT r = {b.left + pad, b.top, b.right - pad, b.bottom};
+            draw_str(dc, g_font_semi ? g_font_semi : font, fg, a, r, f);
+        } else {
+            int w0 = ListView_GetColumnWidth(lv, 0);
+            RECT r0 = {b.left + pad, b.top, b.left + w0 - S(4), b.bottom};
+            RECT r1 = {b.left + w0 + pad, b.top, b.right - S(4), b.bottom};
+            if (a[0]) draw_str(dc, font, label, a, r0, f);
+            draw_str(dc, font, fg, v, r1, f);
+        }
+        return CDRF_SKIPDEFAULT;
     }
     }
     return CDRF_DODEFAULT;
+}
+
+/* The label column as wide as the widest label (headings run across the
+ * row), up to cap percent; the values get the rest, less the scroll bar
+ * when the rows need one. */
+static void kv_fit_cols(HWND lv, int cap)
+{
+    RECT rc;
+    GetClientRect(lv, &rc);
+    if (rc.right <= 0) return;
+    int n = ListView_GetItemCount(lv), w0 = S(60);
+    wchar_t a[600];
+    for (int i = 0; i < n; i++) {
+        if (lv_index(lv, i) != KV_FACT) continue;
+        a[0] = 0;
+        ListView_GetItemText(lv, i, 0, a, COUNT_OF(a));
+        int w = ListView_GetStringWidth(lv, a) + S(7) + S(12);
+        if (w > w0) w0 = w;
+    }
+    if (w0 > rc.right * cap / 100) w0 = rc.right * cap / 100;
+    int bar = n > ListView_GetCountPerPage(lv) && !(GetWindowLongW(lv, GWL_STYLE) & WS_VSCROLL) ? GetSystemMetrics(SM_CXVSCROLL) : 0;
+    ListView_SetColumnWidth(lv, 0, w0);
+    int w1 = rc.right - w0 - bar;
+    ListView_SetColumnWidth(lv, 1, w1 > S(40) ? w1 : S(40));
 }
 
 /* For one file whose newest version has no good copy anywhere: which
@@ -4475,18 +4527,12 @@ static void versions_fit_cols(void)
 static wchar_t g_detail_empty[1200]; /* what the details pane says when it shows nothing */
 
 /* The labels as wide as the widest, the values the rest. */
+static void layout_detail(void);
+
 static void detail_fit_cols(void)
 {
     if (!g_detail) return;
-    RECT rc;
-    GetClientRect(g_detail, &rc);
-    if (rc.right <= 0) return;
-    ListView_SetColumnWidth(g_detail, 0, LVSCW_AUTOSIZE);
-    int w0 = ListView_GetColumnWidth(g_detail, 0) + S(12);
-    if (w0 > rc.right * 40 / 100) w0 = rc.right * 40 / 100;
-    ListView_SetColumnWidth(g_detail, 0, w0);
-    int w1 = rc.right - w0 - S(2);
-    ListView_SetColumnWidth(g_detail, 1, w1 > S(40) ? w1 : S(40));
+    kv_fit_cols(g_detail, 40);
 }
 
 /* A row's value (or its label, on a heading) to the clipboard. */
@@ -4517,6 +4563,7 @@ static void detail_say(const wchar_t *text)
 {
     swprintf(g_detail_empty, COUNT_OF(g_detail_empty), L"%ls", text ? text : L"");
     ListView_DeleteAllItems(g_detail);
+    layout_detail();
     InvalidateRect(g_detail, NULL, TRUE);
 }
 
@@ -4654,7 +4701,7 @@ static void show_detail(void)
         free(dl.items);
         versions_fit_cols();
     }
-    detail_fit_cols();
+    layout_detail();
     SendMessageW(g_detail, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_detail, NULL, TRUE);
 }
@@ -4901,16 +4948,7 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             ListView_InsertColumn(lv, 1, &c);
         }
         drive_form(lv, d);
-        {
-            /* The labels as wide as the widest, the values the rest. */
-            RECT rc;
-            GetClientRect(lv, &rc);
-            ListView_SetColumnWidth(lv, 0, LVSCW_AUTOSIZE);
-            int w0 = ListView_GetColumnWidth(lv, 0) + S(12);
-            if (w0 > rc.right * 45 / 100) w0 = rc.right * 45 / 100;
-            ListView_SetColumnWidth(lv, 0, w0);
-            ListView_SetColumnWidth(lv, 1, rc.right - w0 - GetSystemMetrics(SM_CXVSCROLL));
-        }
+        kv_fit_cols(lv, 45); /* the labels as wide as the widest, the values the rest */
         /* Under the facts: what being marked lost means, or what the drive's
          * health says to do. */
         const wchar_t *note = d->lost_ms && d->secondary
@@ -10383,6 +10421,32 @@ static int flow(const int *ids, int n, int x, int y, int w)
     return n ? cy + bh - y : 0;
 }
 
+/* The right of the Primary Database tab: the details form over the list of
+ * versions. With no versions (a folder, nothing selected) the form takes
+ * it all; otherwise the list gets a header and up to five rows, between a
+ * third and half of it. */
+static RECT g_detail_area;
+static void layout_detail(void)
+{
+    if (!g_detail || !g_list || IsRectEmpty(&g_detail_area)) return;
+    int rx = g_detail_area.left, rw = g_detail_area.right - g_detail_area.left, y = g_detail_area.top;
+    int body = g_detail_area.bottom - y, gap = S(6), n = ListView_GetItemCount(g_list);
+    if (n == 0) {
+        ShowWindow(g_list, SW_HIDE);
+        mv(g_detail, rx, y, rw, body);
+    } else {
+        int row = font_h(g_font) + S(8);
+        int list_h = row * (2 + (n < 5 ? n : 5));
+        if (list_h < body / 3) list_h = body / 3;
+        if (list_h > body / 2) list_h = body / 2;
+        int detail_h = body - list_h - gap;
+        mv(g_detail, rx, y, rw, detail_h);
+        mv(g_list, rx, y + detail_h + gap, rw, list_h);
+        ShowWindow(g_list, SW_SHOWNA);
+    }
+    detail_fit_cols();
+}
+
 static void layout_pages(void)
 {
     if (!g_page[0]) return;
@@ -10397,14 +10461,8 @@ static void layout_pages(void)
     mv(g_search, pad, y, tree_w, search_h);
     mv(g_tree, pad, y + below, tree_w, body - below);
     mv(g_results, pad, y + below, tree_w, body - below);
-    int rx = pad * 2 + tree_w, rw = w - rx - pad;
-    int list_h = (font_h(g_font) + S(8)) * 6; /* a header and five versions */
-    if (list_h < body * 42 / 100) list_h = body * 42 / 100;
-    if (list_h > body * 62 / 100) list_h = body * 62 / 100;
-    int detail_h = body - list_h - gap;
-    mv(g_detail, rx, y, rw, detail_h);
-    mv(g_list, rx, y + detail_h + gap, rw, list_h);
-    detail_fit_cols();
+    SetRect(&g_detail_area, pad * 2 + tree_w, y, w - pad, y + body);
+    layout_detail();
 
     /* Next backup */
     int lw = button_width(CTL(ID_NEXT_FOR_LABEL)) - S(18);

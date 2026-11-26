@@ -672,6 +672,33 @@ static class Shots {
         }
     }
 
+    // Select backup root / folder / ... and then, if the last name is a file,
+    // that file in the file list beside the tree (the tree holds folders only).
+    static bool Select(params string[] path) {
+        IntPtr tree = Control(Id("ID_TREE"), "SysTreeView32");
+        if (tree == IntPtr.Zero) { Log("no tree"); return false; }
+        if (path.Length > 1) {
+            using (Remote rm = new Remote(proc.Id)) {
+                IntPtr item = IntPtr.Zero;
+                for (int i = 0; i < path.Length - 1; i++) {
+                    if (item != IntPtr.Zero) { Send(tree, TVM_EXPAND, (IntPtr)2, item); Thread.Sleep(400); }
+                    item = TreeChild(rm, tree, item, path[i]);
+                    if (item == IntPtr.Zero) break;
+                }
+                if (item != IntPtr.Zero) {
+                    Send(tree, TVM_EXPAND, (IntPtr)2, item);
+                    Thread.Sleep(400);
+                    if (TreeChild(rm, tree, item, path[path.Length - 1]) == IntPtr.Zero) {
+                        string[] folder = new string[path.Length - 1];
+                        Array.Copy(path, folder, folder.Length);
+                        return TreeSelect(folder) && ListSelect("ID_FILES", path[path.Length - 1]);
+                    }
+                }
+            }
+        }
+        return TreeSelect(path);
+    }
+
     static string ListText(Remote rm, IntPtr lv, int row, int col) {
         LVITEM it = new LVITEM();
         it.iSubItem = col;
@@ -894,8 +921,10 @@ static class Shots {
         WaitIdle("on-opening", 90000);
         Foreground(main);
         Shot(main, "tab-1-primary-database");
-        if (TreeSelect("Documents", "Taxes", "2023")) Shot(main, "tab-1-a-file-selected");
-        if (TreeSelect("Photos", "2023", "Holiday", "IMG_0001")) Shot(main, "tab-1-a-changed-file-selected");
+        if (Select("Documents", "Taxes", "2023")) Shot(main, "tab-1-a-folder-selected");
+        if (Select("Documents", "Taxes", "2023", "Tax return 2023")) Shot(main, "tab-1-a-file-selected");
+        if (Select("Documents", "Letters", "Car insurance")) Shot(main, "tab-1-a-deleted-file-selected");
+        if (Select("Photos", "2023", "Holiday", "IMG_0001")) Shot(main, "tab-1-a-changed-file-selected");
         IntPtr search = Control(Id("ID_SEARCH"), "Edit");
         if (search != IntPtr.Zero) {
             SetText(search, "receipt");
@@ -905,7 +934,7 @@ static class Shots {
             Thread.Sleep(1000);
         }
         if (TreeSelect("Documents", "Letters")) ContextMenu("tab-1-right-click-a-folder", "ID_TREE", "SysTreeView32");
-        if (TreeSelect("Photos", "2023", "Holiday", "IMG_0001")) ContextMenu("tab-1-right-click-a-changed-file", "ID_TREE", "SysTreeView32");
+        if (Select("Photos", "2023", "Holiday", "IMG_0001")) ContextMenu("tab-1-right-click-a-changed-file", "ID_FILES", "SysListView32");
         Tab(0);
         string[] tabs = { "primary-database", "next-backup", "local-backups", "starred", "encryption", "restore" };
         for (int i = 1; i < 6; i++) {
@@ -1052,6 +1081,64 @@ static class Shots {
             OpenAndCapture("error-a-backup-root-is-missing", db, db);
         } catch (Exception e) { Log("missing-root step failed: " + e.Message); }
         try { if (Directory.Exists(moved)) Directory.Move(moved, projects); } catch (Exception) { }
+
+        // 5. The database opened with none of its files here and no drive
+        //    plugged in (as on a new PC): everything is faded, and each file
+        //    says which drives hold it. Then the red drive is plugged in.
+        NoLocalData();
+    }
+
+    static void NoLocalData() {
+        string here = Path.GetDirectoryName(db);
+        string[] away = { "Data", @"Drives\Blue", @"Cloud\OneDrive" };
+        List<string> moved = new List<string>();
+        try {
+            foreach (string a in away) {
+                string from = Path.Combine(here, a);
+                if (Directory.Exists(from)) { Directory.Move(from, from + " (away)"); moved.Add(from); }
+            }
+            Registry("0", db);
+            Start(db);
+            Stopwatch sw = Stopwatch.StartNew();
+            for (int n = 0; sw.ElapsedMilliseconds < 25000 && n < 4; n++) {
+                IntPtr d = WaitDialog(4000, IntPtr.Zero);
+                if (d == IntPtr.Zero) break;
+                Shot(d, "no-local-data-on-opening" + (n == 0 ? "" : "-then-" + (n + 1)));
+                Dismiss(d);
+                Thread.Sleep(800);
+            }
+            WaitIdle("no-local-data", 60000);
+            Foreground(main);
+            Shot(main, "no-local-data-tab-1");
+            if (Select("Documents", "Letters")) Shot(main, "no-local-data-letters");
+            if (Select("Documents", "Letters", "Lease agreement")) Shot(main, "no-local-data-a-faded-file-selected");
+            if (Select("Photos", "2023", "Holiday")) Shot(main, "no-local-data-holiday-photos");
+            if (Select("Documents", "Letters", "Lease agreement")) ContextMenu("no-local-data-right-click-a-faded-file", "ID_FILES", "SysListView32");
+            if (TreeSelect("Documents")) Shot(main, "no-local-data-a-backup-root-selected");
+            Tab(2);
+            Shot(main, "no-local-data-tab-3-local-backups");
+            Tab(0);
+            DialogStep("no-local-data-help-what-the-file-list-shows", "ID_M_LEGEND", false);
+
+            // The red drive plugged in: what it holds is no longer faded.
+            Diskpart("attach-red.txt");
+            if (!WaitDrive(@"R:\", true, 20000)) Log("the red drive's letter did not appear");
+            Thread.Sleep(3000);
+            IntPtr q = WaitDialog(3000, IntPtr.Zero);
+            if (q != IntPtr.Zero) { Shot(q, "no-local-data-red-plugged-in-question"); Dismiss(q); }
+            WaitIdle("no-local-data-red", 60000);
+            Tab(0);
+            if (Select("Documents", "Letters")) Shot(main, "no-local-data-red-plugged-in-letters");
+            if (Select("Documents", "Letters", "Lease agreement")) Shot(main, "no-local-data-red-plugged-in-a-file-selected");
+            if (Select("Photos", "2023", "Holiday")) Shot(main, "no-local-data-red-plugged-in-holiday-photos");
+            Diskpart("detach-red.txt");
+            WaitDrive(@"R:\", false, 15000);
+            Thread.Sleep(1500);
+        } catch (Exception e) { Log("no-local-data step failed: " + e.Message); }
+        Stop();
+        foreach (string from in moved) {
+            try { Directory.Move(from + " (away)", from); } catch (Exception e) { Log("could not put back " + from + ": " + e.Message); }
+        }
     }
 
     static void WrongPassphrase() {

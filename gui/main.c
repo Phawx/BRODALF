@@ -4430,34 +4430,246 @@ static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
 
 static const drive_snap *g_edit_drive;
 static wchar_t g_edit_name[256], g_edit_location[256];
+static int g_drive_note_warn; /* the note under the facts is advice to replace the drive */
+
+/* The drive details as a form: a label and its value on each row, under
+ * headings. A row's data says what it is: 0 a fact, 1 a heading, 2 space. */
+enum { KV_FACT, KV_HEAD, KV_SPACE };
+
+static int lv_index(HWND lv, int pos);
+static void dialog_drop_rows(HWND dlg, int first_id, int next_id);
+
+static void kv_row(HWND lv, int kind, const wchar_t *label, const wchar_t *fmt, ...)
+{
+    wchar_t v[1024] = L"";
+    if (fmt) {
+        va_list ap;
+        va_start(ap, fmt);
+        vswprintf(v, 1024, fmt, ap);
+        va_end(ap);
+    }
+    if (kind == KV_HEAD && ListView_GetItemCount(lv) > 0) kv_row(lv, KV_SPACE, L"", NULL);
+    LVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_TEXT | LVIF_PARAM;
+    it.iItem = ListView_GetItemCount(lv);
+    it.lParam = kind;
+    it.pszText = (wchar_t *)label;
+    int row = (int)SendMessageW(lv, LVM_INSERTITEMW, 0, (LPARAM)&it);
+    LVITEMW sub;
+    memset(&sub, 0, sizeof(sub));
+    sub.iSubItem = 1;
+    sub.pszText = v;
+    SendMessageW(lv, LVM_SETITEMTEXTW, (WPARAM)row, (LPARAM)&sub);
+}
+
+/* Headings in semibold, labels in grey, values in the text colour. */
+static LRESULT kv_draw(NMLVCUSTOMDRAW *cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: return CDRF_NOTIFYSUBITEMDRAW;
+    case CDDS_ITEMPREPAINT | CDDS_SUBITEM: {
+        HWND lv = cd->nmcd.hdr.hwndFrom;
+        int item = (int)cd->nmcd.dwItemSpec, kind = lv_index(lv, item);
+        int selected = (ListView_GetItemState(lv, item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+        SelectObject(cd->nmcd.hdc, kind == KV_HEAD && g_font_semi ? g_font_semi : (HFONT)SendMessageW(lv, WM_GETFONT, 0, 0));
+        cd->clrText = g_hc || selected || kind == KV_HEAD || cd->iSubItem != 0 ? ListView_GetTextColor(lv) : theme_gray();
+        return CDRF_NEWFONT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
+/* The facts about one drive or extra place, under headings. */
+static void drive_form(HWND lv, const drive_snap *d)
+{
+    wchar_t when[64], a[64], b[64];
+    wchar_t *root = widen(d->root);
+    int is_drive = strcmp(d->kind, "drive") == 0;
+    kv_row(lv, KV_HEAD, d->secondary ? T(L"This extra place") : T(L"This drive"), NULL);
+    format_time_ms(d->last_seen_ms, when, 64);
+    if (!is_drive) kv_row(lv, KV_FACT, T(L"State"), L"%ls", T(L"Cloud account from an earlier version (not supported in this version)"));
+    else if (d->lost_ms) {
+        wchar_t lost[64];
+        format_time_ms(d->lost_ms, lost, 64);
+        /* An extra place has its own words: it is gone, not lost. */
+        int broken = strcmp(d->lost_why, "broken") == 0;
+        kv_row(lv, KV_FACT, T(L"State"),
+               d->secondary ? (broken ? T(L"Marked broken on %ls") : T(L"Marked gone %ls")) : broken ? T(L"Marked broken %ls") : T(L"Marked lost %ls"),
+               lost);
+    } else if (d->connected) kv_row(lv, KV_FACT, T(L"State"), T(L"Plugged in now at %ls"), root ? root : L"");
+    else if (root && *root) kv_row(lv, KV_FACT, T(L"State"), T(L"Not plugged in. Last seen %ls at %ls"), when, root);
+    else kv_row(lv, KV_FACT, T(L"State"), T(L"Not plugged in. Last seen %ls"), when);
+    kv_row(lv, KV_FACT, T(L"Encryption"), L"%ls", d->hide_names ? T(L"Encrypted, names hidden") : d->encrypted ? T(L"Encrypted") : T(L"Not encrypted"));
+    format_time_ms(d->added_ms, when, 64);
+    kv_row(lv, KV_FACT, T(L"Set up"), TN(d->copies, L"%ls, %lld copy recorded", L"%ls, %lld copies recorded"), when, (long long)d->copies);
+    if (is_drive && !d->lost_ms && d->copies) {
+        format_bytes(d->bytes_held, a, 64);
+        kv_row(lv, KV_FACT, T(L"Good copies"), L"%ls", a);
+        if (d->oldest_unread_ms) {
+            format_time_ms(d->oldest_unread_ms, when, 64);
+            kv_row(lv, KV_FACT, T(L"Checked"), T(L"Some never, since they were written (the oldest %ls)%ls"), when,
+                   d->check_due ? T(L" (due for a check)") : L"");
+        } else {
+            format_time_ms(d->oldest_check_ms, when, 64);
+            kv_row(lv, KV_FACT, T(L"Checked"), T(L"All; the oldest check was %ls%ls"), when, d->check_due ? T(L" (due for a check)") : L"");
+        }
+    }
+    free(root);
+
+    if (is_drive) {
+        kv_row(lv, KV_HEAD, T(L"Where it stands"), NULL);
+        const drive_fig *g = fig_of(d->id);
+        if (!g || !g->has_ms)
+            kv_row(lv, KV_FACT, T(L"Its copies"), L"%ls", g ? T(L"Could not be read from the database.") : T(L"Being read..."));
+        else {
+            bd_media_status ms = g->ms;
+            format_bytes(ms.bytes_current, a, 64);
+            kv_row(lv, KV_FACT, T(L"As they are now"), TN(ms.files_current, L"%lld file (%ls)", L"%lld files (%ls)"), (long long)ms.files_current, a);
+            if (ms.files_behind) {
+                format_bytes(ms.bytes_behind, a, 64);
+                kv_row(lv, KV_FACT, T(L"Changed since"), TN(ms.files_behind, L"%lld file (%ls): only an older version is on it",
+                                                             L"%lld files (%ls): only an older version is on it"),
+                       (long long)ms.files_behind, a);
+            }
+            if (ms.files_not_here) {
+                format_bytes(ms.bytes_not_here, a, 64);
+                kv_row(lv, KV_FACT, T(L"Not on it at all"), TN(ms.files_not_here, L"%lld file (%ls)", L"%lld files (%ls)"),
+                       (long long)ms.files_not_here, a);
+            }
+            if (ms.deleted_kept)
+                kv_row(lv, KV_FACT, T(L"Deleted, still kept"), TN(ms.deleted_kept, L"%lld file deleted from its folder", L"%lld files deleted from their folders"),
+                       (long long)ms.deleted_kept);
+            if (ms.old_versions) {
+                format_bytes(ms.old_bytes, a, 64);
+                kv_row(lv, KV_FACT, T(L"Older versions"), L"%lld (%ls)", (long long)ms.old_versions, a);
+            }
+            if (ms.last_backup_ms) {
+                wchar_t failed[96] = L"";
+                format_time_ms(ms.last_backup_ms, when, 64);
+                if (ms.last_backup_failed) swprintf(failed, 96, T(L", %lld failed"), (long long)ms.last_backup_failed);
+                kv_row(lv, KV_FACT, T(L"Last backup"), T(L"%ls: %ls, %lld files copied%ls"), when,
+                       job_end_words(ms.last_backup_status, ms.last_backup_end_ms), (long long)ms.last_backup_files, failed);
+            } else
+                kv_row(lv, KV_FACT, T(L"Last backup"), L"%ls", T(L"Never backed up to"));
+            if (ms.last_check_ms) {
+                format_time_ms(ms.last_check_ms, when, 64);
+                kv_row(lv, KV_FACT, T(L"Last check"),
+                       strcmp(ms.last_check_kind, "read back") == 0 ? T(L"%ls: %ls (only the copies not checked lately)") : L"%ls: %ls", when,
+                       job_end_words(ms.last_check_status, ms.last_check_ms));
+            } else
+                kv_row(lv, KV_FACT, T(L"Last check"), L"%ls", T(L"Never: Check drive... checks its copies"));
+            if (ms.copies_bad)
+                kv_row(lv, KV_FACT, T(L"Damaged or missing"), TN(ms.copies_bad, L"%lld copy when last checked: the next backup to it writes it again",
+                                                                  L"%lld copies when last checked: the next backup to it writes them again"),
+                       (long long)ms.copies_bad);
+            if (ms.copies_never_read)
+                kv_row(lv, KV_FACT, T(L"Never checked"), TN(ms.copies_never_read, L"%lld copy, since it was written", L"%lld copies, since they were written"),
+                       (long long)ms.copies_never_read);
+        }
+    }
+
+    /* An extra place is a folder: the disk under it says nothing about it. */
+    if (!is_drive || d->secondary) return;
+    kv_row(lv, KV_HEAD, T(L"The disk"), NULL);
+    if (!d->has_hw) {
+        kv_row(lv, KV_FACT, T(L"Disk"), L"%ls", T(L"No details yet: they are read the next time it is plugged in."));
+        return;
+    }
+    const bd_drive_hw *h = &d->hw;
+    wchar_t *vendor = widen(h->vendor), *model = widen(h->model), *bus = widen(h->bus), *serial = widen(h->serial);
+    wchar_t *fw = widen(h->firmware), *vname = widen(h->volume_name), *vser = widen(h->volume_serial), *fs = widen(h->filesystem);
+    wchar_t *health = widen(h->health), *note = widen(h->note);
+    a[0] = 0;
+    if (h->disk_bytes > 0) format_bytes(h->disk_bytes, a, 64);
+    wchar_t name[256], line[512] = L"";
+    swprintf(name, 256, L"%ls%ls%ls", vendor, *vendor && *model ? L" " : L"", model);
+    const wchar_t *parts[3] = {name, a, bus};
+    for (int i = 0; i < 3; i++)
+        if (*parts[i]) swprintf(line + wcslen(line), 512 - wcslen(line), L"%ls%ls", *line ? L", " : L"", parts[i]);
+    if (*line) kv_row(lv, KV_FACT, T(L"Disk"), L"%ls", line);
+    if (*serial) kv_row(lv, KV_FACT, T(L"Serial number"), L"%ls%ls%ls", serial, *fw ? T(L", firmware ") : L"", fw);
+    if (*vser) kv_row(lv, KV_FACT, T(L"Volume"), T(L"\"%ls\" (%ls, serial %ls)"), *vname ? vname : T(L"no name"), fs, vser);
+    if (h->smart) {
+        wtext t = {NULL, 0, 0};
+        wadd(&t, L"%ls", *health ? health : T(L"unknown"));
+        if (h->temperature_c >= 0) wadd(&t, L", %d \x00B0" L"C", h->temperature_c);
+        if (h->power_on_hours >= 0) wadd(&t, T(L", %lld hours powered on"), (long long)h->power_on_hours);
+        if (h->power_cycles >= 0) wadd(&t, T(L", %lld power cycles"), (long long)h->power_cycles);
+        if (h->percent_used >= 0) wadd(&t, T(L", %d%% worn"), h->percent_used);
+        kv_row(lv, KV_FACT, T(L"Health"), L"%ls", t.p ? t.p : L"");
+        free(t.p);
+        if (h->reallocated_sectors > 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
+            kv_row(lv, KV_FACT, T(L"Sectors"), T(L"%lld reallocated, %lld waiting to be reallocated, %lld unreadable"),
+                   (long long)(h->reallocated_sectors > 0 ? h->reallocated_sectors : 0),
+                   (long long)(h->pending_sectors > 0 ? h->pending_sectors : 0),
+                   (long long)(h->uncorrectable_sectors > 0 ? h->uncorrectable_sectors : 0));
+    } else if (h->temperature_c >= 0)
+        kv_row(lv, KV_FACT, T(L"Temperature"), L"%d \x00B0" L"C", h->temperature_c);
+    if (*note) kv_row(lv, KV_FACT, T(L"Note"), L"%ls", note);
+    if (d->total > 0) {
+        format_bytes(d->freeb, a, 64);
+        format_bytes(d->total, b, 64);
+        kv_row(lv, KV_FACT, T(L"Free space"), T(L"%ls free of %ls when last seen"), a, b);
+    }
+    format_time_ms(d->hw_read_ms, when, 64);
+    kv_row(lv, KV_FACT, T(L"Read from the drive"), L"%ls", when);
+    free(vendor); free(model); free(bus); free(serial); free(fw); free(vname); free(vser); free(fs); free(health); free(note);
+}
 
 static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_CTLCOLORSTATIC && !g_hc && g_drive_note_warn && GetDlgCtrlID((HWND)lp) == IDC_DRIVE_NOTE) {
+        /* Advice to replace the drive, in the warning colour. */
+        LRESULT r;
+        HDC dc = (HDC)wp;
+        if (!theme_ctlcolor(msg, wp, lp, &r)) {
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+            r = (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        SetTextColor(dc, tone_text(TONE_WARN));
+        return (INT_PTR)r;
+    }
     INT_PTR themed;
     if (theme_dialog(dlg, msg, wp, lp, &themed)) return themed;
     (void)lp;
     switch (msg) {
     case WM_INITDIALOG: {
         const drive_snap *d = g_edit_drive;
-        wtext t = {NULL, 0, 0};
-        wchar_t added[64], copies[32];
-        add_drive_heading(&t, d, L"");
-        format_time_ms(d->added_ms, added, 64);
-        swprintf(copies, 32, L"%lld", (long long)d->copies);
-        wadd(&t, T(L"    Set up %ls, %ls copies recorded\r\n\r\n"), added, copies);
-        if (strcmp(d->kind, "drive") == 0) {
-            add_drive_status(&t, d->id, L"");
-            wadd(&t, L"\r\n");
+        HWND lv = GetDlgItem(dlg, IDC_DRIVE_INFO);
+        ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        {
+            LVCOLUMNW c;
+            memset(&c, 0, sizeof(c));
+            c.mask = LVCF_WIDTH;
+            c.cx = S(160);
+            ListView_InsertColumn(lv, 0, &c);
+            ListView_InsertColumn(lv, 1, &c);
         }
-        /* An extra place is a folder: the disk under it says nothing about it. */
-        if (!d->secondary) add_drive_lines(&t, d, L"");
-        if (d->lost_ms && d->secondary)
-            wadd(&t, T(L"\r\nBRODALF no longer copies starred files there. Your full copies do not change: extra places never count "
-                     L"toward them. If it is back, choose Found it.\r\n"));
-        else if (d->lost_ms)
-            wadd(&t, T(L"\r\nIts copies still restore if it turns up, but they no longer count toward your full copies, so the "
-                     L"files it held are backed up again to your other drives. If you find it, choose Found it.\r\n"));
-        SetDlgItemTextW(dlg, IDC_DRIVE_INFO, t.p ? t.p : L"");
+        drive_form(lv, d);
+        {
+            /* The labels as wide as the widest, the values the rest. */
+            RECT rc;
+            GetClientRect(lv, &rc);
+            ListView_SetColumnWidth(lv, 0, LVSCW_AUTOSIZE);
+            int w0 = ListView_GetColumnWidth(lv, 0) + S(12);
+            if (w0 > rc.right * 45 / 100) w0 = rc.right * 45 / 100;
+            ListView_SetColumnWidth(lv, 0, w0);
+            ListView_SetColumnWidth(lv, 1, rc.right - w0 - GetSystemMetrics(SM_CXVSCROLL));
+        }
+        /* Under the facts: what being marked lost means, or what the drive's
+         * health says to do. */
+        const wchar_t *note = d->lost_ms && d->secondary
+                                  ? T(L"BRODALF no longer copies starred files there. Your full copies do not change: extra places never count "
+                                      L"toward them. If it is back, choose Found it.")
+                              : d->lost_ms ? T(L"Its copies still restore if it turns up, but they no longer count toward your full copies, so the "
+                                               L"files it held are backed up again to your other drives. If you find it, choose Found it.")
+                              : d->secondary ? NULL
+                                             : replace_advice(d);
+        g_drive_note_warn = note && !d->lost_ms;
+        SetDlgItemTextW(dlg, IDC_DRIVE_NOTE, note ? note : L"");
+        if (!note) dialog_drop_rows(dlg, IDC_DRIVE_NOTE, IDC_DRIVE_LOST);
         SetDlgItemTextW(dlg, IDC_DRIVE_LOST, d->lost_ms ? T(L"Found it") : d->secondary ? T(L"It is gone...") : T(L"Mark lost or broken..."));
         if (d->secondary) {
             /* An extra place, not a drive: its own words. */
@@ -4466,7 +4678,6 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(dlg, IDC_DRIVE_LOC_TEXT, T(L"Where it is (optional):"));
         }
         EnableWindow(GetDlgItem(dlg, IDC_DRIVE_LOST), strcmp(d->kind, "drive") == 0);
-        free(t.p);
         wchar_t *name = widen(d->label), *loc = widen(d->location);
         SetDlgItemTextW(dlg, IDC_DRIVE_NAME, name);
         fill_places_combo(GetDlgItem(dlg, IDC_DRIVE_LOCATION), loc);
@@ -4491,6 +4702,14 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             return TRUE;
         }
         break;
+    case WM_NOTIFY: {
+        const NMHDR *nh = (const NMHDR *)lp;
+        if (nh->idFrom == IDC_DRIVE_INFO && nh->code == NM_CUSTOMDRAW) {
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, kv_draw((NMLVCUSTOMDRAW *)lp));
+            return TRUE;
+        }
+        break;
+    }
     }
     return FALSE;
 }

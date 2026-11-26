@@ -325,7 +325,11 @@ are offered in a list, so drives kept together get the same words.
 places**) shows where each drive stands, from the database alone, so it
 works with the drive in a box: what it holds, what changed since, its last
 backup and check, copies found missing or damaged, and its total, free and
-kept-free space. **View > Status of every drive** puts every drive in one
+kept-free space. Its details window puts the name and where it is kept at
+the top, then the facts as a form, one label and its value to a row, under
+**This drive**, **Where it stands** and **The disk**; when the drive's own
+health says to replace it, that advice is under them in the warning colour.
+**View > Status of every drive** puts every drive in one
 table, and the **Local backups** tab shows them all as a list. **File >
 Export the file list (CSV)** writes every file and the drives holding it,
 for a spreadsheet.

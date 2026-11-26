@@ -169,6 +169,31 @@ bd_status bd_backup_sets(bd_catalog *cat, bd_set_progress *out, int cap, int *se
     return BD_OK;
 }
 
+bd_status bd_backup_set_drives(bd_catalog *cat, bd_set_drive *out, int cap, int *n)
+{
+    if (n) *n = 0;
+    if (!out || cap <= 0) return BD_OK;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "WITH h AS (SELECT DISTINCT n.id AS nid, c.media_id AS mid FROM nodes n"
+                           "  JOIN copies c ON c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c")
+                           "  WHERE n.is_dir=0 AND n.deleted=0 AND " BD_SQL_ACTIVE("n") "),"
+                           " r AS (SELECT mid, ROW_NUMBER() OVER (PARTITION BY nid ORDER BY mid) AS k FROM h)"
+                           " SELECT k, mid, COUNT(*) FROM r GROUP BY k, mid ORDER BY k, mid",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "work out which drives make up each full copy");
+    int got = 0;
+    while (got < cap && sqlite3_step(q) == SQLITE_ROW) {
+        out[got].set = sqlite3_column_int(q, 0);
+        out[got].media_id = sqlite3_column_int64(q, 1);
+        out[got].files = sqlite3_column_int64(q, 2);
+        got++;
+    }
+    sqlite3_finalize(q);
+    if (n) *n = got;
+    return BD_OK;
+}
+
 bd_status bd_list_largest(bd_catalog *cat, int limit, bd_risk_fn fn, void *ctx)
 {
     bd_target t;

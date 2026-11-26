@@ -191,7 +191,7 @@ void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx)
 }
 
 
-static void emit(bd_catalog *cat, int done)
+static void emit_as(bd_catalog *cat, int done, int recorded)
 {
     bd_progress p;
     p.phase = cat->prog_phase ? cat->prog_phase : "";
@@ -203,7 +203,20 @@ static void emit(bd_catalog *cat, int done)
     p.file_bytes_done = cat->prog_file_bytes;
     p.file_bytes_total = cat->prog_file_total;
     p.done = done;
+    p.recorded = recorded;
     cat->progress(cat->progress_ctx, &p);
+}
+
+static void emit(bd_catalog *cat, int done)
+{
+    emit_as(cat, done, 0);
+}
+
+void bd_report_recorded(bd_catalog *cat)
+{
+    if (!cat->progress) return;
+    cat->progress_last_ms = bd_now_ms();
+    emit_as(cat, 0, 1);
 }
 
 void bd_progress_begin(bd_catalog *cat, const char *phase, int64_t files_total, int64_t bytes_total)

@@ -689,7 +689,7 @@ static void test_report(void)
 }
 
 typedef struct {
-    int reports, ends;
+    int reports, ends, recorded;
     bd_progress last;
     char phase[32];
     int64_t max_file_total;
@@ -700,6 +700,7 @@ static void on_progress(void *ctx, const bd_progress *p)
     progress_log *l = ctx;
     l->reports++;
     if (p->done) l->ends++;
+    if (p->recorded) l->recorded++;
     l->last = *p;
     snprintf(l->phase, sizeof(l->phase), "%s", p->phase);
     l->last.phase = l->phase;
@@ -760,6 +761,7 @@ static void test_moves_guard_and_progress(void)
     REQUIRE_OK(bd_backup(cat, d1, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 60);
     CHECK(pl.ends == 1 && strcmp(pl.last.phase, "backup") == 0);
+    CHECK(pl.recorded > 0); /* the window shows the full copies growing from these */
     CHECK(pl.last.files_total == 60 && pl.last.files_done == 60 && pl.last.bytes_done == pl.last.bytes_total);
 
     /* Rename a folder holding a third of the files: the scan sees the same
@@ -829,7 +831,7 @@ static void test_moves_guard_and_progress(void)
     CHECK(ss.files_changed == 35);
     REQUIRE_OK(bd_backup_preview(cat, d1, 0, &pv), cat);
     CHECK(pv.files_to_copy == 35 && pv.files_changed == 35 && pv.files_new == 0);
-    CHECK(pv.files_held == 60 && pv.held_changed == 35 && pv.mass_change);
+    CHECK(pv.files_held == 60 && pv.held_changed == 35 && pv.mass_change && pv.held_deleted == 0);
     {
         int changed = 0;
         REQUIRE_OK(bd_list_changed_on_media(cat, d1, count_changed, &changed), cat);
@@ -850,6 +852,13 @@ static void test_moves_guard_and_progress(void)
     CHECK(bs.files_copied == 35 && bs.copies_alongside == 35);
     REQUIRE_OK(bd_backup_preview(cat, d1, 0, &pv), cat);
     CHECK(pv.files_to_copy == 0 && !pv.mass_change);
+    {
+        /* The one full copy there is, is on the first drive. */
+        bd_set_drive sd[8];
+        int nsd = 0;
+        REQUIRE_OK(bd_backup_set_drives(cat, sd, 8, &nsd), cat);
+        CHECK(nsd == 1 && sd[0].set == 1 && sd[0].media_id == d1 && sd[0].files == 60);
+    }
 
     /* Where the drive stands. */
     bd_media_status mst;
@@ -1910,7 +1919,7 @@ static void test_deleted_files(void)
     bd_catalog_close(cat);
 }
 
-typedef struct { int n; int64_t node_id; char rel[256]; int differ; } damaged_list;
+typedef struct { int n; int64_t node_id, version_id; char rel[256]; int differ; } damaged_list;
 
 static int collect_damaged(void *ctx, const bd_damaged_info *d)
 {
@@ -1919,6 +1928,7 @@ static int collect_damaged(void *ctx, const bd_damaged_info *d)
         l->node_id = d->node_id;
         snprintf(l->rel, sizeof(l->rel), "%s", d->rel_path);
         l->differ = strcmp(d->hash_on_record, d->hash_found) != 0;
+        l->version_id = d->version_id;
     }
     return 0;
 }
@@ -1994,6 +2004,10 @@ static void test_bitrot_and_sizes(void)
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, "a.txt", at("br/fixed"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1 && file_equals(at("br/fixed/a.txt"), "alpha alpha alpha"));
+    /* The list names the good version, which the window restores. */
+    CHECK(dl.version_id > 0);
+    REQUIRE_OK(bd_restore_version(cat, dl.version_id, at("br/good"), &rs, quiet, NULL), cat);
+    CHECK(rs.files_restored == 1 && file_equals(at("br/good/a.txt"), "alpha alpha alpha"));
     /* Or the user says the change was theirs: it becomes a new version. */
     REQUIRE_OK(bd_damaged_accept(cat, dl.node_id), cat);
     memset(&dl, 0, sizeof(dl));
@@ -2043,8 +2057,9 @@ static void test_bitrot_and_sizes(void)
 
 static int count_conflict(void *ctx, const bd_conflict_info *c)
 {
-    (void)c;
-    (*(int *)ctx)++;
+    /* Each says which version it was going to put there, so the window
+     * can restore it somewhere else. */
+    if (c->version_id > 0) (*(int *)ctx)++;
     return 0;
 }
 

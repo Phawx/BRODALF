@@ -1897,8 +1897,12 @@ static void test_copies_on(void)
     bd_list_sources(cat, source_where, &sw);
     CHECK(sw.backed_up == 3);
 
-    /* A drive marked lost no longer counts. */
+    /* A drive marked lost no longer counts, but while it is plugged in it
+     * is named (a restore can read it); unplugged, it is not. */
     REQUIRE_OK(bd_media_mark_lost(cat, blue, "lost"), cat);
+    w = where_of(cat, src, 0, "sub");
+    CHECK(strcmp(w.on, "Blue, Red") == 0 && strcmp(w.plugged, "Blue") == 0 && w.backed_up == 3);
+    bd_media_disconnect(cat, blue);
     w = where_of(cat, src, 0, "sub");
     CHECK(strcmp(w.on, "Red") == 0 && strcmp(w.plugged, "") == 0 && w.backed_up == 3);
     w = where_of(cat, src, 0, "one.txt");

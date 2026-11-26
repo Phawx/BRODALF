@@ -40,12 +40,17 @@ static bd_node_state folder_state(int64_t total, int64_t available, int64_t with
 #define CUR_COPY \
     "EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_USABLE("c") ")"
 
+/* SQL: drive m is one to name where copies are: it is not marked lost or
+ * broken, or it is plugged in now (a restore reads from it then). */
+#define NAMED_DRIVE \
+    "(m.retired_ms IS NULL OR EXISTS(SELECT 1 FROM temp.connected rk WHERE rk.media_id=m.id))"
+
 /* Drives and extra places holding a good copy of the current version of a
  * file under a folder (?2 its path, "" for the whole source ?1), counting
  * the deleted files when ?3 is not 0: name, plugged in now. */
 #define DRIVES_UNDER \
     "SELECT m.label, k.media_id IS NOT NULL FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id" \
-    " WHERE m.retired_ms IS NULL AND m.id IN (SELECT c.media_id FROM nodes n JOIN copies c ON c.version_id=n.current_version_id" \
+    " WHERE " NAMED_DRIVE " AND m.id IN (SELECT c.media_id FROM nodes n JOIN copies c ON c.version_id=n.current_version_id" \
     "   WHERE n.source_id=?1 AND n.is_dir=0 AND (n.deleted=0 OR ?3) AND c.state='ok'" \
     "   AND (?2='' OR substr(n.rel_path,1,length(?2)+1)=?2||'/'))" \
     " ORDER BY m.label COLLATE NOCASE"
@@ -159,15 +164,15 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
                            " n.mtime_ns, COALESCE((SELECT mtime_ns FROM versions WHERE id=n.current_version_id),0),"
                            " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label AS label FROM copies c"
                            "   JOIN media m ON m.id=c.media_id WHERE c.version_id=n.current_version_id AND c.state='ok'"
-                           "   AND m.retired_ms IS NULL ORDER BY m.label COLLATE NOCASE)),"
+                           "   AND " NAMED_DRIVE " ORDER BY m.label COLLATE NOCASE)),"
                            " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label AS label FROM copies c"
                            "   JOIN media m ON m.id=c.media_id JOIN temp.connected k ON k.media_id=m.id"
-                           "   WHERE c.version_id=n.current_version_id AND c.state='ok' AND m.retired_ms IS NULL"
+                           "   WHERE c.version_id=n.current_version_id AND c.state='ok'"
                            "   ORDER BY m.label COLLATE NOCASE)),"
                            " (SELECT group_concat(label, ', ') FROM (SELECT DISTINCT m.label AS label FROM copies c"
                            "   JOIN versions v ON v.id=c.version_id JOIN media m ON m.id=c.media_id"
                            "   WHERE v.node_id=n.id AND v.id<>COALESCE(n.current_version_id,0) AND c.state='ok'"
-                           "   AND m.retired_ms IS NULL ORDER BY m.label COLLATE NOCASE)),"
+                           "   AND " NAMED_DRIVE " ORDER BY m.label COLLATE NOCASE)),"
                            " CASE WHEN n.is_dir THEN (SELECT COUNT(*) FROM nodes d WHERE d.source_id=n.source_id AND d.parent_id=n.id"
                            "   AND d.is_dir=1) ELSE 0 END"
                            " FROM nodes n WHERE n.source_id=? AND n.parent_id IS ?"

@@ -2078,6 +2078,10 @@ static wchar_t g_jp_btn_text[2][120];
 static HWND g_jp_btn[2];
 static RECT g_jp_close;
 static int g_log_open = 1;
+static int g_log_auto = 1;   /* no choice saved: open in a tall window, closed in a low one */
+static int g_log_h;          /* the height the user dragged the log to, at 96 DPI (0: the usual) */
+static RECT g_split_rc;      /* the strip between the tabs and the job: drag it to size the log */
+static int g_split_drag, g_split_y0, g_split_h0, g_log_cur;
 
 static HFONT g_font_semi, g_font_title;
 
@@ -13274,12 +13278,13 @@ static void goal_text(wchar_t *out, size_t cap)
  * header leaves the tabs more room. */
 static int header_measure(int w, int place)
 {
-    int pad = S(14), x = pad, y = pad, gap = S(12);
+    int pad = g_hd_compact ? S(10) : S(14), x = pad, y = pad, gap = g_hd_compact ? S(8) : S(12);
     int th = font_h(g_font_title), line = font_h(g_font);
     int icon = S(32);
     int row_h = th + S(2) + line;
     if (row_h < icon) row_h = icon;
-    int cw = w >= S(1400) ? S(260) : S(224), ch = S(64), cg = S(10);
+    /* In a low window each card is one line: its icon, name and state. */
+    int cw = w >= S(1400) ? S(260) : S(224), ch = g_hd_compact ? S(36) : S(64), cg = g_hd_compact ? S(8) : S(10);
     int side = g_cat && g_ncards > 0 && w >= S(1000);
     int side_w = side ? (g_ncards == 1 ? cw : cw * 2 + cg) : 0;
     int left_r = side ? w - pad - side_w - S(20) : w - pad;
@@ -13321,13 +13326,13 @@ static int header_measure(int w, int place)
         ReleaseDC(NULL, dc);
         g_hd_right_w = S(260);
         if (g_hd_right_w > (left_r - x) / 3) g_hd_right_w = (left_r - x) / 3;
-        g_hd_bar_row = S(24);
+        g_hd_bar_row = g_hd_compact ? S(20) : S(24);
         SetRect(&g_hd_bars, x, y, left_r, y + g_hd_bar_row * g_nhbars);
         y += g_hd_bar_row * g_nhbars;
     } else
         SetRectEmpty(&g_hd_bars);
     /* The goal, with a link to change it. */
-    if (!g_hd_compact || side) {
+    if (!g_hd_compact) {
         y += S(4);
         SetRect(&g_hd_goal, x, y, left_r, y + line);
         y += line;
@@ -13510,9 +13515,14 @@ static void paint_card(HDC dc, int i)
     COLORREF bg = g_hc ? GetSysColor(COLOR_WINDOW) : g_dark ? RGB(50, 50, 50) : RGB(250, 250, 250);
     COLORREF border = i == g_card_hot ? ui_link() : ui_border();
     round_box(dc, r, S(8), bg, border);
+    int compact = r->bottom - r->top < S(50);
     if (i == CARD_MORE) {
         wchar_t s[80];
         swprintf(s, 80, TN(g_card_more, L"+%d more", L"+%d more"), g_card_more);
+        if (compact) {
+            draw_str(dc, g_font_semi, ui_link(), s, *r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            return;
+        }
         RECT tr = {r->left, r->top + S(10), r->right, r->top + S(32)};
         draw_str(dc, g_font_semi, ui_text(), s, tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         RECT sr = {r->left, r->top + S(32), r->right, r->bottom - S(8)};
@@ -13520,6 +13530,23 @@ static void paint_card(HDC dc, int i)
         return;
     }
     const hd_card *c = &g_cards[i];
+    if (compact) {
+        /* One line: the icon with its mark, the name, then the state. */
+        int isz = S(20), x = r->left + S(8), cy = (r->top + r->bottom) / 2, iy = cy - isz / 2;
+        HICON ic = c->secondary ? (g_ico_folder ? g_ico_folder : g_ico_drive) : g_ico_drive;
+        if (ic) DrawIconEx(dc, x, iy, ic, isz, isz, 0, NULL, DI_NORMAL);
+        if (c->lost) draw_state_icon(dc, x + isz - S(8), iy + isz - S(7), S(10), TONE_BAD, GLYPH_CROSS);
+        else if (c->connected && !c->secondary) draw_state_icon(dc, x + isz - S(8), iy + isz - S(7), S(10), TONE_SAFE, GLYPH_CHECK);
+        int tx = x + isz + S(8), tr_ = r->right - S(8), room = tr_ - tx;
+        int nw = text_w(dc, g_font_semi, c->name);
+        if (nw > room * 45 / 100) nw = room * 45 / 100;
+        RECT nr = {tx, r->top, tx + nw, r->bottom};
+        draw_str(dc, g_font_semi, ui_text(), c->name, nr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        const wchar_t *chip = job_uses(c->id) ? job_chip() : c->chip;
+        int tone = job_uses(c->id) ? TONE_WORK : c->tone, chip_x = tx + nw + S(8);
+        if (tr_ - chip_x > S(24)) draw_chip(dc, chip_x, cy - S(10), S(20), chip, tone, tr_ - chip_x);
+        return;
+    }
     int x = r->left + S(10), y = r->top + S(10), isz = S(32);
     HICON ic = c->secondary ? (g_ico_folder ? g_ico_folder : g_ico_drive) : g_ico_drive;
     if (ic) DrawIconEx(dc, x, y + S(2), ic, isz, isz, 0, NULL, DI_NORMAL);
@@ -14383,6 +14410,7 @@ static void header_next(void)
 static void log_toggle(void)
 {
     g_log_open = !g_log_open;
+    g_log_auto = 0;
     DWORD v = (DWORD)g_log_open;
     RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"LogOpen", REG_DWORD, &v, sizeof(v));
     SetWindowTextW(g_log_btn, g_log_open ? T(L"Hide the log") : T(L"Show the log"));
@@ -14446,12 +14474,17 @@ static void create_job_panel(HWND hwnd)
     /* The log: open in a tall window, closed in a low one, until the
      * user says. */
     DWORD v = 0, sz = sizeof(v);
-    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"LogOpen", RRF_RT_REG_DWORD, NULL, &v, &sz) == ERROR_SUCCESS) g_log_open = v != 0;
-    else {
+    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"LogOpen", RRF_RT_REG_DWORD, NULL, &v, &sz) == ERROR_SUCCESS) {
+        g_log_open = v != 0;
+        g_log_auto = 0;
+    } else {
         RECT wa;
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
         g_log_open = wa.bottom - wa.top >= S(900);
     }
+    sz = sizeof(v);
+    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"LogHeight", RRF_RT_REG_DWORD, NULL, &v, &sz) == ERROR_SUCCESS && v > 0 && v < 4000)
+        g_log_h = (int)v;
     g_log_btn = panel_button(g_jobpanel, g_log_open ? T(L"Hide the log") : T(L"Show the log"), ID_BTN_LOGTOGGLE, 0);
     ShowWindow(g_log_btn, SW_SHOWNA);
     header_refresh();
@@ -14487,7 +14520,15 @@ static void layout(void)
     /* A low window: one row of drives and of warnings, and no goal line
      * (the status bar has it), so the tabs keep room for their lists. */
     int jh = g_jobpanel ? jobpanel_height(hw) : 0;
-    int log_h = g_log_open ? S(110) : 0, want = S(340), hh = 0, wh = 0, body_h = 0;
+    /* Until the user opens or closes the log, it is closed in a low window. */
+    if (g_log_auto && g_log_btn) {
+        int open = h >= S(740);
+        if (open != g_log_open) {
+            g_log_open = open;
+            SetWindowTextW(g_log_btn, g_log_open ? T(L"Hide the log") : T(L"Show the log"));
+        }
+    }
+    int log_h = g_log_open ? S(g_log_h ? g_log_h : 110) : 0, want = S(340), hh = 0, wh = 0, body_h = 0;
     for (int pass = 0; pass < 2; pass++) {
         g_hd_compact = pass == 1 || h < S(720);
         hh = g_header ? header_height(hw) : 0;
@@ -14511,9 +14552,11 @@ static void layout(void)
             ShowWindow(g_warnbar, SW_HIDE);
     }
 
-    /* Then the log gives up some of its height. */
-    if (log_h && body_h < want) {
-        int take = want - body_h;
+    /* Then the log gives up some of its height: down to what the tabs
+     * need, or, when the user dragged it, down to a little. */
+    int need = g_log_h ? S(120) : want;
+    if (log_h && body_h < need) {
+        int take = need - body_h;
         if (take > log_h - S(56)) take = log_h - S(56);
         if (take > 0) {
             log_h -= take;
@@ -14534,6 +14577,10 @@ static void layout(void)
         jobpanel_layout();
         py += jh + gap;
     }
+    /* The strip between the tabs and the job sizes the log. */
+    g_log_cur = log_h;
+    if (log_h) SetRect(&g_split_rc, pad, top + body_h, w - pad, top + body_h + gap);
+    else SetRectEmpty(&g_split_rc);
     if (log_h) {
         MoveWindow(g_log, pad, py, hw, log_h, TRUE);
         if (!is_shown(g_log)) ShowWindow(g_log, SW_SHOWNA);
@@ -15315,7 +15362,55 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_INITMENUPOPUP:
         if ((HMENU)wp == g_menu_local && !g_busy) fill_storage_menus();
         return 0;
+    case WM_LBUTTONDOWN: {
+        POINT p = {(short)LOWORD(lp), (short)HIWORD(lp)};
+        if (PtInRect(&g_split_rc, p)) {
+            g_split_drag = 1;
+            g_split_y0 = p.y;
+            g_split_h0 = g_log_cur;
+            SetCapture(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_MOUSEMOVE:
+        if (g_split_drag) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int nh = g_split_h0 + g_split_y0 - (short)HIWORD(lp);
+            if (nh < S(56)) nh = S(56);
+            if (nh > rc.bottom * 2 / 3) nh = rc.bottom * 2 / 3;
+            nh = MulDiv(nh, 96, g_dpi);
+            if (nh != g_log_h) {
+                g_log_h = nh;
+                layout();
+            }
+            return 0;
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (g_split_drag) {
+            ReleaseCapture();
+            return 0;
+        }
+        break;
+    case WM_CAPTURECHANGED:
+        if (g_split_drag) {
+            g_split_drag = 0;
+            DWORD v = (DWORD)g_log_h;
+            RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"LogHeight", REG_DWORD, &v, sizeof(v));
+        }
+        break;
     case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT && (HWND)wp == hwnd && !IsRectEmpty(&g_split_rc)) {
+            POINT p;
+            GetCursorPos(&p);
+            ScreenToClient(hwnd, &p);
+            if (g_split_drag || PtInRect(&g_split_rc, p)) {
+                SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_SIZENS));
+                return TRUE;
+            }
+        }
         /* Saving a change: the arrow says the window is working. */
         if (g_busy && g_running_kind == JOB_REFRESH && LOWORD(lp) == HTCLIENT) {
             SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_APPSTARTING));

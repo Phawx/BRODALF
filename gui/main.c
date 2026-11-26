@@ -1772,10 +1772,11 @@ static int g_nwarn_hidden;
 
 /* The job panel, under the tabs: what runs now, or how the last job ended. */
 enum { JP_IDLE, JP_RUN, JP_OK, JP_STOPPED, JP_FAILED, JP_PROBLEM };
-enum { JA_NONE, JA_REPORTS, JA_DAMAGED, JA_CONFLICTS, JA_CHECK, JA_BACKUP };
+enum { JA_NONE, JA_REPORTS, JA_DAMAGED, JA_CONFLICTS, JA_CHECK, JA_BACKUP, JA_OPEN_DEST };
 static int g_jp_state, g_jp_pct, g_jp_fpct = -1, g_jp_phase;
 static wchar_t g_jp_title[600], g_jp_line[SUMMARY_LEN + 400], g_jp_file[700], g_jp_right[200];
 static int g_jp_act[2];
+static wchar_t g_jp_dest[600]; /* the folder the last restore went into */
 static int64_t g_jp_arg[2];
 static wchar_t g_jp_btn_text[2][120];
 static HWND g_jp_btn[2];
@@ -1969,6 +1970,22 @@ static void format_left(int64_t bytes_left, double rate, wchar_t *out, size_t n)
     else swprintf(out, n, T(L", about %.1f hours left"), secs / 3600.0);
 }
 
+typedef struct { wchar_t names[300]; int n; } restore_from;
+
+static int restore_from_cb(void *ctx, const bd_restore_step *st)
+{
+    restore_from *rf = ctx;
+    if (!st->connected || rf->n >= 3) return 0;
+    wchar_t *w = widen(st->label);
+    if (w && *w && !wcsstr(rf->names, w)) {
+        size_t len = wcslen(rf->names);
+        swprintf(rf->names + len, 300 - len, L"%ls%ls", len ? L", " : L"", w);
+        rf->n++;
+    }
+    free(w);
+    return 0;
+}
+
 static void job_progress(void *ctx, const bd_progress *p)
 {
     (void)ctx;
@@ -1985,7 +2002,7 @@ static void job_progress(void *ctx, const bd_progress *p)
                         : strcmp(ph, "restore") == 0 ? T(L"files restored") : T(L"copies read");
     /* Which drive, and how many there are: a backup to several drives
      * starts over for each, and the line says so. */
-    if (strcmp(ph, "backup") == 0 && g_job_dest[0]) verb = g_job_dest;
+    if ((strcmp(ph, "backup") == 0 || strcmp(ph, "restore") == 0) && g_job_dest[0]) verb = g_job_dest;
     /* Copies were just recorded, on the job's own thread: the full-copy
      * bars grow with them, at most once a second. */
     if (p->recorded && strcmp(ph, "backup") == 0) post_live_sets();
@@ -2441,6 +2458,19 @@ static DWORD WINAPI worker(LPVOID arg)
         memset(&rs, 0, sizeof(rs));
         memset(&ro, 0, sizeof(ro));
         ro.deleted_only = j->deleted;
+        {
+            restore_from rf;
+            memset(&rf, 0, sizeof(rf));
+            if (!j->version_id && !j->n_picks)
+                bd_restore_plan_ex(g_cat, j->source_id, j->rel ? j->rel : "", j->dest, &ro, restore_from_cb, &rf, NULL, NULL);
+            for (int i = 0; i < j->n_picks; i++)
+                bd_restore_plan_ex(g_cat, j->pick_src[i], j->pick_rel[i] ? j->pick_rel[i] : "",
+                                   j->pick_dest && j->pick_dest[i] ? j->pick_dest[i] : j->dest, &ro, restore_from_cb, &rf, NULL, NULL);
+            wchar_t *dw = widen(j->dest);
+            if (rf.names[0]) swprintf(g_job_dest, 400, T(L"Restoring from %ls into %ls"), rf.names, dw ? dw : L"");
+            else swprintf(g_job_dest, 400, T(L"Restoring into %ls"), dw ? dw : L"");
+            free(dw);
+        }
         if (j->version_id) {
             s = bd_restore_version(g_cat, j->version_id, j->dest, &rs, job_log, j);
             if (s == BD_OK) collect_conflicts(j);
@@ -2465,10 +2495,23 @@ static DWORD WINAPI worker(LPVOID arg)
             rs.files_conflict += one.files_conflict;
             rs.files_older_version += one.files_older_version;
         }
+        g_job_dest[0] = 0;
         format_bytes(rs.bytes_restored, size, 64);
-        swprintf(j->summary, SUMMARY_LEN, T(L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed."),
-                 (long long)rs.files_restored, size, (long long)rs.files_already_there, (long long)rs.files_offline,
-                 (long long)rs.files_no_copy, (long long)rs.files_failed);
+        {
+            /* Only what happened: the counts that are not zero. */
+            wchar_t *dw = widen(j->dest);
+            swprintf(j->summary, SUMMARY_LEN, TN(rs.files_restored, L"Restored %lld file (%ls) into %ls.", L"Restored %lld files (%ls) into %ls."),
+                     (long long)rs.files_restored, size, dw ? dw : L"");
+            free(dw);
+        }
+        if (rs.files_already_there)
+            say(j, TN(rs.files_already_there, L" %lld was already there.", L" %lld were already there."), (long long)rs.files_already_there);
+        if (rs.files_offline)
+            say(j, TN(rs.files_offline, L" %lld is on drives that are not plugged in.", L" %lld are on drives that are not plugged in."),
+                (long long)rs.files_offline);
+        if (rs.files_no_copy)
+            say(j, TN(rs.files_no_copy, L" %lld was never backed up.", L" %lld were never backed up."), (long long)rs.files_no_copy);
+        if (rs.files_failed) say(j, TN(rs.files_failed, L" %lld failed.", L" %lld failed."), (long long)rs.files_failed);
         if (rs.files_conflict)
             say(j, TN(rs.files_conflict, L" %lld file left alone because another file was already there: nothing was overwritten.",
                       L" %lld files left alone because another file was already there: nothing was overwritten."),
@@ -3920,6 +3963,38 @@ static wchar_t *copy_full_path(const drive_snap *d, const char *path_on_media)
     wchar_t *w = widen(p);
     free(p);
     return w;
+}
+
+/* For one file whose newest version has no good copy anywhere: which
+ * version a restore gives instead. Empty when it gives the file as it is. */
+static void version_note(const node_ref *r, wchar_t *out, size_t cap)
+{
+    out[0] = 0;
+    if (!g_cat || !r || r->is_dir || !r->node_id) return;
+    copy_list cl = {NULL, 0, 0};
+    bd_list_copies(g_cat, r->node_id, copy_snap_cb, &cl);
+    int cur = 0, best = 0;
+    int64_t cur_size = 0, best_size = 0, best_mtime = 0;
+    for (int i = 0; i < cl.n; i++) {
+        const bd_copy_info *c = &cl.items[i].c;
+        if (c->is_current) {
+            cur = c->version_no;
+            cur_size = c->size;
+        }
+        if (c->media_id && !c->media_lost && strcmp(cl.items[i].state, "ok") == 0 && c->version_no > best) {
+            best = c->version_no;
+            best_size = c->size;
+            best_mtime = c->mtime_ns;
+        }
+    }
+    free(cl.items);
+    if (!cur || !best || best >= cur) return;
+    wchar_t a[64], b[64], m[64];
+    format_bytes(best_size, a, 64);
+    format_bytes(cur_size, b, 64);
+    format_ns(best_mtime, m, 64);
+    swprintf(out, cap, T(L"You will get version %d, as it was on %ls (%ls). The newest version, %d (%ls), has no copy yet: back it up first to keep it."),
+             best, m, a, cur, b);
 }
 
 static void show_detail(void)
@@ -5883,23 +5958,27 @@ static void clear_pending(void)
     g_pending.rel = g_pending.dest = NULL;
 }
 
+/* The last restore, in words, for the Restore tab. */
+static wchar_t g_last_restore[SUMMARY_LEN];
+static int64_t g_last_restore_ms;
+
 static void after_restore(job *j)
 {
+    {
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ULONGLONG t = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+        g_last_restore_ms = (int64_t)((t - 116444736000000000ULL) / 10000ULL);
+        swprintf(g_last_restore, SUMMARY_LEN, L"%ls", j->summary);
+    }
     /* What the restore left alone replaces the last restore's list. */
     free_conflicts(g_conflicts, g_n_conflicts);
     g_conflicts = j->conf;
     g_n_conflicts = j->n_conf;
     j->conf = NULL;
     j->n_conf = j->cap_conf = 0;
-    if (g_n_conflicts > 0) {
-        wchar_t msg[600];
-        swprintf(msg, 600, TN(g_n_conflicts, L"%d file was left alone because another file was already where it would go. "
-                                             L"Nothing was overwritten.\n\nShow them, to compare?",
-                              L"%d files were left alone because another file was already where each would go. "
-                              L"Nothing was overwritten.\n\nShow them, to compare?"),
-                 g_n_conflicts);
-        if (ask_verbs(g_main, msg, MB_ICONINFORMATION | MB_YESNO, T(L"Show them"), T(L"Not now")) == IDYES) cmd_table(TABLE_CONFLICTS);
-    }
+    /* No question: the job panel offers to compare them, and the Restore
+     * tab lists them. */
     if (j->deleted || j->version_id) {
         /* Not kept waiting: the user picks them again. */
         if (j->offline > 0) {
@@ -6831,10 +6910,13 @@ static void restore_selection(int whole, int64_t source_id)
         MessageBoxW(g_main, T(L"Everything here is already restored in that folder."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
-    if (p.n > 1 || p.any_offline || none) {
+    wchar_t older[600];
+    version_note(whole ? NULL : r, older, 600);
+    if (p.n > 1 || p.any_offline || none || older[0]) {
         wtext msg = {NULL, 0, 0};
         wadd(&msg, TN(total, L"Restoring %lld file needs these drives:\n\n%ls", L"Restoring %lld files needs these drives:\n\n%ls"),
              (long long)total, p.t.p ? p.t.p : T(L"    (none)\n"));
+        if (older[0]) wadd(&msg, L"\n%ls\n", older);
         if (none) wadd(&msg, TN(none, L"\n%lld file has no copy on any drive.\n", L"\n%lld files have no copy on any drive.\n"), (long long)none);
         if (p.any_offline)
             wadd(&msg, T(L"\nBRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press "
@@ -8914,7 +8996,7 @@ static void create_pages(HWND hwnd)
     page_button(TAB_RESTORE, T(L"Continue the restore that waits for drives"), ID_REST_CONTINUE);
     page_text(TAB_RESTORE, ID_REST_PLAN);
     page_label(TAB_RESTORE, ID_REST_LABEL, T(L"Files the last restore left alone"));
-    page_button(TAB_RESTORE, T(L"Show it in Explorer"), ID_REST_OPEN);
+    page_button(TAB_RESTORE, T(L"Open in Explorer"), ID_REST_OPEN);
     page_button(TAB_RESTORE, T(L"Show them in a window..."), ID_REST_TABLE);
     {
         static const wchar_t *cols[] = {N_(L"File"), N_(L"Where it would go"), N_(L"Backed-up size"), N_(L"Backed-up modified"), N_(L"Size there"),
@@ -10036,6 +10118,9 @@ static void fill_restore(void)
         wchar_t *what = where_text(r->source_id, r->rel);
         wadd(&t, T(L"Selected on the Primary Database tab: %ls\n"), what ? what : L"");
         free(what);
+        wchar_t older[600];
+        version_note(r, older, 600);
+        if (older[0]) wadd(&t, L"%ls\n", older);
         plan_text p;
         memset(&p, 0, sizeof(p));
         int64_t total = 0, none = 0;
@@ -10048,6 +10133,11 @@ static void fill_restore(void)
                 wadd(&t, T(L"BRODALF restores what the plugged-in drives hold first; then plug in each other drive and press Continue.\n"));
         }
         free(p.t.p);
+    }
+    if (g_last_restore[0]) {
+        wchar_t when[96];
+        friendly_time(g_last_restore_ms, when, 96);
+        wadd(&t, T(L"\nLast restore, %ls: %ls\n"), when, g_last_restore);
     }
     if (g_pending.active) {
         wchar_t *dest = widen(g_pending.dest);
@@ -12353,6 +12443,21 @@ static void jp_result(const job *j, const wchar_t *headline, int stopped, int dr
             SetWindowTextW(g_jp_btn[0], T(L"Show the damaged files"));
         }
     }
+    if (j->kind == JOB_RESTORE && j->status == BD_OK && !stopped && !drive_gone && j->dest && j->dest[0]) {
+        wchar_t *dw = widen(j->dest);
+        swprintf(g_jp_dest, 600, L"%ls", dw ? dw : L"");
+        free(dw);
+        int k2 = g_jp_act[0] == JA_NONE ? 0 : 1;
+        g_jp_act[k2] = JA_OPEN_DEST;
+        SetWindowTextW(g_jp_btn[k2], T(L"Open the folder"));
+        if (k2 == 0 && j->n_conf > 0) {
+            wchar_t b[120];
+            swprintf(b, 120, TN(j->n_conf, L"Compare the %d left alone...", L"Compare the %d left alone..."), j->n_conf);
+            g_jp_act[1] = JA_CONFLICTS;
+            SetWindowTextW(g_jp_btn[1], b);
+        }
+        if (g_jp_state == JP_OK && j->n_conf > 0) g_jp_state = JP_PROBLEM; /* two lines: the summary says what was left alone */
+    }
     layout();
 }
 
@@ -12365,6 +12470,10 @@ static void jp_action(int k)
         else show_app_log(g_main);
         break;
     case JA_DAMAGED: cmd_table(TABLE_DAMAGED); break;
+    case JA_CONFLICTS: cmd_table(TABLE_CONFLICTS); break;
+    case JA_OPEN_DEST:
+        if (g_jp_dest[0]) show_in_explorer(g_jp_dest);
+        break;
     }
 }
 
@@ -13711,6 +13820,7 @@ static void close_database(void)
     free_conflicts(g_conflicts, g_n_conflicts);
     g_conflicts = NULL;
     g_n_conflicts = 0;
+    g_last_restore[0] = 0;
     g_n_check_offered = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");

@@ -3632,7 +3632,10 @@ static int collect_child(void *ctx, const bd_node_info *info)
 static const wchar_t *state_suffix(const bd_node_info *n, const char *label)
 {
     switch (n->state) {
-    case BD_STATE_AVAILABLE_OLDER: return T(L"changed since backup");
+    case BD_STATE_AVAILABLE_OLDER:
+        /* The newest version is backed up too, on a drive not plugged in. */
+        if (!n->is_dir && n->copies_on && *n->copies_on) return T(L"drive not plugged in");
+        return T(L"changed since backup");
     case BD_STATE_BAD: return T(L"copy damaged");
     case BD_STATE_DELETED: return T(L"deleted");
     case BD_STATE_NO_COPY: return n->is_dir ? NULL : T(L"not backed up");
@@ -3837,11 +3840,13 @@ static HTREEITEM insert_item(HTREEITEM parent, const wchar_t *text, node_ref *re
     }
     /* A root's name in bold; the icon faded when it is not on this PC and
      * no drive that is plugged in has it, as Explorer fades a file whose
-     * tape is not loaded. */
+     * tape is not loaded. A root is faded by tree_post_paint instead: in
+     * the screenshots a bold item marked cut stopped the tree drawing the
+     * rest of its rows. */
     if (ref && (ref->root || ref->ghost)) {
         tv.item.mask |= TVIF_STATE;
         tv.item.stateMask = TVIS_BOLD | TVIS_CUT;
-        tv.item.state = (ref->root ? TVIS_BOLD : 0) | (ref->ghost ? TVIS_CUT : 0);
+        tv.item.state = ref->root ? TVIS_BOLD : ref->ghost ? TVIS_CUT : 0;
     }
     return (HTREEITEM)SendMessageW(g_tree, TVM_INSERTITEMW, 0, (LPARAM)&tv);
 }
@@ -4354,19 +4359,26 @@ static void files_fit_cols(void)
         if (t > want[c]) want[c] = t;
     }
     ReleaseDC(g_files, dc);
-    int rest = 0, name_min = w * 30 / 100;
-    if (name_min < S(140)) name_min = S(140);
-    for (int c = 1; c < FC_COUNT; c++) rest += want[c];
-    if (rest > w - name_min && w - name_min > 0) {
-        int room = w - name_min, total = rest;
-        rest = 0;
-        for (int c = 1; c < FC_COUNT; c++) {
-            want[c] = (int)((long long)want[c] * room / total);
-            if (want[c] < S(44)) want[c] = S(44);
-            rest += want[c];
+    /* When it does not all fit: the date and the size keep their width (a
+     * cut number misleads); the type gives way first, then the drives, each
+     * down to a least width; then the type goes (the icon says it too);
+     * then the state and the name give way. */
+    want[FC_NAME] = w * 32 / 100;
+    if (want[FC_NAME] < S(180)) want[FC_NAME] = S(180);
+    int total = 0;
+    for (int c = 0; c < FC_COUNT; c++) total += want[c];
+    static const struct { int col, least; } order[] = {
+        {FC_TYPE, 64}, {FC_COPIES, 72}, {FC_TYPE, 0}, {FC_STATUS, 84}, {FC_NAME, 140}};
+    for (int i = 0; i < COUNT_OF(order) && total > w; i++) {
+        int c = order[i].col, cut = want[c] - S(order[i].least);
+        if (order[i].least == 0) cut = want[c]; /* all or nothing */
+        else if (cut > total - w) cut = total - w;
+        if (cut > 0) {
+            want[c] -= cut;
+            total -= cut;
         }
     }
-    want[FC_NAME] = w - rest > name_min ? w - rest : name_min;
+    if (total < w) want[FC_NAME] += w - total;
     for (int c = 0; c < FC_COUNT; c++) ListView_SetColumnWidth(g_files, c, want[c]);
 }
 
@@ -5334,7 +5346,10 @@ static void show_detail(void)
         } else
             kv_row(g_detail, KV_HEAD, full, NULL);
     }
-    kv_row(g_detail, KV_FACT, T(L"State"), L"%ls", state_words(r->state));
+    if (!r->is_dir && r->state == BD_STATE_AVAILABLE_OLDER && r->copies_on && *r->copies_on)
+        kv_row(g_detail, KV_FACT, T(L"State"), L"%ls", T(L"Backed up, but the drive is not plugged in. An older version is on a plugged-in drive."));
+    else
+        kv_row(g_detail, KV_FACT, T(L"State"), L"%ls", state_words(r->state));
     if (r->away)
         kv_row(g_detail, KV_FACT, T(L"On this PC"), L"%ls",
                r->state == BD_STATE_DELETED ? T(L"No: it was deleted from its folder") : T(L"No: its backup root is not on this PC now"));
@@ -11279,15 +11294,15 @@ static void layout_pages(void)
         mv(g_address, pad, y, iw - search_w - gap, bar_h);
         mv(g_search, pad + iw - search_w, y, search_w, bar_h);
         y += bar_h + gap;
-        int body = h - y - pad, tree_w = iw * 20 / 100, info_h = font_h(g_font) + S(6);
+        int body = h - y - pad, tree_w = iw * 18 / 100, info_h = font_h(g_font) + S(6);
         if (tree_w < S(170)) tree_w = S(170);
-        if (tree_w > S(300)) tree_w = S(300);
+        if (tree_w > S(280)) tree_w = S(280);
         int mid_x = pad + tree_w + gap, mid_w = iw - tree_w - gap, mid_h = body;
         mv(g_tree, pad, y, tree_w, body);
         if (iw >= S(980)) {
-            int det_w = iw * 28 / 100;
-            if (det_w < S(280)) det_w = S(280);
-            if (det_w > S(460)) det_w = S(460);
+            int det_w = iw * 25 / 100;
+            if (det_w < S(270)) det_w = S(270);
+            if (det_w > S(420)) det_w = S(420);
             mid_w -= det_w + gap;
             SetRect(&g_detail_area, mid_x + mid_w + gap, y, pad + iw, y + body);
         } else {
@@ -15494,7 +15509,11 @@ static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int
         if (r->state == BD_STATE_BAD) { *tone = TONE_BAD; return T(L"Copy damaged"); }
         if (r->damaged && r->state != BD_STATE_DELETED) { *tone = TONE_WARN; return T(L"May be damaged"); }
         switch (r->state) {
-        case BD_STATE_AVAILABLE_OLDER: *tone = TONE_WARN; return T(L"Changed since backup");
+        case BD_STATE_AVAILABLE_OLDER:
+            /* Backed up, on a drive not plugged in; an older version is on one that is. */
+            if (r->copies_on && *r->copies_on) return T(L"Drive not plugged in");
+            *tone = TONE_WARN;
+            return T(L"Changed since backup");
         case BD_STATE_NO_COPY: *tone = TONE_WARN; return T(L"Not backed up");
         case BD_STATE_DELETED: return T(L"Deleted");
         case BD_STATE_OFFLINE:
@@ -15661,7 +15680,9 @@ static void files_paint_cells(HDC dc, RECT row, const node_ref *r, const int *cw
             if (!r->is_dir) {
                 wchar_t bytes[64];
                 format_bytes(r->size, bytes, COUNT_OF(bytes));
-                draw_str(dc, g_font, sub, bytes, cell, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                /* Too narrow: cut at the end, never at the front of the number. */
+                UINT al = text_w(dc, g_font, bytes) > cell.right - cell.left ? DT_LEFT | DT_END_ELLIPSIS : DT_RIGHT;
+                draw_str(dc, g_font, sub, bytes, cell, al | DT_VCENTER | DT_SINGLELINE);
             }
             break;
         }
@@ -15757,6 +15778,17 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
         int iw = S(16), ih = S(16), cs = S(10);
         if (g_sys_il) ImageList_GetIconSize(g_sys_il, &iw, &ih);
         int ix = tr.left - S(3) - iw, iy = row.top + (rh - ih) / 2;
+        /* Faded as the cut folders under it are, except while the row is
+         * selected or under the pointer (its background is the theme's). */
+        if (r->ghost && !(cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_HOT))) {
+            RECT ir = {ix, iy, ix + iw, iy + ih};
+            fill_color(dc, &ir, tree_bg());
+            int icon = g_icon_folder;
+#ifdef TVIF_EXPANDEDIMAGE
+            if ((TreeView_GetItemState(tv, h, TVIS_EXPANDED) & TVIS_EXPANDED) && g_icon_folder_open >= 0) icon = g_icon_folder_open;
+#endif
+            draw_shell_icon(dc, icon, ix, iy, 1);
+        }
         draw_state_icon(dc, ix + iw - cs + S(2), iy + ih - cs + S(2), cs, TONE_BAD, GLYPH_CROSS);
     }
     int x = tr.right + S(6);

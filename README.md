@@ -160,7 +160,10 @@ here too (see [Backing up](#backing-up)).
 Below the tabs, BRODALF shows the **job** that is running (scan, backup,
 check or restore), with how many files and how much data, the data rate
 and a **Stop** button, then the **file** being copied or read right now,
-then the log.
+then the log. In a low window the log starts closed (**Show the log**
+opens it) and the top area gets smaller: each drive card is one line.
+Drag the strip between the tabs and the job to give the log more or less
+room; BRODALF remembers both.
 
 The menus are **File** (new, open, recover the database, the recovery
 sheet, CSV export, exit), **View** (the six tabs, the status of every

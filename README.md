@@ -295,10 +295,14 @@ lists the biggest files, which BRODALF backs up like any other.
 ### Drives
 
 A drive is recognised by the `BRODALF.media` file on it, not by its letter.
-When a disk BRODALF does not know is plugged in, it asks whether to set it
-up as a backup drive: **Set it up as a backup drive**, **Not now**, or **Never ask about
-this disk**. Setting it up makes BRODALF's own folder on it and touches nothing
-else on the disk.
+When a disk BRODALF does not know is plugged in, it says its name, its size
+and how much of it is used, and asks whether to set it up as a backup
+drive: **Set it up as a backup drive**, **Not now**, or **Never ask about
+this drive**. Setting it up asks for a name (the disk's own label to start
+with) and where it is kept, then makes BRODALF's own folder on it, touches
+nothing else on the disk and backs up to it. Whether the drive is encrypted
+is chosen then and cannot be changed later. **Settings > Ask again about
+the drives you said never to ask about** undoes **Never ask**.
 
 Each time a drive is plugged in BRODALF reads what the disk says about
 itself and keeps the latest reading in the database: make, model, serial
@@ -306,7 +310,8 @@ number, firmware, bus and size; the volume name, serial and file system;
 and SMART health (the drive's own failure prediction, temperature, hours
 powered on, power cycles, bad sectors and SSD wear), where the disk passes
 it through. Every drive can also have a free-text **where it is kept**
-label, such as "Box 3, garage shelf".
+label, such as "Box 3, garage shelf"; the places other drives already have
+are offered in a list, so drives kept together get the same words.
 
 ![Drive details](docs/images/gui-drive-details.png)
 

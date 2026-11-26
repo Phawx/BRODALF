@@ -224,6 +224,7 @@ enum {
     ID_MENU_LOW_PRIORITY,
     ID_MENU_SKIP,
     ID_MENU_PARALLEL,
+    ID_MENU_UNIGNORE,
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
     ID_DRIVE_ACT_BASE = 20000, /* + media id * 8 + action, for the Local backups menu */
     ID_MENU_OTHER = 900,
@@ -3805,6 +3806,25 @@ static int drive_snap_cb(void *ctx, const bd_media_info *m)
     return 0;
 }
 
+static drive_list load_drives(void);
+
+/* "Where it is kept": the places other drives already have, so two drives
+ * in the same place get the same words (and count as one place). */
+static void fill_places_combo(HWND combo, const wchar_t *current)
+{
+    drive_list dl = load_drives();
+    for (int i = 0; i < dl.n; i++) {
+        if (!dl.items[i].location[0]) continue;
+        wchar_t *w = widen(dl.items[i].location);
+        if (w && *w && SendMessageW(combo, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)w) == CB_ERR)
+            SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)w);
+        free(w);
+    }
+    free(dl.items);
+    SendMessageW(combo, CB_SETCUEBANNER, 0, (LPARAM)T(L"For example: desk drawer at home"));
+    SetWindowTextW(combo, current ? current : L"");
+}
+
 static drive_list load_drives(void)
 {
     drive_list l = {NULL, 0, 0};
@@ -4434,7 +4454,7 @@ static INT_PTR CALLBACK drive_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         free(t.p);
         wchar_t *name = widen(d->label), *loc = widen(d->location);
         SetDlgItemTextW(dlg, IDC_DRIVE_NAME, name);
-        SetDlgItemTextW(dlg, IDC_DRIVE_LOCATION, loc);
+        fill_places_combo(GetDlgItem(dlg, IDC_DRIVE_LOCATION), loc);
         free(name);
         free(loc);
         SetFocus(GetDlgItem(dlg, IDC_DRIVE_LOCATION));
@@ -5644,6 +5664,7 @@ static INT_PTR CALLBACK label_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     case WM_INITDIALOG:
         SetDlgItemTextW(dlg, IDC_LABEL_EDIT, g_label_buf);
         g_label_location[0] = 0;
+        fill_places_combo(GetDlgItem(dlg, IDC_LABEL_LOCATION), L"");
         CheckDlgButton(dlg, IDC_LABEL_ENCRYPT, g_label_encrypt_default ? BST_CHECKED : BST_UNCHECKED);
         EnableWindow(GetDlgItem(dlg, IDC_LABEL_HIDE), g_label_encrypt_default); /* hiding names needs encryption */
         SendDlgItemMessageW(dlg, IDC_LABEL_EDIT, EM_SETSEL, 0, -1);
@@ -6369,20 +6390,27 @@ static void offer_new_disk(const wchar_t *root)
     wchar_t serial[16] = L"", windir[MAX_PATH] = L"";
     if (GetWindowsDirectoryW(windir, MAX_PATH) && towupper(windir[0]) == towupper(root[0])) return; /* the system disk */
     if (disk_serial(root, serial, 16) && disk_ignored(serial)) return;
-    wchar_t vname[MAX_PATH + 1] = L"", size[64] = L"", content[900];
+    wchar_t vname[MAX_PATH + 1] = L"", size[64] = L"", used[64] = L"", content[900];
     GetVolumeInformationW(root, vname, MAX_PATH + 1, NULL, NULL, NULL, NULL, 0);
-    ULARGE_INTEGER total;
-    if (GetDiskFreeSpaceExW(root, NULL, &total, NULL)) format_bytes((int64_t)total.QuadPart, size, 64);
-    if (*vname) swprintf(content, 900, T(L"\"%ls\" (%ls) was plugged in. It is not one of your backup drives."), vname, root);
-    else swprintf(content, 900, T(L"The drive at %ls was plugged in. It is not one of your backup drives."), root);
-    if (*size) {
-        size_t len = wcslen(content);
-        swprintf(content + len, 900 - len, T(L" It holds %ls."), size);
+    ULARGE_INTEGER total, freeb;
+    if (GetDiskFreeSpaceExW(root, NULL, &total, &freeb)) {
+        format_bytes((int64_t)total.QuadPart, size, 64);
+        format_bytes((int64_t)(total.QuadPart - freeb.QuadPart), used, 64);
     }
+    /* Its name, its size and how much of it is used: what is on it already. */
+    if (*vname && *size)
+        swprintf(content, 900, T(L"%ls (%ls) holds %ls, of which %ls is used. It is not one of your backup drives."), vname, root, size, used);
+    else if (*size)
+        swprintf(content, 900, T(L"The drive at %ls holds %ls, of which %ls is used. It is not one of your backup drives."), root, size, used);
+    else if (*vname)
+        swprintf(content, 900, T(L"\"%ls\" (%ls) was plugged in. It is not one of your backup drives."), vname, root);
+    else
+        swprintf(content, 900, T(L"The drive at %ls was plugged in. It is not one of your backup drives."), root);
     TASKDIALOG_BUTTON b[3] = {
-        {640, T(L"Set it up as a backup drive\nBRODALF makes its own folder on it and backs up to it. Nothing else on the drive is touched.")},
+        {640, T(L"Set it up as a backup drive\nYou name it first. BRODALF then makes its own folder on it and backs up to it. "
+                L"Nothing else on the drive is touched.")},
         {641, T(L"Not now")},
-        {642, T(L"Never ask about this drive")},
+        {642, T(L"Never ask about this drive\nSettings... can ask about it again.")},
     };
     TASKDIALOGCONFIG tc;
     memset(&tc, 0, sizeof(tc));
@@ -6612,6 +6640,20 @@ static void cmd_security(void)
     AppendMenuW(m, MF_STRING | (bd_option_get(g_cat, "parallel_copies") > 0 ? MF_CHECKED : 0), ID_MENU_PARALLEL,
                 T(L"Back up to several drives at once"));
     AppendMenuW(m, MF_STRING, ID_MENU_SKIP, T(L"What to leave out in every backup root..."));
+    {
+        DWORD n_ignored = 0;
+        HKEY k;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, IGNORED_KEY, 0, KEY_READ, &k) == ERROR_SUCCESS) {
+            RegQueryInfoKeyW(k, NULL, NULL, NULL, NULL, NULL, NULL, &n_ignored, NULL, NULL, NULL, NULL);
+            RegCloseKey(k);
+        }
+        if (n_ignored) {
+            wchar_t text[200];
+            swprintf(text, 200, TN((int)n_ignored, L"Ask again about the %d drive you said never to ask about", L"Ask again about the %d drives you said never to ask about"),
+                     (int)n_ignored);
+            AppendMenuW(m, MF_STRING, ID_MENU_UNIGNORE, text);
+        }
+    }
     RECT r;
     GetWindowRect(g_buttons[6], &r);
     int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, g_main, NULL);
@@ -6641,6 +6683,9 @@ static void settings_command(int cmd)
         log_append(T(L"Passphrase forgotten. BRODALF will ask for it again when it needs it."));
     } else if (cmd == ID_MENU_SKIP) {
         cmd_skip(0, NULL);
+    } else if (cmd == ID_MENU_UNIGNORE) {
+        RegDeleteKeyW(HKEY_CURRENT_USER, IGNORED_KEY);
+        log_append(T(L"BRODALF asks again about every drive that is not a backup drive when it is plugged in."));
     } else if (cmd >= ID_M_VERIFY_7 && cmd <= ID_M_VERIFY_NEVER) {
         static const int choice[] = {7, 30, 90, 0};
         int d = choice[cmd - ID_M_VERIFY_7];
@@ -7154,9 +7199,16 @@ static void add_disk_at(char *root)
     {
         j->root = root;
         if (!is_brodalf_drive(j->root)) {
-            wchar_t *w = widen(j->root);
+            wchar_t *w = widen(j->root), vname[MAX_PATH + 1] = L"";
             const wchar_t *slash = w ? wcsrchr(w, L'\\') : NULL;
-            wcsncpy(g_label_buf, (!w || wcslen(w) <= 3 || !slash || !slash[1]) ? T(L"Backup drive") : slash + 1, 255);
+            int whole = !w || wcslen(w) <= 3 || !slash || !slash[1];
+            /* A whole drive is called what its own label says, like "SPARE". */
+            if (whole && w) {
+                wchar_t vroot[8];
+                swprintf(vroot, 8, L"%lc:\\", w[0]);
+                GetVolumeInformationW(vroot, vname, MAX_PATH + 1, NULL, NULL, NULL, NULL, 0);
+            }
+            wcsncpy(g_label_buf, whole ? (vname[0] ? vname : T(L"Backup drive")) : slash + 1, 255);
             g_label_buf[255] = 0;
             free(w);
             if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }

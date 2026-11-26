@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <winioctl.h>
+#include <werapi.h>
 #include <bcrypt.h>
 #include "blake3.h"
 #include <io.h>
@@ -609,6 +610,21 @@ char *bd_fold_case(const char *s)
 int bd_random_bytes(void *buf, size_t n)
 {
     return BCRYPT_SUCCESS(BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)n, BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ? 0 : -1;
+}
+
+void bd_secret_lock(void *p, size_t n)
+{
+    VirtualLock(p, n);
+}
+
+void bd_secret_unlock(void *p, size_t n)
+{
+    VirtualUnlock(p, n);
+}
+
+void bd_no_crash_dumps_of_memory(void)
+{
+    WerSetFlags(WER_FAULT_REPORTING_FLAG_NOHEAP);
 }
 
 int64_t bd_now_ms(void)

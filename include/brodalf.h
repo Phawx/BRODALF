@@ -50,7 +50,9 @@ bd_status bd_catalog_create(const char *path, bd_catalog **out);
 bd_status bd_catalog_open(const char *path, bd_catalog **out);
 
 /* Open with a passphrase. For an encrypted catalog file the catalog comes
- * back unlocked; for a plain one the passphrase is ignored. */
+ * back unlocked, and it is unpacked into memory instead of the temp folder:
+ * nothing of it is written to the disk unencrypted while it is open. For a
+ * plain one the passphrase is ignored. */
 bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
 
 /* Start again on a new PC from a copy of the catalog a drive holds
@@ -87,7 +89,7 @@ bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *c
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
-/* Write the working copy back to the .brodalf file atomically, as a new
+/* Write the catalog back to the .brodalf file atomically, as a new
  * revision of the catalog, when anything changed since the catalog was
  * opened or last saved; with nothing to save it does nothing (no new
  * revision, the file is not rewritten) and returns BD_OK. Every committed
@@ -105,7 +107,7 @@ void bd_catalog_mark_changed(bd_catalog *cat);
  * drive keeps every revision it was given. */
 int64_t bd_catalog_revision(bd_catalog *cat);
 
-/* Close without saving, remove the working copy and the lock. */
+/* Close without saving, remove the working copy (if any) and the lock. */
 void bd_catalog_close(bd_catalog *cat);
 
 const char *bd_catalog_error(const bd_catalog *cat);
@@ -148,7 +150,10 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
 /* Forget the master key until the next unlock. */
 void bd_catalog_lock_key(bd_catalog *cat);
 /* Encrypt the .brodalf file from the next save on. Needs an unlocked
- * catalog to turn on. */
+ * catalog to turn on. Turned on, the open catalog moves into memory at
+ * once and its working copy is deleted (BD_ERR_DB if a job keeps the
+ * database busy for more than a few seconds); turned off, it stays in
+ * memory until it is closed. */
 bd_status bd_catalog_set_file_encrypted(bd_catalog *cat, int on);
 int bd_catalog_file_encrypted(bd_catalog *cat);
 

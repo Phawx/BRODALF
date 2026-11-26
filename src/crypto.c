@@ -787,6 +787,12 @@ int bd_catalog_file_encrypted(bd_catalog *cat)
 bd_status bd_catalog_set_file_encrypted(bd_catalog *cat, int on)
 {
     if (on && !cat->have_key) return bd_fail(cat, BD_ERR_PASSPHRASE, "set or enter the passphrase first");
+    /* From now on nothing of it goes to the disk unencrypted. Turned off,
+     * it stays in memory until it is closed. */
+    if (on) {
+        bd_status s = bd_catalog_keep_in_memory(cat);
+        if (s != BD_OK) return s;
+    }
     return bd_setting_set(cat, "encrypt_catalog", on ? "1" : "0") == 0 ? BD_OK : bd_fail_db(cat, "change catalog encryption");
 }
 

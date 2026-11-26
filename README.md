@@ -442,7 +442,9 @@ There are four kinds, each on its own, all on the **Encryption** tab:
   everything else stays plain files. Copies made before stay as they are,
   since nothing on a drive is overwritten; new copies and new versions are
   encrypted. **Stop encrypting it** makes the next new copies plain again.
-- **The database file itself** (**Encrypt the database file**).
+- **The database file itself** (**Encrypt the database file**). While
+  BRODALF has it open it stays in memory, so nothing of it is written to
+  the disk unencrypted, not even by a crash or a power cut.
 - **The database copies on the drives**, which are always encrypted on an
   encrypted drive.
 
@@ -592,6 +594,7 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `cli/main.c` | `brodalf-cli` |
 | `tests/test_core.c` | End-to-end test |
 | `tests/test_crypto.c` | Encryption test |
+| `tests/test_memory.c` | An encrypted database is never on the disk unencrypted |
 | `tests/test_blake3.c` | Checksum test vectors |
 | `tests/bench_many.c` | Many files: timings and counts (`bench_many 1000000` by hand) |
 | `installer/brodalf.nsi` | The NSIS installer |
@@ -980,9 +983,13 @@ limits of the new work:
   drive holds the data. The read-back offer after a backup says to unplug
   and replug the drive first; Check drive's read back on a later day does
   prove it.
-- While an encrypted database is open, its working copy in the temp folder
-  is not encrypted. A crashed BRODALF's working copy is removed the next
-  time it starts.
+- An encrypted database is kept in memory while it is open, never on the
+  disk unencrypted, but Windows may still write memory to its page file,
+  or to `hiberfil.sys` when the PC hibernates. BitLocker on the system
+  drive covers both. Encrypting a database that was plain deletes its
+  unencrypted working copy, but, as with any deleted file, does not
+  overwrite the space it took on the disk. The database takes about its
+  own size in memory, and twice that for a moment while it is saved.
 - `brodalf-cli` errors that end the program (`die()`) do not save the
   catalog; Ctrl+C does.
 - 0.4.0 and earlier refuse an encrypted catalog that has a recovery key, as

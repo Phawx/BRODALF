@@ -116,15 +116,22 @@ last, and **View** lists them too.
 Each tab has its own buttons for everything it shows, so nothing needs a
 menu.
 
-**Primary Database.** The tree shows everything in your backup roots.
-Greyed files have no copy on a drive that is plugged in (the label says
-which drive holds them, if any). Amber files have changed, and only an
-older version is reachable. Red means a copy is missing or damaged, and
-struck-through means deleted from your folder. Starred files and folders
-show **★ starred** after their name, and ones you chose to encrypt show
-**[encrypted]**. Folders show how many files inside are available. Select a
+**Primary Database.** The tree shows everything in your backup roots: each
+name with its file icon, then on the right its state and its size. Names in
+grey have no copy on a drive that is plugged in (the state says **On**
+and the drive that holds them, if any); grey italics have no copy yet;
+struck through means deleted from your folder. The state is an amber
+**Changed since backup** or **Not backed up**, a red **Copy damaged**, or
+nothing when a good copy is plugged in. Starred files and folders show a
+★ after their name, and ones you chose to encrypt a lock. Folders show how
+many files inside are available. **Help > What the file list shows** draws
+a sample of each, with what it means under it. Select a
 file to see every version and where each copy is, even when none of those
-drives are plugged in, so you know which box to go and get. The buttons
+drives are plugged in, so you know which box to go and get. Its details read
+like a form: the name, the folder it is in, its state, size, version and
+checksum, then one row for each drive with a copy, saying whether the copy
+is good and where that drive is (plugged in, or last seen and where it is
+kept). Right-click a row, or press Ctrl+C, to copy its value. The buttons
 add a backup root, star or encrypt what is selected, run the bit-rot scan,
 change where a root is, change what to leave out, list the deleted,
 damaged, in-use and largest files, and export the list as CSV.

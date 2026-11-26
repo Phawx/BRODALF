@@ -5669,7 +5669,7 @@ msgstr ""
 msgid ""
 "How much of your starred files %ls may hold in all, so a small free account does not fill up. Files that would go over it are not copied there; your drives still get them."
 msgstr ""
-"Wie viel Ihrer Dateien mit Stern %ls insgesamt aufnehmen darf, damit ein kleines kostenloses Konto nicht vollläuft. Dateien, die das überschreiten würden, werden nicht dorthin kopiert; Ihre Laufwerke erhalten sie trotzdem."
+"Wie viel von Ihren Dateien mit Stern der Ort „%ls“ insgesamt aufnehmen darf, damit ein kleines kostenloses Konto nicht vollläuft. Dateien, die das überschreiten würden, werden nicht dorthin kopiert; Ihre Laufwerke erhalten sie trotzdem."
 
 #: gui/main.c:12500
 msgid "Could not change the size limit."

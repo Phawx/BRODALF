@@ -716,6 +716,13 @@ static void show_tab(int i);
 static int last_tab(void);
 static void layout_pages(void);
 static void create_pages(HWND hwnd);
+static void local_metrics(void);
+static void local_fit_cols(void);
+static int local_list_need(void);
+/* The Local backups table's columns. */
+static const wchar_t *const g_local_cols[6] = {N_(L"Drive"), N_(L"State"), N_(L"Copies on it"),
+                                               N_(L"Space"), N_(L"Health"), N_(L"Last checked")};
+
 static void register_page_class(void);
 static void cmd_backup_all(int offer_scan);
 static void cmd_backup_at(HWND anchor);
@@ -1765,10 +1772,11 @@ static int g_nwarn_hidden;
 
 /* The job panel, under the tabs: what runs now, or how the last job ended. */
 enum { JP_IDLE, JP_RUN, JP_OK, JP_STOPPED, JP_FAILED, JP_PROBLEM };
-enum { JA_NONE, JA_REPORTS, JA_DAMAGED, JA_CONFLICTS, JA_CHECK, JA_BACKUP };
+enum { JA_NONE, JA_REPORTS, JA_DAMAGED, JA_CONFLICTS, JA_CHECK, JA_BACKUP, JA_OPEN_DEST };
 static int g_jp_state, g_jp_pct, g_jp_fpct = -1, g_jp_phase;
 static wchar_t g_jp_title[600], g_jp_line[SUMMARY_LEN + 400], g_jp_file[700], g_jp_right[200];
 static int g_jp_act[2];
+static wchar_t g_jp_dest[600]; /* the folder the last restore went into */
 static int64_t g_jp_arg[2];
 static wchar_t g_jp_btn_text[2][120];
 static HWND g_jp_btn[2];
@@ -1962,6 +1970,22 @@ static void format_left(int64_t bytes_left, double rate, wchar_t *out, size_t n)
     else swprintf(out, n, T(L", about %.1f hours left"), secs / 3600.0);
 }
 
+typedef struct { wchar_t names[300]; int n; } restore_from;
+
+static int restore_from_cb(void *ctx, const bd_restore_step *st)
+{
+    restore_from *rf = ctx;
+    if (!st->connected || rf->n >= 3) return 0;
+    wchar_t *w = widen(st->label);
+    if (w && *w && !wcsstr(rf->names, w)) {
+        size_t len = wcslen(rf->names);
+        swprintf(rf->names + len, 300 - len, L"%ls%ls", len ? L", " : L"", w);
+        rf->n++;
+    }
+    free(w);
+    return 0;
+}
+
 static void job_progress(void *ctx, const bd_progress *p)
 {
     (void)ctx;
@@ -1978,7 +2002,7 @@ static void job_progress(void *ctx, const bd_progress *p)
                         : strcmp(ph, "restore") == 0 ? T(L"files restored") : T(L"copies read");
     /* Which drive, and how many there are: a backup to several drives
      * starts over for each, and the line says so. */
-    if (strcmp(ph, "backup") == 0 && g_job_dest[0]) verb = g_job_dest;
+    if ((strcmp(ph, "backup") == 0 || strcmp(ph, "restore") == 0) && g_job_dest[0]) verb = g_job_dest;
     /* Copies were just recorded, on the job's own thread: the full-copy
      * bars grow with them, at most once a second. */
     if (p->recorded && strcmp(ph, "backup") == 0) post_live_sets();
@@ -2434,6 +2458,19 @@ static DWORD WINAPI worker(LPVOID arg)
         memset(&rs, 0, sizeof(rs));
         memset(&ro, 0, sizeof(ro));
         ro.deleted_only = j->deleted;
+        {
+            restore_from rf;
+            memset(&rf, 0, sizeof(rf));
+            if (!j->version_id && !j->n_picks)
+                bd_restore_plan_ex(g_cat, j->source_id, j->rel ? j->rel : "", j->dest, &ro, restore_from_cb, &rf, NULL, NULL);
+            for (int i = 0; i < j->n_picks; i++)
+                bd_restore_plan_ex(g_cat, j->pick_src[i], j->pick_rel[i] ? j->pick_rel[i] : "",
+                                   j->pick_dest && j->pick_dest[i] ? j->pick_dest[i] : j->dest, &ro, restore_from_cb, &rf, NULL, NULL);
+            wchar_t *dw = widen(j->dest);
+            if (rf.names[0]) swprintf(g_job_dest, 400, T(L"Restoring from %ls into %ls"), rf.names, dw ? dw : L"");
+            else swprintf(g_job_dest, 400, T(L"Restoring into %ls"), dw ? dw : L"");
+            free(dw);
+        }
         if (j->version_id) {
             s = bd_restore_version(g_cat, j->version_id, j->dest, &rs, job_log, j);
             if (s == BD_OK) collect_conflicts(j);
@@ -2458,10 +2495,23 @@ static DWORD WINAPI worker(LPVOID arg)
             rs.files_conflict += one.files_conflict;
             rs.files_older_version += one.files_older_version;
         }
+        g_job_dest[0] = 0;
         format_bytes(rs.bytes_restored, size, 64);
-        swprintf(j->summary, SUMMARY_LEN, T(L"Restore done: %lld files (%ls), %lld already there, %lld on drives that are not plugged in, %lld never backed up, %lld failed."),
-                 (long long)rs.files_restored, size, (long long)rs.files_already_there, (long long)rs.files_offline,
-                 (long long)rs.files_no_copy, (long long)rs.files_failed);
+        {
+            /* Only what happened: the counts that are not zero. */
+            wchar_t *dw = widen(j->dest);
+            swprintf(j->summary, SUMMARY_LEN, TN(rs.files_restored, L"Restored %lld file (%ls) into %ls.", L"Restored %lld files (%ls) into %ls."),
+                     (long long)rs.files_restored, size, dw ? dw : L"");
+            free(dw);
+        }
+        if (rs.files_already_there)
+            say(j, TN(rs.files_already_there, L" %lld was already there.", L" %lld were already there."), (long long)rs.files_already_there);
+        if (rs.files_offline)
+            say(j, TN(rs.files_offline, L" %lld is on drives that are not plugged in.", L" %lld are on drives that are not plugged in."),
+                (long long)rs.files_offline);
+        if (rs.files_no_copy)
+            say(j, TN(rs.files_no_copy, L" %lld was never backed up.", L" %lld were never backed up."), (long long)rs.files_no_copy);
+        if (rs.files_failed) say(j, TN(rs.files_failed, L" %lld failed.", L" %lld failed."), (long long)rs.files_failed);
         if (rs.files_conflict)
             say(j, TN(rs.files_conflict, L" %lld file left alone because another file was already there: nothing was overwritten.",
                       L" %lld files left alone because another file was already there: nothing was overwritten."),
@@ -3913,6 +3963,38 @@ static wchar_t *copy_full_path(const drive_snap *d, const char *path_on_media)
     wchar_t *w = widen(p);
     free(p);
     return w;
+}
+
+/* For one file whose newest version has no good copy anywhere: which
+ * version a restore gives instead. Empty when it gives the file as it is. */
+static void version_note(const node_ref *r, wchar_t *out, size_t cap)
+{
+    out[0] = 0;
+    if (!g_cat || !r || r->is_dir || !r->node_id) return;
+    copy_list cl = {NULL, 0, 0};
+    bd_list_copies(g_cat, r->node_id, copy_snap_cb, &cl);
+    int cur = 0, best = 0;
+    int64_t cur_size = 0, best_size = 0, best_mtime = 0;
+    for (int i = 0; i < cl.n; i++) {
+        const bd_copy_info *c = &cl.items[i].c;
+        if (c->is_current) {
+            cur = c->version_no;
+            cur_size = c->size;
+        }
+        if (c->media_id && !c->media_lost && strcmp(cl.items[i].state, "ok") == 0 && c->version_no > best) {
+            best = c->version_no;
+            best_size = c->size;
+            best_mtime = c->mtime_ns;
+        }
+    }
+    free(cl.items);
+    if (!cur || !best || best >= cur) return;
+    wchar_t a[64], b[64], m[64];
+    format_bytes(best_size, a, 64);
+    format_bytes(cur_size, b, 64);
+    format_ns(best_mtime, m, 64);
+    swprintf(out, cap, T(L"You will get version %d, as it was on %ls (%ls). The newest version, %d (%ls), has no copy yet: back it up first to keep it."),
+             best, m, a, cur, b);
 }
 
 static void show_detail(void)
@@ -5876,23 +5958,27 @@ static void clear_pending(void)
     g_pending.rel = g_pending.dest = NULL;
 }
 
+/* The last restore, in words, for the Restore tab. */
+static wchar_t g_last_restore[SUMMARY_LEN];
+static int64_t g_last_restore_ms;
+
 static void after_restore(job *j)
 {
+    {
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ULONGLONG t = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+        g_last_restore_ms = (int64_t)((t - 116444736000000000ULL) / 10000ULL);
+        swprintf(g_last_restore, SUMMARY_LEN, L"%ls", j->summary);
+    }
     /* What the restore left alone replaces the last restore's list. */
     free_conflicts(g_conflicts, g_n_conflicts);
     g_conflicts = j->conf;
     g_n_conflicts = j->n_conf;
     j->conf = NULL;
     j->n_conf = j->cap_conf = 0;
-    if (g_n_conflicts > 0) {
-        wchar_t msg[600];
-        swprintf(msg, 600, TN(g_n_conflicts, L"%d file was left alone because another file was already where it would go. "
-                                             L"Nothing was overwritten.\n\nShow them, to compare?",
-                              L"%d files were left alone because another file was already where each would go. "
-                              L"Nothing was overwritten.\n\nShow them, to compare?"),
-                 g_n_conflicts);
-        if (ask_verbs(g_main, msg, MB_ICONINFORMATION | MB_YESNO, T(L"Show them"), T(L"Not now")) == IDYES) cmd_table(TABLE_CONFLICTS);
-    }
+    /* No question: the job panel offers to compare them, and the Restore
+     * tab lists them. */
     if (j->deleted || j->version_id) {
         /* Not kept waiting: the user picks them again. */
         if (j->offline > 0) {
@@ -6824,10 +6910,13 @@ static void restore_selection(int whole, int64_t source_id)
         MessageBoxW(g_main, T(L"Everything here is already restored in that folder."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
-    if (p.n > 1 || p.any_offline || none) {
+    wchar_t older[600];
+    version_note(whole ? NULL : r, older, 600);
+    if (p.n > 1 || p.any_offline || none || older[0]) {
         wtext msg = {NULL, 0, 0};
         wadd(&msg, TN(total, L"Restoring %lld file needs these drives:\n\n%ls", L"Restoring %lld files needs these drives:\n\n%ls"),
              (long long)total, p.t.p ? p.t.p : T(L"    (none)\n"));
+        if (older[0]) wadd(&msg, L"\n%ls\n", older);
         if (none) wadd(&msg, TN(none, L"\n%lld file has no copy on any drive.\n", L"\n%lld files have no copy on any drive.\n"), (long long)none);
         if (p.any_offline)
             wadd(&msg, T(L"\nBRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press "
@@ -8745,9 +8834,15 @@ static void layout_pages(void)
 
     /* Local backups */
     y = pad + flow(g_local_btns, COUNT_OF(g_local_btns), pad, pad, iw) + gap;
-    part = (h - y - pad) * 50 / 100;
+    {
+        int room = h - y - pad;
+        part = local_list_need();
+        if (part > room * 65 / 100) part = room * 65 / 100;
+        if (part < room * 35 / 100) part = room * 35 / 100;
+    }
     y += mv(CTL(ID_LOCAL_LIST), pad, y, iw, part) + gap;
     mv(CTL(ID_LOCAL_TEXT), pad, y, iw, h - y - pad);
+    local_fit_cols();
 
     /* Starred files and extra places */
     y = pad + mv(CTL(ID_STAR_TEXT), pad, pad, iw, text_height(CTL(ID_STAR_TEXT), iw)) + gap;
@@ -8838,11 +8933,12 @@ static void create_pages(HWND hwnd)
     page_button(TAB_LOCAL, T(L"Which drive to plug in..."), ID_LOCAL_RISK);
     page_check(TAB_LOCAL, T(L"Back up to several drives at once"), ID_LOCAL_PARALLEL);
     {
-        static const wchar_t *cols[] = {N_(L"Drive"), N_(L"Plugged in"), N_(L"Size"), N_(L"Free"), N_(L"BRODALF's copies"), N_(L"Other files"),
-                                        N_(L"Kept free"), N_(L"Health"), N_(L"Temperature"), N_(L"Hours on"), N_(L"Worn"), N_(L"Oldest read-back"),
-                                        N_(L"Copies"), N_(L"Problems")};
-        static const int widths[] = {200, 80, 70, 70, 100, 80, 70, 70, 80, 70, 50, 120, 70, 220};
-        page_list(TAB_LOCAL, ID_LOCAL_LIST, cols, widths, 14);
+        static const int widths[] = {220, 170, 150, 170, 170, 160};
+        page_list(TAB_LOCAL, ID_LOCAL_LIST, (const wchar_t **)g_local_cols, widths, 6);
+        HWND lv = CTL(ID_LOCAL_LIST);
+        ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
+        ListView_EnableGroupView(lv, TRUE);
+        local_metrics();
     }
     page_text(TAB_LOCAL, ID_LOCAL_TEXT);
 
@@ -8900,7 +8996,7 @@ static void create_pages(HWND hwnd)
     page_button(TAB_RESTORE, T(L"Continue the restore that waits for drives"), ID_REST_CONTINUE);
     page_text(TAB_RESTORE, ID_REST_PLAN);
     page_label(TAB_RESTORE, ID_REST_LABEL, T(L"Files the last restore left alone"));
-    page_button(TAB_RESTORE, T(L"Show it in Explorer"), ID_REST_OPEN);
+    page_button(TAB_RESTORE, T(L"Open in Explorer"), ID_REST_OPEN);
     page_button(TAB_RESTORE, T(L"Show them in a window..."), ID_REST_TABLE);
     {
         static const wchar_t *cols[] = {N_(L"File"), N_(L"Where it would go"), N_(L"Backed-up size"), N_(L"Backed-up modified"), N_(L"Size there"),
@@ -9185,6 +9281,461 @@ static void fill_next(void)
 
 /* Local backups --------------------------------------------------------- */
 
+/* The drives' table: one row for each drive, in groups by whether it is
+ * plugged in, each cell drawn by hand in two lines, what it is and then a
+ * word more in grey. Each cell's own text says the same in words, for
+ * sorting by a column and for screen readers. */
+enum { LOCAL_PLUGGED = 1, LOCAL_UNPLUGGED, LOCAL_LOST };
+
+typedef struct {
+    int64_t id;
+    int group, connected, lost, chip_tone, copies2_tone, space_tone, health_tone, checked2_tone;
+    int64_t total, freeb, held, other, reserve;
+    wchar_t name[128], where[200], chip[120], state2[200];
+    wchar_t copies[96], copies2[96], space[128];
+    wchar_t health[64], health2[128], checked[96], checked2[96];
+    wchar_t tip[900];
+} local_view;
+
+static local_view g_local_view[256];
+static int g_local_groups[3];
+static HIMAGELIST g_local_il;
+static int g_lv_h1, g_lv_h2;
+
+static void friendly_time(int64_t ms, wchar_t *out, size_t cap);
+static void card_state(hd_card *c, const drive_snap *d, const drive_fig *g);
+static void card_tip(hd_card *c, const drive_snap *d, const drive_fig *g);
+static int job_uses(int64_t id);
+static const wchar_t *job_chip(void);
+static int font_h(HFONT f);
+static int draw_chip_fit(HDC dc, int x, int y, int h, const wchar_t *s, int tone, int max);
+static const wchar_t *ui_locale(void);
+
+/* 1234567 as "1,234,567", with the window's language's separator. */
+static void group_digits(int64_t v, wchar_t *out, size_t cap)
+{
+    wchar_t sep[8] = L",", digits[32];
+    if (!GetLocaleInfoEx(ui_locale(), LOCALE_STHOUSAND, sep, 8)) wcscpy(sep, L",");
+    swprintf(digits, 32, L"%lld", (long long)(v < 0 ? -v : v));
+    size_t n = wcslen(digits), o = 0;
+    if (v < 0 && o + 1 < cap) out[o++] = L'-';
+    for (size_t i = 0; i < n && o + 1 < cap; i++) {
+        out[o++] = digits[i];
+        size_t left = n - i - 1;
+        if (left && left % 3 == 0)
+            for (const wchar_t *s = sep; *s && o + 1 < cap; s++) out[o++] = *s;
+    }
+    out[o] = 0;
+}
+
+static void join_part(wchar_t *buf, size_t cap, const wchar_t *part)
+{
+    size_t len = wcslen(buf);
+    if (!*part || len + 4 >= cap) return;
+    swprintf(buf + len, cap - len, L"%ls%ls", len ? L" \x00B7 " : L"", part);
+}
+
+/* Rows tall enough for two lines: a table's rows are as tall as its
+ * images, so it has a list of blank images that tall. */
+static void local_metrics(void)
+{
+    HWND lv = CTL(ID_LOCAL_LIST);
+    if (!lv) return;
+    int h = font_h(g_font_semi) + font_h(g_font) + S(14);
+    if (h < S(40)) h = S(40);
+    HIMAGELIST il = ImageList_Create(1, h, ILC_COLOR32, 1, 0);
+    ListView_SetImageList(lv, il, LVSIL_SMALL);
+    if (g_local_il) ImageList_Destroy(g_local_il);
+    g_local_il = il;
+    HWND tip = ListView_GetToolTips(lv);
+    if (tip) SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, S(480));
+}
+
+static void local_group_text(int id, wchar_t *out, size_t cap)
+{
+    int n = id >= 1 && id <= 3 ? g_local_groups[id - 1] : 0;
+    swprintf(out, cap, id == LOCAL_PLUGGED ? T(L"Plugged in (%d)") : id == LOCAL_UNPLUGGED ? T(L"Not plugged in (%d)")
+                                                                   : T(L"Lost or broken, copies not counted (%d)"),
+             n);
+}
+
+/* What one row shows, from the drive and what the last job read. */
+static void local_view_fill(local_view *v, const drive_snap *d)
+{
+    memset(v, 0, sizeof(*v));
+    const drive_fig *g = fig_of(d->id);
+    hd_card c;
+    memset(&c, 0, sizeof(c));
+    c.id = d->id;
+    c.connected = d->connected;
+    c.lost = d->lost_ms != 0;
+    c.secondary = d->secondary;
+    c.total = d->total;
+    c.freeb = d->freeb;
+    c.held = d->bytes_held;
+    wchar_t *w = widen(d->label);
+    swprintf(c.name, 128, L"%ls", w ? w : L"");
+    free(w);
+    w = widen(d->location);
+    swprintf(c.where, 200, L"%ls", w ? w : L"");
+    free(w);
+    w = widen(d->root);
+    swprintf(c.path, 400, L"%ls", w ? w : L"");
+    free(w);
+    card_state(&c, d, g);
+    card_tip(&c, d, g);
+    /* The card's last line says to click the card: not for a row. */
+    wchar_t *last = NULL;
+    for (wchar_t *p = wcsstr(c.tip, L"\r\n"); p; p = wcsstr(p + 2, L"\r\n")) last = p;
+    if (last) *last = 0;
+
+    v->id = d->id;
+    v->connected = d->connected;
+    v->lost = d->lost_ms != 0;
+    v->group = v->lost ? LOCAL_LOST : d->connected ? LOCAL_PLUGGED : LOCAL_UNPLUGGED;
+    swprintf(v->name, 128, L"%ls", c.name);
+    swprintf(v->where, 200, L"%ls", c.where[0] ? c.where : T(L"Where it is kept: not set"));
+    swprintf(v->chip, 120, L"%ls", c.chip);
+    v->chip_tone = c.tone;
+    swprintf(v->tip, 900, L"%ls", c.tip);
+
+    wchar_t a[96], b[96];
+    if (d->connected) swprintf(v->state2, 200, T(L"Plugged in at %ls"), c.path);
+    else if (d->last_seen_ms > 0) {
+        friendly_time(d->last_seen_ms, a, 96);
+        swprintf(v->state2, 200, T(L"Last seen %ls"), a);
+    } else
+        swprintf(v->state2, 200, L"%ls", T(L"Not seen yet"));
+
+    format_bytes(d->bytes_held, a, 96);
+    swprintf(b, 96, TN(d->copies, L"%lld copy", L"%lld copies"), (long long)d->copies);
+    swprintf(v->copies, 96, L"%ls \x00B7 %ls", b, a);
+    if (g && g->has_ms && g->ms.copies_bad > 0) {
+        swprintf(v->copies2, 96, T(L"%lld missing or damaged"), (long long)g->ms.copies_bad);
+        v->copies2_tone = TONE_BAD;
+    }
+
+    v->total = d->total;
+    v->freeb = d->freeb;
+    v->held = d->bytes_held;
+    v->reserve = d->reserve_bytes;
+    v->other = d->total - d->freeb - d->bytes_held;
+    if (v->other < 0) v->other = 0;
+    if (d->total > 0) {
+        format_bytes(d->freeb, a, 96);
+        format_bytes(d->total, b, 96);
+        swprintf(v->space, 128, T(L"%ls free of %ls"), a, b);
+        int free_pct = (int)(d->freeb * 100 / d->total);
+        v->space_tone = free_pct < 5 ? TONE_BAD : free_pct < 15 ? TONE_WARN : TONE_NEUTRAL;
+    } else
+        swprintf(v->space, 128, L"%ls", T(L"Size not known yet"));
+
+    /* Health: a word, then what the drive said; nothing it did not say. */
+    const bd_drive_hw *h = &d->hw;
+    if (!d->has_hw) swprintf(v->health, 64, L"%ls", T(L"Not read yet"));
+    else if (!h->smart || !h->health[0]) swprintf(v->health, 64, L"%ls", T(L"Not reported"));
+    else if (strcmp(h->health, "failing") == 0) {
+        swprintf(v->health, 64, L"%ls", T(L"Failing"));
+        v->health_tone = TONE_BAD;
+    } else if (strcmp(h->health, "warning") == 0 || replace_advice(d)) {
+        swprintf(v->health, 64, L"%ls", T(L"Warning"));
+        v->health_tone = TONE_WARN;
+    } else {
+        swprintf(v->health, 64, L"%ls", T(L"Good"));
+        v->health_tone = TONE_SAFE;
+    }
+    if (d->has_hw) {
+        if (h->temperature_c >= 0) {
+            swprintf(a, 96, L"%d \x00B0" L"C", h->temperature_c);
+            join_part(v->health2, 128, a);
+        }
+        if (h->power_on_hours > 0) {
+            group_digits(h->power_on_hours, b, 96);
+            swprintf(a, 96, T(L"%ls h"), b);
+            join_part(v->health2, 128, a);
+        }
+        if (h->percent_used >= 0) {
+            swprintf(a, 96, T(L"%d%% worn"), h->percent_used);
+            join_part(v->health2, 128, a);
+        }
+    }
+
+    /* When its copies were last read back to check them. */
+    if (d->copies == 0) swprintf(v->checked, 96, L"%ls", T(L"No copies yet"));
+    else {
+        int64_t last = g && g->has_ms ? g->ms.last_check_ms : 0;
+        if (last <= 0) last = d->oldest_check_ms;
+        if (last > 0) {
+            friendly_time(last, v->checked, 96);
+            v->checked[0] = (wchar_t)towupper(v->checked[0]);
+        } else
+            swprintf(v->checked, 96, L"%ls", T(L"Never"));
+        if (d->oldest_unread_ms) {
+            swprintf(v->checked2, 96, L"%ls", T(L"Some copies never read back"));
+            v->checked2_tone = TONE_WARN;
+        } else if (d->check_due) {
+            swprintf(v->checked2, 96, L"%ls", T(L"Due for a check"));
+            v->checked2_tone = TONE_WARN;
+        }
+    }
+}
+
+/* Columns as wide as what they hold; what is left goes to all of them. */
+static void local_fit_cols(void)
+{
+    HWND lv = CTL(ID_LOCAL_LIST);
+    HWND hd = lv ? ListView_GetHeader(lv) : NULL;
+    if (!hd || Header_GetItemCount(hd) != 6) return;
+    RECT cr;
+    GetClientRect(lv, &cr);
+    int avail = cr.right - cr.left - S(2);
+    if (!(GetWindowLongW(lv, GWL_STYLE) & WS_VSCROLL)) avail -= GetSystemMetrics(SM_CXVSCROLL);
+    if (avail < S(240)) return;
+    HDC dc = GetDC(lv);
+    int need[6], pad = S(16);
+    for (int c = 0; c < 6; c++) need[c] = text_w(dc, g_font, T(g_local_cols[c])) + S(28);
+    for (int i = 0; i < g_local_n; i++) {
+        const local_view *v = &g_local_view[i];
+        int w0 = text_w(dc, g_font_semi, v->name), w1 = text_w(dc, g_font, v->where);
+        int x = S(10) + S(24) + S(10) + (w0 > w1 ? w0 : w1) + S(8);
+        if (x > need[0]) need[0] = x;
+        w0 = text_w(dc, g_font, v->chip) + S(12);
+        w1 = text_w(dc, g_font, v->state2) + S(2);
+        x = pad + (w0 > w1 ? w0 : w1);
+        if (x > need[1]) need[1] = x;
+        w0 = text_w(dc, g_font, v->copies);
+        w1 = text_w(dc, g_font, v->copies2);
+        x = pad + (w0 > w1 ? w0 : w1);
+        if (x > need[2]) need[2] = x;
+        w0 = text_w(dc, g_font, v->space);
+        x = pad + (w0 > S(120) ? w0 : S(120));
+        if (x > need[3]) need[3] = x;
+        w0 = text_w(dc, g_font, v->health);
+        w1 = text_w(dc, g_font, v->health2);
+        x = pad + (w0 > w1 ? w0 : w1);
+        if (x > need[4]) need[4] = x;
+        w0 = text_w(dc, g_font, v->checked);
+        w1 = text_w(dc, g_font, v->checked2);
+        x = pad + (w0 > w1 ? w0 : w1);
+        if (x > need[5]) need[5] = x;
+    }
+    ReleaseDC(lv, dc);
+    int sum = 0;
+    for (int c = 0; c < 6; c++) sum += need[c];
+    if (sum <= avail) {
+        int extra = avail - sum;
+        for (int c = 0; c < 6; c++) need[c] += extra / 6;
+    } else {
+        int over = sum - avail;
+        for (int c = 0; c < 6; c++) {
+            need[c] -= (int)((long long)over * need[c] / sum);
+            if (need[c] < S(64)) need[c] = S(64);
+        }
+    }
+    for (int c = 0; c < 6; c++) ListView_SetColumnWidth(lv, c, need[c]);
+}
+
+/* How tall the table wants to be: its header, groups and rows. */
+static int local_list_need(void)
+{
+    HWND lv = CTL(ID_LOCAL_LIST);
+    int groups = 0, rowh = S(40);
+    for (int i = 0; i < 3; i++)
+        if (g_local_groups[i]) groups++;
+    RECT ir;
+    if (ListView_GetItemCount(lv) > 0 && ListView_GetItemRect(lv, 0, &ir, LVIR_BOUNDS)) rowh = ir.bottom - ir.top;
+    RECT hr = {0, 0, 0, 0};
+    HWND hd = ListView_GetHeader(lv);
+    if (hd) GetWindowRect(hd, &hr);
+    int head = hr.bottom - hr.top;
+    if (head <= 0) head = S(26);
+    return head + groups * (font_h(g_font_semi) + S(22)) + g_local_n * rowh + S(18);
+}
+
+static COLORREF local_bg(void) { return g_hc ? GetSysColor(COLOR_WINDOW) : g_dark ? DARK_FIELD : GetSysColor(COLOR_WINDOW); }
+
+/* Two lines in a cell, or one in its middle when there is no second. */
+static void cell_lines(HDC dc, RECT r, HFONT f1, COLORREF c1, const wchar_t *s1, COLORREF c2, const wchar_t *s2)
+{
+    UINT fl = DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS;
+    if (!s2 || !*s2) {
+        draw_str(dc, f1, c1, s1, r, fl | DT_VCENTER);
+        return;
+    }
+    int h = g_lv_h1 + S(2) + g_lv_h2, top = r.top + (r.bottom - r.top - h) / 2;
+    RECT a = {r.left, top, r.right, top + g_lv_h1};
+    RECT b = {r.left, top + g_lv_h1 + S(2), r.right, top + h};
+    draw_str(dc, f1, c1, s1, a, fl);
+    draw_str(dc, g_font, c2, s2, b, fl);
+}
+
+/* A drive's space: its copies, other files, free, and at the end what
+ * BRODALF keeps free, hatched. */
+static void space_bar(HDC dc, RECT r, const local_view *v)
+{
+    round_box(dc, &r, S(4), ui_track(), CLR_INVALID);
+    int w = r.right - r.left;
+    if (w <= 0 || v->total <= 0) return;
+    HRGN clip = CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, S(4), S(4));
+    SelectClipRgn(dc, clip);
+    int held_w = (int)((long long)w * v->held / v->total), other_w = (int)((long long)w * v->other / v->total);
+    if (v->held > 0 && held_w < S(2)) held_w = S(2);
+    int64_t res = v->reserve < v->freeb ? v->reserve : v->freeb;
+    int res_w = res > 0 ? (int)((long long)w * res / v->total) : 0;
+    if (res > 0 && res_w < S(2)) res_w = S(2);
+    RECT a = {r.left, r.top, r.left + held_w, r.bottom};
+    if (a.right > r.right) a.right = r.right;
+    fill_color(dc, &a, g_hc ? GetSysColor(COLOR_HIGHLIGHT) : ui_link());
+    RECT b = {a.right, r.top, a.right + other_w, r.bottom};
+    if (b.right > r.right) b.right = r.right;
+    fill_color(dc, &b, g_hc ? GetSysColor(COLOR_GRAYTEXT) : g_dark ? RGB(125, 125, 125) : RGB(165, 165, 165));
+    if (res_w > 0) {
+        RECT k = {r.right - res_w, r.top, r.right, r.bottom};
+        HBRUSH hb = CreateHatchBrush(HS_BDIAGONAL, g_hc ? GetSysColor(COLOR_WINDOWTEXT) : g_dark ? RGB(150, 150, 150) : RGB(130, 130, 130));
+        int om = SetBkMode(dc, OPAQUE);
+        COLORREF ob = SetBkColor(dc, ui_track());
+        FillRect(dc, &k, hb);
+        SetBkColor(dc, ob);
+        SetBkMode(dc, om);
+        DeleteObject(hb);
+    }
+    SelectClipRgn(dc, NULL);
+    DeleteObject(clip);
+}
+
+static void local_paint_row(NMLVCUSTOMDRAW *cd, int pos, const local_view *v)
+{
+    HWND lv = cd->nmcd.hdr.hwndFrom;
+    HDC dc = cd->nmcd.hdc;
+    RECT row;
+    if (!ListView_GetItemRect(lv, pos, &row, LVIR_BOUNDS)) return;
+    HWND hd = ListView_GetHeader(lv);
+    if (!hd || Header_GetItemCount(hd) < 6) return;
+    int rh = row.bottom - row.top;
+    int sel = (ListView_GetItemState(lv, pos, LVIS_SELECTED) & LVIS_SELECTED) != 0, focus = GetFocus() == lv;
+    COLORREF bg = local_bg();
+    if (sel) {
+        if (g_hc) bg = GetSysColor(COLOR_HIGHLIGHT);
+        else if (focus) bg = g_dark ? RGB(0x26, 0x4F, 0x78) : RGB(0xCC, 0xE4, 0xF7);
+        else bg = g_dark ? RGB(0x2E, 0x3B, 0x48) : RGB(0xE5, 0xF0, 0xFA);
+    }
+    fill_color(dc, &row, bg);
+    if (sel && focus && !g_hc) {
+        RECT ab = {row.left + S(1), row.top + S(6), row.left + S(4), row.bottom - S(6)};
+        round_box(dc, &ab, S(3), ui_link(), CLR_INVALID);
+    } else if (!sel) {
+        RECT ln = {row.left + S(8), row.bottom - 1, row.right - S(8), row.bottom};
+        fill_color(dc, &ln, g_hc ? GetSysColor(COLOR_GRAYTEXT) : ui_border());
+    }
+    int hc_sel = sel && g_hc;
+    COLORREF text = hc_sel ? GetSysColor(COLOR_HIGHLIGHTTEXT) : v->lost ? theme_gray() : ui_text();
+    COLORREF sub = hc_sel ? GetSysColor(COLOR_HIGHLIGHTTEXT) : ui_sub();
+#define TONED(t) ((t) && !hc_sel ? tone_text(t) : sub)
+
+    RECT cell[6];
+    for (int c = 1; c < 6; c++) {
+        ListView_GetSubItemRect(lv, pos, c, LVIR_BOUNDS, &cell[c]);
+        cell[c].left += S(8);
+        cell[c].right -= S(6);
+        cell[c].top = row.top;
+        cell[c].bottom = row.bottom;
+    }
+    cell[0] = row;
+    cell[0].right = cell[1].left - S(8) - S(6);
+    cell[0].left += S(10);
+
+    /* The drive: its icon, marked plugged in or lost, its name, where it is kept. */
+    int isz = S(24), iy = row.top + (rh - isz) / 2;
+    if (g_ico_drive) DrawIconEx(dc, cell[0].left, iy, g_ico_drive, isz, isz, 0, NULL, DI_NORMAL);
+    if (v->lost) draw_state_icon(dc, cell[0].left + isz - S(9), iy + isz - S(9), S(12), TONE_BAD, GLYPH_CROSS);
+    else if (v->connected) draw_state_icon(dc, cell[0].left + isz - S(9), iy + isz - S(9), S(12), TONE_SAFE, GLYPH_CHECK);
+    RECT c0 = cell[0];
+    c0.left += isz + S(10);
+    cell_lines(dc, c0, g_font_semi, text, v->name, sub, v->where);
+
+    /* Its state, as the drive's card in the header says it. */
+    int busy = job_uses(v->id);
+    const wchar_t *chip = busy ? job_chip() : v->chip;
+    int tone = busy ? TONE_WORK : v->chip_tone;
+    int ch = g_lv_h2 + S(4), block = ch + S(3) + g_lv_h2;
+    int top = v->state2[0] ? row.top + (rh - block) / 2 : row.top + (rh - ch) / 2;
+    draw_chip_fit(dc, cell[1].left, top, ch, chip, tone, cell[1].right - cell[1].left);
+    if (v->state2[0]) {
+        RECT s2 = {cell[1].left + S(2), top + ch + S(3), cell[1].right, top + block};
+        draw_str(dc, g_font, sub, v->state2, s2, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    cell_lines(dc, cell[2], g_font, text, v->copies, TONED(v->copies2_tone), v->copies2);
+
+    if (v->total > 0) {
+        int bw = cell[3].right - cell[3].left, bh = S(8);
+        if (bw > S(160)) bw = S(160);
+        int sblock = bh + S(5) + g_lv_h2, sy = row.top + (rh - sblock) / 2;
+        RECT bar = {cell[3].left, sy, cell[3].left + bw, sy + bh};
+        space_bar(dc, bar, v);
+        RECT st = {cell[3].left, sy + bh + S(5), cell[3].right, sy + sblock};
+        draw_str(dc, g_font, v->space_tone ? TONED(v->space_tone) : text, v->space, st, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else
+        draw_str(dc, g_font, sub, v->space, cell[3], DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    cell_lines(dc, cell[4], g_font, TONED(v->health_tone), v->health, sub, v->health2);
+    cell_lines(dc, cell[5], g_font, text, v->checked, TONED(v->checked2_tone), v->checked2);
+#undef TONED
+}
+
+static void local_paint_group(NMLVCUSTOMDRAW *cd)
+{
+    HWND lv = cd->nmcd.hdr.hwndFrom;
+    HDC dc = cd->nmcd.hdc;
+    int id = (int)cd->nmcd.dwItemSpec;
+    RECT r;
+    if (!ListView_GetGroupRect(lv, id, LVGGR_HEADER, &r)) r = cd->rcText;
+    fill_color(dc, &r, local_bg());
+    wchar_t s[200];
+    local_group_text(id, s, 200);
+    RECT t = r;
+    t.left += S(10);
+    int tw = text_w(dc, g_font_semi, s);
+    draw_str(dc, g_font_semi, id == LOCAL_LOST ? tone_text(TONE_BAD) : ui_text(), s, t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    int ly = (r.top + r.bottom) / 2;
+    RECT ln = {t.left + tw + S(10), ly, r.right - S(10), ly + 1};
+    if (ln.right > ln.left) fill_color(dc, &ln, g_hc ? GetSysColor(COLOR_GRAYTEXT) : ui_border());
+}
+
+static LRESULT local_custom_draw(NMLVCUSTOMDRAW *cd)
+{
+    switch (cd->nmcd.dwDrawStage) {
+    case CDDS_PREPAINT:
+        if (cd->dwItemType == LVCDI_GROUP) {
+            local_paint_group(cd);
+            return CDRF_SKIPDEFAULT;
+        } else {
+            TEXTMETRICW tm;
+            HGDIOBJ o = SelectObject(cd->nmcd.hdc, g_font_semi);
+            GetTextMetricsW(cd->nmcd.hdc, &tm);
+            g_lv_h1 = tm.tmHeight;
+            SelectObject(cd->nmcd.hdc, g_font);
+            GetTextMetricsW(cd->nmcd.hdc, &tm);
+            g_lv_h2 = tm.tmHeight;
+            SelectObject(cd->nmcd.hdc, o);
+        }
+        return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: {
+        int i = (int)cd->nmcd.lItemlParam;
+        if (i < 0 || i >= g_local_n) return CDRF_DODEFAULT;
+        local_paint_row(cd, (int)cd->nmcd.dwItemSpec, &g_local_view[i]);
+        return CDRF_SKIPDEFAULT;
+    }
+    }
+    return CDRF_DODEFAULT;
+}
+
+static void local_info_tip(NMLVGETINFOTIPW *tip)
+{
+    int i = lv_index(tip->hdr.hwndFrom, tip->iItem);
+    if (i >= 0 && i < g_local_n && tip->pszText && tip->cchTextMax > 0) lstrcpynW(tip->pszText, g_local_view[i].tip, tip->cchTextMax);
+}
+
 static void local_detail(void)
 {
     HWND ed = CTL(ID_LOCAL_TEXT);
@@ -9218,52 +9769,24 @@ static void fill_local(void)
     HWND lv = CTL(ID_LOCAL_LIST);
     int r = lv_selected(ID_LOCAL_LIST), sel = -1;
     int64_t keep = r >= 0 && r < g_local_n ? g_local_rows[r].id : 0;
+    int was_n = g_local_n, was_groups[3];
+    memcpy(was_groups, g_local_groups, sizeof(was_groups));
     g_filling++;
     SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(lv);
+    ListView_RemoveAllGroups(lv);
+    ListView_EnableGroupView(lv, TRUE);
     g_local_n = 0;
+    memset(g_local_groups, 0, sizeof(g_local_groups));
     if (g_cat) {
         drive_list dl = load_drives();
+        static wchar_t names[256][160];
         for (int i = 0; i < dl.n && g_local_n < 256; i++) {
             const drive_snap *d = &dl.items[i];
             if (strcmp(d->kind, "drive") != 0 || d->secondary) continue;
-            wchar_t name[600], plugged[600], size[64] = L"", freeb[64] = L"", held[64], other[64] = L"", reserve[64];
-            wchar_t health[32] = L"", temp[32] = L"", hours[32] = L"", worn[16] = L"", oldest[64] = L"", copies[32], probs[200] = L"";
-            drive_name(d->label, d->location, name, 600);
-            wchar_t *root = widen(d->root);
-            if (d->connected) swprintf(plugged, 600, T(L"Yes, at %ls"), root ? root : L"");
-            else wcscpy(plugged, T(L"No"));
-            free(root);
-            if (d->total > 0) {
-                format_bytes(d->total, size, 64);
-                format_bytes(d->freeb, freeb, 64);
-                int64_t o = d->total - d->freeb - d->bytes_held;
-                if (o >= 0) format_bytes(o, other, 64);
-            }
-            format_bytes(d->bytes_held, held, 64);
-            format_bytes(d->reserve_bytes, reserve, 64);
-            if (d->has_hw && d->hw.smart) {
-                wchar_t *h = widen(d->hw.health);
-                swprintf(health, 32, L"%ls", h && *h ? h : T(L"unknown"));
-                free(h);
-                if (d->hw.power_on_hours >= 0) swprintf(hours, 32, L"%lld", (long long)d->hw.power_on_hours);
-                if (d->hw.percent_used >= 0) swprintf(worn, 16, L"%d%%", d->hw.percent_used);
-            } else
-                wcscpy(health, d->has_hw ? T(L"not reported") : T(L"not read yet"));
-            if (d->has_hw && d->hw.temperature_c >= 0) swprintf(temp, 32, L"%d \x00B0" L"C", d->hw.temperature_c);
-            if (d->copies && d->oldest_unread_ms) wcscpy(oldest, T(L"some never"));
-            else if (d->copies) format_time_ms(d->oldest_check_ms, oldest, 64);
-            swprintf(copies, 32, L"%lld", (long long)d->copies);
-            const drive_fig *g = fig_of(d->id); /* read after the last job */
-            if (g && g->has_ms && g->ms.copies_bad) swprintf(probs, 200, T(L"%lld missing or damaged"), (long long)g->ms.copies_bad);
-            const wchar_t *add = d->lost_ms ? (strcmp(d->lost_why, "broken") == 0 ? T(L"marked broken") : T(L"marked lost"))
-                               : replace_advice(d) ? T(L"its health data warns") : d->check_due ? T(L"due for a check") : NULL;
-            if (add) {
-                size_t len = wcslen(probs);
-                swprintf(probs + len, 200 - len, L"%ls%ls", len ? L", " : L"", add);
-            }
-            const wchar_t *cells[] = {name, plugged, size, freeb, held, other, reserve, health, temp, hours, worn, oldest, copies, probs};
-            lv_row(lv, cells, 14);
+            local_view_fill(&g_local_view[g_local_n], d);
+            drive_name(d->label, d->location, names[g_local_n], 160);
+            g_local_groups[g_local_view[g_local_n].group - 1]++;
             media_row *m = &g_local_rows[g_local_n];
             m->id = d->id;
             m->connected = d->connected;
@@ -9273,12 +9796,43 @@ static void fill_local(void)
             g_local_n++;
         }
         free(dl.items);
+        for (int gid = LOCAL_PLUGGED; gid <= LOCAL_LOST; gid++) {
+            if (!g_local_groups[gid - 1]) continue;
+            wchar_t head[200];
+            local_group_text(gid, head, 200);
+            LVGROUP gr;
+            memset(&gr, 0, sizeof(gr));
+            gr.cbSize = sizeof(gr);
+            gr.mask = LVGF_HEADER | LVGF_GROUPID;
+            gr.iGroupId = gid;
+            gr.pszHeader = head;
+            ListView_InsertGroup(lv, -1, &gr);
+        }
+        /* The cells' own text: the name first, as the drive is known
+         * everywhere else, then each cell in words. */
+        for (int i = 0; i < g_local_n; i++) {
+            const local_view *v = &g_local_view[i];
+            wchar_t health[200], checked[200];
+            swprintf(health, 200, L"%ls%ls%ls", v->health, v->health2[0] ? L", " : L"", v->health2);
+            swprintf(checked, 200, L"%ls%ls%ls", v->checked, v->checked2[0] ? L", " : L"", v->checked2);
+            const wchar_t *cells[] = {names[i], v->chip, v->copies, v->space, health, checked};
+            lv_row(lv, cells, 6);
+            LVITEMW it;
+            memset(&it, 0, sizeof(it));
+            it.mask = LVIF_GROUPID;
+            it.iItem = ListView_GetItemCount(lv) - 1;
+            it.iGroupId = v->group;
+            SendMessageW(lv, LVM_SETITEMW, 0, (LPARAM)&it);
+        }
     }
     if (sel < 0 && g_local_n) sel = 0;
     lv_select(lv, sel);
     SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(lv, NULL, TRUE);
     g_filling--;
+    /* More or fewer rows: the table and the details share the room again. */
+    if (g_local_n != was_n || memcmp(was_groups, g_local_groups, sizeof(was_groups)) != 0) layout_pages();
+    else local_fit_cols();
     local_detail();
 }
 
@@ -9564,6 +10118,9 @@ static void fill_restore(void)
         wchar_t *what = where_text(r->source_id, r->rel);
         wadd(&t, T(L"Selected on the Primary Database tab: %ls\n"), what ? what : L"");
         free(what);
+        wchar_t older[600];
+        version_note(r, older, 600);
+        if (older[0]) wadd(&t, L"%ls\n", older);
         plan_text p;
         memset(&p, 0, sizeof(p));
         int64_t total = 0, none = 0;
@@ -9576,6 +10133,11 @@ static void fill_restore(void)
                 wadd(&t, T(L"BRODALF restores what the plugged-in drives hold first; then plug in each other drive and press Continue.\n"));
         }
         free(p.t.p);
+    }
+    if (g_last_restore[0]) {
+        wchar_t when[96];
+        friendly_time(g_last_restore_ms, when, 96);
+        wadd(&t, T(L"\nLast restore, %ls: %ls\n"), when, g_last_restore);
     }
     if (g_pending.active) {
         wchar_t *dest = widen(g_pending.dest);
@@ -11881,6 +12443,21 @@ static void jp_result(const job *j, const wchar_t *headline, int stopped, int dr
             SetWindowTextW(g_jp_btn[0], T(L"Show the damaged files"));
         }
     }
+    if (j->kind == JOB_RESTORE && j->status == BD_OK && !stopped && !drive_gone && j->dest && j->dest[0]) {
+        wchar_t *dw = widen(j->dest);
+        swprintf(g_jp_dest, 600, L"%ls", dw ? dw : L"");
+        free(dw);
+        int k2 = g_jp_act[0] == JA_NONE ? 0 : 1;
+        g_jp_act[k2] = JA_OPEN_DEST;
+        SetWindowTextW(g_jp_btn[k2], T(L"Open the folder"));
+        if (k2 == 0 && j->n_conf > 0) {
+            wchar_t b[120];
+            swprintf(b, 120, TN(j->n_conf, L"Compare the %d left alone...", L"Compare the %d left alone..."), j->n_conf);
+            g_jp_act[1] = JA_CONFLICTS;
+            SetWindowTextW(g_jp_btn[1], b);
+        }
+        if (g_jp_state == JP_OK && j->n_conf > 0) g_jp_state = JP_PROBLEM; /* two lines: the summary says what was left alone */
+    }
     layout();
 }
 
@@ -11893,6 +12470,10 @@ static void jp_action(int k)
         else show_app_log(g_main);
         break;
     case JA_DAMAGED: cmd_table(TABLE_DAMAGED); break;
+    case JA_CONFLICTS: cmd_table(TABLE_CONFLICTS); break;
+    case JA_OPEN_DEST:
+        if (g_jp_dest[0]) show_in_explorer(g_jp_dest);
+        break;
     }
 }
 
@@ -12518,6 +13099,7 @@ static void dpi_changed(HWND hwnd, int dpi, const RECT *want)
         r.to[3] = g_font_bold;
         EnumChildWindows(hwnd, refont_child, (LPARAM)&r);
         tree_metrics();
+        local_metrics();
         if (g_tip) {
             SendMessageW(g_tip, WM_SETFONT, (WPARAM)g_font, FALSE);
             SendMessageW(g_tip, TTM_SETMAXTIPWIDTH, 0, S(560));
@@ -12795,6 +13377,13 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 di->lpszText = g_tip_text;
             }
             return 0;
+        }
+        if (nh->idFrom == ID_LOCAL_LIST && nh->hwndFrom == CTL(ID_LOCAL_LIST)) {
+            if (nh->code == NM_CUSTOMDRAW) return local_custom_draw((NMLVCUSTOMDRAW *)lp);
+            if (nh->code == LVN_GETINFOTIPW) {
+                local_info_tip((NMLVGETINFOTIPW *)lp);
+                return 0;
+            }
         }
         if (page_notify(nh)) return 0;
         if (nh->idFrom == ID_RESULTS) {
@@ -13231,6 +13820,7 @@ static void close_database(void)
     free_conflicts(g_conflicts, g_n_conflicts);
     g_conflicts = NULL;
     g_n_conflicts = 0;
+    g_last_restore[0] = 0;
     g_n_check_offered = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");

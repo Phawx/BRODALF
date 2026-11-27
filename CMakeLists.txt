@@ -153,7 +153,8 @@ if(BRODALF_BUILD_TESTS)
     add_executable(test_flow_tests tests/test_flow_tests.c)
     target_link_libraries(test_flow_tests PRIVATE brodalf_core)
     target_include_directories(test_flow_tests PRIVATE src)
-    add_test(NAME flow_tests COMMAND test_flow_tests)
+    add_test(NAME flow_tests COMMAND test_flow_tests disk)
+    add_test(NAME flow_shadow COMMAND test_flow_tests shadow)
     # Real FAT32 and exFAT volumes and a share, which CI makes (c-core.yml).
     set(BRODALF_WINDOWS_TESTS "")
     if(WIN32)
@@ -179,7 +180,7 @@ if(BRODALF_BUILD_TESTS)
     add_test(NAME test_tmp_remove COMMAND ${CMAKE_COMMAND} -E remove_directory ${BRODALF_TEST_TMP})
     set_tests_properties(test_tmp_make PROPERTIES FIXTURES_SETUP brodalf_test_tmp)
     set_tests_properties(test_tmp_remove PROPERTIES FIXTURES_CLEANUP brodalf_test_tmp)
-    set_tests_properties(core crypto blake3 misc memory gaps flow_tests ${BRODALF_WINDOWS_TESTS} many_files PROPERTIES
+    set_tests_properties(core crypto blake3 misc memory gaps flow_tests flow_shadow ${BRODALF_WINDOWS_TESTS} many_files PROPERTIES
                          FIXTURES_REQUIRED brodalf_test_tmp
                          ENVIRONMENT "TMPDIR=${BRODALF_TEST_TMP};TMP=${BRODALF_TEST_TMP};TEMP=${BRODALF_TEST_TMP}")
 endif()

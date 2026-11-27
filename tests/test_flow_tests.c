@@ -12,7 +12,9 @@
  * A shadow copy needs administrator rights: without them the shadow part
  * is skipped, saying so, except on CI (the CI variable set), where it
  * fails. Elsewhere than Windows only what these functions answer there is
- * checked. Everything is made in one temp folder, removed at the end. */
+ * checked. Everything is made in one temp folder, removed at the end.
+ * "test_flow_tests disk" or "test_flow_tests shadow" runs one of the two
+ * parts (ctest's flow_tests and flow_shadow); with neither, both run. */
 #include "brodalf.h"
 #include "internal.h"
 #include "test_tree.h"
@@ -381,8 +383,13 @@ static void test_shadow_copy(void)
 #endif
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    const char *only = argc > 1 ? argv[1] : "";
+    if (*only && strcmp(only, "disk") != 0 && strcmp(only, "shadow") != 0) {
+        fprintf(stderr, "usage: test_flow_tests [disk|shadow]\n");
+        return 2;
+    }
     char tmp[512], id[37];
     bd_temp_dir(tmp, sizeof(tmp));
     bd_uuid_v4(id);
@@ -391,8 +398,8 @@ int main(void)
     bd_mkdirs(top);
     printf("working in %s\n", top);
 
-    test_drive_hw();
-    test_shadow_copy();
+    if (strcmp(only, "shadow") != 0) test_drive_hw();
+    if (strcmp(only, "disk") != 0) test_shadow_copy();
 
     remove_tree(top);
     CHECK(!exists(top));

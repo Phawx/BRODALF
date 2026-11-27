@@ -837,8 +837,11 @@ static void test_moves_guard_and_progress(void)
         REQUIRE_OK(bd_list_changed_on_media(cat, d1, count_changed, &changed), cat);
         CHECK(changed == 35);
     }
+    /* The new drive holds nothing to compare, so the change is worked out
+     * over every drive: it warns too. */
     REQUIRE_OK(bd_backup_preview(cat, d2, 0, &pv), cat);
-    CHECK(pv.files_to_copy == 60 && pv.files_held == 0 && !pv.mass_change && !pv.free_is_current);
+    CHECK(pv.files_to_copy == 60 && !pv.free_is_current);
+    CHECK(pv.held_everywhere && pv.files_held == 60 && pv.held_changed == 35 && pv.mass_change);
 
     /* The latest versions were never backed up: a restore brings back the
      * versions that were. */
@@ -3192,8 +3195,18 @@ static void test_unread_copies(void)
     bd_catalog_close(cat);
 }
 
+/* The test folders all sit on one disk; tests not about disks treat every
+ * drive as a disk of its own, as before copies were counted by disk. */
+static int no_disk_known(const char *root, bd_drive_hw *hw)
+{
+    (void)root;
+    memset(hw, 0, sizeof(*hw));
+    return -1;
+}
+
 int main(void)
 {
+    bd_test_hw_read = no_disk_known;
     char tmp[512], id[37];
     bd_temp_dir(tmp, sizeof(tmp));
     bd_uuid_v4(id);

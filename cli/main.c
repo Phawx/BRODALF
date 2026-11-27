@@ -32,14 +32,17 @@ static void usage(void)
          "  root-stop   <catalog> <root>               stop backing up a root (its copies stay and still restore)\n"
          "  root-resume <catalog> <root>               back a stopped root up again\n"
          "  root-move   <catalog> <root> <folder>      the root is somewhere else now (a new PC, another drive letter)\n"
-         "  scan     <catalog> [--bitrot] [--accept ROOT/PATH]... [--shadow-copy]\n"
+         "  scan     <catalog> [--bitrot] [--accept ROOT/PATH]... [--shadow-copy] [--gone ROOT]...\n"
          "                                             record files, sizes and checksums; --bitrot also reads\n"
          "                                             unchanged files to find ones damaged on this PC. Those\n"
          "                                             stay listed after every scan until a scan finds them\n"
          "                                             right again, or --accept records one as changed on purpose.\n"
          "                                             --shadow-copy (Windows, as administrator): files in use\n"
          "                                             by another program are read from a shadow copy of\n"
-         "                                             their drive instead of being skipped\n"
+         "                                             their drive instead of being skipped. A root that is there\n"
+         "                                             but almost empty (a new PC) is left as it was: restore it,\n"
+         "                                             or if its files really were deleted, --gone ROOT marks them\n"
+         "                                             deleted\n"
          "  deleted  <catalog> [--new] [--root NAME]   files deleted from their folders, and the drives holding them\n"
          "  deleted-ack    <catalog> <root> <path> | --all\n"
          "                                             mark deleted files as seen; they stay in the catalog\n"
@@ -360,7 +363,7 @@ static const char *opt(int argc, char **argv, const char *name)
 static int positional(int argc, char **argv, const char **out, int cap)
 {
     static const char *const with_value[] = {"--drive", "--root", "--source", "--path", "--dest", "--location", "--days",
-                                             "--add", "--set", "--accept", "--sheet", "--id"};
+                                             "--add", "--set", "--accept", "--sheet", "--id", "--gone"};
     int n = 0;
     for (int i = 3; i < argc; i++) {
         int takes = 0;
@@ -973,6 +976,7 @@ static void print_preview(const bd_backup_preview_info *p)
         j_int("files_held", p->files_held);
         j_int("held_changed", p->held_changed);
         j_bool("mass_change", p->mass_change);
+        j_bool("held_everywhere", p->held_everywhere);
         j_int("files_too_big", p->files_too_big);
         j_int("bytes_too_big", p->bytes_too_big);
         if (p->too_big_why) j_str("too_big_why", p->too_big_why);
@@ -1006,7 +1010,13 @@ static void print_preview(const bd_backup_preview_info *p)
         printf("of those, %lld file%s (%s) will not fit because %s\n", (long long)p->files_too_big,
                p->files_too_big == 1 ? "" : "s", size, p->too_big_why);
     }
-    if (p->mass_change)
+    if (p->mass_change && p->held_everywhere)
+        printf("WARNING: %lld of the %lld files your drives hold have different contents now or are gone\n"
+               "from their folder, and this drive holds too few of them to tell. That is what ransomware\n"
+               "encrypting your files looks like. If you did not expect it, look at the list first\n"
+               "and restore from your other drives instead of backing up.\n",
+               (long long)p->held_changed, (long long)p->files_held);
+    else if (p->mass_change)
         printf("WARNING: %lld of the %lld files this drive holds have different contents now or are gone\n"
                "from their folder. That is what ransomware encrypting your files looks like. If you did not\n"
                "expect it, look at the list first\n"
@@ -1612,6 +1622,8 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         j_int("files_too_big", bs->files_too_big);
         j_int("bytes_too_big", bs->bytes_too_big);
         if (bs->too_big_why) j_str("too_big_why", bs->too_big_why);
+        j_int("files_bigger_than_drives", bs->files_bigger_than_drives);
+        j_int("bytes_bigger_than_drives", bs->bytes_bigger_than_drives);
         report_in_use(cat, bs->files_in_use);
         J_END();
         return;
@@ -1642,6 +1654,13 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         human_bytes(bs->bytes_too_big, size, sizeof(size));
         printf("of those, %lld file%s (%s) did not fit because %s\n", (long long)bs->files_too_big,
                bs->files_too_big == 1 ? "" : "s", size, bs->too_big_why);
+    }
+    if (bs->files_bigger_than_drives) {
+        human_bytes(bs->bytes_bigger_than_drives, size, sizeof(size));
+        printf("of those, %lld file%s (%s) %s bigger than every backup drive you have: leave %s out (brodalf skip), or back %s up to a bigger drive\n",
+               (long long)bs->files_bigger_than_drives, bs->files_bigger_than_drives == 1 ? "" : "s", size,
+               bs->files_bigger_than_drives == 1 ? "is" : "are", bs->files_bigger_than_drives == 1 ? "it" : "them",
+               bs->files_bigger_than_drives == 1 ? "it" : "them");
     }
 }
 
@@ -1732,6 +1751,12 @@ static int run(int argc, char **argv)
     } else if (strcmp(cmd, "scan") == 0) {
         bd_scan_stats st;
         bd_scan_opts so = {has_flag(argc, argv, "--bitrot")};
+        for (int i = 3; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "--gone") != 0) continue;
+            int64_t id = source_id_by_name(cat, argv[i + 1]);
+            if (!id) { bd_catalog_close(cat); return 1; }
+            bd_source_accept_gone(cat, id);
+        }
         bd_status s = bd_scan_ex(cat, &so, &st, log_line, NULL);
         char *shadow_dir = NULL;
         if (s == BD_OK && has_flag(argc, argv, "--shadow-copy") && shadow_stage(cat, st.files_in_use, &shadow_dir)) {
@@ -1761,7 +1786,11 @@ static int run(int argc, char **argv)
             j_int("files_online_only", st.files_online_only);
             j_int("files_damaged", st.files_damaged);
             j_int("roots_missing", st.roots_missing);
+            j_int("roots_emptied", st.roots_emptied);
+            j_int("roots_waiting", st.roots_waiting);
             j_int("roots_stopped", st.roots_stopped);
+            j_int("files_cloud_changed", st.files_cloud_changed);
+            j_int("links_not_followed", st.links_not_followed);
             if (listed) {
                 J_ARR("damaged");
                 bd_list_damaged(cat, print_damaged, &dc);
@@ -1774,9 +1803,16 @@ static int run(int argc, char **argv)
                    "%lld skipped, %lld errors\n",
                    (long long)st.files_seen, (long long)st.dirs_seen, (long long)st.files_new, (long long)st.files_changed,
                    (long long)st.files_moved, (long long)st.files_deleted, (long long)st.skipped, (long long)st.errors);
-            if (st.roots_missing)
+            if (st.roots_missing - st.roots_emptied - st.roots_waiting > 0)
                 printf("%lld backup roots were not found and were left as they were: plug in their drive, or say where\n"
-                       "they are now with root-move (roots shows which)\n", (long long)st.roots_missing);
+                       "they are now with root-move (roots shows which)\n",
+                       (long long)(st.roots_missing - st.roots_emptied - st.roots_waiting));
+            if (st.roots_emptied)
+                printf("%lld backup roots are there but almost empty (a new PC, or a reinstalled Windows?) and were left as\n"
+                       "they were: restore them, or if their files really were deleted, scan again with --gone ROOT\n",
+                       (long long)st.roots_emptied);
+            if (st.roots_waiting)
+                printf("%lld backup roots wait for their disk to be plugged in\n", (long long)st.roots_waiting);
             if (st.files_deleted)
                 printf("%lld files were deleted from their folders (%lld of them on no drive); they stay in the catalog:\n"
                        "see them with deleted, then keep them (deleted-ack) or forget them (deleted-forget)\n",
@@ -1785,6 +1821,12 @@ static int run(int argc, char **argv)
             if (st.files_online_only)
                 printf("%lld files are online-only (in the cloud, not on this PC) and were left alone\n",
                        (long long)st.files_online_only);
+            if (st.files_cloud_changed)
+                printf("%lld of them changed in the cloud, so their newest versions are not backed up: set them to\n"
+                       "\"Always keep on this device\" and scan again\n", (long long)st.files_cloud_changed);
+            if (st.links_not_followed)
+                printf("%lld links lead outside your backup roots and were not followed, so what they lead to is not\n"
+                       "backed up (the log says where each leads): add it as a backup root\n", (long long)st.links_not_followed);
             if (listed) {
                 printf("%lld files changed without their size or modified time changing (a bit-rot scan found them).\n"
                        "That is what damage on this PC's disk looks like; their copies on the drives are the good ones:\n",
@@ -1797,7 +1839,7 @@ static int run(int argc, char **argv)
                 puts("no damaged files found");
             }
         }
-        if (st.errors || st.files_in_use || st.roots_missing || dc.shown) problems = 1;
+        if (st.errors || st.files_in_use || st.roots_missing - st.roots_waiting > 0 || dc.shown) problems = 1;
         save = 1;
     } else if (strcmp(cmd, "deleted") == 0) {
         int64_t source_id = root_opt(cat, argc, argv);
@@ -2141,6 +2183,8 @@ static int run(int argc, char **argv)
                     bs.files_too_big = first.files_too_big;
                     bs.bytes_too_big = first.bytes_too_big;
                     bs.too_big_why = first.too_big_why;
+                    bs.files_bigger_than_drives = first.files_bigger_than_drives;
+                    bs.bytes_bigger_than_drives = first.bytes_bigger_than_drives;
                     bs.copies_alongside += first.copies_alongside;
                     bs.files_rehashed += first.files_rehashed;
                     bs.files_online_only = first.files_online_only;
@@ -2379,6 +2423,14 @@ static int run(int argc, char **argv)
             int64_t source_id = root_opt(cat, argc, argv);
             if (source_id < 0) { bd_catalog_close(cat); return 1; }
             bd_restore_opts ro = {has_flag(argc, argv, "--deleted")};
+            int64_t need = 0, freeb = -1;
+            if (bd_restore_room(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, 0, &need, &freeb) == BD_OK && freeb >= 0 &&
+                need > freeb) {
+                char a[32], b[32];
+                human_bytes(need, a, sizeof(a));
+                human_bytes(freeb, b, sizeof(b));
+                fprintf(stderr, "warning: this restore needs %s, but only %s is free there: it stops with errors once the disk is full\n", a, b);
+            }
             s = bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, &rs, log_line, NULL);
         }
         if (s == BD_ERR_CANCELLED) return stopped(cat, "restore (run the same restore again to carry on)");
@@ -2399,11 +2451,26 @@ static int run(int argc, char **argv)
         else puts("plug these in, in this order:");
         bd_status s = bd_restore_plan_ex(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro,
                                          print_plan_step, &steps, &total, &none);
-        if (g_json) { J_END_ARR(); j_int("files", total); j_int("files_no_copy", none); J_END(); }
+        int64_t need = 0, freeb = -1;
+        if (s == BD_OK && opt(argc, argv, "--dest"))
+            s = bd_restore_room(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro, 0, &need, &freeb);
+        if (g_json) {
+            J_END_ARR();
+            j_int("files", total);
+            j_int("files_no_copy", none);
+            if (opt(argc, argv, "--dest")) { j_int("bytes_needed", need); j_int("bytes_free", freeb); }
+            J_END();
+        }
         if (s != BD_OK) return die(cat, "cannot plan the restore");
         if (!g_json) {
             if (!steps) puts("  (nothing to plug in)");
             printf("%lld files to restore, %lld with no copy anywhere\n", (long long)total, (long long)none);
+            if (freeb >= 0 && need > freeb) {
+                char a[32], b[32];
+                human_bytes(need, a, sizeof(a));
+                human_bytes(freeb, b, sizeof(b));
+                printf("this needs %s, but only %s is free at --dest: free up space or restore somewhere else\n", a, b);
+            }
         }
         save = 1;
     } else if (strcmp(cmd, "need") == 0) {

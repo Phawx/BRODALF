@@ -456,8 +456,10 @@ Scans skip temp files, caches and things a program can rebuild, such as
 every backup root (**Settings > What to leave out in every backup root**)
 and one per root (right-click it). One pattern per line, `*` and `?` as
 wildcards, a trailing `/` for folders only, and a `/` in the middle (like
-`Photos/Exports/`) for a path inside a backup root. A file that is newly
-left out shows among the deleted files, for you to keep or forget.
+`Photos/Exports/`) or at the start (like `/big.vhdx`) for a path inside a
+backup root. A file that is newly left out shows among the deleted files,
+for you to keep or forget. **Largest files** and **Older versions using the
+most space** (View menu) can leave a file out for you.
 
 Files in OneDrive or Dropbox are scanned like any other; one that is
 online-only (in the cloud, not on this PC) is left alone until it is on the
@@ -843,6 +845,28 @@ on a local machine needs to pick the work up without the chat history.
   on a Windows CI runner, with a database opened with no local data and
   its drives unplugged. No change to the database format: 0.10.2 opens
   the files 0.11.0 saves.
+- Not released yet (branch `use-case-gaps`): the 21 gaps that walking
+  real use cases through 0.11.0 found. A new PC, or a reinstalled Windows,
+  no longer marks every file deleted: a backup root holding a tenth or
+  less of the files it had is held as it was and offered for restore, and
+  a root on an unplugged disk can wait for it. Copies count once per
+  physical disk; a drive on the same disk as your files, or one whose
+  health data says it is failing, does not count. A wiped drive is
+  recognized by its model, serial and size; a drive holding another
+  database's backups offers to recover that database; Recover falls back
+  to an older catalog copy when the newest is damaged, and opening a copy
+  on a drive offers Recover instead. A cloud file changed on another
+  device, a link that is not followed and a file that changes during
+  every copy are no longer silent. The mass-change warning comes up for a
+  new drive too. Changing the passphrase or the recovery key says what
+  the old one still opens. The open database is left out of the scan.
+  New: files bigger than every drive, Older versions using the most
+  space, Leave it out from either view, a free-space check before a
+  restore, half-written `.brodalf-tmp` files listed and removed on a yes
+  at Check drive, the release page and version on the recovery sheet, and
+  "Not on this PC" in the Status column for screen readers. A skip line
+  starting with `/` is now a path from the top of the root. No change to
+  the database format: 0.10.2 and 0.11.0 open the files it saves.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -998,6 +1022,17 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
+Not released yet, from the `use-case-gaps` branch (built by CI, tested
+on Linux only): Windows' empty Documents after a reinstall held as almost
+empty; a root on an unplugged USB disk waiting for it; disk serials of two
+partitions of one USB disk and of a disk behind a USB bridge; a drive on
+the system disk; SMART saying a disk is failing; a drive reformatted in
+Explorer and plugged back in; OneDrive files edited on another device;
+junctions and symbolic links inside a root and chosen as a root; an
+Outlook .pst open while backing up (the shadow-copy offer); free space on
+a restore folder; every new dialog and table in the three languages; and
+a screen reader on the file view.
+
 1. Everything new in 0.11.0, seen only in automated screenshots on a
    Windows CI runner and never used by a person: the Explorer-style tab
    with real files (double-click, Backspace, sorting, right-click in both
@@ -1118,6 +1153,23 @@ limits of the new work:
   a newer format.
 - Case-insensitive matching keys (`nodes.rel_fold`) are only written by
   Windows builds, so files added to a catalog by a POSIX build have none.
+- The files are encrypted with one key that never changes. After a
+  passphrase change or a new recovery key, the older database copies on
+  the drives still open with the old one; BRODALF says so, but a new key
+  for later copies would make the database unreadable by 0.11.0 and
+  older, so it is not done.
+- A database opened on a second PC whose paths are the same is not told
+  apart from the first PC (no machine ID is kept per root); only the
+  almost-empty check catches it. A drive letter taken over by another
+  disk is not noticed either.
+- A USB bridge that reports one serial for several disks makes them count
+  as one copy (the safe side). Links whose target is inside a backup root
+  are not listed, since what they lead to is backed up anyway.
+- A skip line starting with `/` is a path from the top of the root. A
+  line like `/huge.bin`, with no other `/`, is read by 0.11.0 and older
+  as that name anywhere in the root, so they leave out more with it.
+- "Bigger than every drive" compares with each drive's whole size, not
+  its size less the space kept free.
 
 ### Backlog: suggested but not yet asked for
 

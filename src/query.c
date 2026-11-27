@@ -113,7 +113,9 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
                            " (SELECT COALESCE(SUM(n.size),0) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0),"
                            " s.active, EXISTS(SELECT 1 FROM temp.missing_sources ms WHERE ms.source_id=s.id),"
                            " COALESCE(s.last_scan_ms,0),"
-                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " CUR_COPY ")"
+                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " CUR_COPY "),"
+                           " COALESCE((SELECT ms.files_gone FROM temp.missing_sources ms WHERE ms.source_id=s.id),0),"
+                           " EXISTS(SELECT 1 FROM settings st WHERE st.key='wait_disk.'||s.id)"
                            " FROM sources s ORDER BY s.name COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list sources");
@@ -134,6 +136,8 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
         info.missing = sqlite3_column_int(q, 9);
         info.last_scan_ms = sqlite3_column_int64(q, 10);
         info.files_backed_up = sqlite3_column_int64(q, 11);
+        info.files_gone = sqlite3_column_int64(q, 12);
+        info.wait_for_disk = sqlite3_column_int(q, 13);
         char *all = NULL, *plugged = NULL;
         drives_under(dq, info.source_id, "", 0, &all, &plugged);
         info.copies_on = all ? all : "";
@@ -174,7 +178,8 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
                            "   WHERE v.node_id=n.id AND v.id<>COALESCE(n.current_version_id,0) AND c.state='ok'"
                            "   AND " NAMED_DRIVE " ORDER BY m.label COLLATE NOCASE)),"
                            " CASE WHEN n.is_dir THEN (SELECT COUNT(*) FROM nodes d WHERE d.source_id=n.source_id AND d.parent_id=n.id"
-                           "   AND d.is_dir=1) ELSE 0 END"
+                           "   AND d.is_dir=1) ELSE 0 END,"
+                           " COALESCE((SELECT o.changed+1 FROM temp.online_only o WHERE o.node_id=n.id),0)"
                            " FROM nodes n WHERE n.source_id=? AND n.parent_id IS ?"
                            " ORDER BY n.is_dir DESC, n.name COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK) {
@@ -216,6 +221,7 @@ bd_status bd_list_children(bd_catalog *cat, int64_t source_id, int64_t parent_no
         info.offline_media_label = (const char *)sqlite3_column_text(q, 12);
 
         info.subfolders = sqlite3_column_int64(q, 18);
+        info.online_only = sqlite3_column_int(q, 19);
         info.mtime_ns = sqlite3_column_int64(q, info.is_dir ? 13 : 14);
         if (!info.mtime_ns) info.mtime_ns = sqlite3_column_int64(q, 13);
         char *label_copy = NULL, *all = NULL, *plugged = NULL;
@@ -354,7 +360,10 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            "   WHERE c.media_id=m.id AND c.state='ok'),"
                            " m.secondary, COALESCE(m.limit_bytes,0), m.hide_names,"
                            " (SELECT MIN(c.written_ms) FROM copies c WHERE c.media_id=m.id AND c.state='ok'"
-                           "   AND c.last_full_check_ms IS NULL)"
+                           "   AND c.last_full_check_ms IS NULL),"
+                           " COALESCE((SELECT u.why FROM temp.uncounted u WHERE u.media_id=m.id),0),"
+                           " (SELECT o.label FROM media o WHERE o.id<>m.id AND o.kind='drive' AND o.retired_ms IS NULL"
+                           "   AND m.kind='drive' AND " BD_SQL_DISK("o.id") "=" BD_SQL_DISK("m.id") " ORDER BY o.label LIMIT 1)"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -391,6 +400,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.secondary = sqlite3_column_int(q, 37);
         info.limit_bytes = sqlite3_column_int64(q, 38);
         info.hide_names = sqlite3_column_int(q, 39);
+        info.uncounted = sqlite3_column_int(q, 41);
+        info.same_disk_as = sqlite3_column_type(q, 42) == SQLITE_NULL ? "" : (const char *)sqlite3_column_text(q, 42);
         int64_t oldest_unread = col_num(q, 40);
         info.oldest_unread_ms = oldest_unread > 0 ? oldest_unread : 0;
         info.check_due = check_days > 0 &&

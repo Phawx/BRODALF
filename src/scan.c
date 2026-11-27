@@ -184,6 +184,14 @@ static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
 {
     bd_stat_t st;
+    if (bd_stat(folder, &st) == 0 && st.is_link) {
+        char *target = bd_link_target(folder, NULL);
+        bd_status s = target ? bd_fail(cat, BD_ERR_INVALID, "%s is a link to %s. BRODALF does not follow links: add %s instead",
+                                       folder, target, target)
+                             : bd_fail(cat, BD_ERR_NOT_FOUND, "%s is a link that leads nowhere", folder);
+        free(target);
+        return s;
+    }
     if (bd_stat(folder, &st) != 0 || !st.is_dir) return bd_fail(cat, BD_ERR_NOT_FOUND, "%s is not a folder", folder);
 
     char *path = bd_strdup(folder);
@@ -354,6 +362,34 @@ bd_status bd_source_skip_set(bd_catalog *cat, int64_t source_id, const char *pat
     return bd_setting_set(cat, key, patterns) == 0 ? BD_OK : bd_fail_db(cat, "save the folder's skip list");
 }
 
+bd_status bd_leave_out(bd_catalog *cat, int64_t node_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT source_id, rel_path, is_dir FROM nodes WHERE id=?", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "find the file to leave out");
+    sqlite3_bind_int64(q, 1, node_id);
+    if (sqlite3_step(q) != SQLITE_ROW) {
+        sqlite3_finalize(q);
+        return bd_fail(cat, BD_ERR_NOT_FOUND, "no such file in the catalog");
+    }
+    int64_t source_id = sqlite3_column_int64(q, 0);
+    char *line = bd_sprintf("/%s%s", (const char *)sqlite3_column_text(q, 1), sqlite3_column_int(q, 2) ? "/" : "");
+    sqlite3_finalize(q);
+    char *list = bd_source_skip_get(cat, source_id);
+    bd_status s = BD_OK;
+    if (!line || !list) s = bd_fail(cat, BD_ERR_NOMEM, "out of memory");
+    else if (bd_skip_match(list, line + 1, line[strlen(line) - 1] == '/')) s = BD_OK; /* left out already */
+    else {
+        size_t len = strlen(list);
+        char *more = bd_sprintf("%s%s%s\n", list, len && list[len - 1] != '\n' ? "\n" : "", line);
+        s = more ? bd_source_skip_set(cat, source_id, more) : bd_fail(cat, BD_ERR_NOMEM, "out of memory");
+        free(more);
+    }
+    free(line);
+    free(list);
+    return s;
+}
+
 bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active)
 {
     sqlite3_stmt *u;
@@ -421,6 +457,7 @@ static void skip_parse(const char *text, skip_list *l)
         p = *end ? end + 1 : end;
         if (a == b || *a == '#') continue;
         skip_rule r = {0};
+        int anchored = *a == '/' || *a == '\\'; /* a path from the top of the root */
         size_t n = (size_t)(b - a);
         r.pat = malloc(n + 1);
         if (!r.pat) continue;
@@ -429,7 +466,7 @@ static void skip_parse(const char *text, skip_list *l)
         for (char *c = r.pat; *c; c++) if (*c == '\\') *c = '/';
         if (n > 1 && r.pat[n - 1] == '/') { r.dir_only = 1; r.pat[--n] = '\0'; }
         while (r.pat[0] == '/') memmove(r.pat, r.pat + 1, strlen(r.pat));
-        r.whole_path = strchr(r.pat, '/') != NULL;
+        r.whole_path = anchored || strchr(r.pat, '/') != NULL;
         if (!r.pat[0]) { free(r.pat); continue; }
         skip_rule *nr = realloc(l->rules, sizeof(skip_rule) * (size_t)(l->n + 1));
         if (!nr) { free(r.pat); continue; }
@@ -558,12 +595,16 @@ typedef struct {
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
     sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged, *clear_damaged;
+    sqlite3_stmt *note_online, *note_link;
     int have_damaged; /* damaged_files has rows: a file read again may clear one */
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
     int db_error;
     int cancelled;
+    int64_t inserted_files; /* files new to the catalog in this root */
     hash_pool *pool;
+    char *own_keys[12]; /* the open database and its side files, when in this root */
+    int n_own_keys;
 } scan_ctx;
 
 static int64_t lookup_parent(scan_ctx *c, const char *rel)
@@ -870,13 +911,144 @@ static int is_own_store(const scan_ctx *c, const char *rel)
     return own;
 }
 
+/* The open database and the files kept beside it (its lock, a save or a
+ * recovery under way, the working copy): a backup root that holds them
+ * never backs them up, or every backup would add the whole database again. */
+static void find_own_files(scan_ctx *c)
+{
+    const bd_catalog *cat = c->cat;
+    char *rk = root_key(c->root);
+    if (!rk) return;
+    static const char *const side[] = {"", ".lock", ".saving", ".recovering"};
+    static const char *const work[] = {"", "-wal", "-shm", "-journal", ".snapshot"};
+    char *cand[12];
+    int n = 0;
+    for (size_t i = 0; cat->path && i < sizeof(side) / sizeof(side[0]); i++) cand[n++] = bd_sprintf("%s%s", cat->path, side[i]);
+    for (size_t i = 0; cat->work_path && i < sizeof(work) / sizeof(work[0]); i++) cand[n++] = bd_sprintf("%s%s", cat->work_path, work[i]);
+    if (cat->owner_path) cand[n++] = bd_sprintf("%s", cat->owner_path);
+    for (int i = 0; i < n; i++) {
+        char *k = cand[i] ? root_key(cand[i]) : NULL;
+        if (k && key_inside(k, rk) && c->n_own_keys < (int)(sizeof(c->own_keys) / sizeof(c->own_keys[0])))
+            c->own_keys[c->n_own_keys++] = k;
+        else
+            free(k);
+        free(cand[i]);
+    }
+    free(rk);
+}
+
+static int is_own_file(const scan_ctx *c, const char *rel)
+{
+    if (!c->n_own_keys) return 0;
+    char *full = bd_path_join(c->root, rel);
+    char *k = full ? root_key(full) : NULL;
+    int own = 0;
+    for (int i = 0; k && !own && i < c->n_own_keys; i++) own = strcmp(k, c->own_keys[i]) == 0;
+    free(full);
+    free(k);
+    return own;
+}
+
+char *bd_root_holding(bd_catalog *cat, const char *path)
+{
+    char *key = cat && path ? root_key(path) : NULL;
+    if (!key) return NULL;
+    sqlite3_stmt *q;
+    char *found = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE active=1 ORDER BY id", -1, &q, NULL) == SQLITE_OK) {
+        while (!found && sqlite3_step(q) == SQLITE_ROW) {
+            const char *root = (const char *)sqlite3_column_text(q, 0);
+            char *okey = root ? root_key(root) : NULL;
+            if (okey && key_inside(key, okey)) found = bd_strdup(root);
+            free(okey);
+        }
+        sqlite3_finalize(q);
+    }
+    free(key);
+    return found;
+}
+
+/* 1 if path is in an active backup root. */
+static int in_a_root(bd_catalog *cat, const char *path)
+{
+    char *key = root_key(path);
+    if (!key) return 0;
+    sqlite3_stmt *q;
+    int in = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE active=1", -1, &q, NULL) == SQLITE_OK) {
+        while (!in && sqlite3_step(q) == SQLITE_ROW) {
+            char *okey = root_key((const char *)sqlite3_column_text(q, 0));
+            in = okey && (strcmp(key, okey) == 0 || key_inside(key, okey));
+            free(okey);
+        }
+        sqlite3_finalize(q);
+    }
+    free(key);
+    return in;
+}
+
+/* A link the scan does not follow: listed when what it leads to is in no
+ * backup root, so nothing backs it up. */
+static void note_link(scan_ctx *c, const char *rel)
+{
+    char *full = bd_path_join(c->root, rel);
+    int hidden_system = 0;
+    char *target = full ? bd_link_target(full, &hidden_system) : NULL;
+    free(full);
+    bd_stat_t t;
+    if (!target || hidden_system || bd_stat(target, &t) != 0 || (!t.is_dir && !t.is_file) || in_a_root(c->cat, target)) {
+        bd_logf(c->log, c->log_ctx, "skipped link: %s", rel);
+        free(target);
+        return;
+    }
+    c->stats->links_not_followed++;
+    bd_logf(c->log, c->log_ctx, "link not followed, so %s is not backed up: %s", target, rel);
+    sqlite3_reset(c->note_link);
+    sqlite3_bind_int64(c->note_link, 1, c->source_id);
+    sqlite3_bind_text(c->note_link, 2, rel, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(c->note_link, 3, target, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(c->note_link, 4, t.is_dir);
+    sqlite3_step(c->note_link);
+    free(target);
+}
+
+bd_status bd_list_links(bd_catalog *cat, bd_link_fn fn, void *ctx)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT l.source_id, s.name, l.rel_path, l.target, l.is_dir FROM temp.links l"
+                           " JOIN sources s ON s.id=l.source_id WHERE s.active=1"
+                           " ORDER BY s.name COLLATE NOCASE, l.rel_path COLLATE NOCASE",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list links");
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_link_info info;
+        info.source_id = sqlite3_column_int64(q, 0);
+        info.source_name = (const char *)sqlite3_column_text(q, 1);
+        info.rel_path = (const char *)sqlite3_column_text(q, 2);
+        info.target = (const char *)sqlite3_column_text(q, 3);
+        info.is_dir = sqlite3_column_int(q, 4);
+        if (in_a_root(cat, info.target)) continue; /* added as a root since */
+        if (fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
+}
+
+char *bd_path_link_target(const char *path)
+{
+    bd_stat_t st;
+    if (bd_stat(path, &st) != 0 || !st.is_link) return NULL;
+    return bd_link_target(path, NULL);
+}
+
 static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 {
     scan_ctx *c = ctx;
     if (bd_cancelled(c->cat)) { c->cancelled = 1; return 1; }
     if (st->is_link) {
         c->stats->skipped_links++;
-        bd_logf(c->log, c->log_ctx, "skipped link: %s", rel);
+        note_link(c, rel);
         return 0;
     }
     if (!st->is_dir && !st->is_file) return 0;
@@ -886,6 +1058,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         return st->is_dir ? BD_WALK_SKIP : 0;
     }
     if (st->is_dir && is_own_store(c, rel)) return BD_WALK_SKIP;
+    if (st->is_file && is_own_file(c, rel)) return 0;
 
     sqlite3_reset(c->find_node);
     sqlite3_bind_int64(c->find_node, 1, c->source_id);
@@ -947,6 +1120,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         if (sqlite3_step(c->insert_node) != SQLITE_DONE) { free(key); c->db_error = 1; return 1; }
         node_id = sqlite3_last_insert_rowid(c->cat->db);
         if (!st->is_dir) {
+            c->inserted_files++;
             /* Perhaps a file moved here: matched after the scan. */
             sqlite3_reset(c->note_new);
             sqlite3_bind_int64(c->note_new, 1, node_id);
@@ -979,7 +1153,18 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     if (st->online_only || (bd_test_online_only && bd_rel_ends_with(rel, bd_test_online_only))) {
         if (!c->stats->files_online_only++)
             bd_logf(c->log, c->log_ctx, "files that are online-only (in the cloud, not on this PC) are skipped, not downloaded");
-        bd_logf(c->log, c->log_ctx, "online-only, skipped: %s", rel);
+        /* Known, but not as the catalog has it: edited on another device. */
+        int changed = !is_new;
+        if (changed) {
+            c->stats->files_cloud_changed++;
+            bd_logf(c->log, c->log_ctx, "online-only, changed in the cloud and not backed up: %s", rel);
+        } else {
+            bd_logf(c->log, c->log_ctx, "online-only, skipped: %s", rel);
+        }
+        sqlite3_reset(c->note_online);
+        sqlite3_bind_int64(c->note_online, 1, node_id);
+        sqlite3_bind_int(c->note_online, 2, changed);
+        sqlite3_step(c->note_online);
         return 0;
     }
 
@@ -1052,10 +1237,12 @@ static int under_failed_dir(scan_ctx *c, const char *rel)
 
 /* What this scan did not see is marked deleted, files newly on a skip list
  * included: they stay in the catalog with their versions and copies until
- * the user forgets them (bd_deleted_forget). */
-static bd_status mark_deleted(scan_ctx *c)
+ * the user forgets them (bd_deleted_forget). With count_only, nothing is
+ * marked: the files that would be are counted in *files. */
+static bd_status mark_deleted(scan_ctx *c, int count_only, int64_t *files)
 {
     sqlite3_stmt *q, *u, *gone;
+    if (files) *files = 0;
     if (sqlite3_prepare_v2(c->cat->db, "SELECT id, rel_path, is_dir FROM nodes WHERE source_id=? AND deleted=0 AND last_seen_ms<?", -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(c->cat, "find deleted files");
     if (sqlite3_prepare_v2(c->cat->db, "UPDATE nodes SET deleted=1, deleted_ack=0 WHERE id=?", -1, &u, NULL) != SQLITE_OK) {
@@ -1072,6 +1259,11 @@ static bd_status mark_deleted(scan_ctx *c)
     while (sqlite3_step(q) == SQLITE_ROW) {
         const char *rel = (const char *)sqlite3_column_text(q, 1);
         if (under_failed_dir(c, rel)) continue;
+        int is_dir = sqlite3_column_int(q, 2);
+        if (count_only) {
+            if (!is_dir && files) (*files)++;
+            continue;
+        }
         int64_t id = sqlite3_column_int64(q, 0);
         sqlite3_reset(u);
         sqlite3_bind_int64(u, 1, id);
@@ -1079,7 +1271,7 @@ static bd_status mark_deleted(scan_ctx *c)
         sqlite3_reset(gone);
         sqlite3_bind_int64(gone, 1, id);
         sqlite3_step(gone);
-        if (!sqlite3_column_int(q, 2)) c->stats->files_deleted++;
+        if (!is_dir) c->stats->files_deleted++;
     }
     sqlite3_finalize(q);
     sqlite3_finalize(u);
@@ -1087,28 +1279,78 @@ static bd_status mark_deleted(scan_ctx *c)
     return BD_OK;
 }
 
-static void note_missing(bd_catalog *cat, int64_t source_id, int missing)
+/* gone: the folder is there but so many of its files were not (an
+ * emptied root); 0 when the folder itself could not be found. */
+static void note_missing(bd_catalog *cat, int64_t source_id, int missing, int64_t gone)
 {
     sqlite3_stmt *u;
-    const char *sql = missing ? "INSERT OR IGNORE INTO temp.missing_sources(source_id) VALUES(?)"
+    const char *sql = missing ? "INSERT OR REPLACE INTO temp.missing_sources(source_id, files_gone) VALUES(?,?)"
                               : "DELETE FROM temp.missing_sources WHERE source_id=?";
     if (sqlite3_prepare_v2(cat->db, sql, -1, &u, NULL) != SQLITE_OK) return;
     sqlite3_bind_int64(u, 1, source_id);
+    if (missing) sqlite3_bind_int64(u, 2, gone);
     sqlite3_step(u);
     sqlite3_finalize(u);
+}
+
+/* The user said the files of this root really were deleted: 1, and the
+ * word is used up, so the next emptied scan asks again. */
+static int take_accept_gone(bd_catalog *cat, int64_t source_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.accept_gone WHERE source_id=?", -1, &q, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(q, 1, source_id);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+    return sqlite3_changes(cat->db) > 0;
+}
+
+bd_status bd_source_accept_gone(bd_catalog *cat, int64_t source_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "INSERT OR IGNORE INTO temp.accept_gone(source_id) VALUES(?)", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "note the deleted files");
+    sqlite3_bind_int64(q, 1, source_id);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "note the deleted files");
+}
+
+bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on)
+{
+    char key[48];
+    snprintf(key, sizeof(key), "wait_disk.%lld", (long long)source_id);
+    if (on) return bd_setting_set(cat, key, "1") == 0 ? BD_OK : bd_fail_db(cat, "remember the backup root's disk");
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM settings WHERE key=?", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "remember the backup root's disk");
+    sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "remember the backup root's disk");
 }
 
 static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot, hash_pool *pool, int64_t source_id,
                              const char *root, int64_t scan_ms, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_stat_t rst;
+    char wait_key[48], wait_val[8];
+    snprintf(wait_key, sizeof(wait_key), "wait_disk.%lld", (long long)source_id);
+    int waiting = bd_setting_get(cat, wait_key, wait_val, sizeof(wait_val));
     if (bd_stat(root, &rst) != 0 || !rst.is_dir) {
         stats->roots_missing++;
-        note_missing(cat, source_id, 1);
-        bd_logf(log, log_ctx, "backup root %s is not reachable; skipped (nothing marked deleted)", root);
+        note_missing(cat, source_id, 1, 0);
+        if (waiting) {
+            stats->roots_waiting++;
+            bd_logf(log, log_ctx, "backup root %s waits for its disk to be plugged in; skipped (nothing marked deleted)", root);
+        } else {
+            bd_logf(log, log_ctx, "backup root %s is not reachable; skipped (nothing marked deleted)", root);
+        }
         return BD_OK;
     }
-    note_missing(cat, source_id, 0);
+    if (waiting) bd_source_wait_for_disk(cat, source_id, 0);
+    note_missing(cat, source_id, 0, 0);
+    bd_scan_stats before = *stats;
     char *own_text = bd_source_skip_get(cat, source_id);
     skip_list own;
     skip_parse(own_text, &own);
@@ -1151,6 +1393,8 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
                           " THEN found_ms ELSE excluded.found_ms END,"
                           " version_id=excluded.version_id, found_hash=excluded.found_hash"},
         {&c.clear_damaged, "DELETE FROM damaged_files WHERE node_id=?"},
+        {&c.note_online, "INSERT OR REPLACE INTO temp.online_only(node_id, changed) VALUES(?,?)"},
+        {&c.note_link, "INSERT OR REPLACE INTO temp.links(source_id, rel_path, target, is_dir) VALUES(?,?,?,?)"},
     };
     bd_status s = BD_OK;
     size_t n = sizeof(stmts) / sizeof(stmts[0]);
@@ -1166,6 +1410,20 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     }
     c.have_damaged = sqlite3_step(any) == SQLITE_ROW;
     sqlite3_finalize(any);
+    /* What the last scan of this root found is found again. */
+    sqlite3_stmt *clear;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.online_only WHERE node_id IN (SELECT id FROM nodes WHERE source_id=?1)",
+                           -1, &clear, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(clear, 1, source_id);
+        sqlite3_step(clear);
+        sqlite3_finalize(clear);
+    }
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.links WHERE source_id=?1", -1, &clear, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(clear, 1, source_id);
+        sqlite3_step(clear);
+        sqlite3_finalize(clear);
+    }
+    find_own_files(&c);
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
     /* The files still with the workers. */
     pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
@@ -1182,7 +1440,29 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         goto done;
     }
     if (c.db_error) { s = bd_fail_db(cat, "record scan results"); bd_exec(cat, "ROLLBACK"); goto done; }
-    s = mark_deleted(&c);
+    /* The folder is there but holds a tenth or less of the files the
+     * catalog knows in it: most likely a new PC or a reinstalled Windows,
+     * which makes empty Documents, Pictures and Desktop folders under the
+     * same names. Marking everything deleted would leave a restore with
+     * nothing to restore, so it is left as the last scan saw it and listed
+     * like a root that cannot be found: the user says where it is, restores
+     * it, or says the files really were deleted (bd_source_accept_gone). */
+    int64_t gone = 0;
+    s = mark_deleted(&c, 1, &gone);
+    int64_t seen = stats->files_seen - before.files_seen;
+    int64_t known = gone + seen - c.inserted_files;
+    if (s == BD_OK && gone > 0 && seen * 10 <= known && !take_accept_gone(cat, source_id)) {
+        bd_exec(cat, "ROLLBACK");
+        *stats = before;
+        stats->roots_missing++;
+        stats->roots_emptied++;
+        note_missing(cat, source_id, 1, gone);
+        bd_logf(log, log_ctx, "backup root %s is there, but %lld of the %lld files the catalog knows in it are not: left as it was "
+                              "(nothing marked deleted). A new PC, or a reinstalled Windows?",
+                root, (long long)gone, (long long)known);
+        goto done;
+    }
+    if (s == BD_OK) s = mark_deleted(&c, 0, NULL);
     if (s == BD_OK) {
         sqlite3_stmt *u;
         if (sqlite3_prepare_v2(cat->db, "UPDATE sources SET last_scan_ms=? WHERE id=?", -1, &u, NULL) == SQLITE_OK) {
@@ -1199,6 +1479,7 @@ done:
     for (size_t i = 0; i < n; i++) sqlite3_finalize(*stmts[i].st);
     for (size_t i = 0; i < c.failed_len; i++) free(c.failed_dirs[i]);
     free(c.failed_dirs);
+    for (int i = 0; i < c.n_own_keys; i++) free(c.own_keys[i]);
     skip_free(&own);
     return s;
 }
@@ -1416,6 +1697,45 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     return bd_scan_ex(cat, NULL, stats, log, log_ctx);
 }
 
+/* The disk each backup root is on, read once a session: a drive on the
+ * same disk does not count as a copy (bd_refresh_uncounted). */
+static void note_root_disks(bd_catalog *cat, const void *roots, size_t n)
+{
+    typedef struct { int64_t id; char *path; } src;
+    const src *list = roots;
+    sqlite3_stmt *have = NULL, *put = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM temp.root_disks WHERE source_id=?", -1, &have, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.root_disks(source_id, model, serial, disk_bytes) VALUES(?,?,?,?)",
+                           -1, &put, NULL) != SQLITE_OK) {
+        sqlite3_finalize(have);
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!list[i].path) continue;
+        sqlite3_reset(have);
+        sqlite3_bind_int64(have, 1, list[i].id);
+        if (sqlite3_step(have) == SQLITE_ROW) continue;
+        bd_drive_hw hw;
+        int rc = bd_test_hw_read ? bd_test_hw_read(list[i].path, &hw) : bd_drive_hw_read(list[i].path, &hw);
+        sqlite3_reset(put);
+        sqlite3_bind_int64(put, 1, list[i].id);
+        if (rc == 0 && hw.serial[0]) {
+            sqlite3_bind_text(put, 2, hw.model, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(put, 3, hw.serial, -1, SQLITE_TRANSIENT);
+            if (hw.disk_bytes >= 0) sqlite3_bind_int64(put, 4, hw.disk_bytes);
+            else sqlite3_bind_null(put, 4);
+        } else {
+            sqlite3_bind_null(put, 2);
+            sqlite3_bind_null(put, 3);
+            sqlite3_bind_null(put, 4);
+        }
+        sqlite3_step(put);
+    }
+    sqlite3_finalize(have);
+    sqlite3_finalize(put);
+    bd_refresh_uncounted(cat);
+}
+
 bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_scan_stats local;
@@ -1462,6 +1782,7 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
     }
     bd_progress_begin(cat, bitrot ? "bit-rot scan" : "scan", expect, bitrot ? expect_bytes : 0);
     bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.scan_new; DELETE FROM temp.scan_gone;");
+    note_root_disks(cat, list, len);
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);
 
     bd_status s = BD_OK;

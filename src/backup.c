@@ -655,6 +655,22 @@ drop:
     return 0;
 }
 
+/* A file changed while it was being copied: how many times now. */
+static int note_copy_changed(bd_catalog *cat, const char *path)
+{
+    sqlite3_stmt *q;
+    int times = 1;
+    if (sqlite3_prepare_v2(cat->db,
+                           "INSERT INTO temp.copy_changed(path, times) VALUES(?1,1)"
+                           " ON CONFLICT(path) DO UPDATE SET times=times+1 RETURNING times",
+                           -1, &q, NULL) != SQLITE_OK)
+        return times;
+    sqlite3_bind_text(q, 1, path, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) times = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    return times;
+}
+
 /* The copy is written (rc and failed from bd_hash_copy_multi): give it the
  * file's modified time and close it, and keep it only if what was read
  * is the version being backed up. 1 if it waits to be synced, 0 dropped,
@@ -689,7 +705,20 @@ static int dest_written(bd_store *store, pending_copy *p, int rc, int failed, in
         bd_logf(log, log_ctx, "cannot copy %s to the drive%s%s", p->orig, store->err[0] ? ": " : "", store->err);
     } else if (strcmp(hash, it->hash) != 0) {
         stats->files_failed++;
-        bd_logf(log, log_ctx, "changed while copying, scan again: %s", p->orig);
+        /* Once is a file saved during the backup. Again and again is a file
+         * another program keeps writing (a virtual machine's disk, a mail
+         * store): like a file in use, a shadow copy can back it up. */
+        if (!*in_use_noted) {
+            if (note_copy_changed(cat, p->orig) >= 2) {
+                bd_note_in_use(cat, p->orig, it->node_size);
+                bd_logf(log, log_ctx, "changed while copying again, so another program keeps writing it: %s", p->orig);
+                *in_use_noted = 3;
+            } else {
+                bd_logf(log, log_ctx, "changed while copying, scan again: %s", p->orig);
+                *in_use_noted = 2;
+            }
+        }
+        if (*in_use_noted == 3) stats->files_in_use++;
     } else {
         keep = 1;
     }
@@ -1034,6 +1063,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
     int64_t last_id = 0, items_done = 0, rehashed_total = 0, last_save_ms = bd_now_ms();
     int cancelled = 0, gone = 0;
     int full_said[MAX_DESTS] = {0}, limit_said[MAX_DESTS] = {0};
+    int64_t biggest = bd_biggest_drive(cat); /* a file over it fits no drive you have */
     while (!cancelled && !gone) {
         size_t ni = 0;
         sqlite3_reset(q);
@@ -1145,7 +1175,13 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                     continue;
                 }
                 if (d->space_free >= 0 && need > d->space_free - d->reserve) {
-                    if (!full_said[k]++) {
+                    if (biggest > 0 && need > biggest) {
+                        /* No drive you have could take it. */
+                        if (stats[k].files_bigger_than_drives < 20)
+                            bd_logf(log, log_ctx, "%s is bigger than every backup drive you have: leave it out, or back it up to a bigger drive", it->rel);
+                        stats[k].files_bigger_than_drives++;
+                        stats[k].bytes_bigger_than_drives += it->version_size;
+                    } else if (!full_said[k]++) {
                         if (n > 1) bd_logf(log, log_ctx, "\"%s\" is full; files that do not fit wait for another drive", d->label);
                         else bd_logf(log, log_ctx, "the drive is full; files that do not fit wait for another drive");
                     }
@@ -1301,7 +1337,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
  * count. */
 #define HELD_CTE                                                                                        \
     "WITH h AS (SELECT v.node_id AS nid, MAX(v.version_no) AS vno FROM copies c"                        \
-    " JOIN versions v ON v.id=c.version_id WHERE c.media_id=?1 AND c.state='ok' GROUP BY v.node_id)"
+    " JOIN versions v ON v.id=c.version_id WHERE (?1=0 OR c.media_id=?1) AND c.state='ok' GROUP BY v.node_id)"
 
 bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out)
 {
@@ -1356,18 +1392,26 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     /* How much of the drive held, and how much of that changed since. A
      * large share at once is what ransomware encrypting the folders looks
      * like: the user should see the list before backing that up. */
+    /* A new or nearly empty drive holds too few to tell: then the same is
+     * worked out over every drive, so a first backup to a new drive does
+     * not copy encrypted files without a word. */
     if (sqlite3_prepare_v2(cat->db,
                            HELD_CTE " SELECT COUNT(*), COALESCE(SUM(n.deleted<>0 OR hv.id IS NOT n.current_version_id),0), COALESCE(SUM(n.deleted<>0),0)"
                            " FROM h JOIN nodes n ON n.id=h.nid JOIN versions hv ON hv.node_id=h.nid AND hv.version_no=h.vno"
                            " WHERE n.is_dir=0 AND (n.deleted=0 OR n.deleted_ack=0) AND (?2=0 OR n.source_id=?2)"
                            " AND " BD_SQL_ACTIVE("n"),
                            -1, &q, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(q, 1, media_id);
-        sqlite3_bind_int64(q, 2, source_id);
-        if (sqlite3_step(q) == SQLITE_ROW) {
-            out->files_held = sqlite3_column_int64(q, 0);
-            out->held_changed = sqlite3_column_int64(q, 1);
-            out->held_deleted = sqlite3_column_int64(q, 2);
+        for (int everywhere = 0; everywhere < 2; everywhere++) {
+            sqlite3_reset(q);
+            sqlite3_bind_int64(q, 1, everywhere ? 0 : media_id);
+            sqlite3_bind_int64(q, 2, source_id);
+            if (sqlite3_step(q) == SQLITE_ROW && (!everywhere || sqlite3_column_int64(q, 0) >= MASS_CHANGE_MIN_FILES)) {
+                out->files_held = sqlite3_column_int64(q, 0);
+                out->held_changed = sqlite3_column_int64(q, 1);
+                out->held_deleted = sqlite3_column_int64(q, 2);
+                out->held_everywhere = everywhere;
+            }
+            if (out->files_held >= MASS_CHANGE_MIN_FILES || !media_id) break;
         }
         sqlite3_finalize(q);
     }
@@ -1454,7 +1498,7 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
 
 #define PENDING_SELECT                                                                                  \
     "SELECT n.id AS id, n.source_id AS sid, s.name AS sname, n.rel_path AS rel, v.size AS size, n.mtime_ns AS mt," \
-    " (SELECT COUNT(DISTINCT c.media_id) FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp," \
+    " (SELECT " BD_SQL_COPIES("c") " FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp," \
     " (SELECT COUNT(DISTINCT " BD_SQL_PLACE("m") ") FROM copies c JOIN media m ON m.id=c.media_id"      \
     "   WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl,"                     \
     " NOT EXISTS(SELECT 1 FROM copies oc JOIN versions ov ON ov.id=oc.version_id"                       \
@@ -2042,6 +2086,54 @@ typedef struct {
     int connected;
     int used;
 } plan_media;
+
+static int add_step_bytes(void *ctx, const bd_restore_step *st)
+{
+    *(int64_t *)ctx += st->bytes;
+    return 0;
+}
+
+/* Free space at path, or at the nearest folder above it that is there. */
+static int64_t free_at(const char *path)
+{
+    if (bd_test_free_bytes >= 0) return bd_test_free_bytes;
+    char *p = path ? bd_strdup(path) : NULL;
+    int64_t total = 0, freeb = -1;
+    for (int tries = 0; p && *p && tries < 256; tries++) {
+        if (bd_disk_space(p, &total, &freeb) == 0) break;
+        freeb = -1;
+        size_t n = strlen(p);
+        while (n > 1 && (p[n - 1] == '/' || p[n - 1] == '\\') && !(n == 3 && p[1] == ':')) p[--n] = '\0';
+        char *x = strrchr(p, '/'), *y = strrchr(p, '\\');
+        char *cut = !x ? y : !y ? x : x > y ? x : y;
+        if (!cut || cut[1] == '\0') break; /* the top, and it cannot be read */
+        if (cut == p || (cut == p + 2 && p[1] == ':')) cut[1] = '\0'; /* keep "/" or "C:\\" */
+        else *cut = '\0';
+    }
+    free(p);
+    return freeb;
+}
+
+bd_status bd_restore_room(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                          const bd_restore_opts *opts, int64_t version_id, int64_t *bytes_needed, int64_t *bytes_free)
+{
+    int64_t need = 0;
+    bd_status s = BD_OK;
+    if (version_id > 0) {
+        sqlite3_stmt *q;
+        if (sqlite3_prepare_v2(cat->db, "SELECT size FROM versions WHERE id=?", -1, &q, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "find the version to restore");
+        sqlite3_bind_int64(q, 1, version_id);
+        if (sqlite3_step(q) == SQLITE_ROW) need = sqlite3_column_int64(q, 0);
+        else s = bd_fail(cat, BD_ERR_NOT_FOUND, "no such version");
+        sqlite3_finalize(q);
+    } else {
+        s = bd_restore_plan_ex(cat, source_id, rel_prefix, dest_root, opts, add_step_bytes, &need, NULL, NULL);
+    }
+    if (bytes_needed) *bytes_needed = need;
+    if (bytes_free) *bytes_free = free_at(dest_root);
+    return s;
+}
 
 bd_status bd_restore_plan(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                           bd_restore_step_fn fn, void *ctx, int64_t *files_total, int64_t *files_no_copy)

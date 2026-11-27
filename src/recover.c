@@ -159,6 +159,87 @@ static int report_subfolders(const char *dir, bd_catalog_copy_fn fn, void *ctx)
     return found;
 }
 
+typedef struct {
+    struct rev { char *path; int64_t revision, mtime_ns; } *items;
+    size_t n, cap;
+    const char *folder;
+} rev_list;
+
+static int revs_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    rev_list *l = ctx;
+    if (st->is_dir) return BD_WALK_SKIP;
+    if (!st->is_file || strchr(rel, '/') || l->n >= 100000) return 0;
+    int64_t r = copy_revision(rel);
+    if (r < 0) return 0;
+    if (l->n == l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 32;
+        struct rev *g = realloc(l->items, cap * sizeof(*g));
+        if (!g) return BD_WALK_SKIP;
+        l->items = g;
+        l->cap = cap;
+    }
+    char *p = bd_path_join(l->folder, rel);
+    if (!p) return 0;
+    l->items[l->n].path = p;
+    l->items[l->n].revision = r;
+    l->items[l->n].mtime_ns = st->mtime_ns;
+    l->n++;
+    return 0;
+}
+
+static int rev_newer_first(const void *a, const void *b)
+{
+    const struct rev *x = a, *y = b;
+    if (x->revision != y->revision) return x->revision > y->revision ? -1 : 1;
+    return x->mtime_ns > y->mtime_ns ? -1 : x->mtime_ns < y->mtime_ns ? 1 : 0;
+}
+
+bd_status bd_find_catalog_revisions(const char *folder, bd_catalog_copy_fn fn, void *ctx)
+{
+    rev_list l = {NULL, 0, 0, folder};
+    bd_walk(folder, revs_cb, quiet_err, &l);
+    if (l.n) qsort(l.items, l.n, sizeof(l.items[0]), rev_newer_first);
+    char *name = bd_strdup(folder);
+    const char *last = name ? name : "";
+    if (name) {
+        size_t len = strlen(name);
+        while (len > 0 && (name[len - 1] == '/' || name[len - 1] == '\\')) name[--len] = '\0';
+        for (const char *p = name; *p; p++) if (*p == '/' || *p == '\\') last = p + 1;
+    }
+    int stop = 0;
+    for (size_t i = 0; i < l.n; i++) {
+        bd_catalog_copy_info info = {last, l.items[i].path, l.items[i].revision, l.items[i].mtime_ns / 1000000};
+        if (!stop && fn && fn(ctx, &info)) stop = 1;
+        free(l.items[i].path);
+    }
+    size_t n = l.n;
+    free(l.items);
+    free(name);
+    return n ? BD_OK : BD_ERR_NOT_FOUND;
+}
+
+int bd_path_is_drive_copy(const char *path)
+{
+    if (!path) return 0;
+    const char *name = path + strlen(path);
+    while (name > path && name[-1] != '/' && name[-1] != '\\') name--;
+    if (copy_revision(name) >= 0) return 1;
+    /* .../BRODALF/<36-character catalog id>/... */
+    for (const char *p = path; *p; p++) {
+        if (p != path && p[-1] != '/' && p[-1] != '\\') continue;
+        static const char dir[] = "brodalf";
+        size_t k = 0;
+        while (k < 7 && p[k] && (p[k] | 0x20) == dir[k]) k++;
+        if (k < 7 || (p[7] != '/' && p[7] != '\\')) continue;
+        const char *id = p + 8;
+        size_t n = 0;
+        while (id[n] && id[n] != '/' && id[n] != '\\') n++;
+        if (n == 36 && id[8] == '-' && id[13] == '-' && id[18] == '-' && id[23] == '-' && id[n]) return 1;
+    }
+    return 0;
+}
+
 bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *ctx)
 {
     bd_stat_t st;

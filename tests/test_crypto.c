@@ -228,6 +228,10 @@ static void test_recovery_key(void)
     REQUIRE_OK(bd_write_recovery_sheet(cat, at("rk/sheet.html"), key), cat);
     CHECK(contains(at("rk/sheet.html"), key) && contains(at("rk/sheet.html"), "Vault"));
     CHECK(contains(at("rk/sheet.html"), "Top &lt;shelf&gt; &amp; co") && !contains(at("rk/sheet.html"), "<shelf>"));
+    /* Where to get BRODALF, and the window's own words (0.11.0: neither). */
+    CHECK(contains(at("rk/sheet.html"), "github.com/Phawx/BRODALF/releases") && contains(at("rk/sheet.html"), bd_version()));
+    CHECK(contains(at("rk/sheet.html"), "Backup roots") && !contains(at("rk/sheet.html"), "Protected folders"));
+    CHECK(contains(at("rk/sheet.html"), "Change where a root is...") && contains(at("rk/sheet.html"), bd_catalog_uuid(cat)));
     CHECK(contains(at("rk/sheet.html"), "src: 1 file"));
     CHECK(!contains(at("rk/sheet.html"), "passphrase\"") && !contains(at("rk/sheet.html"), "second passphrase"));
     REQUIRE_OK(bd_write_recovery_sheet(cat, at("rk/sheet2.html"), NULL), cat);

@@ -62,6 +62,12 @@ int bd_stat_ex(const char *path, bd_stat_t *st)
     return 0;
 }
 
+char *bd_link_target(const char *path, int *hidden_system)
+{
+    if (hidden_system) *hidden_system = 0;
+    return realpath(path, NULL);
+}
+
 int bd_stat(const char *path, bd_stat_t *st)
 {
     return bd_stat_ex(path, st) == 0 ? 0 : -1;

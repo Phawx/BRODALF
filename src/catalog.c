@@ -541,7 +541,23 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
                      /* The last scan: backup roots it could not reach. (Damaged
                       * files are kept in the catalog: damaged_files.) */
-                     "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY);"
+                     "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY, files_gone INTEGER NOT NULL DEFAULT 0);"
+                     /* Roots whose files the user said really were deleted: the next scan marks them. */
+                     "CREATE TEMP TABLE IF NOT EXISTS accept_gone(source_id INTEGER PRIMARY KEY);"
+                     /* The last scan: cloud files not on this PC (changed: 1 if the
+                     * cloud has a newer version than the catalog's), and links it
+                     * did not follow whose target no backup root holds. */
+                     "CREATE TEMP TABLE IF NOT EXISTS online_only(node_id INTEGER PRIMARY KEY, changed INTEGER NOT NULL);"
+                     /* Files whose contents changed while a backup copied them, and how often. */
+                     "CREATE TEMP TABLE IF NOT EXISTS copy_changed(path TEXT PRIMARY KEY, times INTEGER NOT NULL);"
+                     /* The disks the backup roots are on (read at a scan), and the
+                     * drives whose copies do not count by their disk: why 1 on a
+                     * backup root's disk, 2 failing. */
+                     "CREATE TEMP TABLE IF NOT EXISTS root_disks(source_id INTEGER PRIMARY KEY, model TEXT, serial TEXT,"
+                     " disk_bytes INTEGER);"
+                     "CREATE TEMP TABLE IF NOT EXISTS uncounted(media_id INTEGER PRIMARY KEY, why INTEGER NOT NULL);"
+                     "CREATE TEMP TABLE IF NOT EXISTS links(source_id INTEGER NOT NULL, rel_path TEXT NOT NULL, target TEXT NOT NULL,"
+                     " is_dir INTEGER NOT NULL, PRIMARY KEY(source_id, rel_path));"
                      /* During a scan: files it added and files it marked deleted. */
                      "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"
@@ -558,6 +574,7 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      /* During a backup: the drives it writes to. */
                      "CREATE TEMP TABLE IF NOT EXISTS bk_dests(media_id INTEGER PRIMARY KEY, secondary INTEGER NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
+    bd_refresh_uncounted(cat);
     return BD_OK;
 }
 
@@ -658,6 +675,8 @@ static bd_status decompress_to(bd_catalog *cat, bd_source *in, const char *out_p
             }
             if (mem) {
                 mem->len += (sqlite3_int64)ob.pos;
+            } else if (!out) {
+                /* Only read through: what it unpacks to is not kept. */
             } else if (fwrite(obuf, 1, ob.pos, out) != ob.pos) {
                 status = bd_fail(cat, BD_ERR_IO, "cannot write working copy %s", out_path);
                 goto done;
@@ -1119,6 +1138,43 @@ bd_status bd_option_set(bd_catalog *cat, const char *name, int value)
 }
 
 /* ---- Recovery on a new PC -------------------------------------------------- */
+
+bd_status bd_catalog_copy_readable(bd_catalog *cat, const char *path)
+{
+    FILE *in = bd_fopen(path, "rb");
+    if (!in) return bd_fail(cat, BD_ERR_NOT_FOUND, "cannot open %s", path);
+    unsigned char header[16];
+    if (fread(header, 1, sizeof(header), in) != sizeof(header) || memcmp(header, BD_MAGIC, 8) != 0) {
+        fclose(in);
+        return bd_fail(cat, BD_ERR_FORMAT, "%s is not a BRODALF catalog", path);
+    }
+    uint32_t version = get_u32(header + 8), flags = get_u32(header + 12);
+    if (version > BD_FORMAT_VERSION || (flags & ~3u) || flags == 2u) {
+        fclose(in);
+        return bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format", path);
+    }
+    bd_source src = {in, NULL};
+    if (flags & 1u) {
+        uint8_t block[BD_KEY_BLOCK];
+        if (!cat->have_key) {
+            fclose(in);
+            return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to read the encrypted copy %s", path);
+        }
+        if (fread(block, 1, sizeof(block), in) != sizeof(block) || ((flags & 2u) && fread(block, 1, sizeof(block), in) != sizeof(block)) ||
+            !(src.opener = bd_open_begin(in, cat->key))) {
+            fclose(in);
+            return bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
+        }
+    }
+    /* Every byte is read and unpacked, which checks its checksum (and, when
+     * it is encrypted, that nothing in it was changed). */
+    bd_status s = decompress_to(cat, &src, NULL, NULL);
+    bd_open_end(src.opener);
+    fclose(in);
+    if (s == BD_ERR_FORMAT) return bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
+    if (s != BD_OK) return bd_fail(cat, s, "cannot read %s", path);
+    return BD_OK;
+}
 
 bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)
 {

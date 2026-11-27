@@ -399,6 +399,101 @@ static void test_every_place_listed(void)
     bd_catalog_close(cat);
 }
 
+/* Stop the running job when the progress names a file. */
+typedef struct { bd_catalog *cat; const char *in_file; int64_t after_files; int fired; } stop_at;
+
+static void stop_progress(void *ctx, const bd_progress *p)
+{
+    stop_at *c = ctx;
+    c->cat->progress_last_ms = 0; /* every file */
+    if (c->fired || p->done || strcmp(p->phase, "scan") != 0) return;
+    if (c->in_file ? (p->current && strstr(p->current, c->in_file) != NULL) : p->files_done >= c->after_files) {
+        c->fired = 1;
+        bd_catalog_cancel(c->cat);
+    }
+}
+
+static bd_risk_stats risk_of(bd_catalog *cat)
+{
+    bd_risk_stats rs;
+    memset(&rs, 0, sizeof(rs));
+    bd_list_at_risk(cat, 0, NULL, NULL, &rs);
+    return rs;
+}
+
+/* D5: a stopped scan keeps what it read in the root it was in, marks
+ * nothing deleted there, and a root that never finished a scan is said. */
+static void test_stopped_scan_kept(void)
+{
+    make_files("stop/Big", 60, "big");
+    make_files("stop/Small", 3, "small");
+    bd_mkdirs(at("stop/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("stop/db.brodalf"), &cat), NULL);
+    bd_target one = {1, 1};
+    REQUIRE_OK(bd_target_set(cat, &one), cat);
+    int64_t big, small, drive;
+    REQUIRE_OK(bd_source_add(cat, at("stop/Small"), &small), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("stop/drive"), "Stop", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(risk_of(cat).files_at_risk == 0 && risk_of(cat).roots_not_scanned == 0);
+
+    /* A big root added, its first scan stopped part way. */
+    REQUIRE_OK(bd_source_add(cat, at("stop/Big"), &big), cat);
+    CHECK(risk_of(cat).roots_not_scanned == 1);
+    bd_test_scan_workers = -1; /* one file at a time, read in order */
+    stop_at sa = {cat, NULL, 20, 0};
+    bd_catalog_set_progress(cat, stop_progress, &sa);
+    CHECK(bd_scan(cat, &ss, quiet, NULL) == BD_ERR_CANCELLED && sa.fired);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    char sql[200];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE n.source_id=%lld",
+             (long long)big);
+    int64_t kept = count_rows(cat, sql);
+    CHECK(kept > 0 && kept < 60);
+    CHECK(ss.files_new == kept);
+    CHECK(root_of(cat, big).last_scan_ms == 0);
+    /* Not "every file has its copies": that root is not scanned yet. */
+    bd_risk_stats rs = risk_of(cat);
+    CHECK(rs.roots_not_scanned == 1 && rs.files_at_risk >= kept); /* (and the one it was reading) */
+    /* Kept after closing and opening again. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("stop/db.brodalf"), &cat), NULL);
+    REQUIRE_OK(bd_media_connect(cat, at("stop/drive"), &drive, quiet, NULL), cat);
+    CHECK(count_rows(cat, sql) == kept);
+
+    /* The next scan reads only the rest and finishes. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 60 - kept && ss.files_deleted == 0);
+    CHECK(count_rows(cat, sql) == 60);
+    CHECK(root_of(cat, big).last_scan_ms > 0);
+    CHECK(risk_of(cat).roots_not_scanned == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM settings WHERE key LIKE 'scan_stopped.%'") == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 60);
+
+    /* Stopped again after a file was renamed: nothing marked deleted, and
+     * the next scan still sees the rename (no second copy). */
+    CHECK(bd_rename_noreplace(at("stop/Big/f007.txt"), at("stop/Big/renamed.txt")) == 0);
+    sa.cat = cat;
+    sa.fired = 0;
+    sa.in_file = "renamed.txt";
+    bd_catalog_set_progress(cat, stop_progress, &sa);
+    CHECK(bd_scan(cat, &ss, quiet, NULL) == BD_ERR_CANCELLED && sa.fired);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE deleted=1") == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_moved == 1 && ss.files_deleted == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    bd_test_scan_workers = 0;
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -413,6 +508,7 @@ int main(void)
     test_change_time();
     test_root_moved_only_when_sure();
     test_every_place_listed();
+    test_stopped_scan_kept();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

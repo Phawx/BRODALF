@@ -1528,6 +1528,12 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     if (waiting) bd_source_wait_for_disk(cat, source_id, 0);
     note_missing(cat, source_id, 0, 0);
     bd_scan_stats before = *stats;
+    /* The last scan of this root was stopped part way: what it found new
+     * is new to this scan too (moved files are matched against it, and it
+     * says nothing about whether the folder holds the root's files). */
+    char stop_key[48], stop_val[8];
+    snprintf(stop_key, sizeof(stop_key), "scan_stopped.%lld", (long long)source_id);
+    int resumed = bd_setting_get(cat, stop_key, stop_val, sizeof(stop_val));
     char *own_text = bd_source_skip_get(cat, source_id);
     skip_list own;
     skip_parse(own_text, &own);
@@ -1603,14 +1609,68 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         sqlite3_step(clear);
         sqlite3_finalize(clear);
     }
+    if (resumed) {
+        sqlite3_stmt *r;
+        if (sqlite3_prepare_v2(cat->db, "INSERT OR IGNORE INTO temp.scan_new(node_id) SELECT n.id FROM nodes n"
+                                        " WHERE n.source_id=?1 AND n.is_dir=0 AND n.deleted=0 AND NOT EXISTS(SELECT 1 FROM versions v"
+                                        " WHERE v.node_id=n.id AND v.first_seen_ms<=COALESCE((SELECT last_scan_ms FROM sources"
+                                        " WHERE id=?1),0))",
+                               -1, &r, NULL) != SQLITE_OK) {
+            s = bd_fail_db(cat, "prepare scan");
+            bd_exec(cat, "ROLLBACK");
+            goto done;
+        }
+        sqlite3_bind_int64(r, 1, source_id);
+        int rc = sqlite3_step(r);
+        sqlite3_finalize(r);
+        if (rc != SQLITE_DONE) {
+            s = bd_fail_db(cat, "prepare scan");
+            bd_exec(cat, "ROLLBACK");
+            goto done;
+        }
+    }
     find_own_files(&c);
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
-    /* The files still with the workers. */
-    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
+    /* The files still with the workers: those read to the end are kept,
+     * also when the scan is being stopped. */
+    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error);
+    if (c.cancelled && walk_rc == 0 && !c.db_error) {
+        /* Stopped: keep the files read so far, but a half-scanned folder
+         * would look like files deleted, so nothing is marked deleted and
+         * the root is not counted as scanned. The next scan goes on from
+         * there (its files are not read again). A folder in which none of
+         * the files the catalog knows turned up may not be the root at
+         * all: that one is left as the last full scan saw it. */
+        int64_t seen = stats->files_seen - before.files_seen, known_seen = seen - c.inserted_files;
+        sqlite3_stmt *lq;
+        int64_t last_ms = 0, had_files = 0;
+        if (sqlite3_prepare_v2(cat->db, "SELECT COALESCE(last_scan_ms,0), EXISTS(SELECT 1 FROM nodes n WHERE n.source_id=?1"
+                                        " AND n.is_dir=0 AND n.last_seen_ms<?2) FROM sources WHERE id=?1",
+                               -1, &lq, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(lq, 1, source_id);
+            sqlite3_bind_int64(lq, 2, scan_ms);
+            if (sqlite3_step(lq) == SQLITE_ROW) {
+                last_ms = sqlite3_column_int64(lq, 0);
+                had_files = sqlite3_column_int64(lq, 1);
+            }
+            sqlite3_finalize(lq);
+        }
+        if (last_ms > 0 && had_files && known_seen <= 0) {
+            bd_exec(cat, "ROLLBACK");
+            *stats = before;
+        } else if (bd_setting_set(cat, stop_key, "1") != 0 || bd_exec(cat, "COMMIT") != 0) {
+            bd_exec(cat, "ROLLBACK");
+            *stats = before;
+        } else {
+            bd_logf(log, log_ctx, "scan of %s stopped: the %lld files it read are kept; nothing was marked deleted", root,
+                    (long long)seen);
+        }
+        s = bd_fail_cancelled(cat);
+        goto done;
+    }
     if (c.cancelled) {
-        /* A half-scanned folder would look like files deleted: leave this
-         * one as the last full scan saw it. */
         bd_exec(cat, "ROLLBACK");
+        *stats = before;
         s = bd_fail_cancelled(cat);
         goto done;
     }
@@ -1639,7 +1699,20 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     s = mark_deleted(&c, 1, &gone, &moved);
     int64_t seen = stats->files_seen - before.files_seen;
     int64_t changed = stats->files_changed - before.files_changed + stats->files_cloud_changed - before.files_cloud_changed;
-    int64_t known = gone + seen - c.inserted_files;
+    /* After a stopped scan, the files it found new count as new here too. */
+    int64_t inserted = c.inserted_files;
+    if (resumed && s == BD_OK) {
+        sqlite3_stmt *iq;
+        if (sqlite3_prepare_v2(cat->db, "SELECT COUNT(*) FROM temp.scan_new w JOIN nodes n ON n.id=w.node_id"
+                                        " WHERE n.source_id=? AND n.is_dir=0 AND n.last_seen_ms=?",
+                               -1, &iq, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(iq, 1, source_id);
+            sqlite3_bind_int64(iq, 2, scan_ms);
+            if (sqlite3_step(iq) == SQLITE_ROW) inserted = sqlite3_column_int64(iq, 0);
+            sqlite3_finalize(iq);
+        }
+    }
+    int64_t known = gone + seen - inserted;
     int64_t lost = gone - moved;
     int64_t kept = known - lost - changed;
     if (s == BD_OK && lost > 0 && kept * 10 <= known && lost > changed && !take_accept_gone(cat, source_id)) {
@@ -1662,6 +1735,7 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
             sqlite3_step(u);
             sqlite3_finalize(u);
         }
+        if (resumed && bd_setting_del(cat, stop_key) != 0) s = bd_fail_db(cat, "record scan results");
     }
     if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit scan");
     if (s != BD_OK) bd_exec(cat, "ROLLBACK");
@@ -2053,7 +2127,6 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
         bd_logf(log, log_ctx, "scanning %s", list[i].path);
         bd_scan_stats before = *stats;
         s = scan_source(cat, &skip, bitrot, &pool, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
-        if (s == BD_ERR_CANCELLED) *stats = before; /* that folder was rolled back */
         if (s == BD_OK && stats->roots_emptied > before.roots_emptied) {
             /* The folder there holds other files: say where its own are,
              * when another folder holds them. The user decides. */

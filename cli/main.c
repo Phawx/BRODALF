@@ -1305,6 +1305,7 @@ static void print_risk_stats(bd_catalog *cat, int64_t source_id, int all)
         j_int("deleted_short", st.deleted_short);
         j_int("old_versions_kept", st.old_versions_kept);
         j_int("old_versions_short", st.old_versions_short);
+        j_int("roots_not_scanned", st.roots_not_scanned);
         J_ARR("files");
         bd_list_at_risk(cat, source_id, print_risk, &rp, NULL);
         J_END_ARR();
@@ -1319,6 +1320,9 @@ static void print_risk_stats(bd_catalog *cat, int64_t source_id, int all)
     printf("target: %d %s in %d %s\n", t.copies, t.copies == 1 ? "copy" : "copies", t.places, t.places == 1 ? "place" : "places");
     printf("%lld of %lld files are short of it (%s), %lld with no copy at all\n", (long long)st.files_at_risk,
            (long long)st.files_total, size, (long long)st.files_no_copy);
+    if (st.roots_not_scanned)
+        printf("%lld backup roots have not finished a scan yet, so their files are not all counted here: scan to finish\n",
+               (long long)st.roots_not_scanned);
     if (st.deleted_kept)
         printf("%lld deleted files are kept on drives, %lld of them with fewer than %d copies\n",
                (long long)st.deleted_kept, (long long)st.deleted_short, t.copies);
@@ -2554,6 +2558,7 @@ static int run(int argc, char **argv)
             j_int("files_total", rs.files_total);
             j_int("files_at_risk", rs.files_at_risk);
             j_int("bytes_at_risk", rs.bytes_at_risk);
+            j_int("roots_not_scanned", rs.roots_not_scanned);
             if (have) risk_help_json("plug_in", &h);
             J_END();
         } else {
@@ -2561,6 +2566,9 @@ static int run(int argc, char **argv)
             human_bytes(rs.bytes_at_risk, size, sizeof(size));
             printf("%lld of %lld files (%s) have fewer than %d copies in %d places\n", (long long)rs.files_at_risk,
                    (long long)rs.files_total, size, t.copies, t.places);
+            if (rs.roots_not_scanned)
+                printf("%lld backup roots have not finished a scan yet, so their files are not all counted: scan to finish\n",
+                       (long long)rs.roots_not_scanned);
             if (have) {
                 printf("plug in next:\n");
                 print_risk_help(NULL, &h);

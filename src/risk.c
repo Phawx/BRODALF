@@ -117,6 +117,12 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
             stats->old_versions_short = sqlite3_column_int64(q, 3);
         }
         sqlite3_finalize(q);
+        if (sqlite3_prepare_v2(cat->db, "SELECT COUNT(*) FROM sources WHERE active<>0 AND COALESCE(last_scan_ms,0)=0 AND (?1=0 OR id=?1)",
+                               -1, &q, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "count backup roots not scanned yet");
+        sqlite3_bind_int64(q, 1, source_id);
+        if (sqlite3_step(q) == SQLITE_ROW) stats->roots_not_scanned = sqlite3_column_int64(q, 0);
+        sqlite3_finalize(q);
     }
     if (!fn) return BD_OK;
 

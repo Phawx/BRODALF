@@ -205,8 +205,10 @@ void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
  * Safe to call from any thread, including from the progress callback. The
  * job stops between files, or between blocks of a big file, and returns
  * BD_ERR_CANCELLED. Everything it finished stays recorded: a scan keeps
- * the folders it had finished (the one it was in is left as it was), a
- * backup keeps every copy it had finished, and a copy it was writing is
+ * every file it had read, in the root it was in too (nothing there is
+ * marked deleted, and that root is not counted as scanned until a scan of
+ * it finishes; one whose folder showed none of the files the catalog knows
+ * is left as it was), a backup keeps every copy it had finished, and a copy it was writing is
  * removed, never put in place. Each job clears the request when it
  * starts. */
 void bd_catalog_cancel(bd_catalog *cat);
@@ -1350,6 +1352,10 @@ typedef struct {
     int64_t deleted_short;
     int64_t old_versions_kept;
     int64_t old_versions_short;
+    /* Backup roots that are backed up but have never finished a scan
+     * (bd_source_info.last_scan_ms 0): the files they hold are not all in
+     * the catalog yet, so the counts above say nothing of them. */
+    int64_t roots_not_scanned;
 } bd_risk_stats;
 
 typedef int (*bd_risk_fn)(void *ctx, const bd_risk_info *info);

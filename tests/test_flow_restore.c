@@ -582,6 +582,11 @@ static void scan_thread(void *arg)
     bd_scan_stats ss;
     j->scan = bd_scan(j->cat, &ss, quiet, NULL);
     j->save = bd_catalog_save(j->cat);
+    /* A few more saves, each after a change, as jobs make them. */
+    for (int i = 0; i < 8 && j->save == BD_OK; i++) {
+        bd_option_set(j->cat, "check_days", 100 + i);
+        j->save = bd_catalog_save(j->cat);
+    }
     j->done = 1;
 }
 
@@ -614,6 +619,9 @@ static void test_search_during_scan(void)
         memset(&x, 0, sizeof(x));
         if (bd_search(cat, "*.txt", 0, hit_cb, &x) != BD_OK || x.n != 400) bad++;
         searches++;
+        /* As someone types: a search now and then, not one after another
+         * (a mutex need not be fair, and the scan would wait for each). */
+        bd_sleep_ms(1);
     }
     if (t) bd_thread_join(t);
     CHECK(j.scan == BD_OK && j.save == BD_OK && bad == 0 && searches > 0);

@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        combo: [en-light, en-dark, de-light, de-dark, es-light, es-dark]
+        combo: [en-light, en-dark]
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -39,6 +39,8 @@ jobs:
         run: .\shots.exe --resolution 1920 1080
       - name: Take the screenshots
         shell: pwsh
+        env:
+          SHOTS_ONLY_NO_LOCAL: "1"
         run: >-
           tools\ui-screenshots\run-all.ps1
           -Exe "$PWD\build\Release\brodalf.exe" -Cli "$PWD\build\Release\brodalf-cli.exe"
@@ -81,4 +83,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -q -m "Screenshots from run ${{ github.run_id }} of ${{ github.sha }}"
-          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/ui-screenshots-images
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/tree-debug-images

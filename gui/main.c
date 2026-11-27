@@ -15803,14 +15803,37 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
          * Its name is greyed here too, not by tree_custom_draw: in the
          * screenshots a bold item given another text colour stopped the
          * tree drawing that row and the rows after it. */
+        static int variant_n;
+        int variant = -1;
         if (r->ghost && !(cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_HOT))) {
+            /* debug: Documents = fill only, Photos = icon only, others = nothing */
+            wchar_t dn[100] = L"";
+            TVITEMW dit;
+            memset(&dit, 0, sizeof(dit));
+            dit.mask = TVIF_TEXT;
+            dit.hItem = h;
+            dit.pszText = dn;
+            dit.cchTextMax = 100;
+            SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&dit);
+            variant = wcscmp(dn, L"Documents") == 0 ? 0 : wcscmp(dn, L"Photos") == 0 ? 1 : 2;
+            bd_applog("TREEDBG variant %d (n=%d) ix=%d iy=%d iw=%d ih=%d icon=%d open=%d", variant, ++variant_n, ix, iy, iw, ih, g_icon_folder,
+                      g_icon_folder_open);
+        }
+        if (variant == 0) {
             RECT ir = {ix, iy, ix + iw, iy + ih};
             fill_color(dc, &ir, tree_bg());
+            bd_applog("TREEDBG filled");
+        }
+        if (variant == 1) {
             int icon = g_icon_folder;
 #ifdef TVIF_EXPANDEDIMAGE
             if ((TreeView_GetItemState(tv, h, TVIS_EXPANDED) & TVIS_EXPANDED) && g_icon_folder_open >= 0) icon = g_icon_folder_open;
 #endif
+            bd_applog("TREEDBG icon %d", icon);
             draw_shell_icon(dc, icon, ix, iy, 1);
+            bd_applog("TREEDBG icon drawn");
+        }
+        if (0) {
             wchar_t name[MAX_PATH];
             TVITEMW it;
             memset(&it, 0, sizeof(it));
@@ -15891,12 +15914,37 @@ static void draw_page_button(const DRAWITEMSTRUCT *di)
     else draw_primary_button(di, page_bg());
 }
 
+static void tree_dbg(const char *what, const node_ref *r, NMTVCUSTOMDRAW *cd)
+{
+    char nm[200] = "";
+    wchar_t w[200];
+    TVITEMW it;
+    memset(&it, 0, sizeof(it));
+    it.mask = TVIF_TEXT | TVIF_STATE;
+    it.stateMask = 0xFFFF;
+    it.hItem = (HTREEITEM)cd->nmcd.dwItemSpec;
+    it.pszText = w;
+    it.cchTextMax = 200;
+    w[0] = 0;
+    SendMessageW(cd->nmcd.hdr.hwndFrom, TVM_GETITEMW, 0, (LPARAM)&it);
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, nm, sizeof(nm), NULL, NULL);
+    bd_applog("TREEDBG %s %s root=%d away=%d ghost=%d uis=0x%x tvis=0x%x rc=%ld,%ld,%ld,%ld", what, nm, r ? r->root : -1, r ? r->away : -1,
+              r ? r->ghost : -1, (unsigned)cd->nmcd.uItemState, (unsigned)it.state, cd->nmcd.rc.left, cd->nmcd.rc.top, cd->nmcd.rc.right,
+              cd->nmcd.rc.bottom);
+}
+
 static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
 {
     switch (cd->nmcd.dwDrawStage) {
-    case CDDS_PREPAINT: return CDRF_NOTIFYITEMDRAW;
+    case CDDS_PREPAINT:
+        bd_applog("TREEDBG paint-begin rc=%ld,%ld,%ld,%ld", cd->nmcd.rc.left, cd->nmcd.rc.top, cd->nmcd.rc.right, cd->nmcd.rc.bottom);
+        return CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT;
+    case CDDS_POSTPAINT:
+        bd_applog("TREEDBG paint-end");
+        return CDRF_DODEFAULT;
     case CDDS_ITEMPREPAINT: {
         node_ref *r = (node_ref *)cd->nmcd.lItemlParam;
+        tree_dbg("pre", r, cd);
         if (!r) return CDRF_DODEFAULT;
         int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
         HFONT font = NULL;
@@ -15914,7 +15962,9 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
     }
     case CDDS_ITEMPOSTPAINT: {
         node_ref *r = (node_ref *)cd->nmcd.lItemlParam;
+        tree_dbg("post", r, cd);
         if (r) tree_post_paint(cd, r);
+        if (r && r->root) bd_applog("TREEDBG post-done");
         return CDRF_DODEFAULT;
     }
     }

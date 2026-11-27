@@ -874,6 +874,7 @@ static class Shots {
     static void Run() {
         N.SetCursorPos(N.GetSystemMetrics(0) - 2, N.GetSystemMetrics(1) / 2);
         Log(string.Format("{0} {1}, screen {2}x{3}", lang, theme, N.GetSystemMetrics(0), N.GetSystemMetrics(1)));
+        if (Environment.GetEnvironmentVariable("SHOTS_ONLY_NO_LOCAL") == "1") { NoLocalData(); return; }
 
         // 1. Started with no database named: the question it asks, then
         //    the window with none open.

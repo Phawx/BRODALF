@@ -735,6 +735,16 @@ static bd_status store_block(bd_catalog *cat, const uint8_t block[BD_KEY_BLOCK])
     return bd_setting_set(cat, "key_block", hex) == 0 ? BD_OK : bd_fail_db(cat, "store the encryption key");
 }
 
+/* The revision the next save gets, under which: a copy of the database of
+ * that revision or later has the new passphrase or recovery key, an older
+ * one the one it had then (bd_media_copy_has_key). */
+static void note_key_change(bd_catalog *cat, const char *which)
+{
+    char v[32];
+    snprintf(v, sizeof(v), "%lld", (long long)(bd_catalog_revision(cat) + 1));
+    bd_setting_set(cat, which, v);
+}
+
 bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase)
 {
     if (!passphrase || strlen(passphrase) < 8)
@@ -754,7 +764,10 @@ bd_status bd_catalog_set_passphrase(bd_catalog *cat, const char *passphrase)
                         : bd_fail(cat, BD_ERR_NOMEM, "not enough memory to derive the key");
     }
     bd_status s = store_block(cat, block);
-    if (s == BD_OK) bd_catalog_set_key(cat, key);
+    if (s == BD_OK) {
+        bd_catalog_set_key(cat, key);
+        note_key_change(cat, "passphrase_rev");
+    }
     crypto_wipe(key, sizeof(key));
     return s;
 }
@@ -876,6 +889,7 @@ bd_status bd_catalog_make_recovery_key(bd_catalog *cat, char out[BD_RECOVERY_KEY
         crypto_wipe(norm, sizeof(norm));
         return bd_fail_db(cat, "store the recovery key");
     }
+    note_key_change(cat, "recovery_key_rev");
     size_t j = 0;
     for (int i = 0; i < RECOVERY_CHARS; i++) {
         if (i && i % RECOVERY_GROUP == 0) out[j++] = '-';

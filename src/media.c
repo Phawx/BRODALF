@@ -1073,6 +1073,41 @@ static int wrote_revision(bd_catalog *cat, int64_t media_id, int64_t rev)
     return yes;
 }
 
+/* The newest revision of the database known to be on the drive: put there
+ * this session or recorded before, or, on a drive plugged in now, read
+ * from the names of the copies there. 0 when none is known. */
+static int64_t known_copy_revision(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *q;
+    int64_t rev = 0;
+    bd_exec(cat, COPY_RESULT_TABLE);
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT MAX(r) FROM (SELECT revision AS r FROM temp.copy_result WHERE media_id=?1 AND ok<>0"
+                           " UNION ALL SELECT revision FROM media_catalog WHERE media_id=?1)",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, media_id);
+        if (sqlite3_step(q) == SQLITE_ROW) rev = sqlite3_column_int64(q, 0);
+        sqlite3_finalize(q);
+    }
+    char *root = bd_connected_root(cat, media_id);
+    bd_drive_catalog dc;
+    if (root && bd_media_catalog_compare(cat, media_id, &dc) == BD_OK) {
+        if (dc.revision > rev) rev = dc.revision;
+        free(dc.path);
+    }
+    free(root);
+    return rev;
+}
+
+int bd_media_copy_has_key(bd_catalog *cat, int64_t media_id, int recovery)
+{
+    char v[32];
+    int64_t since = bd_setting_get(cat, recovery ? "recovery_key_rev" : "passphrase_rev", v, sizeof(v)) ? atoll(v) : 0;
+    int64_t rev = known_copy_revision(cat, media_id);
+    if (rev <= 0) return -1;
+    return rev >= since;
+}
+
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
 {
     /* What the copies put on the drives were is no change to save as a
@@ -1089,6 +1124,9 @@ bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
         if (s == BD_OK) s = put_catalog_copy(cat, media_id);
     }
     note_copy_result(cat, media_id, bd_catalog_revision(cat), s == BD_OK);
+    /* Kept now, so it is there when the database is closed with nothing
+     * else to save; it is no change of its own (see only_noted above). */
+    bd_media_record_catalog_copies(cat);
     return s;
 }
 

@@ -7458,6 +7458,8 @@ static INT_PTR g_pass_rc;
 typedef int (*pass_try_fn)(void *ctx, const char *secret, int recovery);
 static pass_try_fn g_pass_try;
 static void *g_pass_try_ctx;
+/* Shown in place of the dialog's text after a try that is not right. */
+static const wchar_t *g_pass_wrong_hint;
 
 static void free_secret(char *p);
 
@@ -7666,6 +7668,7 @@ static INT_PTR CALLBACK pass_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                     SecureZeroMemory(g_pass_buf, sizeof(g_pass_buf));
                     pass_error(dlg, IDC_PASS_ERROR, g_pass_mode == 2 ? T(L"That recovery key is not right.")
                                                                      : T(L"That passphrase is not right."));
+                    if (g_pass_wrong_hint) SetDlgItemTextW(dlg, IDC_PASS_TEXT, g_pass_wrong_hint);
                     pass_select(dlg, IDC_PASS_EDIT);
                     return TRUE;
                 }
@@ -7775,6 +7778,29 @@ static int unlock_ui(const wchar_t *why)
     return 1;
 }
 
+/* After a new passphrase or recovery key: a copy of the database with it
+ * on every drive plugged in now, so a recovery from one of them takes the
+ * new one. The others get one at their next backup. How many got one;
+ * *failed: how many could not take one (the log says why). */
+static int copy_db_to_plugged(int *failed)
+{
+    id_list l = {{0}, 0};
+    int done = 0;
+    *failed = 0;
+    bd_list_media(g_cat, connected_drive_cb, &l);
+    for (int i = 0; i < l.n; i++) {
+        if (bd_catalog_copy_to_media(g_cat, l.ids[i]) == BD_OK) {
+            done++;
+            continue;
+        }
+        ++*failed;
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        if (e) log_append(e);
+        free(e);
+    }
+    return done;
+}
+
 /* Set the first passphrase, or change it. 1 on success. */
 static int set_passphrase_ui(void)
 {
@@ -7821,6 +7847,24 @@ static int set_passphrase_ui(void)
         return 0;
     }
     log_append(changing ? T(L"Passphrase changed.") : T(L"Passphrase set."));
+    if (changing) {
+        int failed = 0, done = copy_db_to_plugged(&failed);
+        wchar_t msg[600];
+        if (done) {
+            swprintf(msg, 600, TN(done, L"The drive plugged in now has a copy of the database that opens with the new passphrase.",
+                                  L"The %d drives plugged in now have a copy of the database that opens with the new passphrase."),
+                     done);
+            log_append(msg);
+        }
+        if (failed) {
+            swprintf(msg, 600, TN(failed, L"A copy of the database could not be put on %d drive plugged in now; the log above says why.",
+                                  L"A copy of the database could not be put on %d drives plugged in now; the log above says why."),
+                     failed);
+            log_append(msg);
+        }
+        log_append(T(L"The other drives get a copy with the new passphrase at their next backup. Until then, the database copy on "
+                   L"each of them opens with the earlier passphrase."));
+    }
     if (changing && g_main) warn_old_secret(0);
     if (!changing && g_main &&
         ask_verbs(g_main, T(L"Print a recovery sheet now? It lists your drives and holds a recovery key, which opens your "
@@ -9307,6 +9351,41 @@ static void cmd_settings(void)
 
 /* Write the recovery sheet and open it for printing. with_key: 1 always
  * put a new recovery key on it, 0 ask (encrypted catalogs only). */
+/* The sheet with its recovery key inside a backup root: the next backup
+ * would copy it to the drives, where nothing is ever deleted. 1 choose
+ * another folder, 2 save it there anyway, 0 cancelled. */
+static int ask_sheet_in_root(const char *root)
+{
+    wchar_t *r = widen(root), content[MAX_PATH * 2 + 700];
+    swprintf(content, MAX_PATH * 2 + 700,
+             T(L"The folder you chose is inside the backup root %ls. The next backup would copy the sheet, recovery key and all, "
+               L"to your drives, and a drive that is not encrypted keeps it as a plain file for good. Anyone with that drive "
+               L"could then read your encrypted ones."),
+             r ? r : L"");
+    free(r);
+    TASKDIALOG_BUTTON b[2] = {
+        {4202, T(L"Choose another folder")},
+        {4203, T(L"Save it here anyway\nMove the file out of the backup root, or delete it, before the next backup.")},
+    };
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_WARNING_ICON;
+    tc.pszMainInstruction = T(L"Save the recovery key inside a backup root?");
+    tc.pszContent = content;
+    tc.cButtons = 2;
+    tc.pButtons = b;
+    tc.nDefaultButton = 4202;
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return 1;
+    return pressed == 4202 ? 1 : pressed == 4203 ? 2 : 0;
+}
+
 static void cmd_sheet(int with_key)
 {
     char key[BD_RECOVERY_KEY_SIZE] = "";
@@ -9332,9 +9411,40 @@ static void cmd_sheet(int with_key)
         if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) || (pressed != 600 && pressed != 601)) return;
         with_key = pressed == 600;
     }
+    if (with_key && !unlock_ui(T(L"Enter the passphrase to make a recovery key."))) return;
+
+    /* Where the sheet goes comes first: a new key replaces the old one, so
+     * it is made only once there is somewhere to write it down. */
+    wchar_t path[MAX_PATH * 2];
+    wcscpy(path, T(L"BRODALF recovery sheet.html"));
+    for (;;) {
+        OPENFILENAMEW of;
+        memset(&of, 0, sizeof(of));
+        of.lStructSize = sizeof(of);
+        of.hwndOwner = g_main;
+        wchar_t filter_text[256];
+        of.lpstrFilter = file_filter(filter_text, 256, 2, N_(L"Web page (*.html)"), L"*.html");
+        of.lpstrFile = path;
+        of.nMaxFile = MAX_PATH * 2;
+        of.lpstrDefExt = L"html";
+        of.lpstrTitle = T(L"Save the recovery sheet");
+        of.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&of)) return;
+        if (!with_key) break;
+        char *p8 = narrow(path);
+        char *holder = p8 ? bd_root_holding(g_cat, p8) : NULL;
+        free(p8);
+        if (!holder) break;
+        int choice = ask_sheet_in_root(holder);
+        free(holder);
+        if (choice == 0) return;
+        if (choice == 2) break;
+    }
+
+    int had_key = 0;
     if (with_key) {
-        if (!unlock_ui(T(L"Enter the passphrase to make a recovery key."))) return;
-        int had_key = bd_catalog_has_recovery_key(g_cat);
+        had_key = bd_catalog_has_recovery_key(g_cat);
+        SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_WAIT));
         bd_status s = bd_catalog_make_recovery_key(g_cat, key);
         if (s == BD_OK) s = bd_catalog_save(g_cat);
         if (s != BD_OK) {
@@ -9344,51 +9454,25 @@ static void cmd_sheet(int with_key)
             free(e);
             return;
         }
-        /* The catalog backups on the drives plugged in now learn the key too;
-         * the others at their next backup. */
-        id_list l = {{0}, 0};
-        bd_list_media(g_cat, connected_drive_cb, &l);
-        for (int i = 0; i < l.n; i++)
-            if (bd_catalog_copy_to_media(g_cat, l.ids[i]) != BD_OK) {
-                wchar_t *e = widen(bd_catalog_error(g_cat));
-                if (e) log_append(e);
-                free(e);
-            }
+        /* The database copies on the drives plugged in now get the key too,
+         * before the sheet says which drives have it; the others at their
+         * next backup. */
+        int failed = 0;
+        copy_db_to_plugged(&failed);
         log_append(T(L"Made a new recovery key. Drives that are not plugged in learn it at their next backup."));
-        if (had_key) warn_old_secret(1);
     }
 
-    wchar_t path[MAX_PATH * 2];
-    wcscpy(path, T(L"BRODALF recovery sheet.html"));
-    OPENFILENAMEW of;
-    memset(&of, 0, sizeof(of));
-    of.lStructSize = sizeof(of);
-    of.hwndOwner = g_main;
-    wchar_t filter_text[256];
-    of.lpstrFilter = file_filter(filter_text, 256, 2, N_(L"Web page (*.html)"), L"*.html");
-    of.lpstrFile = path;
-    of.nMaxFile = MAX_PATH * 2;
-    of.lpstrDefExt = L"html";
-    of.lpstrTitle = T(L"Save the recovery sheet");
-    of.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    int saved = GetSaveFileNameW(&of);
-    bd_status s = BD_OK;
-    if (saved) {
-        char *p8 = narrow(path);
-        s = p8 ? bd_write_recovery_sheet(g_cat, p8, key[0] ? key : NULL) : BD_ERR_NOMEM;
-        free(p8);
-    }
+    char *p8 = narrow(path);
+    bd_status s = p8 ? bd_write_recovery_sheet(g_cat, p8, key[0] ? key : NULL) : BD_ERR_NOMEM;
+    free(p8);
     SecureZeroMemory(key, sizeof(key));
-    if (!saved) {
-        if (with_key)
-            MessageBoxW(g_main, T(L"The new recovery key was not saved anywhere, so it cannot be used. Make the sheet again "
-                                L"to get one."), APP_NAME, MB_ICONINFORMATION);
-        return;
-    }
     if (s != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         report_status(g_main, s, 0, e && e[0] ? e : T(L"Could not write the recovery sheet."));
         free(e);
+        if (with_key)
+            MessageBoxW(g_main, T(L"The new recovery key was not saved anywhere, so it cannot be used. Make the sheet again "
+                                L"to get one."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
     ShellExecuteW(g_main, L"open", path, NULL, NULL, SW_SHOWNORMAL);
@@ -9396,6 +9480,7 @@ static void cmd_sheet(int with_key)
         MessageBoxW(g_main, T(L"The sheet is open in your browser. Print it and keep it somewhere safe, away from the PC and "
                             L"the drives. Then delete the file: anyone who finds the recovery key can read your encrypted "
                             L"backups."), APP_NAME, MB_ICONINFORMATION);
+    if (with_key && had_key) warn_old_secret(1);
 }
 
 /* ---- A backup root that is somewhere else ---------------------------------- */
@@ -18555,7 +18640,12 @@ static int recover_copy(const char *path)
         s = bd_catalog_recover(rp.paths[i], d8);
         if (s == BD_OK) {
             bd_applog("recovered the catalog from %s to %s", rp.paths[i], d8);
+            /* A copy keeps the passphrase and recovery key the database had
+             * when it was written to the drive. */
+            g_pass_wrong_hint = T(L"This copy may be from before the passphrase or recovery key was last changed: it opens "
+                                  L"with the one of then. Try the earlier one.");
             s = open_maybe_encrypted(d8, &nc);
+            g_pass_wrong_hint = NULL;
             if (s != BD_OK) DeleteFileW(dest); /* only the copy just made; the drive's is untouched */
         }
         if (s == BD_OK) {

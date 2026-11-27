@@ -61,6 +61,7 @@ typedef struct {
     FILE *f;
     sqlite3_stmt *held, *last;
     int rows;
+    bd_catalog *key_cat; /* set when the sheet holds a new recovery key */
 } sheet_ctx;
 
 static int drive_row(void *ctx, const bd_media_info *m)
@@ -78,6 +79,12 @@ static int drive_row(void *ctx, const bd_media_info *m)
         put_html(f, m->lost_why);
         fputs("</small>", f);
     }
+    /* Which drives' copies of the database open with the key on this sheet:
+     * the others open with the key or passphrase of when they were written,
+     * until their next backup. */
+    int has = c->key_cat ? bd_media_copy_has_key(c->key_cat, m->media_id, 1) : -1;
+    if (has == 1) fputs("<br><small>its database copy has this key</small>", f);
+    else if (has == 0) fputs("<br><small>its database copy does not have this key yet: back up to it once</small>", f);
     fputs("</td><td>", f);
     if (m->location && *m->location) put_html(f, m->location);
     else fputs("<i>not set</i>", f);
@@ -150,7 +157,7 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
 {
     FILE *f = bd_fopen(path, "wb");
     if (!f) return bd_fail(cat, BD_ERR_IO, "cannot write %s", path);
-    sheet_ctx c = {f, NULL, NULL, 0};
+    sheet_ctx c = {f, NULL, NULL, 0, recovery_key && *recovery_key && bd_catalog_has_passphrase(cat) ? cat : NULL};
     sqlite3_prepare_v2(cat->db,
                        "SELECT s.name, COUNT(*), COALESCE(SUM(v.size),0) FROM copies k"
                        " JOIN versions v ON v.id=k.version_id JOIN nodes n ON n.id=v.node_id JOIN sources s ON s.id=n.source_id"
@@ -204,7 +211,10 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
             put_html(f, recovery_key);
             fputs("</p>\n<p>This key opens the catalog and every encrypted drive, like the passphrase. Anyone who has it can "
                   "read your encrypted backups, so keep this sheet somewhere safe, away from the drives and the PC. "
-                  "Making a new recovery sheet replaces this key.</p>\n",
+                  "Making a new recovery sheet replaces this key.</p>\n"
+                  "<p>To recover with this key, use a drive whose database copy has it: the list of drives below says "
+                  "which. Each drive gets one at its next backup. A copy written before this key opens with the "
+                  "passphrase or key the database had then.</p>\n",
                   f);
         } else {
             fputs("<p>This catalog is encrypted. Without the passphrase or a recovery key the encrypted copies cannot be "

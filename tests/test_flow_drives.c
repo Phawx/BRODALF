@@ -394,6 +394,97 @@ static void test_room_and_failed_catalog_copy(void)
     bd_catalog_close(cat);
 }
 
+/* ---- R3: a new passphrase or recovery key reaches the drives ------------- */
+
+/* The whole of a small text file, or "" (free it). */
+static char *slurp(const char *path)
+{
+    FILE *f = bd_fopen(path, "rb");
+    char *buf = calloc(1, 1 << 20);
+    if (f && buf) {
+        size_t n = fread(buf, 1, (1 << 20) - 1, f);
+        buf[n] = '\0';
+    }
+    if (f) fclose(f);
+    return buf;
+}
+
+/* Recover the newest copy on the drive at root and try to open it. */
+static bd_status open_newest(bd_catalog *cat, const char *root, const char *dest, const char *secret, int recovery)
+{
+    char dir[2048], newest[2048] = "";
+    snprintf(dir, sizeof(dir), "%s/BRODALF/%s", root, bd_catalog_uuid(cat));
+    bd_find_catalog_revisions(dir, newest_cb, newest);
+    if (!newest[0] || bd_catalog_recover(newest, dest) != BD_OK) return BD_ERR_NOT_FOUND;
+    bd_catalog *c = NULL;
+    bd_status s = recovery ? bd_catalog_open_with_recovery(dest, secret, &c) : bd_catalog_open_with(dest, secret, &c);
+    if (c) bd_catalog_close(c);
+    bd_remove(dest);
+    return s;
+}
+
+static void test_key_reaches_drives(void)
+{
+    bd_catalog *cat;
+    bd_mkdirs(at("r3/A"));
+    bd_mkdirs(at("r3/B"));
+    REQUIRE_OK(bd_catalog_create(at("r3/db.brodalf"), &cat), NULL);
+    make_files("r3-src/Docs", 3, "r3");
+    int64_t src, a, b;
+    bd_scan_stats ss;
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_source_add(cat, at("r3-src/Docs"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, "first passphrase"), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r3/A"), "A", BD_MEDIA_ENCRYPTED, &a), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r3/B"), "B", BD_MEDIA_ENCRYPTED, &b), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    CHECK(bd_media_copy_has_key(cat, a, 0) == 1);
+
+    /* A new passphrase: no drive has it until a copy of the database goes
+     * there, and one that got none still opens with the old one. */
+    REQUIRE_OK(bd_catalog_set_passphrase(cat, "second passphrase"), cat);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    CHECK(bd_media_copy_has_key(cat, a, 0) == 0);
+    REQUIRE_OK(bd_catalog_copy_to_media(cat, a), cat);
+    CHECK(bd_media_copy_has_key(cat, a, 0) == 1);
+    CHECK(bd_media_copy_has_key(cat, b, 0) == 0);
+    CHECK(open_newest(cat, at("r3/A"), at("r3/try.brodalf"), "second passphrase", 0) == BD_OK);
+    CHECK(open_newest(cat, at("r3/B"), at("r3/try.brodalf"), "second passphrase", 0) == BD_ERR_PASSPHRASE);
+    CHECK(open_newest(cat, at("r3/B"), at("r3/try.brodalf"), "first passphrase", 0) == BD_OK);
+
+    /* A new recovery key, put on B only: the sheet says which drive has it. */
+    char key[BD_RECOVERY_KEY_SIZE];
+    REQUIRE_OK(bd_catalog_make_recovery_key(cat, key), cat);
+    CHECK(bd_media_copy_has_key(cat, b, 1) == 0);
+    REQUIRE_OK(bd_catalog_copy_to_media(cat, b), cat);
+    CHECK(bd_media_copy_has_key(cat, b, 1) == 1);
+    CHECK(bd_media_copy_has_key(cat, a, 1) == 0);
+    CHECK(open_newest(cat, at("r3/B"), at("r3/try.brodalf"), key, 1) == BD_OK);
+    CHECK(open_newest(cat, at("r3/A"), at("r3/try.brodalf"), key, 1) != BD_OK);
+    REQUIRE_OK(bd_write_recovery_sheet(cat, at("r3/sheet.html"), key), cat);
+    char *sheet = slurp(at("r3/sheet.html"));
+    CHECK(sheet && strstr(sheet, "its database copy has this key"));
+    CHECK(sheet && strstr(sheet, "does not have this key yet"));
+    free(sheet);
+    /* Without a key on it the sheet says nothing about keys. */
+    REQUIRE_OK(bd_write_recovery_sheet(cat, at("r3/plain.html"), NULL), cat);
+    sheet = slurp(at("r3/plain.html"));
+    CHECK(sheet && !strstr(sheet, "this key"));
+    free(sheet);
+
+    /* With no drive plugged in, what was put on each is remembered. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("r3/db.brodalf"), &cat), NULL);
+    CHECK(bd_media_copy_has_key(cat, b, 1) == 1);
+    CHECK(bd_media_copy_has_key(cat, a, 1) == 0);
+    CHECK(bd_media_copy_has_key(cat, a, 0) == 1);
+    CHECK(bd_media_copy_has_key(cat, b, 0) == 1);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -407,6 +498,7 @@ int main(void)
     test_two_copies_same_revision();
     test_backup_stops_early();
     test_room_and_failed_catalog_copy();
+    test_key_reaches_drives();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

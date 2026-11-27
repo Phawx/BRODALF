@@ -776,6 +776,13 @@ bd_status bd_media_catalog_compare(bd_catalog *cat, int64_t media_id, bd_drive_c
  * the same revision on that drive (see bd_drive_catalog.separate);
  * *revision is that revision. */
 int bd_media_copy_clash(bd_catalog *cat, int64_t media_id, int64_t *revision);
+/* Whether the newest copy of the database known to be on the drive opens
+ * with the passphrase (recovery 0) or the recovery key (1) the open
+ * database has now: 1 yes, 0 no: it was written before the last change and
+ * opens with the one the database had then, -1 no copy is known. A drive
+ * gets a copy with the new one at its next backup, or from
+ * bd_catalog_copy_to_media. */
+int bd_media_copy_has_key(bd_catalog *cat, int64_t media_id, int recovery);
 
 /* A drive that is lost or broken (why: "lost" or "broken"). Its copies no
  * longer count toward the copies you want, so the progress toward N full

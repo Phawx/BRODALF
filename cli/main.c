@@ -127,9 +127,10 @@ static void usage(void)
          "  recover  <drive>... <new catalog> [--id ID]\n"
          "                                             start again from the newest catalog copy on the drives\n"
          "                                             (or give one catalog copy file instead of drives)\n"
-         "  recovery-key <catalog> [--sheet FILE.html] make a recovery key (and print the recovery sheet)\n"
+         "  recovery-key <catalog> [--sheet FILE.html] [--drive ROOT]...\n"
+         "                                             make a recovery key (and print the recovery sheet)\n"
          "  sheet    <catalog> <file.html>             write the recovery sheet to print\n"
-         "  passphrase <catalog>                       set or change the passphrase\n"
+         "  passphrase <catalog> [--drive ROOT]...     set or change the passphrase\n"
          "  encrypt-catalog <catalog> on|off           encrypt the .brodalf file itself\n"
          "  option   <catalog> [name value]            show or set options (run it to see them)\n"
          "\n"
@@ -647,6 +648,38 @@ static int connect_drives(bd_catalog *cat, int argc, char **argv)
         fprintf(msg_out(), "connected %s as \"%s\"\n", argv[i + 1], label_of(cat, id));
     }
     return 0;
+}
+
+/* After a new passphrase or recovery key: a copy of the database with it on
+ * each drive given with --drive, so a recovery from it takes the new one.
+ * Returns how many could not take one. */
+typedef struct { int64_t ids[64]; int n; } drive_ids;
+
+static int connected_drive_id_cb(void *ctx, const bd_media_info *m)
+{
+    drive_ids *d = ctx;
+    if (m->connected && strcmp(m->kind, "drive") == 0 && d->n < 64) d->ids[d->n++] = m->media_id;
+    return 0;
+}
+
+static int copy_db_to_drives(bd_catalog *cat, const char *with, int *copied)
+{
+    drive_ids d;
+    d.n = 0;
+    *copied = 0;
+    bd_list_media(cat, connected_drive_id_cb, &d);
+    int failed = 0;
+    for (int i = 0; i < d.n; i++) {
+        if (bd_catalog_copy_to_media(cat, d.ids[i]) == BD_OK) {
+            ++*copied;
+            fprintf(msg_out(), "wrote a copy of the database with %s to \"%s\"\n", with, label_of(cat, d.ids[i]));
+        } else {
+            failed++;
+            fprintf(stderr, "brodalf: could not write a copy of the database to \"%s\": %s\n", label_of(cat, d.ids[i]),
+                    bd_catalog_error(cat));
+        }
+    }
+    return failed;
 }
 
 /* Ctrl+C asks the running job to stop between files. */
@@ -1553,6 +1586,15 @@ static int cmd_recover(int argc, char **argv)
     } else {
         s = bd_catalog_open(dest, &cat);
     }
+    if (s == BD_ERR_PASSPHRASE) {
+        /* Not a fault: a copy keeps the passphrase the database had when it
+         * was written to the drive. */
+        if (g_json) J_END();
+        char m[4400];
+        snprintf(m, sizeof(m), "that passphrase does not open this copy of the catalog. It may be from before the passphrase "
+                               "was last changed: it opens with the one of then. Delete %s and try the earlier one", dest);
+        return refuse(NULL, m);
+    }
     if (s != BD_OK) {
         if (g_json) J_END();
         return die(NULL, "the recovered catalog does not open");
@@ -2130,36 +2172,78 @@ static int run(int argc, char **argv)
         else printf("\"%s\" counts again; check it to be sure its copies are still good\n", pos[0]);
         save = 1;
     } else if (strcmp(cmd, "passphrase") == 0) {
+        if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
         if (ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
+        int changing = bd_catalog_has_passphrase(cat);
         char pass[512];
         if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
         bd_status s = bd_catalog_set_passphrase(cat, pass);
         memset(pass, 0, sizeof(pass));
         if (s != BD_OK) return die(cat, "cannot set passphrase");
         fprintf(msg_out(), "passphrase set\n");
-        if (g_json) { J_OBJ(NULL); j_bool("passphrase", 1); J_END(); }
+        int copied = 0, failed = changing ? copy_db_to_drives(cat, "the new passphrase", &copied) : 0;
+        if (changing && !copied && !failed)
+            fprintf(msg_out(), "note: each drive gets a copy of the database with the new passphrase at its next backup; until "
+                               "then the copy on it opens with the earlier one. --drive ROOT writes one now.\n");
+        if (g_json) { J_OBJ(NULL); j_bool("passphrase", 1); j_int("drives_copied", copied); j_int("drives_failed", failed); J_END(); }
+        if (failed) problems = 1;
         save = 1;
     } else if (strcmp(cmd, "recovery-key") == 0 || strcmp(cmd, "sheet") == 0) {
         int make = strcmp(cmd, "recovery-key") == 0;
         const char *sheet = make ? opt(argc, argv, "--sheet") : (npos ? pos[0] : NULL);
         if (!make && !sheet) { usage(); bd_catalog_close(cat); return 1; }
         char key[BD_RECOVERY_KEY_SIZE] = "";
+        int copied = 0, failed = 0;
         if (make) {
             if (!bd_catalog_has_passphrase(cat)) return refuse(cat, "set a passphrase first: a recovery key is a second way to unlock it");
+            if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
             if (ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
+            /* Inside a backup root the next backup would copy the sheet, key
+             * and all, to the drives, where nothing is ever deleted. Asked
+             * before the key is made, so a no leaves the old key working. */
+            char *holder = sheet ? bd_root_holding(cat, sheet) : NULL;
+            if (holder) {
+                char q[1400];
+                snprintf(q, sizeof(q), "%s is inside the backup root %s. The next backup would copy the sheet, recovery key and "
+                                       "all, to your drives, and a drive that is not encrypted keeps it as a plain file for good. "
+                                       "Save it there anyway?", sheet, holder);
+                free(holder);
+                if (!confirm_typed(argc, argv, q, "yes")) {
+                    fprintf(stderr, "brodalf: no recovery key was made; give --sheet a file outside your backup roots\n");
+                    bd_catalog_close(cat);
+                    return 1;
+                }
+            }
             if (bd_catalog_make_recovery_key(cat, key) != BD_OK) return die(cat, "cannot make a recovery key");
+            failed = copy_db_to_drives(cat, "the new recovery key", &copied);
+            if (failed) problems = 1;
             save = 1;
         }
-        if (sheet && bd_write_recovery_sheet(cat, sheet, key[0] ? key : NULL) != BD_OK)
+        if (sheet && bd_write_recovery_sheet(cat, sheet, key[0] ? key : NULL) != BD_OK) {
+            /* The key is made and kept: show it, so it is not lost. */
+            if (make && !g_json) printf("recovery key: %s\n", key);
+            memset(key, 0, sizeof(key));
+            if (make && bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
             return die(cat, "cannot write the recovery sheet");
+        }
         if (g_json) {
             J_OBJ(NULL);
-            if (make) j_str("recovery_key", key);
+            if (make) {
+                j_str("recovery_key", key);
+                j_int("drives_copied", copied);
+                j_int("drives_failed", failed);
+            }
             if (sheet) j_str("sheet", sheet);
             J_END();
         } else {
-            if (make) printf("recovery key: %s\nKeep it apart from the PC, with your drives. It replaces any earlier key.\n", key);
-            if (sheet) printf("wrote the recovery sheet to %s; print it and keep it with your drives\n", sheet);
+            if (make) printf("recovery key: %s\nKeep it somewhere safe, away from the drives and the PC. It replaces any earlier key.\n", key);
+            if (make && !copied && !failed)
+                fprintf(msg_out(), "note: each drive gets a copy of the database with this key at its next backup; until then "
+                                   "the copy on it does not open with it. --drive ROOT writes one now.\n");
+            if (sheet && make)
+                printf("wrote the recovery sheet to %s; print it and keep it somewhere safe, away from the drives and the PC, "
+                       "then delete the file\n", sheet);
+            else if (sheet) printf("wrote the recovery sheet to %s; print it and keep it with your drives\n", sheet);
         }
         memset(key, 0, sizeof(key));
     } else if (strcmp(cmd, "encrypt-catalog") == 0) {

@@ -957,6 +957,66 @@ bd_status bd_media_remove_leftovers(bd_catalog *cat, int64_t media_id, int64_t *
     return BD_OK;
 }
 
+/* How many characters Windows counts in a UTF-8 path (UTF-16 units). */
+static int64_t utf16_length(const char *s)
+{
+    int64_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if ((*p & 0xC0) != 0x80) n++;
+        if (*p >= 0xF0) n++; /* outside the Basic Multilingual Plane: two units */
+    }
+    return n;
+}
+
+int64_t bd_media_long_paths(bd_catalog *cat, int64_t media_id, const char *root)
+{
+    char *connected = root ? NULL : bd_connected_root(cat, media_id);
+    if (!root && !connected) {
+        sqlite3_stmt *r;
+        if (sqlite3_prepare_v2(cat->db, "SELECT last_root FROM media WHERE id=?", -1, &r, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(r, 1, media_id);
+            if (sqlite3_step(r) == SQLITE_ROW && sqlite3_column_text(r, 0))
+                connected = bd_strdup((const char *)sqlite3_column_text(r, 0));
+            sqlite3_finalize(r);
+        }
+    }
+    const char *at = root ? root : connected;
+    char *dir = at && *at ? bd_media_catalog_dir(cat, at) : NULL;
+    free(connected);
+    if (!dir) return 0;
+    int64_t prefix = utf16_length(dir) + 1; /* BRODALF\<id>\ under the root, and the separator after it */
+    free(dir);
+    sqlite3_stmt *q;
+    /* A UTF-8 path has at least as many bytes as UTF-16 units: the bytes
+     * pick out the copies that may be too long, then each is counted. */
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT path_on_media FROM copies WHERE media_id=?1 AND state='ok' AND length(CAST(path_on_media AS BLOB))>?2",
+                           -1, &q, NULL) != SQLITE_OK) {
+        bd_fail_db(cat, "count the long paths");
+        return -1;
+    }
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int64(q, 2, BD_LONG_PATH - prefix);
+    int64_t n = 0;
+    while (sqlite3_step(q) == SQLITE_ROW)
+        if (prefix + utf16_length((const char *)sqlite3_column_text(q, 0)) > BD_LONG_PATH) n++;
+    sqlite3_finalize(q);
+    return n;
+}
+
+void bd_log_long_paths(bd_log_fn log, void *log_ctx, int64_t n, const char *label)
+{
+    if (n <= 0) return;
+    if (label)
+        bd_logf(log, log_ctx, "%lld copies on \"%s\" have a full path there of more than 259 characters: File Explorer and some "
+                              "other programs may not open or copy them by hand, but BRODALF restores them as usual",
+                (long long)n, label);
+    else
+        bd_logf(log, log_ctx, "%lld copies on the drive have a full path there of more than 259 characters: File Explorer and some "
+                              "other programs may not open or copy them by hand, but BRODALF restores them as usual",
+                (long long)n);
+}
+
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_check_stats local;
@@ -1019,6 +1079,8 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stat
     if (stats->leftovers)
         bd_logf(log, log_ctx, "%lld half-written files from a copy that stopped are on the drive (%lld bytes); they can be removed",
                 (long long)stats->leftovers, (long long)stats->leftover_bytes);
+    stats->long_paths = bd_media_long_paths(cat, media_id, NULL);
+    bd_log_long_paths(log, log_ctx, stats->long_paths, NULL);
     return BD_OK;
 }
 

@@ -1897,6 +1897,7 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         j_int("bytes_bigger_than_drives", bs->bytes_bigger_than_drives);
         j_int("catalog_revision", bs->catalog_revision);
         j_bool("catalog_copy_failed", bs->catalog_copy_failed);
+        j_int("long_paths", bs->long_paths);
         report_in_use(cat, bs->files_in_use);
         J_END();
         return;
@@ -2520,6 +2521,7 @@ static int run(int argc, char **argv)
                 j_int("ok", cs.ok);
                 j_int("missing", cs.missing);
                 j_int("damaged", cs.bad);
+                if (!verify) j_int("long_paths", cs.long_paths);
                 J_END();
             } else {
                 printf("%s: read back %lld of %lld copies: %lld ok, %lld missing, %lld damaged\n", verify ? "verify" : "check",

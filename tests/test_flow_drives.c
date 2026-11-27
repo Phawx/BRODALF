@@ -812,6 +812,66 @@ static void test_wiped_drive_set_up_again(void)
     bd_catalog_close(cat);
 }
 
+/* ---- R12: copies whose full path on the drive is long ---------------------- */
+
+static void test_long_paths_counted(void)
+{
+    bd_catalog *cat;
+    bd_mkdirs(at("r12/D"));
+    REQUIRE_OK(bd_catalog_create(at("r12/db.brodalf"), &cat), NULL);
+    bd_mkdirs(at("r12-src/Docs"));
+    write_file(at("r12-src/Docs/short.txt"), "short");
+    int64_t src, d;
+    bd_scan_stats ss;
+    bd_backup_stats bs;
+    bd_check_stats cs;
+    REQUIRE_OK(bd_source_add(cat, at("r12-src/Docs"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r12/D"), "D", 0, &d), cat);
+    REQUIRE_OK(bd_backup(cat, d, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.long_paths == 0);
+    /* How long a copy's full path on the drive is, besides its name. */
+    sqlite3_stmt *q;
+    char rel[1024] = "";
+    if (sqlite3_prepare_v2(cat->db, "SELECT path_on_media FROM copies WHERE media_id=?", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, d);
+        if (sqlite3_step(q) == SQLITE_ROW) snprintf(rel, sizeof(rel), "%s", (const char *)sqlite3_column_text(q, 0));
+        sqlite3_finalize(q);
+    }
+    char *root = bd_connected_root(cat, d); /* as the count takes it */
+    char *dir = root ? bd_media_catalog_dir(cat, root) : NULL;
+    free(root);
+    REQUIRE_OK(dir && strstr(rel, "short.txt") ? BD_OK : BD_ERR_NOT_FOUND, cat);
+    int besides = (int)(strlen(dir) + 1 + strlen(rel) - strlen("short.txt"));
+    free(dir);
+    /* One copy whose full path is 259 characters, and one of 260. */
+    char name[300], *path;
+    for (int len = 259; len <= 260; len++) {
+        int n = len - besides;
+        CHECK(n > 8 && n < 250);
+        if (n <= 8 || n >= 250) break;
+        memset(name, len == 259 ? 'a' : 'b', (size_t)n - 4);
+        memcpy(name + n - 4, ".txt", 5);
+        path = bd_path_join(at("r12-src/Docs"), name);
+        write_file(path, "long");
+        free(path);
+    }
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    log_count lc = {"more than 259 characters", 0};
+    REQUIRE_OK(bd_backup(cat, d, 0, &bs, count_log, &lc), cat);
+    CHECK(bs.files_copied == 2);
+    CHECK(bs.long_paths == 1);
+    CHECK(lc.n == 1);
+    lc.n = 0;
+    REQUIRE_OK(bd_media_check(cat, d, &cs, count_log, &lc), cat);
+    CHECK(cs.ok == 3);
+    CHECK(cs.long_paths == 1);
+    CHECK(lc.n == 1);
+    /* It is the full path that counts: under a longer root, both are long. */
+    CHECK(bd_media_long_paths(cat, d, at("r12/D-at-a-longer-place")) == 2);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -831,6 +891,7 @@ int main(void)
     test_cloned_drive();
     test_lost_drive_takes_old_versions();
     test_wiped_drive_set_up_again();
+    test_long_paths_counted();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

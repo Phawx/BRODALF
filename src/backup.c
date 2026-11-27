@@ -1385,6 +1385,8 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 bd_logf(log, log_ctx, "the catalog could not be copied to the drive, so no copy of it there knows what this backup copied: %s",
                         bd_catalog_error(cat));
         }
+        stats[k].long_paths = bd_media_long_paths(cat, d->media_id, NULL);
+        bd_log_long_paths(log, log_ctx, stats[k].long_paths, n > 1 ? d->label : NULL);
         int64_t rev = 0;
         if (bd_media_copy_clash(cat, d->media_id, &rev))
             bd_logf(log, log_ctx, "\"%s\" already had a different copy of this database at revision %lld: two copies of this database "

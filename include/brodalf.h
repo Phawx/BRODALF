@@ -519,6 +519,9 @@ typedef struct {
      * .brodalf-tmp, from a copy that stopped, as at a power cut), older
      * than an hour: bd_media_remove_leftovers removes them. */
     int64_t leftovers, leftover_bytes;
+    /* bd_media_check only: good copies on the drive whose full path there
+     * is over BD_LONG_PATH characters (bd_media_long_paths). */
+    int64_t long_paths;
 } bd_check_stats;
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx);
@@ -541,6 +544,14 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
  * BD_ERR_DRIVE_GONE, keeps the copies it found good, and marks nothing
  * missing or damaged. */
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+/* Good copies on the drive whose full path at root (NULL: where it is
+ * plugged in, or was last), BRODALF\<database id>\ included, has more
+ * than BD_LONG_PATH characters as Windows counts them. BRODALF writes and
+ * restores them, but File Explorer and programs on a PC without long paths
+ * turned on may not open or copy them by hand, as on another PC. Counted
+ * on every system, as the drive may be read on Windows. -1 on error. */
+#define BD_LONG_PATH 259
+int64_t bd_media_long_paths(bd_catalog *cat, int64_t media_id, const char *root);
 /* Remove the half-written files bd_media_check counted in leftovers: only
  * BRODALF's own .brodalf-tmp files in its folder on the drive, never a
  * copy. *removed is how many went. */
@@ -619,6 +630,9 @@ typedef struct {
      * copied, a problem to show as a failed file is. */
     int64_t catalog_revision;
     int catalog_copy_failed;
+    /* Good copies on the drive, of this backup and earlier ones, whose full
+     * path there is over BD_LONG_PATH characters (bd_media_long_paths). */
+    int64_t long_paths;
 } bd_backup_stats;
 
 /* The size of the biggest backup drive that counts (not lost or broken,

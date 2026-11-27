@@ -54,6 +54,10 @@ struct bd_catalog {
 bd_status bd_fail(bd_catalog *cat, bd_status status, const char *fmt, ...);
 bd_status bd_fail_db(bd_catalog *cat, const char *what);
 void bd_logf(bd_log_fn log, void *ctx, const char *fmt, ...);
+/* Says how many copies on a drive have a full path over BD_LONG_PATH
+ * characters (bd_media_long_paths), if any; label names the drive when a
+ * backup writes to more than one. */
+void bd_log_long_paths(bd_log_fn log, void *log_ctx, int64_t n, const char *label);
 
 char *bd_strdup(const char *s);
 char *bd_sprintf(const char *fmt, ...);

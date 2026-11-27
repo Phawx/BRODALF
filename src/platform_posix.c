@@ -44,8 +44,10 @@ static void fill_stat(const struct stat *sb, bd_stat_t *st)
 #if defined(__APPLE__)
     st->mtime_ns = (int64_t)sb->st_mtimespec.tv_sec * 1000000000LL + sb->st_mtimespec.tv_nsec;
     st->btime_ns = (int64_t)sb->st_birthtimespec.tv_sec * 1000000000LL + sb->st_birthtimespec.tv_nsec;
+    st->ctime_ns = (int64_t)sb->st_ctimespec.tv_sec * 1000000000LL + sb->st_ctimespec.tv_nsec;
 #else
     st->mtime_ns = (int64_t)sb->st_mtim.tv_sec * 1000000000LL + sb->st_mtim.tv_nsec;
+    st->ctime_ns = (int64_t)sb->st_ctim.tv_sec * 1000000000LL + sb->st_ctim.tv_nsec;
 #endif
 }
 

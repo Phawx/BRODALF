@@ -629,6 +629,227 @@ static int stack_push(str_stack *s, const char *v)
     return 0;
 }
 
+/* A name that is not valid UTF-16 (an unpaired surrogate, which NTFS
+ * allows), shown so the user can find it: the rest of the name as it is,
+ * and each unpaired surrogate as \uD800 and the like. malloc'd, or NULL. */
+static char *name_shown(const wchar_t *w, size_t n)
+{
+    char *out = malloc(n * 6 + 1), *o = out;
+    if (!out) return NULL;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t c = w[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n && w[i + 1] >= 0xDC00 && w[i + 1] <= 0xDFFF) {
+            c = 0x10000 + ((c - 0xD800) << 10) + (uint32_t)(w[i + 1] - 0xDC00);
+            i++;
+        } else if (c >= 0xD800 && c <= 0xDFFF) {
+            o += sprintf(o, "\\u%04X", (unsigned)c);
+            continue;
+        }
+        if (c < 0x80) *o++ = (char)c;
+        else if (c < 0x800) { *o++ = (char)(0xC0 | (c >> 6)); *o++ = (char)(0x80 | (c & 0x3F)); }
+        else if (c < 0x10000) {
+            *o++ = (char)(0xE0 | (c >> 12));
+            *o++ = (char)(0x80 | ((c >> 6) & 0x3F));
+            *o++ = (char)(0x80 | (c & 0x3F));
+        } else {
+            *o++ = (char)(0xF0 | (c >> 18));
+            *o++ = (char)(0x80 | ((c >> 12) & 0x3F));
+            *o++ = (char)(0x80 | ((c >> 6) & 0x3F));
+            *o++ = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    *o = '\0';
+    return out;
+}
+
+/* A name of n UTF-16 units as UTF-8; NULL when it is not valid UTF-16 or
+ * out of memory. */
+static char *name_utf8(const wchar_t *w, size_t n)
+{
+    if (n == 0) return NULL;
+    int len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w, (int)n, NULL, 0, NULL, NULL);
+    if (len <= 0) return NULL;
+    char *s = malloc((size_t)len + 1);
+    if (s && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w, (int)n, s, len, NULL, NULL) != len) {
+        free(s);
+        return NULL;
+    }
+    if (s) s[len] = '\0';
+    return s;
+}
+
+/* One entry of a folder, as bd_walk reads it. */
+typedef struct {
+    const wchar_t *name; /* name_len units, not ended by a 0 */
+    size_t name_len;
+    DWORD attrs, reparse_tag, size_hi, size_lo;
+    FILETIME mtime, btime;
+    int64_t ctime_ns; /* 0: not known */
+} dir_entry;
+
+/* Reading one folder. GetFileInformationByHandleEx with FileFullDirectoryInfo
+ * gives what FindFirstFileEx gives (it is what FindFirstFileEx with
+ * FindExInfoBasic asks the file system for: the attributes, the reparse
+ * tag of a reparse point, the size and the times, many entries a call, no
+ * file opened) and each entry's ChangeTime too, which a program cannot set
+ * back. Where the file system does not answer it (Windows 7, some network
+ * and other file systems), the folder is read with FindFirstFileEx, as
+ * before, without change times. */
+#define DIR_BATCH (64 * 1024)
+#define DIR_USED_UP ((size_t)-1)
+typedef struct {
+    HANDLE dir;  /* the folder opened for listing, or INVALID_HANDLE_VALUE */
+    HANDLE find; /* FindFirstFileEx's handle, or INVALID_HANDLE_VALUE */
+    WIN32_FIND_DATAW fd;
+    int find_first; /* fd holds the first entry, not handed out yet */
+    int ended;
+    unsigned char *batch;
+    size_t at; /* the next entry in batch, or DIR_USED_UP */
+} dir_reader;
+
+static void dir_close(dir_reader *r)
+{
+    if (r->dir != INVALID_HANDLE_VALUE) CloseHandle(r->dir);
+    if (r->find != INVALID_HANDLE_VALUE) FindClose(r->find);
+    free(r->batch);
+    r->dir = r->find = INVALID_HANDLE_VALUE;
+    r->batch = NULL;
+}
+
+/* 0, or the Windows error that kept the folder from being opened. folder is
+ * the folder, pattern the same with "\*" added. */
+static DWORD dir_open(dir_reader *r, const char *folder, const char *pattern)
+{
+    memset(r, 0, sizeof(*r));
+    r->dir = r->find = INVALID_HANDLE_VALUE;
+    r->at = DIR_USED_UP;
+    r->batch = malloc(DIR_BATCH);
+    wchar_t *w = r->batch ? to_wide(folder) : NULL;
+    if (w)
+        r->dir = CreateFileW(w, FILE_LIST_DIRECTORY | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(w);
+    if (r->dir != INVALID_HANDLE_VALUE) {
+        if (GetFileInformationByHandleEx(r->dir, FileFullDirectoryInfo, r->batch, DIR_BATCH)) {
+            r->at = 0;
+            return 0;
+        }
+        DWORD e = GetLastError();
+        if (e == ERROR_NO_MORE_FILES || e == ERROR_FILE_NOT_FOUND) { /* nothing in it, not even "." */
+            r->ended = 1;
+            return 0;
+        }
+        CloseHandle(r->dir);
+        r->dir = INVALID_HANDLE_VALUE;
+    }
+    wchar_t *wpat = to_wide(pattern);
+    r->find = wpat ? FindFirstFileExW(wpat, FindExInfoBasic, &r->fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH)
+                   : INVALID_HANDLE_VALUE;
+    DWORD err = wpat ? GetLastError() : ERROR_NOT_ENOUGH_MEMORY;
+    free(wpat);
+    if (r->find == INVALID_HANDLE_VALUE) {
+        dir_close(r);
+        return err ? err : ERROR_PATH_NOT_FOUND;
+    }
+    r->find_first = 1;
+    return 0;
+}
+
+/* The next entry: 1 with *e filled, 0 at the end of the folder, -1 when it
+ * could not be read on (*err gets why). */
+static int dir_next(dir_reader *r, dir_entry *e, DWORD *err)
+{
+    memset(e, 0, sizeof(*e));
+    if (r->find != INVALID_HANDLE_VALUE) {
+        if (r->find_first) r->find_first = 0;
+        else if (!FindNextFileW(r->find, &r->fd)) {
+            DWORD x = GetLastError();
+            if (x == ERROR_NO_MORE_FILES) return 0;
+            *err = x;
+            return -1;
+        }
+        e->name = r->fd.cFileName;
+        e->name_len = wcslen(r->fd.cFileName);
+        e->attrs = r->fd.dwFileAttributes;
+        e->reparse_tag = r->fd.dwReserved0;
+        e->size_hi = r->fd.nFileSizeHigh;
+        e->size_lo = r->fd.nFileSizeLow;
+        e->mtime = r->fd.ftLastWriteTime;
+        e->btime = r->fd.ftCreationTime;
+        return 1;
+    }
+    if (r->dir == INVALID_HANDLE_VALUE || r->ended) return 0;
+    if (r->at == DIR_USED_UP) {
+        if (!GetFileInformationByHandleEx(r->dir, FileFullDirectoryInfo, r->batch, DIR_BATCH)) {
+            DWORD x = GetLastError();
+            if (x == ERROR_NO_MORE_FILES) {
+                r->ended = 1;
+                return 0;
+            }
+            *err = x;
+            return -1;
+        }
+        r->at = 0;
+    }
+    const FILE_FULL_DIR_INFO *fi = (const FILE_FULL_DIR_INFO *)(r->batch + r->at);
+    size_t next = fi->NextEntryOffset;
+    r->at = next && r->at + next + sizeof(FILE_FULL_DIR_INFO) <= DIR_BATCH ? r->at + next : DIR_USED_UP;
+    e->name = fi->FileName;
+    e->name_len = fi->FileNameLength / sizeof(WCHAR);
+    e->attrs = fi->FileAttributes;
+    /* For a reparse point the EaSize field holds its reparse tag
+     * ([MS-FSCC] 2.4.17), where FindFirstFile puts dwReserved0. */
+    e->reparse_tag = (fi->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? fi->EaSize : 0;
+    e->size_hi = (DWORD)fi->EndOfFile.HighPart;
+    e->size_lo = fi->EndOfFile.LowPart;
+    e->mtime.dwLowDateTime = fi->LastWriteTime.LowPart;
+    e->mtime.dwHighDateTime = (DWORD)fi->LastWriteTime.HighPart;
+    e->btime.dwLowDateTime = fi->CreationTime.LowPart;
+    e->btime.dwHighDateTime = (DWORD)fi->CreationTime.HighPart;
+    if (fi->ChangeTime.QuadPart > 0) {
+        FILETIME ct;
+        ct.dwLowDateTime = fi->ChangeTime.LowPart;
+        ct.dwHighDateTime = (DWORD)fi->ChangeTime.HighPart;
+        e->ctime_ns = filetime_to_ns(ct);
+    }
+    return 1;
+}
+
+/* Names in one folder that are not valid Unicode: the first few, shown,
+ * and how many. */
+typedef struct {
+    char *shown[3];
+    int n;
+} bad_names;
+
+static void bad_names_report(bad_names *b, const char *pattern, bd_walk_err_cb err_cb, void *ctx)
+{
+    if (b->n && err_cb) {
+        size_t len = 200;
+        for (int i = 0; i < 3 && i < b->n; i++) len += strlen(b->shown[i] ? b->shown[i] : "?") + 4;
+        char *msg = malloc(len);
+        if (msg) {
+            if (b->n == 1)
+                snprintf(msg, len, "the name \"%s\" in this folder is not valid Unicode, so it cannot be read",
+                         b->shown[0] ? b->shown[0] : "?");
+            else {
+                size_t o = (size_t)snprintf(msg, len, "%d names in this folder are not valid Unicode, so they cannot be read:", b->n);
+                for (int i = 0; i < 3 && i < b->n && o < len; i++)
+                    o += (size_t)snprintf(msg + o, len - o, "%s \"%s\"", i ? "," : "", b->shown[i] ? b->shown[i] : "?");
+                if (b->n > 3 && o < len) snprintf(msg + o, len - o, " and more");
+            }
+            /* Reported against the folder, so the scan treats it as not
+             * read in full and marks nothing in it deleted. */
+            err_cb(ctx, pattern, msg);
+            free(msg);
+        } else {
+            err_cb(ctx, pattern, "a name in this folder is not valid Unicode and cannot be read");
+        }
+    }
+    for (int i = 0; i < 3; i++) free(b->shown[i]);
+    memset(b, 0, sizeof(*b));
+}
+
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
 {
     char *base = strdup(root);
@@ -646,46 +867,58 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
         char *pattern = malloc(blen + rlen + 4);
         if (!pattern) { free(rel); rc = -1; break; }
         sprintf(pattern, rlen ? "%s\\%s\\*" : "%s\\*", base, rel);
-        wchar_t *wpat = to_wide(pattern);
-        WIN32_FIND_DATAW fd;
-        HANDLE h = wpat ? FindFirstFileExW(wpat, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH)
-                        : INVALID_HANDLE_VALUE;
-        free(wpat);
-        if (h == INVALID_HANDLE_VALUE) {
+        /* The folder itself: the pattern without its "\*". */
+        char *folder = strdup(pattern);
+        if (!folder) { free(pattern); free(rel); rc = -1; break; }
+        folder[strlen(folder) - 2] = '\0';
+        if (!folder[0] || (folder[1] == ':' && !folder[2])) strcat(folder, "\\"); /* "C:" is the drive's current folder */
+        dir_reader r;
+        DWORD open_err = dir_open(&r, folder, pattern);
+        free(folder);
+        if (open_err) {
             if (err_cb) err_cb(ctx, pattern, "cannot open folder");
             free(pattern);
             free(rel);
             continue;
         }
-        /* The error FindNextFileW stopped with, read before any other call
-         * can change it: anything but ERROR_NO_MORE_FILES means the folder
-         * was not read to the end. */
-        DWORD werr = ERROR_NO_MORE_FILES;
-        int bad_name = 0;
-        do {
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-            char *name = to_utf8(fd.cFileName);
+        /* The error the listing stopped with, read before any other call
+         * can change it: the folder was not read to the end. */
+        DWORD werr = ERROR_SUCCESS;
+        int failed = 0;
+        bad_names bad;
+        memset(&bad, 0, sizeof(bad));
+        dir_entry e;
+        while (!stop) {
+            /* Test hook spot (Windows): a test that makes a folder listing
+             * fail part way, as bd_test_walk_fail does on POSIX
+             * (platform_posix.c), sets failed and werr here instead of
+             * calling dir_next. */
+            int got = dir_next(&r, &e, &werr);
+            if (got < 0) { failed = 1; break; }
+            if (got == 0) break;
+            if ((e.name_len == 1 && e.name[0] == L'.') || (e.name_len == 2 && e.name[0] == L'.' && e.name[1] == L'.')) continue;
+            char *name = name_utf8(e.name, e.name_len);
             if (!name) {
-                /* Reported against the folder, so the scan treats it as not
-                 * read in full and marks nothing in it deleted. */
-                if (err_cb && !bad_name) err_cb(ctx, pattern, "a name in this folder is not valid Unicode and cannot be read");
-                bad_name = 1;
+                if (bad.n < 3) bad.shown[bad.n] = name_shown(e.name, e.name_len);
+                bad.n++;
                 continue;
             }
             char *child_rel = malloc(rlen + strlen(name) + 2);
             if (!child_rel) { free(name); rc = -1; stop = 1; break; }
             sprintf(child_rel, rlen ? "%s/%s" : "%s%s", rel, name);
             bd_stat_t st;
-            fill_from_attrs(fd.dwFileAttributes, fd.dwReserved0, fd.nFileSizeHigh, fd.nFileSizeLow, fd.ftLastWriteTime, fd.ftCreationTime, &st);
-            int r = cb(ctx, child_rel, &st);
-            if (r == BD_WALK_SKIP) { /* leave the folder out */ }
-            else if (r != 0) stop = 1;
+            fill_from_attrs(e.attrs, e.reparse_tag, e.size_hi, e.size_lo, e.mtime, e.btime, &st);
+            st.ctime_ns = e.ctime_ns;
+            int cr = cb(ctx, child_rel, &st);
+            if (cr == BD_WALK_SKIP) { /* leave the folder out */ }
+            else if (cr != 0) stop = 1;
             else if (st.is_dir && stack_push(&stack, child_rel) != 0) { rc = -1; stop = 1; }
             free(child_rel);
             free(name);
-        } while (!stop && (FindNextFileW(h, &fd) || ((werr = GetLastError()), 0)));
-        FindClose(h);
-        if (!stop && werr != ERROR_NO_MORE_FILES && err_cb) {
+        }
+        dir_close(&r);
+        bad_names_report(&bad, pattern, stop ? NULL : err_cb, ctx);
+        if (!stop && failed && err_cb) {
             char msg[80];
             snprintf(msg, sizeof(msg), "the folder could not be read to the end (error %lu)", (unsigned long)werr);
             err_cb(ctx, pattern, msg);

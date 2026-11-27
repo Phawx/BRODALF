@@ -15,6 +15,11 @@ typedef struct {
     int64_t size;
     int64_t mtime_ns; /* nanoseconds since the Unix epoch */
     int64_t btime_ns; /* created; 0 where the system does not say */
+    /* Changed: when the file's contents or its record last changed (POSIX
+     * st_ctime, NTFS ChangeTime). A program cannot set it back the way it
+     * can set the modified time. Filled by bd_walk; 0 where it is not known
+     * (bd_stat on Windows, FAT drives). */
+    int64_t ctime_ns;
 } bd_stat_t;
 
 /* 0 on success, -1 if the path does not exist or cannot be read. */

@@ -247,6 +247,23 @@ if(EXISTS "${WORK}/recovered2.brodalf")
     fail_check("a failed recover left a file where the new catalog was to go")
 endif()
 
+# C5: widening a root. The folder that holds a root is refused with a hint;
+# with --take-in the root becomes part of it and nothing is copied again.
+file(WRITE "${WORK}/wide/U/Pictures/a.jpg" "picture")
+file(WRITE "${WORK}/wide/U/b.txt" "letter")
+file(MAKE_DIRECTORY "${WORK}/wide/drive")
+run(0 "widen: new" new "${WORK}/wide/db.brodalf" "${WORK}/wide/U/Pictures")
+run(0 "widen: scan" scan "${WORK}/wide/db.brodalf")
+run(0 "widen: drive" drive "${WORK}/wide/db.brodalf" "${WORK}/wide/drive" Wide)
+run(0 "widen: first backup" backup "${WORK}/wide/db.brodalf" "${WORK}/wide/drive")
+run(1 "widen: refused without --take-in" add "${WORK}/wide/db.brodalf" "${WORK}/wide/U")
+expect_text("widen: refused without --take-in" "--take-in")
+run(0 "widen: --take-in" add "${WORK}/wide/db.brodalf" "${WORK}/wide/U" --take-in)
+expect_text("widen: --take-in" "nothing is copied again")
+run(0 "widen: scan again" scan "${WORK}/wide/db.brodalf")
+run(0 "widen: backup copies only the new file" backup "${WORK}/wide/db.brodalf" "${WORK}/wide/drive")
+expect_text("widen: backup copies only the new file" "1 copied")
+
 file(REMOVE_RECURSE "${WORK}")
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} command-line flow check(s) failed")

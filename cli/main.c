@@ -29,7 +29,8 @@ static void usage(void)
          "\n"
          "The catalog and its backup roots\n"
          "  new      <catalog> [folder]...             create a new catalog, with the folders to back up\n"
-         "  add      <catalog> <folder>...             add backup roots (folders to back up)\n"
+         "  add      <catalog> <folder>... [--take-in] add backup roots (folders to back up); --take-in makes the\n"
+         "                                             backup roots inside one part of it, without copying again\n"
          "  roots    <catalog>                         list the backup roots\n"
          "  root-stop   <catalog> <root>               stop backing up a root (its copies stay and still restore)\n"
          "  root-resume <catalog> <root>               back a stopped root up again\n"
@@ -447,7 +448,7 @@ static const char *const with_value[] = {"--drive", "--root", "--source", "--pat
 /* The options that take none. */
 static const char *const no_value[] = {"--json", "--yes", "--all", "--bitrot", "--deleted", "--encrypt", "--hide-names",
                                        "--new", "--parallel", "--reset", "--shadow-copy", "--unread", "--plugged",
-                                       "--accept-changes", "--recovery-key"};
+                                       "--accept-changes", "--recovery-key", "--take-in"};
 
 static int is_option(const char *arg, const char *const *list, size_t n)
 {
@@ -693,18 +694,43 @@ static int root_by_id_cb(void *ctx, const bd_source_info *info)
 /* Add each folder as a backup root and say where it is kept (always as a
  * full path), or that it is a root already: the same folder, reached any
  * way. 0, or the exit code. */
-static int add_roots(bd_catalog *cat, const char **folders, int n)
+static int count_root(void *ctx, int64_t source_id, const char *path)
+{
+    (void)source_id;
+    (void)path;
+    (*(int *)ctx)++;
+    return 0;
+}
+
+static int add_roots(bd_catalog *cat, const char **folders, int n, int take_in)
 {
     for (int i = 0; i < n; i++) {
         int64_t id;
         int is_new = 0;
-        bd_status s = bd_source_add_ex(cat, folders[i], &id, &is_new);
+        int inside = 0;
+        bd_roots_inside(cat, folders[i], count_root, &inside);
+        bd_status s;
+        if (take_in && inside > 0) {
+            /* The roots inside it become part of it, in the catalog only:
+             * their copies keep their places, so nothing is copied again. */
+            s = bd_source_add_holding(cat, folders[i], &id);
+            is_new = s == BD_OK;
+            if (s == BD_OK && !g_json)
+                fprintf(msg_out(), "%d backup root%s inside it %s part of it now; nothing is copied again\n", inside,
+                        inside == 1 ? "" : "s", inside == 1 ? "is" : "are");
+        } else {
+            s = bd_source_add_ex(cat, folders[i], &id, &is_new);
+        }
         if (s == BD_ERR_EXISTS || s == BD_ERR_NOT_FOUND || s == BD_ERR_INVALID) {
             /* Not a fault: this folder cannot be a root (it is not a
              * folder, a link, or inside a root or holding one). */
             const char *why = bd_catalog_error(cat);
-            char *msg = malloc(strlen(why) + 32);
-            if (msg) sprintf(msg, "cannot add the folder: %s", why);
+            const char *hint = !take_in && inside > 0
+                                   ? ". Or add it with --take-in: the backup roots inside it become part of it, and"
+                                     " nothing is copied again"
+                                   : "";
+            char *msg = malloc(strlen(why) + strlen(hint) + 32);
+            if (msg) sprintf(msg, "cannot add the folder: %s%s", why, hint);
             int rc = refuse(cat, msg ? msg : why);
             free(msg);
             return rc;
@@ -2504,7 +2530,7 @@ static int run(int argc, char **argv)
     if (strcmp(cmd, "new") == 0) {
         bd_status cs = bd_catalog_create(path, &cat);
         if (cs != BD_OK) return fail(NULL, cs, "cannot create catalog");
-        int rc = add_roots(cat, pos, npos);
+        int rc = add_roots(cat, pos, npos, has_flag(argc, argv, "--take-in"));
         if (rc) return rc;
         if (bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
         if (g_json) { J_OBJ(NULL); j_str("catalog", path); j_str("id", bd_catalog_uuid(cat)); J_END(); }
@@ -2548,7 +2574,7 @@ static int run(int argc, char **argv)
 
     if (strcmp(cmd, "add") == 0) {
         if (!npos) { usage(); bd_catalog_close(cat); return 1; }
-        int rc = add_roots(cat, pos, npos);
+        int rc = add_roots(cat, pos, npos, has_flag(argc, argv, "--take-in"));
         if (rc) return rc;
         if (g_json) { J_OBJ(NULL); j_int("added", npos); J_END(); }
         save = 1;

@@ -3840,13 +3840,11 @@ static HTREEITEM insert_item(HTREEITEM parent, const wchar_t *text, node_ref *re
     }
     /* A root's name in bold; the icon faded when it is not on this PC and
      * no drive that is plugged in has it, as Explorer fades a file whose
-     * tape is not loaded. A root is faded by tree_post_paint instead: in
-     * the screenshots a bold item marked cut stopped the tree drawing the
-     * rest of its rows. */
+     * tape is not loaded. */
     if (ref && (ref->root || ref->ghost)) {
         tv.item.mask |= TVIF_STATE;
         tv.item.stateMask = TVIS_BOLD | TVIS_CUT;
-        tv.item.state = ref->root ? TVIS_BOLD : ref->ghost ? TVIS_CUT : 0;
+        tv.item.state = (ref->root ? TVIS_BOLD : 0) | (ref->ghost ? TVIS_CUT : 0);
     }
     return (HTREEITEM)SendMessageW(g_tree, TVM_INSERTITEMW, 0, (LPARAM)&tv);
 }
@@ -15798,35 +15796,6 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
         int iw = S(16), ih = S(16), cs = S(10);
         if (g_sys_il) ImageList_GetIconSize(g_sys_il, &iw, &ih);
         int ix = tr.left - S(3) - iw, iy = row.top + (rh - ih) / 2;
-        /* Faded as the cut folders under it are, except while the row is
-         * selected or under the pointer (its background is the theme's).
-         * Its name is greyed here too, not by tree_custom_draw: in the
-         * screenshots a bold item given another text colour stopped the
-         * tree drawing that row and the rows after it. */
-        if (r->ghost && !(cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_HOT))) {
-            RECT ir = {ix, iy, ix + iw, iy + ih};
-            fill_color(dc, &ir, tree_bg());
-            int icon = g_icon_folder;
-#ifdef TVIF_EXPANDEDIMAGE
-            if ((TreeView_GetItemState(tv, h, TVIS_EXPANDED) & TVIS_EXPANDED) && g_icon_folder_open >= 0) icon = g_icon_folder_open;
-#endif
-            draw_shell_icon(dc, icon, ix, iy, 1);
-            wchar_t name[MAX_PATH];
-            TVITEMW it;
-            memset(&it, 0, sizeof(it));
-            it.mask = TVIF_TEXT;
-            it.hItem = h;
-            it.pszText = name;
-            it.cchTextMax = COUNT_OF(name);
-            name[0] = 0;
-            if (SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&it) && name[0]) {
-                RECT nr = tr;
-                nr.top = row.top;
-                nr.bottom = row.bottom;
-                fill_color(dc, &nr, tree_bg());
-                draw_str(dc, g_font_bold, theme_gray(), name, nr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            }
-        }
         draw_state_icon(dc, ix + iw - cs + S(2), iy + ih - cs + S(2), cs, TONE_BAD, GLYPH_CROSS);
     }
     int x = tr.right + S(6);
@@ -15901,9 +15870,8 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
         int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
         HFONT font = NULL;
         /* Faded, as its icon is: not on this PC, and no drive that is
-         * plugged in has it (a root is greyed by tree_post_paint). Struck
-         * through: deleted from its folder. */
-        if ((r->ghost || r->state == BD_STATE_DELETED) && !sel && !r->root) cd->clrText = theme_gray();
+         * plugged in has it. Struck through: deleted from its folder. */
+        if ((r->ghost || r->state == BD_STATE_DELETED) && !sel) cd->clrText = theme_gray();
         if (r->state == BD_STATE_DELETED) font = g_font_strike;
         LRESULT ret = CDRF_NOTIFYPOSTPAINT;
         if (font && !r->root) {
@@ -17810,7 +17778,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     register_page_class();
 
     int made_at = g_dpi;
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_NAME, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, S(1240), S(820),
+    /* Clipping its children: without it, the window's background was
+     * painted over the folder pane (inside a page, which clips its own
+     * children) and nothing told the pane to draw itself again. */
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_NAME, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S(1240), S(820),
                                 NULL, NULL, inst, NULL);
     if (!hwnd) { LocalFree(argv); return 1; }
     /* It opened on a monitor at another DPI (WM_CREATE took that on). */

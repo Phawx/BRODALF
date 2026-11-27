@@ -245,7 +245,8 @@ enum {
     WM_APP_DONE,              /* lParam: job* */
     WM_APP_KICK,              /* start the next job, once the command that asked for it is done */
     WM_APP_SETS,              /* lParam: malloc'd sets_msg, the full copies read during a backup */
-    WM_APP_FILESEL            /* what is selected in the file list changed: show its details once */
+    WM_APP_FILESEL,           /* what is selected in the file list changed: show its details once */
+    WM_APP_SEARCH             /* lParam: search_run*, a search made while a job had the database */
 };
 
 /* ---- Languages -----------------------------------------------------------
@@ -653,6 +654,28 @@ static void format_time_ms(int64_t ms, wchar_t *out, size_t n)
     if (!GetDateFormatEx(fmt_locale(), DATE_SHORTDATE, &st, NULL, d, 96, NULL)) swprintf(d, 96, L"%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
     if (!GetTimeFormatEx(fmt_locale(), TIME_NOSECONDS, &st, NULL, tm, 64)) swprintf(tm, 64, L"%02d:%02d", st.wHour, st.wMinute);
     swprintf(out, n, L"%ls %ls", d, tm);
+}
+
+/* Today as a restore names a file it puts beside another one: 2026-11-27. */
+static void restore_day(wchar_t *out, size_t cap)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    swprintf(out, cap, L"%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+}
+
+/* The name a restore that keeps both gives a file beside the one at path
+ * (bd_restore_opts.keep_both): "a.txt" as "a (restored 2026-11-27).txt". */
+static void beside_name(const wchar_t *path, wchar_t *out, size_t cap)
+{
+    const wchar_t *name = path;
+    for (const wchar_t *p = path; *p; p++)
+        if (*p == L'\\' || *p == L'/') name = p + 1;
+    const wchar_t *dot = wcsrchr(name, L'.');
+    if (!dot || dot == name) dot = name + wcslen(name);
+    wchar_t day[16];
+    restore_day(day, 16);
+    swprintf(out, cap, L"%.*ls (restored %ls)%ls", (int)(dot - name), name, day, dot);
 }
 
 /* ---- Globals ------------------------------------------------------------ */
@@ -1701,6 +1724,12 @@ typedef struct job {
     int64_t offline;    /* restore: files on drives not plugged in */
     int deleted;        /* restore: only files deleted from their folder */
     int64_t version_id; /* restore: this one version of a file, into dest */
+    int with_deleted;   /* restore: the files deleted from it too, as they were last seen */
+    int keep_both;      /* restore: beside a file already where one goes, as "name (restored <day>).ext" */
+    int64_t offer_root; /* restore: a whole backup root that was not found; once it is all back, offer dest as its place */
+    int64_t need_pass, rest_failed, rest_conflict; /* restore: files only on encrypted copies; that failed; left alone */
+    int pend;           /* restore: 1 kept as the restore that waits (in the database), 2 it finished the one that waited */
+    int retried;        /* restore: run again once the passphrase was entered */
     int n_picks;        /* restore: these files or folders instead of source_id/rel */
     int64_t *pick_src;
     char **pick_rel;
@@ -3153,6 +3182,8 @@ static DWORD WINAPI worker(LPVOID arg)
         memset(&rs, 0, sizeof(rs));
         memset(&ro, 0, sizeof(ro));
         ro.deleted_only = j->deleted;
+        ro.with_deleted = j->with_deleted;
+        ro.keep_both = j->keep_both;
         {
             restore_from rf;
             memset(&rf, 0, sizeof(rf));
@@ -3167,7 +3198,7 @@ static DWORD WINAPI worker(LPVOID arg)
             free(dw);
         }
         if (j->version_id) {
-            s = bd_restore_version(g_cat, j->version_id, j->dest, &rs, job_log, j);
+            s = bd_restore_version_ex(g_cat, j->version_id, j->dest, &ro, &rs, job_log, j);
             if (s == BD_OK) collect_conflicts(j);
         } else if (!j->n_picks) {
             s = bd_restore_ex(g_cat, j->source_id, j->rel, j->dest, &ro, &rs, job_log, j);
@@ -3189,6 +3220,8 @@ static DWORD WINAPI worker(LPVOID arg)
             rs.files_already_there += one.files_already_there;
             rs.files_conflict += one.files_conflict;
             rs.files_older_version += one.files_older_version;
+            rs.files_beside += one.files_beside;
+            rs.files_cannot_write += one.files_cannot_write;
         }
         g_job_dest[0] = 0;
         format_bytes(rs.bytes_restored, size, 64);
@@ -3207,6 +3240,17 @@ static DWORD WINAPI worker(LPVOID arg)
         if (rs.files_no_copy)
             say(j, TN(rs.files_no_copy, L" %lld was never backed up.", L" %lld were never backed up."), (long long)rs.files_no_copy);
         if (rs.files_failed) say(j, TN(rs.files_failed, L" %lld failed.", L" %lld failed."), (long long)rs.files_failed);
+        if (rs.files_cannot_write)
+            say(j, TN(rs.files_cannot_write, L" %lld of them could not be written where it goes (the log says why).",
+                      L" %lld of them could not be written where they go (the log says why)."),
+                (long long)rs.files_cannot_write);
+        if (rs.files_beside) {
+            wchar_t day[16];
+            restore_day(day, 16);
+            say(j, TN(rs.files_beside, L" %lld was restored beside another file already there, with \"(restored %ls)\" added to its name.",
+                      L" %lld were restored beside other files already there, with \"(restored %ls)\" added to their names."),
+                (long long)rs.files_beside, day);
+        }
         if (rs.files_conflict)
             say(j, TN(rs.files_conflict, L" %lld file left alone because another file was already there: nothing was overwritten.",
                       L" %lld files left alone because another file was already there: nothing was overwritten."),
@@ -3220,6 +3264,29 @@ static DWORD WINAPI worker(LPVOID arg)
         if (rs.files_need_passphrase) say(j, T(L" %lld need the passphrase."), (long long)rs.files_need_passphrase);
         /* Files on drives that are not plugged in wait for them: not a problem. */
         j->n_problems = j->n_tell = rs.files_failed + rs.files_no_copy + rs.files_need_passphrase;
+        j->need_pass = rs.files_need_passphrase;
+        j->rest_failed = rs.files_failed;
+        j->rest_conflict = rs.files_conflict;
+        /* What still waits for drives or the passphrase is kept in the
+         * database, saved below: Continue goes on with it, after a restart
+         * too. A restore that stopped at a full folder or an unplugged drive
+         * waits the same way. The one that waited is forgotten once it is
+         * done. */
+        if (!j->version_id && !j->n_picks && j->dest) {
+            const char *rel = j->rel ? j->rel : "";
+            if ((s == BD_OK && (rs.files_offline > 0 || rs.files_need_passphrase > 0)) || s == BD_ERR_IO || s == BD_ERR_DRIVE_GONE) {
+                if (bd_restore_pending_set(g_cat, j->source_id, rel, j->dest, &ro, j->offer_root) == BD_OK) j->pend = 1;
+            } else if (s == BD_OK) {
+                bd_restore_pending was;
+                if (bd_restore_pending_get(g_cat, &was) == BD_OK) {
+                    if (was.source_id == j->source_id && strcmp(was.rel_prefix, rel) == 0 && strcmp(was.dest, j->dest) == 0) {
+                        bd_restore_pending_clear(g_cat);
+                        j->pend = 2;
+                    }
+                    bd_restore_pending_free(&was);
+                }
+            }
+        }
         break;
     }
     }
@@ -6303,6 +6370,8 @@ static int CALLBACK lv_compare(LPARAM pa, LPARAM pb, LPARAM ctx)
     return a < b ? -1 : a > b ? 1 : 0;
 }
 
+static int search_sort_key(HWND lv, int index, int col, double *out);
+
 /* Sort the table as its header says, and show the arrow on that column. */
 static void lv_sort(HWND lv)
 {
@@ -6341,7 +6410,9 @@ static void lv_sort(HWND lv)
             if (!SendMessageW(lv, LVM_GETITEMW, 0, (LPARAM)&it)) continue;
             if (it.lParam < 0 || it.lParam >= n || d.text[it.lParam]) continue;
             d.text[it.lParam] = _wcsdup(it.pszText ? it.pszText : L"");
-            if (d.text[it.lParam]) d.has_num[it.lParam] = (char)lv_number(d.text[it.lParam], &d.num[it.lParam]);
+            if (d.text[it.lParam])
+                d.has_num[it.lParam] = (char)(search_sort_key(lv, (int)it.lParam, col, &d.num[it.lParam]) ||
+                                              lv_number(d.text[it.lParam], &d.num[it.lParam]));
         }
         ListView_SortItems(lv, lv_compare, (LPARAM)&d);
         int focus = ListView_GetNextItem(lv, -1, LVNI_FOCUSED);
@@ -6677,6 +6748,7 @@ static void table_add_node(int row, int64_t id)
  * and the one picked to restore once the table is closed. */
 static int64_t *g_table_vers, g_table_restore_vid;
 static int g_table_nvers, g_table_cvers;
+static int g_table_restore_row; /* the row of g_table_restore_vid */
 
 static void table_add_version(int64_t vid)
 {
@@ -6691,6 +6763,7 @@ static void table_add_version(int64_t vid)
 }
 
 static void restore_version(int64_t version_id);
+static void restore_conflict(int row);
 static int g_table_n, g_table_pick;
 static int g_table_left_out; /* a file was left out from the table: scan again */
 /* The files the last restore left alone, from its job. */
@@ -7008,8 +7081,8 @@ static void table_conflicts(HWND lv)
     lv_fit_all(lv, 1);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
                     g_n_conflicts ? T(L"The last restore left these alone because another file was already where each would go: nothing "
-                                    L"was overwritten. Compare them, then move or rename the one that is there and restore again, or pick "
-                                    L"one and press Restore it to another folder...")
+                                    L"was overwritten. Compare them, then pick one and press Restore it... to put it beside the one "
+                                    L"there, or in another folder.")
                                   : T(L"A file is left alone when a restore finds another file already where it would go."));
 }
 
@@ -7106,7 +7179,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         static const wchar_t *buttons[] = {N_(L"Details..."), N_(L"Leave it out..."), N_(L"Back up this version"), N_(L"Open in Explorer"), L"",
                                            N_(L"Show the app log"), N_(L"Leave it out...")};
         /* The lists that say to restore have a button that does it. */
-        static const wchar_t *restores[] = {L"", L"", N_(L"Restore the good copy..."), N_(L"Restore it to another folder..."),
+        static const wchar_t *restores[] = {L"", L"", N_(L"Restore the good copy..."), N_(L"Restore it..."),
                                             N_(L"Restore the drive's copy..."), L"", L""};
         SetWindowTextW(dlg, T(titles[g_table_mode]));
         SetDlgItemTextW(dlg, IDC_TABLE_OPEN, T(buttons[g_table_mode]));
@@ -7154,6 +7227,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 return TRUE;
             }
             g_table_restore_vid = g_table_vers[row];
+            g_table_restore_row = row;
             EndDialog(dlg, IDC_TABLE_RESTORE);
             return TRUE;
         }
@@ -7236,7 +7310,8 @@ static void cmd_table(int mode)
     for (;;) {
         INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_TABLE), g_main, table_proc);
         if (r == IDC_TABLE_RESTORE) {
-            restore_version(g_table_restore_vid);
+            if (mode == TABLE_CONFLICTS) restore_conflict(g_table_restore_row);
+            else restore_version(g_table_restore_vid);
             break;
         }
         if (r != IDC_TABLE_OPEN || mode != TABLE_DRIVES) break;
@@ -8099,8 +8174,59 @@ static void check_drive(int64_t id)
     else if (pressed == 612) enqueue_verify(id);
 }
 
-/* A restore that is waiting for more drives. */
-static struct { int active; int64_t source_id; char *rel, *dest; } g_pending;
+/* A restore that is waiting for more drives (or the passphrase). The
+ * database keeps it too (bd_restore_pending_get), so it is still there
+ * the next time the database is opened. */
+static struct {
+    int active;
+    int64_t source_id;
+    char *rel, *dest;
+    bd_restore_opts ro;
+    int64_t offer_root; /* see job.offer_root */
+} g_pending;
+
+/* The same restore again: what, where and how. For a retry once the
+ * passphrase is entered, or with keep_both for the files it left alone. */
+static job *restore_job_copy(const job *j)
+{
+    job *r = new_job(JOB_RESTORE);
+    if (!r) return NULL;
+    r->source_id = j->source_id;
+    r->rel = xstrdup(j->rel);
+    r->dest = xstrdup(j->dest);
+    r->deleted = j->deleted;
+    r->with_deleted = j->with_deleted;
+    r->keep_both = j->keep_both;
+    r->version_id = j->version_id;
+    r->offer_root = j->offer_root;
+    if (j->n_picks > 0) {
+        r->pick_src = calloc((size_t)j->n_picks, sizeof(int64_t));
+        r->pick_rel = calloc((size_t)j->n_picks, sizeof(char *));
+        r->pick_dest = calloc((size_t)j->n_picks, sizeof(char *));
+        if (!r->pick_src || !r->pick_rel || !r->pick_dest) {
+            job_free(r);
+            return NULL;
+        }
+        for (int i = 0; i < j->n_picks; i++) {
+            r->pick_src[i] = j->pick_src[i];
+            r->pick_rel[i] = xstrdup(j->pick_rel[i]);
+            r->pick_dest[i] = j->pick_dest ? xstrdup(j->pick_dest[i]) : NULL;
+            r->n_picks = i + 1;
+        }
+    }
+    return r;
+}
+
+/* The last restore that left files alone, to run again keeping both. */
+static job *g_redo;
+
+/* A restore that ended with files only on encrypted copies, while the
+ * passphrase is not entered: it asks for it once, then runs again. */
+static int restore_wants_passphrase(const job *j)
+{
+    return j->kind == JOB_RESTORE && j->status == BD_OK && j->need_pass > 0 && !j->retried && g_cat &&
+           bd_catalog_has_passphrase(g_cat) && !bd_catalog_is_unlocked(g_cat);
+}
 
 static void media_name(int64_t id, wchar_t *out, size_t cap)
 {
@@ -8379,11 +8505,42 @@ static int plan_text_cb(void *ctx, const bd_restore_step *st)
 
 static void clear_pending(void)
 {
-    g_pending.active = 0;
     free(g_pending.rel);
     free(g_pending.dest);
-    g_pending.rel = g_pending.dest = NULL;
+    memset(&g_pending, 0, sizeof(g_pending));
 }
+
+/* What the job kept in the database as the restore that waits, or
+ * finished of it, in the window too. */
+static void pending_from_job(const job *j)
+{
+    if (j->pend == 2) clear_pending();
+    if (j->pend != 1) return;
+    clear_pending();
+    g_pending.rel = xstrdup(j->rel ? j->rel : "");
+    g_pending.dest = xstrdup(j->dest);
+    if (!g_pending.rel || !g_pending.dest) {
+        clear_pending();
+        return;
+    }
+    g_pending.active = 1;
+    g_pending.source_id = j->source_id;
+    g_pending.ro.deleted_only = j->deleted;
+    g_pending.ro.with_deleted = j->with_deleted;
+    g_pending.ro.keep_both = j->keep_both;
+    g_pending.offer_root = j->offer_root;
+}
+
+/* Forget the restore that waits, here and in the database: another one
+ * starts. What it restored stays. */
+static void forget_pending(void)
+{
+    if (!g_pending.active) return;
+    if (g_cat) bd_restore_pending_clear(g_cat);
+    clear_pending();
+}
+
+static void offer_root_here(int64_t source_id, const char *dest);
 
 /* The last restore, in words, for the Restore tab. */
 static wchar_t g_last_restore[SUMMARY_LEN];
@@ -8404,9 +8561,12 @@ static void after_restore(job *j)
     g_n_conflicts = j->n_conf;
     j->conf = NULL;
     j->n_conf = j->cap_conf = 0;
+    /* Kept to run again keeping both (the table of them offers it). */
+    job_free(g_redo);
+    g_redo = j->rest_conflict > 0 ? restore_job_copy(j) : NULL;
     /* No question: the job panel offers to compare them, and the Restore
      * tab lists them. */
-    if (j->deleted || j->version_id) {
+    if (j->version_id || j->n_picks) {
         /* Not kept waiting: the user picks them again. */
         if (j->offline > 0) {
             wchar_t line[300];
@@ -8415,23 +8575,50 @@ static void after_restore(job *j)
                      (long long)j->offline);
             log_append(line);
         }
+        /* One version, and a file is already where it goes (most often the
+         * file as it is now): it can go beside it. */
+        if (j->version_id && !j->keep_both && j->rest_conflict > 0 && g_n_conflicts > 0 && g_conflicts[0].dest) {
+            wchar_t name[600], msg[MAX_PATH * 2 + 1400];
+            beside_name(g_conflicts[0].dest, name, 600);
+            swprintf(msg, MAX_PATH * 2 + 1400,
+                     T(L"Restore this version beside the file that is already there?\n\nAnother file is already at %ls, so this "
+                       L"version was left alone: nothing was overwritten. Beside it, it is named \"%ls\"."),
+                     g_conflicts[0].dest, name);
+            if (ask_verbs(g_main, msg, MB_YESNO | MB_ICONQUESTION, T(L"Restore beside it"), T(L"Not now")) == IDYES) {
+                job *again = restore_job_copy(j);
+                if (again) {
+                    again->keep_both = 1;
+                    enqueue(again);
+                }
+            }
+        }
         return;
     }
-    if (j->n_picks) return;
-    if (j->offline <= 0) {
-        if (g_pending.active) log_append(T(L"The restore is complete: every file that has a copy is back."));
-        clear_pending();
+    if (j->offline <= 0 && j->need_pass <= 0) {
+        if (j->pend == 2)
+            log_append(j->rest_failed > 0 ? T(L"The restore that waited for drives is done, but some files could not be restored: the "
+                                              L"log says why.")
+                                          : T(L"The restore is complete: every file that has a copy is back."));
+        if (j->offer_root && j->rest_failed == 0 && j->rest_conflict == 0) offer_root_here(j->offer_root, j->dest);
         return;
     }
-    if (!g_pending.active) {
-        g_pending.active = 1;
-        g_pending.source_id = j->source_id;
-        g_pending.rel = xstrdup(j->rel);
-        g_pending.dest = xstrdup(j->dest);
+    if (j->need_pass > 0 && g_cat && bd_catalog_has_passphrase(g_cat) && !bd_catalog_is_unlocked(g_cat)) {
+        wchar_t line[300];
+        swprintf(line, 300, TN(j->need_pass, L"%lld file is only on encrypted copies. Press Continue on the Restore tab and enter the "
+                                             L"passphrase to restore it.",
+                               L"%lld files are only on encrypted copies. Press Continue on the Restore tab and enter the "
+                               L"passphrase to restore them."),
+                 (long long)j->need_pass);
+        log_append(line);
     }
+    if (j->offline <= 0) return;
     plan_text p;
     memset(&p, 0, sizeof(p));
-    bd_restore_plan(g_cat, j->source_id, j->rel, j->dest, plan_text_cb, &p, NULL, NULL);
+    bd_restore_opts ro;
+    memset(&ro, 0, sizeof(ro));
+    ro.with_deleted = j->with_deleted;
+    ro.keep_both = j->keep_both;
+    bd_restore_plan_ex(g_cat, j->source_id, j->rel, j->dest, &ro, plan_text_cb, &p, NULL, NULL);
     if (p.t.p) {
         wtext msg = {NULL, 0, 0};
         wadd(&msg, TN(j->offline, L"%lld file is on drives that are not plugged in. Plug these in, one at a time, and press Restore... "
@@ -8456,7 +8643,7 @@ static int restore_fits(int64_t need, int64_t freeb, const char *dest)
     format_bytes(freeb, b, 64);
     swprintf(msg, MAX_PATH * 2 + 800,
              T(L"This restore needs %ls, but only %ls is free where it goes (%ls).\n\nFree up space there, or choose another folder. If "
-               L"you restore anyway, it stops with errors once the disk is full; nothing there is overwritten."),
+               L"you restore anyway, it stops once the disk is full and keeps what it restored; nothing there is overwritten."),
              a, b, where ? where : L"");
     free(where);
     return ask_verbs(g_main, msg, MB_YESNO | MB_ICONWARNING, T(L"Restore anyway"), T(L"Cancel")) == IDYES;
@@ -8475,26 +8662,29 @@ static int pending_needs(int64_t id)
     if (!g_pending.active) return 0;
     plan_text p;
     memset(&p, 0, sizeof(p));
-    bd_restore_plan(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, plan_text_cb, &p, NULL, NULL);
+    bd_restore_plan_ex(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, &g_pending.ro, plan_text_cb, &p, NULL, NULL);
     free(p.t.p);
     for (int i = 0; i < p.nid; i++)
         if (p.ids[i] == id) return 1;
     return 0;
 }
 
-/* The user chose to carry on with the restore that waits for drives. */
+/* The user chose to carry on with the restore that waits for drives. The
+ * files on plain copies come first; the passphrase is asked for after,
+ * only if some files are only on encrypted ones. */
 static void continue_restore(void)
 {
     if (!g_pending.active) return;
-    if (media_encryption(0).any_connected_encrypted && !bd_catalog_is_unlocked(g_cat) &&
-        !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
-        return;
-    if (!restore_room_ok(g_pending.source_id, g_pending.rel, g_pending.dest, NULL, 0)) return;
+    if (!restore_room_ok(g_pending.source_id, g_pending.rel, g_pending.dest, &g_pending.ro, 0)) return;
     job *r = new_job(JOB_RESTORE);
     if (!r) return;
     r->source_id = g_pending.source_id;
     r->rel = xstrdup(g_pending.rel);
     r->dest = xstrdup(g_pending.dest);
+    r->deleted = g_pending.ro.deleted_only;
+    r->with_deleted = g_pending.ro.with_deleted;
+    r->keep_both = g_pending.ro.keep_both;
+    r->offer_root = g_pending.offer_root;
     enqueue(r);
 }
 
@@ -9770,6 +9960,54 @@ static void cmd_relocate_one(int64_t source_id)
     source_places_free(&l);
 }
 
+/* The same folder, written with or without a backslash at the end. */
+static int same_folder_text(const wchar_t *a, const wchar_t *b)
+{
+    size_t na = wcslen(a), nb = wcslen(b);
+    while (na > 3 && (a[na - 1] == L'\\' || a[na - 1] == L'/')) na--;
+    while (nb > 3 && (b[nb - 1] == L'\\' || b[nb - 1] == L'/')) nb--;
+    return na == nb && _wcsnicmp(a, b, na) == 0;
+}
+
+/* A whole backup root that could not be found is all back, restored into
+ * dest: offer to back up that folder as the root from now on. Only asked:
+ * the root keeps its old place until the user says. */
+static void offer_root_here(int64_t source_id, const char *dest)
+{
+    if (!g_cat || !dest) return;
+    source_places l;
+    memset(&l, 0, sizeof(l));
+    bd_list_sources(g_cat, source_place_cb, &l);
+    const source_place *sp = NULL;
+    for (int i = 0; i < l.n; i++)
+        if (l.items[i].id == source_id) sp = &l.items[i];
+    wchar_t *d = widen(dest);
+    /* Restored into its own place, the next scan finds it there. */
+    if (sp && d && sp->active && sp->missing && !same_folder_text(sp->path, d)) {
+        wchar_t msg[MAX_PATH * 6 + 900];
+        swprintf(msg, MAX_PATH * 6 + 900,
+                 T(L"Back up this folder as \"%ls\" from now on?\n\nEvery file of \"%ls\" that has a copy is restored in %ls, and "
+                   L"BRODALF could not find it at its old place, %ls. If you say yes, BRODALF backs up %ls as \"%ls\": its files "
+                   L"keep their versions and their copies on your drives."),
+                 sp->name, sp->name, d, sp->path, d, sp->name);
+        if (ask_verbs(g_main, msg, MB_YESNO | MB_ICONQUESTION, T(L"Back it up from here"), T(L"Not now")) == IDYES) {
+            if (bd_source_relocate(g_cat, source_id, dest) == BD_OK) {
+                wchar_t line[MAX_PATH * 4 + 128];
+                swprintf(line, MAX_PATH * 4 + 128, T(L"Backup root \"%ls\" is now at %ls"), sp->name, d);
+                log_append(line);
+                places_changed();
+                enqueue(new_job(JOB_SCAN));
+            } else {
+                wchar_t *e = widen(bd_catalog_error(g_cat));
+                MessageBoxW(g_main, e ? e : T(L"That folder cannot be used."), APP_NAME, MB_ICONWARNING);
+                free(e);
+            }
+        }
+    }
+    free(d);
+    source_places_free(&l);
+}
+
 static void cmd_relocate(void)
 {
     node_ref *r = sel_ref();
@@ -10127,8 +10365,93 @@ static int root_count(void)
     return n;
 }
 
+/* Before a restore into dest: a backup root, or a drive's copies, is said
+ * first (what is restored into a root is backed up again as new files).
+ * 1 to go on. */
+static int restore_dest_ok(int64_t source_id, const char *dest)
+{
+    char *what = NULL;
+    int k = bd_restore_dest_check(g_cat, source_id, dest, &what);
+    if (!k) return 1;
+    wchar_t *w = widen(what ? what : dest), msg[MAX_PATH * 2 + 900];
+    free(what);
+    if (k == 2)
+        swprintf(msg, MAX_PATH * 2 + 900,
+                 T(L"Restore among the copies on a backup drive?\n\nThat folder is in %ls, where BRODALF keeps the copies on a "
+                   L"backup drive. Restored files do not belong there: choose a folder outside it."),
+                 w ? w : L"");
+    else
+        swprintf(msg, MAX_PATH * 2 + 900,
+                 T(L"Restore into a backup root?\n\nThat folder is in the backup root %ls. What is restored there is backed up again, "
+                   L"as new files, by the next backup."),
+                 w ? w : L"");
+    free(w);
+    return ask_verbs(g_main, msg, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2, T(L"Restore there anyway"), T(L"Cancel")) == IDYES;
+}
+
+/* Buttons of the restore's questions. */
+enum { RB_LEAVE = 4300, RB_BESIDE, RB_BESIDE_ONE, RB_BESIDE_ALL, RB_ELSEWHERE };
+
+/* n other files are already where restored files would go in dest: leave
+ * them alone (the restore lists them), or keep both. 0 cancel, 1 leave
+ * them alone, 2 keep both. */
+static int ask_in_the_way(int64_t n, const char *dest)
+{
+    wchar_t day[16], head[300], beside[600], content[MAX_PATH * 2 + 600], *where = widen(dest);
+    restore_day(day, 16);
+    swprintf(head, 300, TN(n, L"%lld file is already where a restored file would go. What should the restore do with it?",
+                           L"%lld files are already where restored files would go. What should the restore do with them?"),
+             (long long)n);
+    swprintf(content, MAX_PATH * 2 + 600, T(L"In %ls, other files already have the names of files being restored. BRODALF never "
+                                            L"overwrites anything."),
+             where ? where : L"");
+    free(where);
+    swprintf(beside, 600, T(L"Keep both\nEach file is restored beside the one there, with \"(restored %ls)\" added to its name."), day);
+    TASKDIALOG_BUTTON b[2] = {
+        {RB_LEAVE, T(L"Leave them alone\nThe restore skips them and lists them on the Restore tab, to compare.")},
+        {RB_BESIDE, beside},
+    };
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainInstruction = head;
+    tc.pszContent = content;
+    tc.cButtons = 2;
+    tc.pButtons = b;
+    tc.nDefaultButton = RB_LEAVE;
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return 1;
+    return pressed == RB_LEAVE ? 1 : pressed == RB_BESIDE ? 2 : 0;
+}
+
+/* A restore found nothing to do: say why, and never that it is all
+ * restored unless the files there were compared with their backups. */
+static void say_nothing_to_restore(const bd_restore_counts *rc)
+{
+    wchar_t msg[400];
+    if (rc->files == 0 && rc->files_checked > 0)
+        swprintf(msg, 400, L"%ls", T(L"Everything here is already restored in that folder. BRODALF compared each file there with its "
+                                     L"backup, and none has changed since."));
+    else if (rc->files == 0)
+        swprintf(msg, 400, L"%ls", T(L"There are no files here to restore."));
+    else
+        swprintf(msg, 400, TN(rc->files, L"%lld file here has no copy on any drive, so it cannot be restored.",
+                              L"None of the %lld files here has a copy on any drive, so they cannot be restored."),
+                 (long long)rc->files);
+    MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+}
+
 /* Restore what is selected in the tree (or everything, with whole set, or
- * one root with whole and source_id), as it is now. */
+ * one root with whole and source_id), as it is now. A deleted file or
+ * folder comes back as it was last seen, and a folder that had files
+ * deleted from it offers them too. The files on plain copies come first;
+ * the passphrase is asked for after, only if some files are only on
+ * encrypted ones. */
 static void restore_selection(int whole, int64_t source_id)
 {
     node_ref all = {0}, *r = whole ? &all : sel_ref();
@@ -10137,34 +10460,81 @@ static void restore_selection(int whole, int64_t source_id)
         MessageBoxW(g_main, T(L"Select a backup root, a folder inside it, or a file to restore."), APP_NAME, MB_ICONINFORMATION);
         return;
     }
-    if (media_encryption(0).any_connected_encrypted && !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
-        return;
+    const char *rel = r->rel ? r->rel : "";
+    bd_restore_opts ro;
+    memset(&ro, 0, sizeof(ro));
+    if (!whole && r->state == BD_STATE_DELETED) {
+        ro.with_deleted = 1;
+    } else if (whole || r->is_dir) {
+        bd_restore_opts gone_only;
+        memset(&gone_only, 0, sizeof(gone_only));
+        gone_only.deleted_only = 1;
+        bd_restore_counts dc;
+        int64_t gone = 0;
+        if (bd_restore_plan_counts(g_cat, r->source_id, rel, NULL, &gone_only, NULL, NULL, &dc) == BD_OK)
+            gone = dc.files - dc.files_no_copy;
+        if (gone > 0) {
+            wchar_t q[700];
+            swprintf(q, 700, TN(gone, L"Also restore %lld file that was deleted from it?\n\nIt was deleted from its folder after it was "
+                                      L"backed up. It comes back as it was last seen.",
+                                L"Also restore %lld files that were deleted from it?\n\nThey were deleted from their folders after they "
+                                L"were backed up. They come back as they were last seen."),
+                     (long long)gone);
+            if (ask_verbs(g_main, q, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2, T(L"Restore them too"), T(L"Only the files there now")) == IDYES)
+                ro.with_deleted = 1;
+        }
+    }
     /* With one root its files go straight into the folder chosen; with
      * several, each root gets a folder of its own there. */
     int flat = r->source_id || root_count() <= 1;
     char *dest = pick_folder(g_main, flat ? T(L"Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten.")
                                           : T(L"Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten."));
     if (!dest) return;
+    if (!restore_dest_ok(r->source_id, dest)) { free(dest); return; }
 
-    /* Which drives this needs, in order. */
+    /* Which drives this needs, in order, and what is there already. */
     plan_text p;
     memset(&p, 0, sizeof(p));
-    int64_t total = 0, none = 0;
-    bd_restore_plan(g_cat, r->source_id, r->rel, dest, plan_text_cb, &p, &total, &none);
-    if (total == 0) {
+    bd_restore_counts rc;
+    bd_restore_plan_counts(g_cat, r->source_id, rel, dest, &ro, plan_text_cb, &p, &rc);
+    if (rc.files == 0 || rc.files_no_copy == rc.files) {
         free(p.t.p);
         free(dest);
-        MessageBoxW(g_main, T(L"Everything here is already restored in that folder."), APP_NAME, MB_ICONINFORMATION);
+        say_nothing_to_restore(&rc);
         return;
     }
+    if (rc.files_in_the_way > 0) {
+        int c = ask_in_the_way(rc.files_in_the_way, dest);
+        if (c == 0) { free(p.t.p); free(dest); return; }
+        if (c == 2) {
+            /* Those files are restored too now, from their drives. */
+            ro.keep_both = 1;
+            free(p.t.p);
+            memset(&p, 0, sizeof(p));
+            bd_restore_plan_counts(g_cat, r->source_id, rel, dest, &ro, plan_text_cb, &p, &rc);
+        }
+    }
+    int64_t total = rc.files, none = rc.files_no_copy;
     wchar_t older[600];
     version_note(whole ? NULL : r, older, 600);
-    if (p.n > 1 || p.any_offline || none || older[0]) {
+    if (p.n > 1 || p.any_offline || none || older[0] || rc.files_to_compare || rc.files_checked) {
         wtext msg = {NULL, 0, 0};
         wadd(&msg, TN(total, L"Restoring %lld file needs these drives:\n\n%ls", L"Restoring %lld files needs these drives:\n\n%ls"),
              (long long)total, p.t.p ? p.t.p : T(L"    (none)\n"));
         if (older[0]) wadd(&msg, L"\n%ls\n", older);
         if (none) wadd(&msg, TN(none, L"\n%lld file has no copy on any drive.\n", L"\n%lld files have no copy on any drive.\n"), (long long)none);
+        if (rc.files_to_compare)
+            wadd(&msg, TN(rc.files_to_compare, L"\n%lld file of the same size is already where it goes: the restore compares it with its "
+                                               L"backup, and leaves it as it is when it is the same.\n",
+                          L"\n%lld files of the same size are already where they go: the restore compares each with its backup, and "
+                          L"leaves it as it is when it is the same.\n"),
+                 (long long)rc.files_to_compare);
+        if (rc.files_checked)
+            wadd(&msg, TN(rc.files_checked, L"\n%lld file is restored there already: it was compared with its backup, and has not "
+                                            L"changed since.\n",
+                          L"\n%lld files are restored there already: they were compared with their backups, and have not changed "
+                          L"since.\n"),
+                 (long long)rc.files_checked);
         if (p.any_offline)
             wadd(&msg, T(L"\nBRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press "
                        L"Restore... again to continue with its files.\n"));
@@ -10173,13 +10543,17 @@ static void restore_selection(int whole, int64_t source_id)
         if (!go) { free(p.t.p); free(dest); return; }
     }
     free(p.t.p);
-    if (!restore_room_ok(r->source_id, r->rel, dest, NULL, 0)) { free(dest); return; }
+    if (!restore_room_ok(r->source_id, rel, dest, &ro, 0)) { free(dest); return; }
     job *j = new_job(JOB_RESTORE);
     if (!j) { free(dest); return; }
     j->source_id = r->source_id;
-    j->rel = xstrdup(r->rel ? r->rel : "");
+    j->rel = xstrdup(rel);
     j->dest = dest;
-    clear_pending();
+    j->with_deleted = ro.with_deleted;
+    j->keep_both = ro.keep_both;
+    /* A whole root, restored because it could not be found. */
+    j->offer_root = whole ? source_id : 0;
+    forget_pending();
     enqueue(j);
 }
 
@@ -10190,7 +10564,7 @@ static void cmd_restore(void)
         wchar_t content[1200], *dest = widen(g_pending.dest);
         plan_text p;
         memset(&p, 0, sizeof(p));
-        bd_restore_plan(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, plan_text_cb, &p, NULL, NULL);
+        bd_restore_plan_ex(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, &g_pending.ro, plan_text_cb, &p, NULL, NULL);
         swprintf(content, 1200, T(L"A restore into %ls is waiting for these drives:\n\n%ls"), dest ? dest : L"",
                  p.t.p ? p.t.p : T(L"    (none: it can finish now)\n"));
         free(dest);
@@ -10495,27 +10869,32 @@ static void cmd_deleted(void)
     char *dest = NULL;
     del_plan *p = calloc(1, sizeof(del_plan));
     if (!p) goto out;
-    if (media_encryption(0).any_connected_encrypted && !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
-        goto out;
     int several = 0;
     for (int i = 1; i < n; i++) if (picks[i].source_id != picks[0].source_id) several = 1;
     dest = pick_folder(g_main, several ? T(L"Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten.")
                                        : T(L"Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten."));
     if (!dest) goto out;
+    if (!restore_dest_ok(several ? 0 : picks[0].source_id, dest)) goto out;
 
     int64_t total = 0;
+    bd_restore_counts sum;
+    memset(&sum, 0, sizeof(sum));
     bd_restore_opts ro;
     memset(&ro, 0, sizeof(ro));
     ro.deleted_only = 1;
     for (int i = 0; i < n; i++) {
-        int64_t t = 0;
+        bd_restore_counts one;
+        memset(&one, 0, sizeof(one));
         char *d = pick_dest(dest, picks[i].root, several);
-        if (d) bd_restore_plan_ex(g_cat, picks[i].source_id, picks[i].rel, d, &ro, del_plan_cb, p, &t, NULL);
+        if (d) bd_restore_plan_counts(g_cat, picks[i].source_id, picks[i].rel, d, &ro, del_plan_cb, p, &one);
         free(d);
-        total += t;
+        sum.files += one.files;
+        sum.files_no_copy += one.files_no_copy;
+        sum.files_checked += one.files_checked;
     }
-    if (total == 0) {
-        MessageBoxW(g_main, T(L"Everything selected is already restored in that folder, or has no copy on any drive."), APP_NAME, MB_ICONINFORMATION);
+    total = sum.files;
+    if (sum.files == 0 || sum.files_no_copy == sum.files) {
+        say_nothing_to_restore(&sum);
         goto out;
     }
     int offline = p->other;
@@ -10578,16 +10957,89 @@ out:
  * user picks, under the file's own name. */
 static void restore_version(int64_t version_id)
 {
-    if (media_encryption(0).any_connected_encrypted && !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
-        return;
     char *dest = pick_folder(g_main, T(L"Choose the folder to put this version in. It keeps the file's own name; nothing there is overwritten."));
     if (!dest) return;
+    if (!restore_dest_ok(0, dest)) { free(dest); return; }
     if (!restore_room_ok(0, NULL, dest, NULL, version_id)) { free(dest); return; }
     job *j = new_job(JOB_RESTORE);
     if (!j) { free(dest); return; }
     j->version_id = version_id;
     j->dest = dest;
     enqueue(j);
+}
+
+/* A file the last restore left alone, picked in the table of them: restore
+ * it beside the file that is there, all of them beside theirs (the last
+ * restore again, keeping both), or it into another folder. Nothing is
+ * overwritten either way. */
+static void restore_conflict(int row)
+{
+    if (row < 0 || row >= g_n_conflicts) return;
+    const conflict_row *c = &g_conflicts[row];
+    int64_t vid = c->version_id;
+    if (!c->dest) {
+        restore_version(vid);
+        return;
+    }
+    wchar_t name[600], one[900], all[600];
+    beside_name(c->dest, name, 600);
+    swprintf(one, 900, T(L"Restore it beside the file there\nAs \"%ls\", in the same folder. Nothing is overwritten."), name);
+    swprintf(all, 600, TN(g_n_conflicts, L"Restore all %d beside the files there\nThe last restore runs again and puts the file it left alone "
+                                         L"beside the one there. What it restored already is only compared, not copied again.",
+                          L"Restore all %d beside the files there\nThe last restore runs again and puts each file it left alone "
+                          L"beside the one there. What it restored already is only compared, not copied again."),
+             g_n_conflicts);
+    TASKDIALOG_BUTTON b[3];
+    int nb = 0;
+    b[nb].nButtonID = RB_BESIDE_ONE;
+    b[nb++].pszButtonText = one;
+    if (g_redo && g_n_conflicts > 1) {
+        b[nb].nButtonID = RB_BESIDE_ALL;
+        b[nb++].pszButtonText = all;
+    }
+    b[nb].nButtonID = RB_ELSEWHERE;
+    b[nb++].pszButtonText = T(L"Restore it to another folder...\nIt keeps its own name there.");
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainInstruction = T(L"Where should this file be restored?");
+    tc.pszContent = c->where ? c->where : c->dest;
+    tc.cButtons = (UINT)nb;
+    tc.pButtons = b;
+    tc.nDefaultButton = RB_BESIDE_ONE;
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return;
+    if (pressed == RB_BESIDE_ONE) {
+        /* Into the folder the file there is in. */
+        wchar_t *folder = _wcsdup(c->dest);
+        wchar_t *cut = folder ? wcsrchr(folder, L'\\') : NULL, *cut2 = folder ? wcsrchr(folder, L'/') : NULL;
+        if (cut2 && (!cut || cut2 > cut)) cut = cut2;
+        if (cut && cut == folder + 2 && folder[1] == L':') cut[1] = 0; /* "D:\\" */
+        else if (cut) *cut = 0;
+        char *d = folder && cut ? narrow(folder) : NULL;
+        free(folder);
+        if (!d) return;
+        if (!restore_room_ok(0, NULL, d, NULL, vid)) { free(d); return; }
+        job *j = new_job(JOB_RESTORE);
+        if (!j) { free(d); return; }
+        j->version_id = vid;
+        j->dest = d;
+        j->keep_both = 1;
+        enqueue(j);
+    } else if (pressed == RB_BESIDE_ALL && g_redo) {
+        job *j = restore_job_copy(g_redo);
+        if (j) {
+            j->keep_both = 1;
+            enqueue(j);
+        }
+    } else if (pressed == RB_ELSEWHERE) {
+        restore_version(vid);
+    }
 }
 
 /* ---- Files in use ------------------------------------------------------------ */
@@ -11803,7 +12255,7 @@ static void after_scan(job *j)
 
 #define ID_SEARCH_TIMER 1
 
-typedef struct { int64_t source_id; char *rel; } search_hit;
+typedef struct { int64_t source_id; char *rel; int64_t mtime_ns, size; int is_dir; } search_hit;
 static search_hit *g_hits;
 static int g_hit_n, g_hit_cap;
 
@@ -11827,6 +12279,16 @@ static const wchar_t *short_state(bd_node_state s)
     return L"";
 }
 
+/* The results' columns. */
+enum { HC_NAME, HC_FOLDER, HC_STATE, HC_DATE, HC_SIZE, HC_WHERE, HC_COUNT };
+
+/* A row of the results that is a message, not a file. */
+static void search_note(const wchar_t *text)
+{
+    const wchar_t *cells[HC_COUNT] = {text, L"", L"", L"", L"", L""};
+    lv_row(g_results, cells, HC_COUNT);
+}
+
 static int search_cb(void *ctx, const bd_search_info *r)
 {
     (void)ctx;
@@ -11839,10 +12301,13 @@ static int search_cb(void *ctx, const bd_search_info *r)
     }
     g_hits[g_hit_n].source_id = r->source_id;
     g_hits[g_hit_n].rel = xstrdup(r->rel_path);
+    g_hits[g_hit_n].mtime_ns = r->mtime_ns;
+    g_hits[g_hit_n].size = r->size;
+    g_hits[g_hit_n].is_dir = r->is_dir;
     g_hit_n++;
 
     wchar_t *name = widen(r->name), *src = widen(r->source_name), *rel = widen(r->rel_path), *where = widen(r->where);
-    wchar_t shown[600], folder[1200];
+    wchar_t shown[600], folder[1200], when[64] = L"", size[64] = L"";
     swprintf(shown, 600, L"%ls%ls", name ? name : L"", r->is_dir ? L"\\" : L"");
     /* The folder it is in: the source, then the path without the name. */
     swprintf(folder, 1200, L"%ls\\%ls", src ? src : L"", rel ? rel : L"");
@@ -11850,12 +12315,32 @@ static int search_cb(void *ctx, const bd_search_info *r)
     if (cut) *cut = 0;
     else if ((cut = wcschr(folder, L'\\')) != NULL) cut[0] = 0;
     for (wchar_t *c = folder; *c; c++) if (*c == L'/') *c = L'\\';
-    const wchar_t *cells[] = {shown, folder, short_state(r->state), where && *where ? where : T(L"(no copies)")};
-    lv_row(g_results, cells, 4);
+    /* When it was last changed, and how big, to sort by: a file is often
+     * remembered by when. */
+    if (r->mtime_ns > 0) format_ns(r->mtime_ns, when, 64);
+    if (!r->is_dir) format_bytes(r->size, size, 64);
+    const wchar_t *cells[HC_COUNT] = {shown, folder, short_state(r->state), when, size, where && *where ? where : T(L"(no copies)")};
+    lv_row(g_results, cells, HC_COUNT);
     free(name);
     free(src);
     free(rel);
     free(where);
+    return 0;
+}
+
+/* Sorting the results by date or size goes by the time and size
+ * themselves, not by how they are written (26.11.2026 is not a number). */
+static int search_sort_key(HWND lv, int index, int col, double *out)
+{
+    if (lv != g_results || index < 0 || index >= g_hit_n) return 0;
+    if (col == HC_DATE && g_hits[index].mtime_ns > 0) {
+        *out = (double)g_hits[index].mtime_ns;
+        return 1;
+    }
+    if (col == HC_SIZE && !g_hits[index].is_dir) {
+        *out = (double)g_hits[index].size;
+        return 1;
+    }
     return 0;
 }
 
@@ -11866,51 +12351,119 @@ static void search_fit_cols(void)
     RECT rc;
     GetClientRect(g_results, &rc);
     int w = rc.right;
-    static const int share[] = {38, 34, 20};
-    for (int c = 0; c < 3; c++) {
+    static const int share[HC_WHERE] = {30, 26, 16, 16, 10};
+    for (int c = 0; c < HC_WHERE; c++) {
         ListView_SetColumnWidth(g_results, c, LVSCW_AUTOSIZE_USEHEADER);
         int cap = w * share[c] / 100;
         if (ListView_GetColumnWidth(g_results, c) > cap) ListView_SetColumnWidth(g_results, c, cap);
     }
-    ListView_SetColumnWidth(g_results, 3, LVSCW_AUTOSIZE_USEHEADER);
+    ListView_SetColumnWidth(g_results, HC_WHERE, LVSCW_AUTOSIZE_USEHEADER);
 }
 
-static void run_search(void)
+/* While a job has the database (the scan when it opens, say), a search
+ * runs on a thread of its own: the database answers it between the job's
+ * own steps, as it stands then (bd_search), and the window does not wait.
+ * Its results come back as WM_APP_SEARCH. One runs at a time; typing more
+ * meanwhile runs the newest text once it is done. */
+typedef struct {
+    int64_t node_id, source_id, size, mtime_ns;
+    int is_dir;
+    bd_node_state state;
+    char *source_name, *rel, *name, *where;
+} found_row;
+
+typedef struct search_run {
+    LONG gen;
+    bd_catalog *cat;
+    char *text;
+    found_row *rows;
+    int n, cap;
+} search_run;
+
+static HANDLE g_search_thread;
+static volatile LONG g_search_gen; /* a newer search, or the database closed: older results are dropped */
+static int g_search_again;
+
+static void search_run_free(search_run *s)
 {
-    if (!g_cat) return;
-    wchar_t text[256];
-    GetWindowTextW(g_search, text, 256);
-    const wchar_t *p = text;
-    while (*p == L' ') p++;
-    SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
-    ListView_DeleteAllItems(g_results);
-    clear_hits();
-    if (!*p) {
-        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
-        ShowWindow(g_results, SW_HIDE);
-        ShowWindow(g_files, SW_SHOW);
-        ShowWindow(g_files_info, SW_SHOW);
-        show_detail(); /* what is selected again */
+    if (!s) return;
+    for (int i = 0; i < s->n; i++) {
+        free(s->rows[i].source_name);
+        free(s->rows[i].rel);
+        free(s->rows[i].name);
+        free(s->rows[i].where);
+    }
+    free(s->rows);
+    free(s->text);
+    free(s);
+}
+
+static int search_keep_cb(void *ctx, const bd_search_info *r)
+{
+    search_run *s = ctx;
+    if (s->gen != g_search_gen) return 1; /* no longer wanted */
+    if (s->n == s->cap) {
+        int cap = s->cap ? s->cap * 2 : 64;
+        found_row *g = realloc(s->rows, sizeof(found_row) * (size_t)cap);
+        if (!g) return 1;
+        s->rows = g;
+        s->cap = cap;
+    }
+    found_row *f = &s->rows[s->n];
+    f->node_id = r->node_id;
+    f->source_id = r->source_id;
+    f->size = r->size;
+    f->mtime_ns = r->mtime_ns;
+    f->is_dir = r->is_dir;
+    f->state = r->state;
+    f->source_name = xstrdup(r->source_name ? r->source_name : "");
+    f->rel = xstrdup(r->rel_path ? r->rel_path : "");
+    f->name = xstrdup(r->name ? r->name : "");
+    f->where = xstrdup(r->where ? r->where : "");
+    s->n++;
+    if (!f->source_name || !f->rel || !f->name || !f->where) return 1;
+    return 0;
+}
+
+static DWORD WINAPI search_thread(LPVOID arg)
+{
+    search_run *s = arg;
+    bd_search(s->cat, s->text, 500, search_keep_cb, s);
+    if (!PostMessageW(g_main, WM_APP_SEARCH, 0, (LPARAM)s)) search_run_free(s);
+    return 0;
+}
+
+/* Wait for the search on its thread to end (it does soon: it only waits
+ * for the database between a job's steps). Before the database closes. */
+static void search_join(void)
+{
+    InterlockedIncrement(&g_search_gen);
+    g_search_again = 0;
+    if (!g_search_thread) return;
+    WaitForSingleObject(g_search_thread, INFINITE);
+    CloseHandle(g_search_thread);
+    g_search_thread = NULL;
+}
+
+static void search_start(const char *text)
+{
+    search_run *s = calloc(1, sizeof(search_run));
+    if (s) s->text = xstrdup(text);
+    if (!s || !s->text) {
+        search_run_free(s);
         return;
     }
-    if (g_busy) {
-        /* The catalog belongs to the job; the search runs again when it ends. */
-        const wchar_t *cells[] = {T(L"Search is available when the current job finishes."), L"", L"", L""};
-        lv_row(g_results, cells, 4);
-        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(g_results, NULL, TRUE);
-        ShowWindow(g_files, SW_HIDE);
-        ShowWindow(g_files_info, SW_HIDE);
-        ShowWindow(g_results, SW_SHOW);
-        return;
-    }
-    char *u = narrow(text);
-    if (u) bd_search(g_cat, u, 500, search_cb, NULL);
-    free(u);
-    if (!g_hit_n) {
-        const wchar_t *cells[] = {T(L"No files or folders match."), L"", L"", L""};
-        lv_row(g_results, cells, 4);
-    }
+    s->gen = InterlockedIncrement(&g_search_gen);
+    s->cat = g_cat;
+    g_search_thread = CreateThread(NULL, 0, search_thread, s, 0, NULL);
+    if (!g_search_thread) search_run_free(s);
+}
+
+/* What was found, said in the details, and the results shown in place of
+ * the folder's files. */
+static void search_show(const wchar_t *p)
+{
+    if (!g_hit_n) search_note(T(L"No files or folders match."));
     /* Until a result is picked, the details say what was found, not what
      * was selected before the search. */
     {
@@ -11931,6 +12484,96 @@ static void run_search(void)
     ShowWindow(g_files, SW_HIDE);
     ShowWindow(g_files_info, SW_HIDE);
     ShowWindow(g_results, SW_SHOW);
+}
+
+static void run_search(void);
+
+/* A search made on its thread is done. */
+static void search_done(search_run *s)
+{
+    if (g_search_thread) {
+        WaitForSingleObject(g_search_thread, INFINITE);
+        CloseHandle(g_search_thread);
+        g_search_thread = NULL;
+    }
+    int wanted = s && s->gen == g_search_gen && g_cat && s->cat == g_cat;
+    if (wanted) {
+        wchar_t text[256];
+        GetWindowTextW(g_search, text, 256);
+        const wchar_t *p = text;
+        while (*p == L' ') p++;
+        SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
+        ListView_DeleteAllItems(g_results);
+        clear_hits();
+        for (int i = 0; i < s->n; i++) {
+            const found_row *f = &s->rows[i];
+            bd_search_info info;
+            memset(&info, 0, sizeof(info));
+            info.node_id = f->node_id;
+            info.source_id = f->source_id;
+            info.source_name = f->source_name;
+            info.rel_path = f->rel;
+            info.name = f->name;
+            info.is_dir = f->is_dir;
+            info.size = f->size;
+            info.state = f->state;
+            info.where = f->where;
+            info.mtime_ns = f->mtime_ns;
+            if (search_cb(NULL, &info)) break;
+        }
+        search_show(p);
+    }
+    search_run_free(s);
+    if (g_search_again) {
+        g_search_again = 0;
+        run_search();
+    }
+}
+
+static void run_search(void)
+{
+    if (!g_cat) return;
+    wchar_t text[256];
+    GetWindowTextW(g_search, text, 256);
+    const wchar_t *p = text;
+    while (*p == L' ') p++;
+    if (*p && g_busy && g_search_thread) {
+        /* One is still looking: it stops, and the newest text is
+         * searched for once it has. */
+        InterlockedIncrement(&g_search_gen);
+        g_search_again = 1;
+        return;
+    }
+    /* What a search on its thread finds now is not wanted any more. */
+    InterlockedIncrement(&g_search_gen);
+    g_search_again = 0;
+    SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(g_results);
+    clear_hits();
+    if (!*p) {
+        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+        ShowWindow(g_results, SW_HIDE);
+        ShowWindow(g_files, SW_SHOW);
+        ShowWindow(g_files_info, SW_SHOW);
+        show_detail(); /* what is selected again */
+        return;
+    }
+    char *u = narrow(text);
+    if (g_busy) {
+        /* The job has the database: search it on a thread of its own. */
+        search_note(T(L"Searching..."));
+        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(g_results, NULL, TRUE);
+        ShowWindow(g_files, SW_HIDE);
+        ShowWindow(g_files_info, SW_HIDE);
+        ShowWindow(g_results, SW_SHOW);
+        if (u && !g_search_thread) search_start(u);
+        free(u);
+        return;
+    }
+    if (u) bd_search(g_cat, u, 500, search_cb, NULL);
+    free(u);
+    search_show(p);
 }
 
 /* Open the tree down to a folder and select it; a file, in the folder it
@@ -13906,7 +14549,11 @@ static void fill_restore(void)
         plan_text p;
         memset(&p, 0, sizeof(p));
         int64_t total = 0, none = 0;
-        bd_restore_plan(g_cat, r->source_id, r->rel ? r->rel : "", NULL, plan_text_cb, &p, &total, &none);
+        /* A deleted file or folder is restored as it was last seen. */
+        bd_restore_opts ro;
+        memset(&ro, 0, sizeof(ro));
+        ro.with_deleted = r->state == BD_STATE_DELETED;
+        bd_restore_plan_ex(g_cat, r->source_id, r->rel ? r->rel : "", NULL, &ro, plan_text_cb, &p, &total, &none);
         if (total == 0 && none == 0) wadd(&t, T(L"    There is nothing in it to restore.\n"));
         else {
             if (p.n) wadd(&t, T(L"Restoring it takes these drives, in this order:\n%ls"), p.t.p);
@@ -13925,9 +14572,23 @@ static void fill_restore(void)
         wchar_t *dest = widen(g_pending.dest);
         plan_text p;
         memset(&p, 0, sizeof(p));
-        bd_restore_plan(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, plan_text_cb, &p, NULL, NULL);
+        bd_restore_counts rc;
+        bd_restore_plan_counts(g_cat, g_pending.source_id, g_pending.rel, g_pending.dest, &g_pending.ro, plan_text_cb, &p, &rc);
         wadd(&t, T(L"\nA restore into %ls is waiting for these drives:\n%ls"), dest ? dest : L"",
              p.t.p ? p.t.p : T(L"    (none: it can finish now; press Continue)\n"));
+        /* What it has done so far, compared with what is there now. */
+        if (rc.files_checked)
+            wadd(&t, TN(rc.files_checked, L"    %lld file is back: it was compared with its backup, and has not changed since.\n",
+                        L"    %lld files are back: each was compared with its backup, and has not changed since.\n"),
+                 (long long)rc.files_checked);
+        if (rc.files_to_compare)
+            wadd(&t, TN(rc.files_to_compare, L"    %lld file of the same size is there, to compare when it continues.\n",
+                        L"    %lld files of the same size are there, to compare when it continues.\n"),
+                 (long long)rc.files_to_compare);
+        if (rc.files_in_the_way && !g_pending.ro.keep_both)
+            wadd(&t, TN(rc.files_in_the_way, L"    %lld other file is where a restored one would go: it is left alone.\n",
+                        L"    %lld other files are where restored ones would go: they are left alone.\n"),
+                 (long long)rc.files_in_the_way);
         free(p.t.p);
         free(dest);
     }
@@ -17324,9 +17985,9 @@ static void create_children(HWND hwnd)
                                 10, 10, g_page[TAB_DB], (HMENU)ID_RESULTS, g_inst, NULL);
     SendMessageW(g_results, WM_SETFONT, (WPARAM)g_font, TRUE);
     {
-        static const wchar_t *cols[] = {N_(L"Name"), N_(L"Folder"), N_(L"State"), N_(L"Where it is")};
-        static const int widths[] = {150, 130, 120, 320};
-        lv_columns(g_results, cols, widths, 4);
+        static const wchar_t *cols[] = {N_(L"Name"), N_(L"Folder"), N_(L"State"), N_(L"Modified"), N_(L"Size"), N_(L"Where it is")};
+        static const int widths[] = {150, 130, 120, 110, 70, 320};
+        lv_columns(g_results, cols, widths, 6);
     }
 
     /* What is selected, as a form: a label and its value on each row. */
@@ -18012,6 +18673,9 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         free(m);
         return 0;
     }
+    case WM_APP_SEARCH:
+        search_done((search_run *)lp);
+        return 0;
     case WM_APP_DONE: {
         job *j = (job *)lp;
         if (g_session_end) { /* the database is closed (end_session) */
@@ -18085,6 +18749,8 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         update_drives_label();
         rebuild_tree();
         show_detail();
+        /* The restore that waits, as the job left it in the database. */
+        if (j->kind == JOB_RESTORE) pending_from_job(j);
         if (stopping) {
             /* Nothing follows a job the user stopped, but a stopped scan
              * leaves the backup working from what the last scans found. */
@@ -18109,6 +18775,26 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     again->many_places = j->many_places;
                     enqueue(again);
                 }
+            } else if (restore_wants_passphrase(j)) {
+                /* The files on plain copies are restored: now, once, the
+                 * passphrase for the rest, and the same restore again. */
+                wchar_t why[400];
+                swprintf(why, 400, TN(j->need_pass, L"%lld file is only on encrypted copies. Enter the passphrase to restore it too.",
+                                      L"%lld files are only on encrypted copies. Enter the passphrase to restore them too."),
+                         (long long)j->need_pass);
+                if (unlock_ui(why)) {
+                    job *again = restore_job_copy(j);
+                    if (again) {
+                        again->retried = 1;
+                        enqueue(again);
+                    }
+                } else if (j->n_tell > j->need_pass) {
+                    show_job_problems(j, headline);
+                }
+            } else if (j->kind == JOB_RESTORE && j->status == BD_ERR_IO && !job_drive_gone(j)) {
+                /* The folder chosen is full or cannot be written: the
+                 * message says which, and why. Nothing went wrong in BRODALF. */
+                MessageBoxW(hwnd, j->summary, APP_NAME, MB_ICONWARNING);
             } else if (j->status != BD_OK && j->status != BD_ERR_PASSPHRASE) {
                 report_status(hwnd, j->status, job_drive_gone(j), j->summary);
             } else if (j->status == BD_OK && j->n_tell > 0) {
@@ -18385,6 +19071,7 @@ static void show_open_error(bd_status s, const wchar_t *fallback)
 static void close_database(void)
 {
     if (!g_cat) return;
+    search_join();
     bd_catalog_save(g_cat);
     bd_catalog_close(g_cat);
     g_cat = NULL;
@@ -18397,6 +19084,8 @@ static void close_database(void)
         g_queue = n;
     }
     clear_pending();
+    job_free(g_redo);
+    g_redo = NULL;
     free_conflicts(g_conflicts, g_n_conflicts);
     g_conflicts = NULL;
     g_n_conflicts = 0;
@@ -18435,6 +19124,20 @@ static void database_opened(const wchar_t *path, int created, int recovered)
         g_opened_by_recovery = 0;
         offer_new_passphrase(g_main);
     }
+    /* A restore that waited for drives when the database was last saved,
+     * here or on another PC, still waits: Continue goes on with it. */
+    {
+        bd_restore_pending was;
+        if (bd_restore_pending_get(g_cat, &was) == BD_OK) {
+            clear_pending();
+            g_pending.active = 1;
+            g_pending.source_id = was.source_id;
+            g_pending.rel = was.rel_prefix;
+            g_pending.dest = was.dest;
+            g_pending.ro = was.opts;
+            g_pending.offer_root = was.offer_root;
+        }
+    }
     update_drives_label();
     rebuild_tree();
     show_detail();
@@ -18449,6 +19152,14 @@ static void database_opened(const wchar_t *path, int created, int recovered)
     else
         log_append(T(L"Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed "
                    L"up until you press Back up."));
+    if (g_pending.active) {
+        wchar_t *d = widen(g_pending.dest), line[MAX_PATH * 2 + 300];
+        swprintf(line, MAX_PATH * 2 + 300, T(L"A restore into %ls is still waiting for drives. Plug them in and press Continue on the "
+                                             L"Restore tab."),
+                 d ? d : L"");
+        free(d);
+        log_append(line);
+    }
     /* A database inside a backup root is left out of that root's backups
      * (the scan skips it), so say so where it was just saved. */
     char *p8 = narrow(path);
@@ -19284,6 +19995,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (g_accel) DestroyAcceleratorTable(g_accel);
 
     if (g_cat) {
+        search_join();
         bd_catalog_save(g_cat);
         bd_catalog_close(g_cat);
     }

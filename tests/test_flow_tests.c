@@ -199,8 +199,27 @@ static void test_drive_hw(void)
     w.id = drive;
     bd_list_media(cat, media_hw_cb, &w);
     CHECK(w.found && strcmp(w.model, here.model) == 0 && strcmp(w.bus, here.bus) == 0);
-    if (here.serial[0]) CHECK(w.uncounted == 1);
-    else printf("  this disk gives no serial number: the same-disk check is not made\n");
+    /* BRODALF tells disks apart by serial number only when it is one: four
+     * characters or more, not all zeros (BD_SQL_HW_KEY). */
+    size_t sl = strlen(here.serial);
+    int real_serial = sl >= 4 && strspn(here.serial, "0 ") < sl;
+    printf("  serial number \"%s\"%s\n", here.serial, real_serial ? "" : ", not one BRODALF tells disks apart by");
+    if (real_serial) {
+        CHECK(w.uncounted == 1);
+        if (w.uncounted != 1) {
+            sqlite3_stmt *q;
+            if (sqlite3_prepare_v2(cat->db, "SELECT 'root', " BD_SQL_HW_KEY("rd") " FROM temp.root_disks rd UNION ALL"
+                                            " SELECT 'drive', " BD_SQL_HW_KEY("h") " FROM media_hardware h", -1, &q, NULL) == SQLITE_OK) {
+                while (sqlite3_step(q) == SQLITE_ROW)
+                    printf("  %s disk: %s\n", (const char *)sqlite3_column_text(q, 0),
+                           sqlite3_column_text(q, 1) ? (const char *)sqlite3_column_text(q, 1) : "(none)");
+                sqlite3_finalize(q);
+            }
+            printf("  uncounted: %d\n", w.uncounted);
+        }
+    } else {
+        printf("  so the same-disk check is not made\n");
+    }
     bd_catalog_close(cat);
 #else
     /* Elsewhere: a description only where the system gives one. */

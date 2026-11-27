@@ -181,6 +181,31 @@ static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except
     return s;
 }
 
+/* The same test without a message: 1 if path is another backup root than
+ * except_id (stopped or not), is inside an active one or holds one. */
+int bd_root_overlaps(bd_catalog *cat, const char *path, int64_t except_id)
+{
+    char *key = root_key(path);
+    if (!key) return 1;
+    sqlite3_stmt *q;
+    int in = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT path, active FROM sources WHERE id<>?", -1, &q, NULL) != SQLITE_OK) {
+        free(key);
+        return 1;
+    }
+    sqlite3_bind_int64(q, 1, except_id);
+    while (!in && sqlite3_step(q) == SQLITE_ROW) {
+        const char *other = (const char *)sqlite3_column_text(q, 0);
+        char *okey = other ? root_key(other) : NULL;
+        in = !okey || strcmp(key, okey) == 0 ||
+             (sqlite3_column_int(q, 1) && (key_inside(key, okey) || key_inside(okey, key)));
+        free(okey);
+    }
+    sqlite3_finalize(q);
+    free(key);
+    return in;
+}
+
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
 {
     bd_stat_t st;
@@ -1239,19 +1264,42 @@ static int under_failed_dir(scan_ctx *c, const char *rel)
  * included: they stay in the catalog with their versions and copies until
  * the user forgets them (bd_deleted_forget). With count_only, nothing is
  * marked: the files that would be are counted in *files. */
-static bd_status mark_deleted(scan_ctx *c, int count_only, int64_t *files)
+/* count_only: files gets how many files would be marked deleted, and
+ * moved how many of them have their contents (checksum and size) in a
+ * file new in this root in this scan: moved or renamed inside it. */
+static bd_status mark_deleted(scan_ctx *c, int count_only, int64_t *files, int64_t *moved)
 {
-    sqlite3_stmt *q, *u, *gone;
+    sqlite3_stmt *q, *u, *gone, *match = NULL;
     if (files) *files = 0;
-    if (sqlite3_prepare_v2(c->cat->db, "SELECT id, rel_path, is_dir FROM nodes WHERE source_id=? AND deleted=0 AND last_seen_ms<?", -1, &q, NULL) != SQLITE_OK)
+    if (moved) *moved = 0;
+    if (count_only && moved) {
+        sqlite3_stmt *fill;
+        if (bd_exec(c->cat, "DELETE FROM temp.scan_new_hash") != 0 ||
+            sqlite3_prepare_v2(c->cat->db, "INSERT OR IGNORE INTO temp.scan_new_hash(hash, size) SELECT v.hash, v.size"
+                               " FROM temp.scan_new w JOIN nodes n ON n.id=w.node_id JOIN versions v ON v.id=n.current_version_id"
+                               " WHERE n.source_id=? AND n.is_dir=0 AND n.deleted=0 AND v.size>0", -1, &fill, NULL) != SQLITE_OK)
+            return bd_fail_db(c->cat, "find moved files");
+        sqlite3_bind_int64(fill, 1, c->source_id);
+        int rc = sqlite3_step(fill);
+        sqlite3_finalize(fill);
+        if (rc != SQLITE_DONE ||
+            sqlite3_prepare_v2(c->cat->db, "SELECT 1 FROM nodes n JOIN versions v ON v.id=n.current_version_id"
+                               " JOIN temp.scan_new_hash h ON h.hash=v.hash AND h.size=v.size WHERE n.id=?", -1, &match, NULL) != SQLITE_OK)
+            return bd_fail_db(c->cat, "find moved files");
+    }
+    if (sqlite3_prepare_v2(c->cat->db, "SELECT id, rel_path, is_dir FROM nodes WHERE source_id=? AND deleted=0 AND last_seen_ms<?", -1, &q, NULL) != SQLITE_OK) {
+        sqlite3_finalize(match);
         return bd_fail_db(c->cat, "find deleted files");
+    }
     if (sqlite3_prepare_v2(c->cat->db, "UPDATE nodes SET deleted=1, deleted_ack=0 WHERE id=?", -1, &u, NULL) != SQLITE_OK) {
         sqlite3_finalize(q);
+        sqlite3_finalize(match);
         return bd_fail_db(c->cat, "mark deleted files");
     }
     if (sqlite3_prepare_v2(c->cat->db, "INSERT OR IGNORE INTO temp.scan_gone(node_id) VALUES(?)", -1, &gone, NULL) != SQLITE_OK) {
         sqlite3_finalize(q);
         sqlite3_finalize(u);
+        sqlite3_finalize(match);
         return bd_fail_db(c->cat, "mark deleted files");
     }
     sqlite3_bind_int64(q, 1, c->source_id);
@@ -1262,6 +1310,11 @@ static bd_status mark_deleted(scan_ctx *c, int count_only, int64_t *files)
         int is_dir = sqlite3_column_int(q, 2);
         if (count_only) {
             if (!is_dir && files) (*files)++;
+            if (!is_dir && match) {
+                sqlite3_reset(match);
+                sqlite3_bind_int64(match, 1, sqlite3_column_int64(q, 0));
+                if (sqlite3_step(match) == SQLITE_ROW) (*moved)++;
+            }
             continue;
         }
         int64_t id = sqlite3_column_int64(q, 0);
@@ -1276,6 +1329,7 @@ static bd_status mark_deleted(scan_ctx *c, int count_only, int64_t *files)
     sqlite3_finalize(q);
     sqlite3_finalize(u);
     sqlite3_finalize(gone);
+    sqlite3_finalize(match);
     return BD_OK;
 }
 
@@ -1440,29 +1494,40 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         goto done;
     }
     if (c.db_error) { s = bd_fail_db(cat, "record scan results"); bd_exec(cat, "ROLLBACK"); goto done; }
-    /* The folder is there but holds a tenth or less of the files the
-     * catalog knows in it: most likely a new PC or a reinstalled Windows,
-     * which makes empty Documents, Pictures and Desktop folders under the
-     * same names. Marking everything deleted would leave a restore with
-     * nothing to restore, so it is left as the last scan saw it and listed
-     * like a root that cannot be found: the user says where it is, restores
-     * it, or says the files really were deleted (bd_source_accept_gone). */
-    int64_t gone = 0;
-    s = mark_deleted(&c, 1, &gone);
+    /* Is this folder the backup root, by its files? The root is what the
+     * catalog records in it; the folder at its path may be another one: an
+     * empty folder made under the same name (a fresh Windows makes empty
+     * Documents, Pictures and Desktop folders), or other files that happen
+     * to have the same path. The files the catalog knows here are kept
+     * (where it has them and as it has them, or moved inside the root:
+     * their contents are in a file new here), changed (at their path, with
+     * other contents) or lost (not here at all). Files new here say nothing
+     * either way. When a tenth or less are kept and more are lost than
+     * changed, marking the lost ones deleted would leave a restore with
+     * nothing to restore: the root is left as the last scan saw it and
+     * listed like one that cannot be found, and the user says where it is,
+     * restores it, or says the files really were deleted
+     * (bd_source_accept_gone). A folder whose files were all edited is not
+     * held: they are changed, not lost. */
+    int64_t gone = 0, moved = 0;
+    s = mark_deleted(&c, 1, &gone, &moved);
     int64_t seen = stats->files_seen - before.files_seen;
+    int64_t changed = stats->files_changed - before.files_changed + stats->files_cloud_changed - before.files_cloud_changed;
     int64_t known = gone + seen - c.inserted_files;
-    if (s == BD_OK && gone > 0 && seen * 10 <= known && !take_accept_gone(cat, source_id)) {
+    int64_t lost = gone - moved;
+    int64_t kept = known - lost - changed;
+    if (s == BD_OK && lost > 0 && kept * 10 <= known && lost > changed && !take_accept_gone(cat, source_id)) {
         bd_exec(cat, "ROLLBACK");
         *stats = before;
         stats->roots_missing++;
         stats->roots_emptied++;
-        note_missing(cat, source_id, 1, gone);
+        note_missing(cat, source_id, 1, lost);
         bd_logf(log, log_ctx, "backup root %s is there, but %lld of the %lld files the catalog knows in it are not: left as it was "
-                              "(nothing marked deleted). A new PC, or a reinstalled Windows?",
-                root, (long long)gone, (long long)known);
+                              "(nothing marked deleted). Another folder with the same name?",
+                root, (long long)lost, (long long)known);
         goto done;
     }
-    if (s == BD_OK) s = mark_deleted(&c, 0, NULL);
+    if (s == BD_OK) s = mark_deleted(&c, 0, NULL, NULL);
     if (s == BD_OK) {
         sqlite3_stmt *u;
         if (sqlite3_prepare_v2(cat->db, "UPDATE sources SET last_scan_ms=? WHERE id=?", -1, &u, NULL) == SQLITE_OK) {
@@ -1782,6 +1847,28 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
     }
     bd_progress_begin(cat, bitrot ? "bit-rot scan" : "scan", expect, bitrot ? expect_bytes : 0);
     bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.scan_new; DELETE FROM temp.scan_gone;");
+    /* A root's folder is where it was last; a root that is not there is
+     * looked for by its files, and pointed at the one place holding them. */
+    for (size_t i = 0; i < len; i++) {
+        bd_stat_t rst;
+        if (!list[i].path || (bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
+        int64_t found = 0, checked = 0;
+        int places = 0;
+        char *p = bd_source_find(cat, list[i].id, &found, &checked, &places);
+        if (p && places == 1 && bd_source_relocate(cat, list[i].id, p) == BD_OK) {
+            bd_logf(log, log_ctx, "backup root %s is now at %s: found it there by its files (%lld of %lld checked)",
+                    list[i].path, p, (long long)found, (long long)checked);
+            stats->roots_found++;
+            free(list[i].path);
+            list[i].path = p;
+            continue;
+        }
+        if (p && places > 1)
+            bd_logf(log, log_ctx, "backup root %s is not where it was, and %lld folders hold its files, so none was picked: "
+                                  "say where it is now. One is %s (%lld of %lld checked)",
+                    list[i].path, (long long)places, p, (long long)found, (long long)checked);
+        free(p);
+    }
     note_root_disks(cat, list, len);
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);
 
@@ -1805,6 +1892,17 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
         bd_scan_stats before = *stats;
         s = scan_source(cat, &skip, bitrot, &pool, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
         if (s == BD_ERR_CANCELLED) *stats = before; /* that folder was rolled back */
+        if (s == BD_OK && stats->roots_emptied > before.roots_emptied) {
+            /* The folder there holds other files: say where its own are,
+             * when another folder holds them. The user decides. */
+            int64_t found = 0, checked = 0;
+            char *p = bd_source_find(cat, list[i].id, &found, &checked, NULL);
+            if (p)
+                bd_logf(log, log_ctx, "the files of backup root %s are in %s (%lld of %lld checked): if that is where it "
+                                      "is now, point the root there",
+                        list[i].path, p, (long long)found, (long long)checked);
+            free(p);
+        }
     }
     pool_stop(&pool);
     skip_free(&skip);

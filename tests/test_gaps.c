@@ -7,6 +7,8 @@
 #include <string.h>
 #ifndef _WIN32
 #include <unistd.h>
+#else
+#include <windows.h>
 #endif
 
 static int failures = 0;
@@ -676,7 +678,7 @@ static void test_new_pc_empty_folders(void)
     char *moved = bd_strdup(at("newpc/Documents-old-pc"));
     CHECK(bd_rename_noreplace(at("newpc/Documents"), moved) == 0);
     write_file(at("newpc/Documents/desktop.ini"), "[.ShellClassInfo]");
-    log_count lc = {"A new PC", 0};
+    log_count lc = {"Another folder with the same name", 0};
     REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
     CHECK(ss.files_deleted == 0); /* 0.11.0: 28 */
     CHECK(ss.roots_missing == 1 && ss.roots_emptied == 1);
@@ -698,6 +700,200 @@ static void test_new_pc_empty_folders(void)
     CHECK(ss.roots_missing == 0);
     CHECK(!root_of(cat, src).missing);
     free(moved);
+    bd_catalog_close(cat);
+}
+
+/* ---- A backup root is its files, wherever they are ------------------- */
+
+static void set_home(const char *dir)
+{
+#ifdef _WIN32
+    SetEnvironmentVariableA("USERPROFILE", dir);
+#else
+    if (dir) setenv("HOME", dir, 1);
+    else unsetenv("HOME");
+#endif
+}
+
+static char *get_home(void)
+{
+#ifdef _WIN32
+    char buf[2048];
+    DWORD n = GetEnvironmentVariableA("USERPROFILE", buf, sizeof(buf));
+    return n && n < sizeof(buf) ? bd_strdup(buf) : NULL;
+#else
+    const char *h = getenv("HOME");
+    return h ? bd_strdup(h) : NULL;
+#endif
+}
+
+static size_t list_len(char **v)
+{
+    size_t n = 0;
+    while (v && v[n]) n++;
+    return n;
+}
+
+static int listed(char **v, const char *want)
+{
+    for (size_t i = 0; v && v[i]; i++)
+        if (strcmp(v[i], want) == 0) return 1;
+    return 0;
+}
+
+static void list_free(char **v)
+{
+    for (size_t i = 0; v && v[i]; i++) free(v[i]);
+    free(v);
+}
+
+static void test_root_candidates(void)
+{
+    char **v = bd_root_candidates("C:\\Users\\alex\\Documents", "C:\\Users\\sam", (1u << 2) | (1u << 3) | (1u << 4), 1);
+    CHECK(list_len(v) == 3);
+    CHECK(v && strcmp(v[0], "C:\\Users\\sam\\Documents") == 0);
+    CHECK(listed(v, "D:\\Users\\alex\\Documents") && listed(v, "E:\\Users\\alex\\Documents"));
+    list_free(v);
+    /* The home folders on another drive, letter case ignored. */
+    v = bd_root_candidates("d:/users/Alex/Pictures", "C:\\Users\\sam", 0, 1);
+    CHECK(list_len(v) == 1 && strcmp(v[0], "C:\\Users\\sam/Pictures") == 0);
+    list_free(v);
+    /* This user's already, or not under a home folder: nothing. */
+    v = bd_root_candidates("C:\\Users\\Sam\\Documents", "C:\\Users\\sam", 0, 1);
+    CHECK(v && list_len(v) == 0);
+    list_free(v);
+    v = bd_root_candidates("\\\\server\\share\\Docs", "C:\\Users\\sam", ~0u, 1);
+    CHECK(v && list_len(v) == 0);
+    list_free(v);
+    /* A whole drive, on another letter. */
+    v = bd_root_candidates("D:\\", NULL, 1u << 5, 1);
+    CHECK(list_len(v) == 1 && strcmp(v[0], "F:\\") == 0);
+    list_free(v);
+    v = bd_root_candidates("/home/alex/Pictures/2024", "/home/sam", 0, 0);
+    CHECK(list_len(v) == 1 && strcmp(v[0], "/home/sam/Pictures/2024") == 0);
+    list_free(v);
+    v = bd_root_candidates("/media/alex/USB/Photos", "/home/sam/", 0, 0);
+    CHECK(list_len(v) == 2 && listed(v, "/media/sam/USB/Photos") && listed(v, "/run/media/sam/USB/Photos"));
+    list_free(v);
+    v = bd_root_candidates("/home/sam/Docs", "/home/sam", 0, 0);
+    CHECK(v && list_len(v) == 0);
+    list_free(v);
+    v = bd_root_candidates("/srv/data", "/home/sam", 0, 0);
+    CHECK(v && list_len(v) == 0);
+    list_free(v);
+}
+
+/* Other files at the root's path are not the root, whatever the PC. */
+static void test_same_path_other_files(void)
+{
+    make_files("same/Documents", 20, "mine");
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("same/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("same/Documents"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 20);
+
+    /* Another folder of files at the same path: other names, and one name
+     * the catalog knows with other contents. */
+    char *mine = bd_strdup(at("same/Documents-mine"));
+    CHECK(bd_rename_noreplace(at("same/Documents"), mine) == 0);
+    make_files("same/Documents/other", 25, "theirs");
+    write_file(at("same/Documents/f000.txt"), "someone else's f000");
+    log_count lc = {"Another folder with the same name", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(ss.files_deleted == 0); /* 0.12.0: 19 */
+    CHECK(ss.roots_missing == 1 && ss.roots_emptied == 1);
+    CHECK(ss.files_new == 0 && ss.files_changed == 0);
+    CHECK(lc.n == 1);
+    root_info r = root_of(cat, src);
+    CHECK(r.missing && r.gone == 19 && r.total == 20);
+
+    /* Its own files back at the path: scanned as usual. */
+    char *theirs = bd_strdup(at("same/Documents-theirs"));
+    CHECK(bd_rename_noreplace(at("same/Documents"), theirs) == 0);
+    CHECK(bd_rename_noreplace(mine, at("same/Documents")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_missing == 0 && ss.files_deleted == 0 && ss.files_new == 0 && ss.files_changed == 0);
+    CHECK(!root_of(cat, src).missing);
+
+    /* Every file edited and one deleted: changed, not another folder. */
+    for (int i = 1; i < 20; i++) {
+        char rel[64], text[64];
+        snprintf(rel, sizeof(rel), "same/Documents/f%03d.txt", i);
+        snprintf(text, sizeof(text), "edited file %d", i);
+        write_file(at(rel), text);
+    }
+    bd_remove(at("same/Documents/f000.txt"));
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_emptied == 0);
+    CHECK(ss.files_changed == 19 && ss.files_deleted == 1);
+    free(mine);
+    free(theirs);
+    bd_catalog_close(cat);
+}
+
+/* A root not where it was last is looked for by its files. */
+static void test_root_found_by_its_files(void)
+{
+    char *old_home = get_home();
+    bd_mkdirs(at("roam/home/sam"));
+    set_home(at("roam/home/sam"));
+    make_files("roam/home/alex/Documents", 12, "alex");
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("roam/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("roam/home/alex/Documents"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 12 && ss.roots_found == 0);
+
+    /* Opened with another user name: Documents is under this user's home
+     * folder now, with all its files. */
+    char *to = bd_strdup(at("roam/home/sam/Documents"));
+    CHECK(bd_rename_noreplace(at("roam/home/alex/Documents"), to) == 0);
+    int64_t found = 0, checked = 0;
+    int places = 0;
+    char *p = bd_source_find(cat, src, &found, &checked, &places);
+    CHECK(p && places == 1 && found == 12 && checked == 12);
+    free(p);
+    log_count lc = {"found it there by its files", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat); /* 0.12.0: missing */
+    CHECK(ss.roots_found == 1 && ss.roots_missing == 0);
+    CHECK(ss.files_deleted == 0 && ss.files_new == 0);
+    CHECK(lc.n == 1);
+    CHECK(!root_of(cat, src).missing);
+    char *holder = bd_root_holding(cat, at("roam/home/sam/Documents/f001.txt"));
+    CHECK(holder && strstr(holder, "sam"));
+    free(holder);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 0 && ss.roots_missing == 0 && ss.files_deleted == 0);
+
+    /* A folder of the same name holding other files is not taken for it. */
+    char *away = bd_strdup(at("roam/elsewhere"));
+    CHECK(bd_rename_noreplace(to, away) == 0);
+    bd_mkdirs(at("roam/home/kim"));
+    set_home(at("roam/home/kim"));
+    make_files("roam/home/kim/Documents", 12, "kim");
+    p = bd_source_find(cat, src, &found, &checked, &places);
+    CHECK(!p && places == 0);
+    free(p);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 0 && ss.roots_missing == 1 && ss.files_deleted == 0);
+    CHECK(root_of(cat, src).missing);
+
+    /* Its own files there after all: found again. */
+    char *kims = bd_strdup(at("roam/kims"));
+    CHECK(bd_rename_noreplace(at("roam/home/kim/Documents"), kims) == 0);
+    CHECK(bd_rename_noreplace(away, at("roam/home/kim/Documents")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 1 && ss.roots_missing == 0 && ss.files_deleted == 0);
+    set_home(old_home);
+    free(old_home);
+    free(to);
+    free(away);
+    free(kims);
     bd_catalog_close(cat);
 }
 
@@ -934,6 +1130,9 @@ int main(void)
     bd_test_hw_read = fake_hw;
 
     test_new_pc_empty_folders();
+    test_root_candidates();
+    test_same_path_other_files();
+    test_root_found_by_its_files();
     test_root_waits_for_disk();
     test_cloud_files();
     test_links();

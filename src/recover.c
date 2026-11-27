@@ -1,14 +1,25 @@
-/* Moving to a new PC: the catalog is copied from a drive with
- * bd_catalog_recover (catalog.c), then backup roots whose paths do
- * not exist here (another user name, another drive letter) are pointed at
- * where they are now. Only the path changes: the folder keeps its name on
+/* Backup roots that moved, and a database started again from a drive.
+ *
+ * What a backup root is, is its folder structure: the files the catalog
+ * records at their paths inside it. Where the folder is (sources.path) is
+ * only where it was last, so a root that is not there is looked for by its
+ * files (bd_source_find) and pointed at where it is now
+ * (bd_source_relocate). Only the path changes: the folder keeps its name on
  * the drives, its files keep their versions and copies, and the next scan
- * matches files by their path inside the folder as usual. */
+ * matches files by their path inside the folder as usual. Nothing ties a
+ * catalog to the computer it is opened on.
+ *
+ * A database is started again from a drive's copy with bd_catalog_recover
+ * (catalog.c). */
 #include "internal.h"
 
+#include <ctype.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new_path)
 {
@@ -50,6 +61,213 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
     }
     free(path);
     return s;
+}
+
+/* ---- Finding a backup root by its files -------------------------------- */
+
+static int is_sep(char c) { return c == '/' || c == '\\'; }
+
+static int same_char(char a, char b, int win)
+{
+    if (!win) return a == b;
+    if (is_sep(a) && is_sep(b)) return 1;
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+}
+
+/* 1 if path names folder, or something inside it. */
+static int under(const char *path, const char *folder, size_t len, int win)
+{
+    for (size_t i = 0; i < len; i++)
+        if (!path[i] || !same_char(path[i], folder[i], win)) return 0;
+    return path[len] == '\0' || is_sep(path[len]);
+}
+
+static int same_path(const char *a, const char *b, int win)
+{
+    size_t la = strlen(a), lb = strlen(b);
+    while (la > 1 && is_sep(a[la - 1])) la--;
+    while (lb > 1 && is_sep(b[lb - 1])) lb--;
+    if (la != lb) return 0;
+    for (size_t i = 0; i < la; i++)
+        if (!same_char(a[i], b[i], win)) return 0;
+    return 1;
+}
+
+typedef struct { char **v; size_t n, cap; int failed; } path_list;
+
+/* Takes p; leaves out path itself and what is listed already. */
+static void list_add(path_list *l, char *p, const char *path, int win)
+{
+    if (!p) { l->failed = 1; return; }
+    int dup = same_path(p, path, win);
+    for (size_t i = 0; !dup && i < l->n; i++) dup = same_path(p, l->v[i], win);
+    if (dup) { free(p); return; }
+    if (l->n + 2 > l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 8;
+        char **g = realloc(l->v, cap * sizeof(*g));
+        if (!g) { free(p); l->failed = 1; return; }
+        l->v = g;
+        l->cap = cap;
+    }
+    l->v[l->n++] = p;
+}
+
+/* The part of path after the folder named by its first len bytes and one
+ * more name, starting at a separator ("" when nothing follows); NULL when
+ * no name follows. */
+static const char *after_name(const char *path, size_t len)
+{
+    const char *p = path + len;
+    if (!is_sep(*p)) return NULL;
+    p++;
+    if (!*p || is_sep(*p)) return NULL;
+    while (*p && !is_sep(*p)) p++;
+    return p;
+}
+
+char **bd_root_candidates(const char *path, const char *home, unsigned drives, int win)
+{
+    path_list l = {0};
+    if (!path) path = "";
+    /* Under another user's home folder: the same folder under this one's. */
+    size_t hl = home ? strlen(home) : 0;
+    while (hl > 1 && is_sep(home[hl - 1])) hl--;
+    size_t pl = hl;
+    while (pl > 0 && !is_sep(home[pl - 1])) pl--;
+    const char *user = home ? home + pl : "";
+    size_t ul = hl - pl;
+    if (pl > 1) pl--; /* the separator */
+    else pl = 0;
+    if (home && pl > 0 && ul > 0) {
+        /* On Windows the folder holding the home folders is on any drive. */
+        int letters = win && pl >= 2 && home[1] == ':' && path[0] && path[1] == ':';
+        size_t from = letters ? 2 : 0;
+        if (under(path + from, home + from, pl - from, win)) {
+            const char *rest = after_name(path, pl);
+            if (rest) list_add(&l, bd_sprintf("%.*s%s", (int)hl, home, rest), path, win);
+        }
+    }
+    /* A disk mounted for another user: mounted for this one. */
+    if (!win && ul > 0) {
+        static const char *const media[] = {"/media", "/run/media"};
+        for (int i = 0; i < 2; i++) {
+            size_t ml = strlen(media[i]);
+            if (!under(path, media[i], ml, 0)) continue;
+            const char *rest = after_name(path, ml);
+            if (!rest || !*rest) continue;
+            for (int j = 0; j < 2; j++) list_add(&l, bd_sprintf("%s/%.*s%s", media[j], (int)ul, user, rest), path, win);
+        }
+    }
+    /* Another drive letter. */
+    if (win && isalpha((unsigned char)path[0]) && path[1] == ':' && (path[2] == '\0' || is_sep(path[2]))) {
+        int own = toupper((unsigned char)path[0]) - 'A';
+        for (int i = 2; i < 26; i++)
+            if ((drives & (1u << i)) && i != own) list_add(&l, bd_sprintf("%c:%s", 'A' + i, path[2] ? path + 2 : "\\"), path, win);
+    }
+    if (!l.v && !l.failed) {
+        l.v = malloc(sizeof(*l.v));
+        if (!l.v) l.failed = 1;
+    }
+    if (l.failed) {
+        for (size_t i = 0; i < l.n; i++) free(l.v[i]);
+        free(l.v);
+        return NULL;
+    }
+    l.v[l.n] = NULL;
+    return l.v;
+}
+
+/* This user's home folder, malloc'd; NULL if not known. */
+static char *home_folder(void)
+{
+#ifdef _WIN32
+    wchar_t buf[1024];
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, 1024);
+    if (n == 0 || n >= 1024) return NULL;
+    char out[3072];
+    if (WideCharToMultiByte(CP_UTF8, 0, buf, -1, out, sizeof(out), NULL, NULL) <= 0) return NULL;
+    return bd_strdup(out);
+#else
+    const char *v = getenv("HOME");
+    return v && *v ? bd_strdup(v) : NULL;
+#endif
+}
+
+/* How many of the files the catalog knows in a root are in folder, at
+ * their path in the root and with their size. checked gets how many were
+ * looked at: up to 64 files with contents, picked by checksum so that the
+ * same ones are looked at each time; a root with none is checked by the
+ * names of its folders and empty files. */
+static int64_t files_there(bd_catalog *cat, int64_t source_id, const char *folder, int64_t *checked)
+{
+    static const char *const sql[2] = {
+        "SELECT n.rel_path, n.is_dir, n.size FROM nodes n JOIN versions v ON v.id=n.current_version_id"
+        " WHERE n.source_id=? AND n.is_dir=0 AND n.deleted=0 AND n.size>0 ORDER BY v.hash, n.id LIMIT 64",
+        "SELECT rel_path, is_dir, size FROM nodes WHERE source_id=? AND deleted=0 AND rel_path<>'' ORDER BY id LIMIT 64",
+    };
+    int64_t there = 0;
+    *checked = 0;
+    for (int k = 0; k < 2 && *checked == 0; k++) {
+        sqlite3_stmt *q;
+        if (sqlite3_prepare_v2(cat->db, sql[k], -1, &q, NULL) != SQLITE_OK) return 0;
+        sqlite3_bind_int64(q, 1, source_id);
+        while (sqlite3_step(q) == SQLITE_ROW) {
+            const char *rel = (const char *)sqlite3_column_text(q, 0);
+            int is_dir = sqlite3_column_int(q, 1);
+            int64_t size = sqlite3_column_int64(q, 2);
+            (*checked)++;
+            char *p = rel ? bd_path_join(folder, rel) : NULL;
+            bd_stat_t st;
+            if (p && bd_stat(p, &st) == 0 && !st.is_link && st.is_dir == is_dir && (is_dir || size <= 0 || st.size == size))
+                there++;
+            free(p);
+        }
+        sqlite3_finalize(q);
+    }
+    return there;
+}
+
+char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t *checked, int *places)
+{
+    int64_t best_found = 0, best_checked = 0;
+    int n_places = 0;
+    char *best = NULL, *path = NULL;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE id=?", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, source_id);
+        if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0))
+            path = bd_strdup((const char *)sqlite3_column_text(q, 0));
+        sqlite3_finalize(q);
+    }
+    char *home = path ? home_folder() : NULL;
+#ifdef _WIN32
+    char **cand = path ? bd_root_candidates(path, home, bd_drive_letters(), 1) : NULL;
+#else
+    char **cand = path ? bd_root_candidates(path, home, 0, 0) : NULL;
+#endif
+    for (size_t i = 0; cand && cand[i]; i++) {
+        bd_stat_t st;
+        if (bd_stat(cand[i], &st) != 0 || !st.is_dir || st.is_link) continue;
+        if (bd_root_overlaps(cat, cand[i], source_id)) continue;
+        int64_t ck = 0, th = files_there(cat, source_id, cand[i], &ck);
+        if (ck == 0 || th == 0 || th * 2 < ck) continue;
+        n_places++;
+        if (!best || th > best_found) {
+            free(best);
+            best = bd_strdup(cand[i]);
+            best_found = th;
+            best_checked = ck;
+        }
+    }
+    for (size_t i = 0; cand && cand[i]; i++) free(cand[i]);
+    free(cand);
+    free(home);
+    free(path);
+    if (!best) n_places = 0;
+    if (found) *found = best ? best_found : 0;
+    if (checked) *checked = best ? best_checked : 0;
+    if (places) *places = n_places;
+    return best;
 }
 
 /* ---- Finding the catalog's copies on a drive ------------------------------ */

@@ -205,6 +205,10 @@ void bd_cond_signal(bd_cond *c);
 void bd_cond_broadcast(bd_cond *c);
 /* Logical processors, at least 1. */
 int bd_cpu_count(void);
+/* Windows: the drive letters of the local disks plugged in now (fixed,
+ * removable and RAM disks, not network drives, not A: or B:), a bit per
+ * letter with A: as bit 0. 0 elsewhere. */
+unsigned bd_drive_letters(void);
 
 #ifdef _MSC_VER
 #define BD_THREAD_LOCAL __declspec(thread)

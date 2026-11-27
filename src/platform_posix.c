@@ -554,6 +554,8 @@ int bd_cpu_count(void)
     return n > 0 ? (int)n : 1;
 }
 
+unsigned bd_drive_letters(void) { return 0; }
+
 /* The lock file is the lock: a crash leaves it behind, and the user is
  * told it can be removed. */
 static char posix_lock_token;

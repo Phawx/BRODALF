@@ -339,6 +339,20 @@ char *bd_path_key(const char *rel);
 /* Tests only: fold case as on Windows. */
 extern int bd_test_fold_case;
 
+/* 1 if path is another backup root than except_id (stopped or not), is
+ * inside an active one or holds one. */
+int bd_root_overlaps(bd_catalog *cat, const char *path, int64_t except_id);
+
+/* The places a backup root at path may be now, besides path itself: the
+ * same folder under the home folder home ("C:\Users\Sam", "/home/sam")
+ * when path is under another user's home folder next to it, the same disk
+ * mounted for this user (/media/<user>/<disk>, /run/media/<user>/<disk>),
+ * and with win, the same folder on each other drive letter in drives (a
+ * bit per letter, A: as bit 0). win compares as Windows does, letter case
+ * ignored and either slash a separator. A NULL-ended list, each entry and
+ * the list malloc'd; NULL when out of memory. */
+char **bd_root_candidates(const char *path, const char *home, unsigned drives, int win);
+
 /* Give a source whose name on the drives is one of BRODALF's own (the
  * .versions tree, BRODALF.media, the catalog copy) a name of its own; its
  * new copies go under that name. */

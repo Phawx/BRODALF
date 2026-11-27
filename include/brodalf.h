@@ -229,12 +229,25 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source
  * database saved inside a root is not added to every backup again. */
 char *bd_root_holding(bd_catalog *cat, const char *path);
 
-/* Point a backup root at where it is now, e.g. on a new PC with another
- * user name. The root keeps its name on the drives and its files keep
- * their versions and copies; the next scan finds them by their path inside
- * the root. new_path must be an existing folder that no other backup root
- * uses (BD_ERR_EXISTS). */
+/* Point a backup root at where it is now, e.g. under another user name
+ * or on another drive letter. The root keeps its name on the drives and
+ * its files keep their versions and copies; the next scan finds them by
+ * their path inside the root. new_path must be an existing folder that no
+ * other backup root uses (BD_ERR_EXISTS). */
 bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new_path);
+
+/* Look for a backup root by its files: the folder the catalog has for it
+ * is only where it was last. Looked at: the same folder under this user's
+ * home folder when it was under another user's, the same disk mounted for
+ * this user, and on Windows the same folder on every other local drive
+ * letter. A folder counts when at least half the files the catalog checks
+ * (up to 64, the same ones each time) are in it at their path in the root
+ * with their size; nothing about the computer is used. Gives the folder
+ * holding the most of them (free it), how many of how many checked are
+ * there, and how many folders counted (places; 0 and NULL when none).
+ * Changes nothing: a scan points a root that is not there at the folder
+ * when places is 1, and the caller offers the folder otherwise. */
+char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t *checked, int *places);
 
 /* Stop backing up a root (active 0), or start again (1). A stopped root is
  * not scanned or backed up and does not count toward the copies you want;
@@ -260,11 +273,13 @@ typedef struct {
     int64_t files_damaged;   /* bit-rot scan: contents changed but size and time did not; see bd_list_damaged */
     int64_t roots_missing;   /* backup roots not found (unplugged, moved): skipped, nothing marked deleted */
     int64_t roots_stopped;   /* backup roots no longer backed up: not scanned */
-    /* Of roots_missing, those whose folder is there but holds a tenth or
-     * less of the files the catalog knows in it (a new PC, or a reinstalled
-     * Windows, makes empty folders under the same names): left as the last
-     * scan saw them, nothing marked deleted. bd_source_info.files_gone says
-     * how many files were not found. */
+    /* Of roots_missing, those whose folder is there but is not the one the
+     * catalog knows: a tenth or less of its files are in it as the catalog
+     * has them (at their path, or moved inside it), and more are not there
+     * at all than are there but changed. An empty folder made under the
+     * same name, or another folder of files with the same path. Left as the
+     * last scan saw them, nothing marked deleted. bd_source_info.files_gone
+     * says how many files were not found. */
     int64_t roots_emptied;
     /* Of roots_missing, those waiting for their disk to be plugged in
      * (bd_source_wait_for_disk): the caller need not ask about them. */
@@ -276,6 +291,10 @@ typedef struct {
     /* Of skipped_links, those leading to a folder or file no backup root
      * holds: what is behind them is not backed up (bd_list_links). */
     int64_t links_not_followed;
+    /* Backup roots whose folder was not there and were found by their
+     * files somewhere else (bd_source_find), in one place only: pointed
+     * there (bd_source_relocate) and scanned there. Not in roots_missing. */
+    int64_t roots_found;
 } bd_scan_stats;
 
 /* The skip lists: files and folders a scan leaves out. One list for the
@@ -320,11 +339,15 @@ typedef struct {
  * version, whatever its size or time say. Unreadable entries are logged
  * and skipped. A root that cannot be found is skipped without marking
  * anything deleted, and listed (bd_source_info.missing) so the user can
- * say where it is now (bd_source_relocate) or restore it. Files moved or
- * renamed inside or between roots are recognised by checksum and keep
- * their versions and copies; nothing on any drive is moved. A root that is
- * there but holds a tenth or less of the files the catalog knows in it is
- * treated the same way (bd_scan_stats.roots_emptied). */
+ * say where it is now (bd_source_relocate) or restore it. Before that, a
+ * root that is not there is looked for by its files (bd_source_find): when
+ * one folder holds them, the root is pointed there and scanned there
+ * (bd_scan_stats.roots_found). Files moved or renamed inside or between
+ * roots are recognised by checksum and keep their versions and copies;
+ * nothing on any drive is moved. A root whose folder is there but holds
+ * other files than the catalog knows (bd_scan_stats.roots_emptied) is
+ * treated like one that is not there, and the log says where its files
+ * are when another folder holds them. */
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 /* The user says the files missing from an emptied root really were

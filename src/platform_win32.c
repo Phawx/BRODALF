@@ -829,6 +829,19 @@ void bd_cond_wait(bd_cond *c, bd_mutex *m) { SleepConditionVariableCS(&c->cv, &m
 void bd_cond_signal(bd_cond *c) { WakeConditionVariable(&c->cv); }
 void bd_cond_broadcast(bd_cond *c) { WakeAllConditionVariable(&c->cv); }
 
+unsigned bd_drive_letters(void)
+{
+    DWORD all = GetLogicalDrives();
+    unsigned out = 0;
+    for (int i = 2; i < 26; i++) {
+        if (!(all & (1u << i))) continue;
+        wchar_t r[4] = {(wchar_t)(L'A' + i), L':', L'\\', 0};
+        UINT t = GetDriveTypeW(r);
+        if (t == DRIVE_FIXED || t == DRIVE_REMOVABLE || t == DRIVE_RAMDISK) out |= 1u << i;
+    }
+    return out;
+}
+
 int bd_cpu_count(void)
 {
     DWORD n = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);

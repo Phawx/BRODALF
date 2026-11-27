@@ -561,6 +561,9 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      /* During a scan: files it added and files it marked deleted. */
                      "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"
+                     /* During one root's scan: the contents of the files new in it. */
+                     "CREATE TEMP TABLE IF NOT EXISTS scan_new_hash(hash TEXT NOT NULL, size INTEGER NOT NULL,"
+                     " PRIMARY KEY(hash, size)) WITHOUT ROWID;"
                      /* Working tables for finding moved files after a scan. */
                      "CREATE TEMP TABLE IF NOT EXISTS mv_gone(node_id INTEGER PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS mv_new(node_id INTEGER PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);"

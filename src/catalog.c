@@ -147,6 +147,16 @@ static const char *SCHEMA_SQL =
     "  rel_path TEXT NOT NULL,"
     "  added_ms INTEGER NOT NULL,"
     "  PRIMARY KEY(source_id, rel_path));"
+    /* Each file's change time (POSIX st_ctime, NTFS ChangeTime) when a
+     * scan last read or recorded it. A file whose change time moved is read
+     * again though its size and modified time are the same: a program can
+     * put a modified time back, not a change time. A file with no row (the
+     * first scan by a BRODALF that keeps them) is recorded, not read.
+     * Written only when it changed. Earlier versions of BRODALF do not
+     * know this table and leave it be. */
+    "CREATE TABLE IF NOT EXISTS file_change_times("
+    "  node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,"
+    "  ctime_ns INTEGER NOT NULL);"
     /* Files a bit-rot scan found changed while their size and time were
      * not, until the user accepts the change or a scan finds the file
      * right again. version_id is the version on record when it was found:

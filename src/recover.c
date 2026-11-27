@@ -64,6 +64,25 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
             sqlite3_finalize(u);
         }
     }
+    /* The files there are other files on disk, with change times of their
+     * own: the next scan records them rather than reading every file again.
+     * Where the root was before is no longer worth a word. */
+    if (s == BD_OK) {
+        sqlite3_stmt *d;
+        if (sqlite3_prepare_v2(cat->db, "DELETE FROM file_change_times WHERE node_id IN (SELECT id FROM nodes WHERE source_id=?)",
+                               -1, &d, NULL) != SQLITE_OK) {
+            s = bd_fail_db(cat, "change the folder");
+        } else {
+            sqlite3_bind_int64(d, 1, source_id);
+            if (sqlite3_step(d) != SQLITE_DONE) s = bd_fail_db(cat, "change the folder");
+            sqlite3_finalize(d);
+        }
+    }
+    if (s == BD_OK) {
+        char key[48];
+        snprintf(key, sizeof(key), "moved_from.%lld", (long long)source_id);
+        if (bd_setting_del(cat, key) != 0) s = bd_fail_db(cat, "change the folder");
+    }
     free(path);
     return s;
 }
@@ -232,11 +251,32 @@ static int64_t files_there(bd_catalog *cat, int64_t source_id, const char *folde
     return there;
 }
 
-char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t *checked, int *places)
+/* The folders that hold a root's files, by the rule bd_source_find gives. */
+typedef struct {
+    char *path;
+    int64_t found, checked;
+} place;
+
+typedef struct {
+    place *v;
+    size_t n, cap;
+    int failed;
+} place_list;
+
+static void places_free(place_list *l)
 {
-    int64_t best_found = 0, best_checked = 0;
-    int n_places = 0;
-    char *best = NULL, *path = NULL;
+    for (size_t i = 0; i < l->n; i++) free(l->v[i].path);
+    free(l->v);
+    memset(l, 0, sizeof(*l));
+}
+
+/* Every folder that holds the root's files, the one holding the most
+ * first (as listed, among those holding as many). 0, or -1 when out of
+ * memory. */
+static int find_places(bd_catalog *cat, int64_t source_id, place_list *out)
+{
+    memset(out, 0, sizeof(*out));
+    char *path = NULL;
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE id=?", -1, &q, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(q, 1, source_id);
@@ -274,7 +314,7 @@ char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t
     }
     size_t nc = 0;
     while (cand && cand[nc]) nc++;
-    for (size_t i = 0; i < nc + 2; i++) {
+    for (size_t i = 0; i < nc + 2 && !out->failed; i++) {
         const char *c = i < nc ? cand[i] : rel[i - nc];
         if (!c) continue;
         bd_stat_t st;
@@ -282,13 +322,23 @@ char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t
         if (bd_root_overlaps(cat, c, source_id)) continue;
         int64_t ck = 0, th = files_there(cat, source_id, c, &ck);
         if (ck == 0 || th == 0 || th * 2 < ck) continue;
-        n_places++;
-        if (!best || th > best_found) {
-            free(best);
-            best = bd_strdup(c);
-            best_found = th;
-            best_checked = ck;
+        if (out->n == out->cap) {
+            size_t cap = out->cap ? out->cap * 2 : 8;
+            place *v = realloc(out->v, cap * sizeof(*v));
+            if (!v) { out->failed = 1; break; }
+            out->v = v;
+            out->cap = cap;
         }
+        char *dup = bd_strdup(c);
+        if (!dup) { out->failed = 1; break; }
+        /* Kept in order, most found first. */
+        size_t at = out->n;
+        while (at > 0 && out->v[at - 1].found < th) at--;
+        memmove(out->v + at + 1, out->v + at, (out->n - at) * sizeof(*out->v));
+        out->v[at].path = dup;
+        out->v[at].found = th;
+        out->v[at].checked = ck;
+        out->n++;
     }
     for (size_t i = 0; i < nc; i++) free(cand[i]);
     free(cand);
@@ -296,11 +346,129 @@ char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t
     free(rel[1]);
     free(home);
     free(path);
-    if (!best) n_places = 0;
-    if (found) *found = best ? best_found : 0;
-    if (checked) *checked = best ? best_checked : 0;
-    if (places) *places = n_places;
+    if (out->failed) {
+        places_free(out);
+        return -1;
+    }
+    return 0;
+}
+
+char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t *checked, int *places)
+{
+    place_list l;
+    char *best = NULL;
+    if (find_places(cat, source_id, &l) == 0 && l.n > 0) {
+        best = l.v[0].path;
+        l.v[0].path = NULL;
+    }
+    if (found) *found = best ? l.v[0].found : 0;
+    if (checked) *checked = best ? l.v[0].checked : 0;
+    if (places) *places = best ? (int)l.n : 0;
+    places_free(&l);
     return best;
+}
+
+int bd_source_find_all(bd_catalog *cat, int64_t source_id, bd_place_fn fn, void *ctx)
+{
+    place_list l;
+    if (find_places(cat, source_id, &l) != 0) return -1;
+    int n = 0;
+    for (size_t i = 0; i < l.n; i++) {
+        bd_place_info p = {l.v[i].path, l.v[i].found, l.v[i].checked};
+        n++;
+        if (fn && fn(ctx, &p)) break;
+    }
+    places_free(&l);
+    return n;
+}
+
+/* A sure match, for a root pointed at a folder without asking: of the
+ * files checked (the same up to 64 as files_there), at least 15 of 16 are
+ * in folder at their path with their size, and the smallest few of those
+ * (up to SURE_READ) hold the contents the catalog has for them. */
+#define SURE_READ 4
+int bd_source_place_sure(bd_catalog *cat, int64_t source_id, const char *folder, int64_t *found, int64_t *checked)
+{
+    sqlite3_stmt *q;
+    *found = *checked = 0;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT n.rel_path, n.size, v.hash FROM nodes n JOIN versions v ON v.id=n.current_version_id"
+                           " WHERE n.source_id=? AND n.is_dir=0 AND n.deleted=0 AND n.size>0 ORDER BY v.hash, n.id LIMIT 64",
+                           -1, &q, NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_bind_int64(q, 1, source_id);
+    struct { char *path; int64_t size; char hash[BD_HASH_HEX_LEN + 1]; } read[SURE_READ];
+    int nread = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        const char *rel = (const char *)sqlite3_column_text(q, 0);
+        const char *hash = (const char *)sqlite3_column_text(q, 2);
+        int64_t size = sqlite3_column_int64(q, 1);
+        (*checked)++;
+        char *p = rel ? bd_path_join(folder, rel) : NULL;
+        bd_stat_t st;
+        if (!p || !hash || bd_stat(p, &st) != 0 || st.is_link || !st.is_file || st.size != size) {
+            free(p);
+            continue;
+        }
+        (*found)++;
+        /* Keep the smallest, to be read. */
+        int at = nread;
+        if (nread == SURE_READ) {
+            at = 0;
+            for (int i = 1; i < nread; i++)
+                if (read[i].size > read[at].size) at = i;
+            if (read[at].size <= size) at = -1;
+            else free(read[at].path);
+        } else {
+            nread++;
+        }
+        if (at < 0) {
+            free(p);
+            continue;
+        }
+        read[at].path = p;
+        read[at].size = size;
+        snprintf(read[at].hash, sizeof(read[at].hash), "%s", hash);
+    }
+    sqlite3_finalize(q);
+    int sure = *checked > 0 && *found * 16 >= *checked * 15 && nread > 0;
+    for (int i = 0; i < nread; i++) {
+        char hex[BD_HASH_HEX_LEN + 1];
+        int64_t got = 0;
+        if (sure && (bd_hash_file(read[i].path, NULL, hex, &got) != 0 || strcmp(hex, read[i].hash) != 0)) sure = 0;
+        free(read[i].path);
+    }
+    return sure;
+}
+
+char *bd_source_old_place(bd_catalog *cat, int64_t source_id, int *back)
+{
+    if (back) *back = 0;
+    char key[48], *val = NULL;
+    snprintf(key, sizeof(key), "moved_from.%lld", (long long)source_id);
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT value FROM settings WHERE key=?", -1, &q, NULL) != SQLITE_OK) return NULL;
+    sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0) && *sqlite3_column_text(q, 0))
+        val = bd_strdup((const char *)sqlite3_column_text(q, 0));
+    sqlite3_finalize(q);
+    if (!val) return NULL;
+    if (back) {
+        bd_stat_t st;
+        int64_t ck = 0, th = 0;
+        if (bd_stat(val, &st) == 0 && st.is_dir && !st.is_link && !bd_root_overlaps(cat, val, source_id)) {
+            th = files_there(cat, source_id, val, &ck);
+            *back = ck > 0 && th > 0 && th * 2 >= ck;
+        }
+    }
+    return val;
+}
+
+bd_status bd_source_keep_place(bd_catalog *cat, int64_t source_id)
+{
+    char key[48];
+    snprintf(key, sizeof(key), "moved_from.%lld", (long long)source_id);
+    return bd_setting_del(cat, key) == 0 ? BD_OK : bd_fail_db(cat, "keep the backup root where it is");
 }
 
 /* ---- Finding the catalog's copies on a drive ------------------------------ */

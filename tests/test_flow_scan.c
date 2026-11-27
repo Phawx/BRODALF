@@ -1,0 +1,736 @@
+/* The scan findings of the 0.14.0 flow review (D2, D4, D5, C2, C5, C7,
+ * C15, C16): each test fails on 0.14.0 where it can run there. */
+#include "brodalf.h"
+#include "internal.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/stat.h>
+#else
+#include <windows.h>
+#include <direct.h>
+#define chdir _chdir
+#define getcwd _getcwd
+#endif
+
+static int failures = 0;
+
+#define CHECK(cond)                                                            \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #cond); \
+            failures++;                                                        \
+        }                                                                      \
+    } while (0)
+
+#define REQUIRE_OK(expr, cat)                                                  \
+    do {                                                                       \
+        bd_status _s = (expr);                                                 \
+        if (_s != BD_OK) {                                                     \
+            fprintf(stderr, "%s:%d: %s -> %s: %s\n", __FILE__, __LINE__, #expr, \
+                    bd_status_name(_s), (cat) ? bd_catalog_error(cat) : bd_open_error()); \
+            exit(1);                                                           \
+        }                                                                      \
+    } while (0)
+
+static char base[1024];
+
+static char *at(const char *rel)
+{
+    static char buf[8][2048];
+    static int i = 0;
+    i = (i + 1) % 8;
+    snprintf(buf[i], sizeof(buf[i]), "%s/%s", base, rel);
+    return buf[i];
+}
+
+static void write_file(const char *path, const char *text)
+{
+    char *dir = bd_strdup(path);
+    char *slash = strrchr(dir, '/');
+    if (slash) { *slash = '\0'; bd_mkdirs(dir); }
+    free(dir);
+    FILE *f = bd_fopen(path, "wb");
+    if (!f) { fprintf(stderr, "cannot write %s\n", path); exit(1); }
+    fputs(text, f);
+    fclose(f);
+}
+
+static void quiet(void *ctx, const char *msg)
+{
+    (void)ctx;
+    (void)msg;
+}
+
+/* Lines the engine logged that hold ctx->want. */
+typedef struct { const char *want; int n; } log_count;
+
+static void count_log(void *ctx, const char *msg)
+{
+    log_count *c = ctx;
+    if (strstr(msg, c->want)) c->n++;
+}
+
+static int64_t count_rows(bd_catalog *cat, const char *sql)
+{
+    sqlite3_stmt *q;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_step(q) == SQLITE_ROW) n = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    return n;
+}
+
+static int fake_hw(const char *root, bd_drive_hw *hw)
+{
+    (void)root;
+    memset(hw, 0, sizeof(*hw));
+    hw->disk_bytes = -1;
+    return -1;
+}
+
+typedef struct { int64_t id; int missing, waiting; int64_t gone, total, last_scan_ms; char path[2048]; } root_info;
+
+static int root_cb(void *ctx, const bd_source_info *s)
+{
+    root_info *r = ctx;
+    if (s->source_id != r->id) return 0;
+    r->missing = s->missing;
+    r->gone = s->files_gone;
+    r->total = s->files_total;
+    r->waiting = s->wait_for_disk;
+    r->last_scan_ms = s->last_scan_ms;
+    snprintf(r->path, sizeof(r->path), "%s", s->path ? s->path : "");
+    return 1;
+}
+
+static root_info root_of(bd_catalog *cat, int64_t id)
+{
+    root_info r;
+    memset(&r, 0, sizeof(r));
+    r.id = id;
+    bd_list_sources(cat, root_cb, &r);
+    return r;
+}
+
+/* A folder of n small files, each with its own contents. */
+static void make_files(const char *dir, int n, const char *tag)
+{
+    for (int i = 0; i < n; i++) {
+        char rel[256], text[128];
+        snprintf(rel, sizeof(rel), "%s/f%03d.txt", dir, i);
+        snprintf(text, sizeof(text), "%s file %d", tag, i);
+        write_file(at(rel), text);
+    }
+}
+
+static void set_home(const char *dir)
+{
+#ifdef _WIN32
+    SetEnvironmentVariableA("USERPROFILE", dir);
+#else
+    if (dir) setenv("HOME", dir, 1);
+    else unsetenv("HOME");
+#endif
+}
+
+static char *get_home(void)
+{
+#ifdef _WIN32
+    char buf[2048];
+    DWORD n = GetEnvironmentVariableA("USERPROFILE", buf, sizeof(buf));
+    return n && n < sizeof(buf) ? bd_strdup(buf) : NULL;
+#else
+    const char *h = getenv("HOME");
+    return h ? bd_strdup(h) : NULL;
+#endif
+}
+
+/* The same path, either slash. */
+static int same_path(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a == '\\' ? '/' : *a, y = *b == '\\' ? '/' : *b;
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+/* Write a file again with the same size and modified time, as some
+ * programs do (VeraCrypt containers by default). The pause lets the
+ * change time move on a clock that ticks every 16 ms. */
+static void rewrite_keeping_time(const char *path, const char *text)
+{
+    bd_stat_t st;
+    CHECK(bd_stat(path, &st) == 0);
+    bd_sleep_ms(40);
+    FILE *f = bd_fopen(path, "r+b");
+    CHECK(f != NULL);
+    if (!f) return;
+    fputs(text, f);
+    fflush(f);
+    CHECK(bd_set_mtime(f, st.mtime_ns) == 0);
+    fclose(f);
+    bd_stat_t after;
+    CHECK(bd_stat(path, &after) == 0 && after.size == st.size && after.mtime_ns == st.mtime_ns);
+}
+
+/* Move a file's change time without touching its contents: set its
+ * modified time to what it already is. */
+static void touch_change_time(const char *path)
+{
+    bd_stat_t st;
+    CHECK(bd_stat(path, &st) == 0);
+    bd_sleep_ms(40);
+    FILE *f = bd_fopen(path, "r+b");
+    CHECK(f != NULL);
+    if (!f) return;
+    CHECK(bd_set_mtime(f, st.mtime_ns) == 0);
+    fclose(f);
+}
+
+/* D2: a change that keeps the size and modified time is seen by the
+ * change time, and backed up; the bit-rot scan then finds nothing. */
+static void test_change_time(void)
+{
+    write_file(at("ct/Src/vault.hc"), "secret contents, version one");
+    write_file(at("ct/Src/other.txt"), "other");
+    bd_mkdirs(at("ct/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("ct/c.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("ct/Src"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 2);
+    REQUIRE_OK(bd_media_init(cat, at("ct/drive"), "CT", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    /* Nothing changed: nothing is read again. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 0 && ss.bytes_hashed == 0);
+
+    rewrite_keeping_time(at("ct/Src/vault.hc"), "SECRET");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 1 && ss.files_damaged == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions v JOIN nodes n ON n.id=v.node_id WHERE n.name='vault.hc'") == 2);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    bd_scan_opts so = {1};
+    REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
+    CHECK(ss.files_damaged == 0 && ss.files_changed == 0);
+
+    /* The change time moved but the contents did not: read, and the same
+     * checksum is no new version. */
+    touch_change_time(at("ct/Src/other.txt"));
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 0 && ss.files_new == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 3);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.bytes_hashed == 0);
+
+    /* A catalog from before (no change times kept): the first scan only
+     * records them, it reads nothing; the next change is seen. */
+    sqlite3_exec(cat->db, "DELETE FROM file_change_times", NULL, NULL, NULL);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.bytes_hashed == 0 && ss.files_changed == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM file_change_times") == 2);
+    rewrite_keeping_time(at("ct/Src/vault.hc"), "secret");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 1);
+
+    /* Where no change time is known (a FAT drive), it is as before. */
+    bd_test_no_change_time = 1;
+    rewrite_keeping_time(at("ct/Src/vault.hc"), "Secret");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 0);
+    REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
+    CHECK(ss.files_damaged == 1);
+    bd_test_no_change_time = 0;
+    bd_catalog_close(cat);
+}
+
+/* D4: a missing root is pointed somewhere else without asking only on a
+ * sure match, never while it waits for its disk, and the old folder
+ * coming back is said. */
+static void test_root_moved_only_when_sure(void)
+{
+    char *old_home = get_home();
+    bd_mkdirs(at("mv/home/sam"));
+    set_home(at("mv/home/sam"));
+    make_files("mv/home/alex/Docs", 20, "alex");
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("mv/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("mv/home/alex/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 20);
+    char *where = bd_strdup(root_of(cat, src).path);
+    char *away = bd_strdup(at("mv/unplugged"));
+    CHECK(bd_rename_noreplace(at("mv/home/alex/Docs"), away) == 0);
+
+    /* Waiting for its disk: an old copy elsewhere is not it. */
+    make_files("mv/home/sam/Docs", 20, "alex");
+    REQUIRE_OK(bd_source_wait_for_disk(cat, src, 1), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 0 && ss.roots_waiting == 1 && ss.files_deleted == 0);
+    CHECK(same_path(root_of(cat, src).path, where));
+    REQUIRE_OK(bd_source_wait_for_disk(cat, src, 0), cat);
+
+    /* A partial copy (12 of 20): offered, not taken; nothing deleted. */
+    for (int i = 12; i < 20; i++) {
+        char rel[64];
+        snprintf(rel, sizeof(rel), "mv/home/sam/Docs/f%03d.txt", i);
+        CHECK(bd_remove(at(rel)) == 0);
+    }
+    log_count lc = {"not enough to point the root there", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(ss.roots_found == 0 && ss.roots_missing == 1 && ss.files_deleted == 0);
+    CHECK(lc.n == 1);
+    CHECK(same_path(root_of(cat, src).path, where));
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE deleted=1") == 0);
+
+    /* Every name and size, other contents: not taken either. */
+    make_files("mv/home/sam/Docs", 20, "ALEX");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 0 && ss.roots_missing == 1);
+    CHECK(same_path(root_of(cat, src).path, where));
+
+    /* A whole copy, contents and all: taken, and the old place kept. */
+    make_files("mv/home/sam/Docs", 20, "alex");
+    lc.want = "found it there by its files";
+    lc.n = 0;
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(ss.roots_found == 1 && ss.roots_missing == 0 && ss.files_deleted == 0 && ss.roots_back == 0);
+    CHECK(lc.n == 1);
+    CHECK(strstr(root_of(cat, src).path, "sam") != NULL);
+    int back = -1;
+    char *old = bd_source_old_place(cat, src, &back);
+    CHECK(old && same_path(old, where) && back == 0);
+    free(old);
+
+    /* The real folder is back: said, every scan, until the user chooses. */
+    CHECK(bd_rename_noreplace(away, at("mv/home/alex/Docs")) == 0);
+    lc.want = "is there again and holds its files";
+    lc.n = 0;
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(ss.roots_back == 1 && lc.n == 1);
+    old = bd_source_old_place(cat, src, &back);
+    CHECK(old && back == 1);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_back == 1);
+    /* "That is the real one": pointed back, and no longer said. */
+    REQUIRE_OK(bd_source_relocate(cat, src, old), cat);
+    free(old);
+    CHECK(bd_source_old_place(cat, src, NULL) == NULL);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_back == 0 && ss.roots_missing == 0 && ss.files_deleted == 0);
+    CHECK(same_path(root_of(cat, src).path, where));
+    /* Or "keep it here" forgets the old place. */
+    char key[48];
+    snprintf(key, sizeof(key), "moved_from.%lld", (long long)src);
+    CHECK(bd_setting_set(cat, key, at("mv/home/sam/Docs")) == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_back == 1);
+    REQUIRE_OK(bd_source_keep_place(cat, src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_back == 0);
+    /* As does pointing it where it is (root-move to the same folder). */
+    CHECK(bd_setting_set(cat, key, at("mv/home/sam/Docs")) == 0);
+    REQUIRE_OK(bd_source_relocate(cat, src, where), cat);
+    CHECK(bd_source_old_place(cat, src, NULL) == NULL);
+
+    set_home(old_home);
+    free(old_home);
+    free(where);
+    free(away);
+    bd_catalog_close(cat);
+}
+
+typedef struct { int n; char path[4][2048]; int64_t found[4], checked[4]; } place_seen;
+
+static int place_cb(void *ctx, const bd_place_info *p)
+{
+    place_seen *l = ctx;
+    if (l->n < 4) {
+        snprintf(l->path[l->n], sizeof(l->path[0]), "%s", p->path);
+        l->found[l->n] = p->found;
+        l->checked[l->n] = p->checked;
+    }
+    l->n++;
+    return 0;
+}
+
+/* C7: every folder holding a missing root's files is listed, with how
+ * many of the files checked each holds, most first. */
+static void test_every_place_listed(void)
+{
+    /* A root kept as it was typed (0.13.0): looked for from the database's
+     * folder and from the current one. */
+    make_files("two/Docs", 10, "doc");
+    make_files("two/cwd/Docs", 8, "doc");
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("two/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("two/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    char sql[128];
+    snprintf(sql, sizeof(sql), "UPDATE sources SET path='Docs' WHERE id=%lld", (long long)src);
+    CHECK(sqlite3_exec(cat->db, sql, NULL, NULL, NULL) == SQLITE_OK);
+    char cwd[2048];
+    CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
+    CHECK(chdir(at("two/cwd")) == 0);
+    place_seen l;
+    memset(&l, 0, sizeof(l));
+    CHECK(bd_source_find_all(cat, src, place_cb, &l) == 2);
+    CHECK(l.n == 2);
+    CHECK(strstr(l.path[0], "cwd") == NULL && l.found[0] == 10 && l.checked[0] == 10);
+    CHECK(strstr(l.path[1], "cwd") != NULL && l.found[1] == 8 && l.checked[1] == 10);
+    /* Two places: the scan picks neither. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 0 && strcmp(root_of(cat, src).path, "Docs") == 0);
+    CHECK(chdir(cwd) == 0);
+    bd_catalog_close(cat);
+}
+
+/* Stop the running job when the progress names a file. */
+typedef struct { bd_catalog *cat; const char *in_file; int64_t after_files; int fired; } stop_at;
+
+static void stop_progress(void *ctx, const bd_progress *p)
+{
+    stop_at *c = ctx;
+    c->cat->progress_last_ms = 0; /* every file */
+    if (c->fired || p->done || strcmp(p->phase, "scan") != 0) return;
+    if (c->in_file ? (p->current && strstr(p->current, c->in_file) != NULL) : p->files_done >= c->after_files) {
+        c->fired = 1;
+        bd_catalog_cancel(c->cat);
+    }
+}
+
+static bd_risk_stats risk_of(bd_catalog *cat)
+{
+    bd_risk_stats rs;
+    memset(&rs, 0, sizeof(rs));
+    bd_list_at_risk(cat, 0, NULL, NULL, &rs);
+    return rs;
+}
+
+/* D5: a stopped scan keeps what it read in the root it was in, marks
+ * nothing deleted there, and a root that never finished a scan is said. */
+static void test_stopped_scan_kept(void)
+{
+    make_files("stop/Big", 60, "big");
+    make_files("stop/Small", 3, "small");
+    bd_mkdirs(at("stop/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("stop/db.brodalf"), &cat), NULL);
+    bd_target one = {1, 1};
+    REQUIRE_OK(bd_target_set(cat, &one), cat);
+    int64_t big, little, drive;
+    REQUIRE_OK(bd_source_add(cat, at("stop/Small"), &little), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("stop/drive"), "Stop", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(risk_of(cat).files_at_risk == 0 && risk_of(cat).roots_not_scanned == 0);
+
+    /* A big root added, its first scan stopped part way. */
+    REQUIRE_OK(bd_source_add(cat, at("stop/Big"), &big), cat);
+    CHECK(risk_of(cat).roots_not_scanned == 1);
+    bd_test_scan_workers = -1; /* one file at a time, read in order */
+    stop_at sa = {cat, NULL, 20, 0};
+    bd_catalog_set_progress(cat, stop_progress, &sa);
+    CHECK(bd_scan(cat, &ss, quiet, NULL) == BD_ERR_CANCELLED && sa.fired);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    char sql[200];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE n.source_id=%lld",
+             (long long)big);
+    int64_t kept = count_rows(cat, sql);
+    CHECK(kept > 0 && kept < 60);
+    CHECK(ss.files_new == kept);
+    CHECK(root_of(cat, big).last_scan_ms == 0);
+    /* Not "every file has its copies": that root is not scanned yet. */
+    bd_risk_stats rs = risk_of(cat);
+    CHECK(rs.roots_not_scanned == 1 && rs.files_at_risk >= kept); /* (and the one it was reading) */
+    /* Kept after closing and opening again. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("stop/db.brodalf"), &cat), NULL);
+    REQUIRE_OK(bd_media_connect(cat, at("stop/drive"), &drive, quiet, NULL), cat);
+    CHECK(count_rows(cat, sql) == kept);
+
+    /* The next scan reads only the rest and finishes. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 60 - kept && ss.files_deleted == 0);
+    CHECK(count_rows(cat, sql) == 60);
+    CHECK(root_of(cat, big).last_scan_ms > 0);
+    CHECK(risk_of(cat).roots_not_scanned == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM settings WHERE key LIKE 'scan_stopped.%'") == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 60);
+
+    /* Stopped again after a file was renamed: nothing marked deleted, and
+     * the next scan still sees the rename (no second copy). */
+    CHECK(bd_rename_noreplace(at("stop/Big/f007.txt"), at("stop/Big/renamed.txt")) == 0);
+    sa.cat = cat;
+    sa.fired = 0;
+    sa.in_file = "renamed.txt";
+    bd_catalog_set_progress(cat, stop_progress, &sa);
+    CHECK(bd_scan(cat, &ss, quiet, NULL) == BD_ERR_CANCELLED && sa.fired);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE deleted=1") == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_moved == 1 && ss.files_deleted == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0);
+    bd_test_scan_workers = 0;
+    bd_catalog_close(cat);
+}
+
+/* C2: Windows' always-changing profile files are left out by default, by
+ * their place in the profile, not by a name a user's own folder may have. */
+static void test_default_skips_profile_churn(void)
+{
+    const char *d = bd_skip_list_default();
+    static const char *const skipped[] = {
+        "NTUSER.DAT", "ntuser.dat.LOG1", "NTUSER.DAT{016888bd-6c6f-11de-8d1d-001e0bcde3ec}.TM.blf",
+        "NTUSER.DAT{016888bd-6c6f-11de-8d1d-001e0bcde3ec}.TMContainer00000000000000000001.regtrans-ms",
+        "AppData/Local/Microsoft/Windows/UsrClass.dat", "AppData/Local/Microsoft/Windows/UsrClass.dat.LOG2",
+        "AppData/Local/Temp/setup.log", "sam/AppData/Local/Temp/x/y.bin",
+        "AppData/Local/Microsoft/Windows/INetCache/IE/a.htm",
+        "AppData/Local/Google/Chrome/User Data/Default/Cache/Cache_Data/f_000001",
+        "Users/sam/AppData/Local/Microsoft/Edge/User Data/Default/Code Cache/js/index",
+        "AppData/Roaming/Slack/GPUCache/data_0",
+        "AppData/Local/Mozilla/Firefox/Profiles/x.default/cache2/entries/A1",
+        "AppData/Local/CrashDumps/app.exe.1234.dmp",
+        "AppData/Local/Google/Chrome/User Data/Crash Dumps/x.dmp",
+    };
+    static const char *const kept[] = {
+        "Documents/Cache/notes.txt", "Documents/Temp/draft.docx", "Pictures/Code Cache/a.jpg",
+        "AppData/Roaming/Code/User/settings.json", "AppData/Local/Packages/App/LocalState/data.db",
+        "Documents/NTUSER notes.txt", "Projects/GPUCache.c", "Local/Temp/x.txt",
+    };
+    for (size_t i = 0; i < sizeof(skipped) / sizeof(skipped[0]); i++) {
+        int hit = bd_skip_match(d, skipped[i], 0);
+        if (!hit) fprintf(stderr, "not left out: %s\n", skipped[i]);
+        CHECK(hit);
+    }
+    for (size_t i = 0; i < sizeof(kept) / sizeof(kept[0]); i++) {
+        int hit = bd_skip_match(d, kept[i], 0);
+        if (hit) fprintf(stderr, "left out: %s\n", kept[i]);
+        CHECK(!hit);
+    }
+}
+
+/* C16: in the skip lists, ? is one character, not one byte, and letters
+ * beyond ASCII ignore case where the file system's names do (Windows). */
+static void test_skip_patterns_unicode(void)
+{
+    CHECK(bd_skip_match("f?.txt", "f\xc3\xa9.txt", 0));             /* fé.txt */
+    CHECK(bd_skip_match("a?b", "a\xe6\x97\xa5" "b", 0));             /* a日b */
+    CHECK(!bd_skip_match("a?b", "a\xe6\x97\xa5\xe6\x97\xa5" "b", 0)); /* two characters */
+    CHECK(bd_skip_match("*\xc3\xa9.log", "x\xc3\xa9\xc3\xa9.log", 0));
+    CHECK(bd_skip_match("Photos/?\?/", "Photos/\xc3\xa9t/a.jpg", 0));
+    CHECK(bd_skip_match("REPORT.TXT", "report.txt", 0));
+#ifdef _WIN32
+    CHECK(bd_skip_match("\xc3\x84rger/", "\xc3\xa4rger/brief.txt", 0));          /* Ärger/ and ärger */
+    CHECK(bd_skip_match("*.\xc3\x89T\xc3\x89", "notes.\xc3\xa9t\xc3\xa9", 0)); /* *.ÉTÉ and .été */
+#endif
+}
+
+#ifdef _WIN32
+/* C16: a name that is not valid Unicode is named in the report. */
+static void test_bad_name_named(void)
+{
+    bd_mkdirs(at("bad/Src"));
+    write_file(at("bad/Src/good.txt"), "good");
+    wchar_t w[2048];
+    MultiByteToWideChar(CP_UTF8, 0, at("bad/Src/"), -1, w, 2000);
+    wcscat(w, L"odd\xD800name.txt");
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    if (h == INVALID_HANDLE_VALUE) return;
+    CloseHandle(h);
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("bad/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("bad/Src"), &src), cat);
+    bd_scan_stats ss;
+    log_count lc = {"odd\\uD800name.txt", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(lc.n == 1);
+    CHECK(ss.files_new == 1 && ss.errors >= 1);
+    DeleteFileW(w);
+    bd_catalog_close(cat);
+}
+#endif
+
+typedef struct { int n; char paths[4][2048]; } inside_list;
+
+static int inside_cb(void *ctx, int64_t id, const char *path)
+{
+    inside_list *l = ctx;
+    (void)id;
+    if (l->n < 4) snprintf(l->paths[l->n], sizeof(l->paths[0]), "%s", path);
+    l->n++;
+    return 0;
+}
+
+/* C5: a new root that holds roots already backed up takes them in, in the
+ * catalog only: their files keep their copies, so nothing is copied again,
+ * and what the old roots left out is still left out there only. */
+static void test_roots_taken_in(void)
+{
+    make_files("take/home/Pictures", 3, "pic");
+    write_file(at("take/home/Pictures/old/a.txt"), "left out by its own list");
+    write_file(at("take/home/Pictures/sub/b.raw"), "left out by name");
+    make_files("take/home/Docs/Scans", 2, "scan");
+    write_file(at("take/home/top.txt"), "new in the bigger root");
+    write_file(at("take/home/z.raw"), "only Pictures left these out");
+    bd_mkdirs(at("take/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("take/db.brodalf"), &cat), NULL);
+    bd_target one = {1, 1};
+    REQUIRE_OK(bd_target_set(cat, &one), cat);
+    int64_t pics, scans, drive, home = 0;
+    REQUIRE_OK(bd_source_add(cat, at("take/home/Pictures"), &pics), cat);
+    REQUIRE_OK(bd_source_add(cat, at("take/home/Docs/Scans"), &scans), cat);
+    REQUIRE_OK(bd_source_skip_set(cat, pics, "# mine\n/old/\n*.raw\n"), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_star_set(cat, pics, "f001.txt", 1), cat);
+    REQUIRE_OK(bd_media_init(cat, at("take/drive"), "Take", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 5);
+    int64_t copies = count_rows(cat, "SELECT COUNT(*) FROM copies");
+
+    CHECK(bd_source_add(cat, at("take/home"), &home) == BD_ERR_EXISTS);
+    inside_list l = {0};
+    CHECK(bd_roots_inside(cat, at("take/home"), inside_cb, &l) == 2 && l.n == 2);
+    CHECK(bd_roots_inside(cat, at("take/home/Pictures"), NULL, NULL) == 0);
+    REQUIRE_OK(bd_source_add_holding(cat, at("take/home"), &home), cat);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM sources") == 1);
+    char sql[300];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes n JOIN versions v ON v.id=n.current_version_id JOIN copies c"
+                               " ON c.version_id=v.id WHERE n.source_id=%lld AND n.rel_path LIKE 'Pictures/f%%'", (long long)home);
+    CHECK(count_rows(cat, sql) == 3);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes WHERE source_id=%lld AND rel_path IN ('Docs','Docs/Scans','Pictures')"
+                               " AND is_dir=1", (long long)home);
+    CHECK(count_rows(cat, sql) == 3);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes n JOIN nodes p ON p.id=n.parent_id WHERE n.source_id=%lld"
+                               " AND n.rel_path='Docs/Scans/f000.txt' AND p.rel_path='Docs/Scans'", (long long)home);
+    CHECK(count_rows(cat, sql) == 1);
+    CHECK(bd_starred(cat, home, "Pictures/f001.txt") == 1);
+    char *own = bd_source_skip_get(cat, home);
+    CHECK(own && strstr(own, "/Pictures/old/\n") && strstr(own, "/Pictures/*.raw\n") && strstr(own, "/Pictures/*/*.raw\n"));
+    free(own);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM settings WHERE key LIKE 'skip_list.%'") == 1);
+    CHECK(root_of(cat, home).last_scan_ms == 0); /* not scanned yet */
+
+    /* The scan finds the files it knows where they were; only the new
+     * ones are copied, and Pictures' own skips still hold there only. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 2 && ss.files_changed == 0 && ss.files_deleted == 0 && ss.files_moved == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == copies + 2);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes WHERE source_id=%lld AND (rel_path LIKE '%%.raw' OR rel_path LIKE '%%/old%%')",
+             (long long)home);
+    CHECK(count_rows(cat, sql) == 1); /* z.raw, outside Pictures */
+    bd_catalog_close(cat);
+}
+
+/* C15: the new database's folders are checked against each other before
+ * it is saved, and a place on a backup drive is told. */
+static void test_new_database_checks(void)
+{
+    bd_mkdirs(at("newdb/home/Pictures"));
+    bd_mkdirs(at("newdb/homes"));
+    CHECK(bd_folders_overlap(at("newdb/home"), at("newdb/home/Pictures")) == 3);
+    CHECK(bd_folders_overlap(at("newdb/home/Pictures"), at("newdb/home")) == 2);
+    CHECK(bd_folders_overlap(at("newdb/home/"), at("newdb/home")) == 1);
+    CHECK(bd_folders_overlap(at("newdb/home"), at("newdb/homes")) == 0);
+
+    bd_mkdirs(at("newdb/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("newdb/first.brodalf"), &cat), NULL);
+    int64_t drive;
+    REQUIRE_OK(bd_media_init(cat, at("newdb/drive"), "Drive", 0, &drive), cat);
+    bd_catalog_close(cat);
+    char *top = bd_backup_drive_holding(at("newdb/drive/My backups.brodalf"));
+    CHECK(top && same_path(top, at("newdb/drive")));
+    free(top);
+    top = bd_backup_drive_holding(at("newdb/drive/Some/folder/My backups.brodalf"));
+    CHECK(top && same_path(top, at("newdb/drive")));
+    free(top);
+    CHECK(bd_backup_drive_holding(at("newdb/home/My backups.brodalf")) == NULL);
+    /* A BRODALF folder that is not a drive's (no BRODALF.media in it). */
+    bd_mkdirs(at("newdb/home/BRODALF/notes"));
+    CHECK(bd_backup_drive_holding(at("newdb/home/x.brodalf")) == NULL);
+}
+
+#ifndef _WIN32
+/* C4: a root on a network share can wait until it can be reached, and the
+ * scan says so in those words. (Not run on Windows, where looking at a
+ * share that is not there can take long.) */
+static void test_network_root_waits(void)
+{
+    make_files("net/Docs", 2, "net");
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("net/db.brodalf"), &cat), NULL);
+    int64_t id;
+    REQUIRE_OK(bd_source_add(cat, at("net/Docs"), &id), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    char sql[200];
+    snprintf(sql, sizeof(sql), "UPDATE sources SET path='//brodalf-no-such-server/share/Docs' WHERE id=%lld", (long long)id);
+    CHECK(bd_exec(cat, sql) == 0);
+    REQUIRE_OK(bd_source_wait_for_disk(cat, id, 1), cat);
+    log_count lc = {"waits until its network share can be reached", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(lc.n == 1 && ss.roots_waiting == 1 && ss.files_deleted == 0);
+    bd_catalog_close(cat);
+}
+#endif
+
+int main(void)
+{
+    char tmp[512], id[37];
+    bd_temp_dir(tmp, sizeof(tmp));
+    bd_uuid_v4(id);
+    snprintf(base, sizeof(base), "%s/brodalf-flow-scan-%.8s", tmp, id);
+    for (char *p = base; *p; p++) if (*p == '\\') *p = '/';
+    bd_mkdirs(base);
+    printf("working in %s\n", base);
+    bd_test_hw_read = fake_hw;
+
+    test_change_time();
+    test_root_moved_only_when_sure();
+    test_every_place_listed();
+    test_stopped_scan_kept();
+    test_default_skips_profile_churn();
+    test_skip_patterns_unicode();
+    test_roots_taken_in();
+    test_new_database_checks();
+#ifndef _WIN32
+    test_network_root_waits();
+#endif
+#ifdef _WIN32
+    test_bad_name_named();
+#endif
+
+    if (failures) {
+        fprintf(stderr, "%d check(s) failed\n", failures);
+        return 1;
+    }
+    printf("all flow scan checks passed\n");
+    return 0;
+}

@@ -205,8 +205,10 @@ void bd_catalog_set_progress(bd_catalog *cat, bd_progress_fn fn, void *ctx);
  * Safe to call from any thread, including from the progress callback. The
  * job stops between files, or between blocks of a big file, and returns
  * BD_ERR_CANCELLED. Everything it finished stays recorded: a scan keeps
- * the folders it had finished (the one it was in is left as it was), a
- * backup keeps every copy it had finished, and a copy it was writing is
+ * every file it had read, in the root it was in too (nothing there is
+ * marked deleted, and that root is not counted as scanned until a scan of
+ * it finishes; one whose folder showed none of the files the catalog knows
+ * is left as it was), a backup keeps every copy it had finished, and a copy it was writing is
  * removed, never put in place. Each job clears the request when it
  * starts. */
 void bd_catalog_cancel(bd_catalog *cat);
@@ -230,10 +232,37 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source
  * was a root already. */
 bd_status bd_source_add_ex(bd_catalog *cat, const char *folder, int64_t *out_source_id, int *is_new);
 
+/* The backup roots that are backed up inside folder (a folder bd_source_add
+ * refuses because it holds them): fn gets each one's id and path, and
+ * returns nonzero to stop. How many there are, or -1 on an error. */
+typedef int (*bd_root_fn)(void *ctx, int64_t source_id, const char *path);
+int bd_roots_inside(bd_catalog *cat, const char *folder, bd_root_fn fn, void *ctx);
+/* Add folder as a backup root, and make every backup root inside it
+ * (bd_roots_inside) part of it, in one step: their files and folders, with
+ * their versions and copies, their stars, encrypted folders and own skip
+ * lists, are the new root's, and those roots are no longer listed. In the
+ * catalog only: nothing on a drive moves, and a copy keeps its place there,
+ * so nothing is copied again. Otherwise as bd_source_add (a root inside it
+ * only through a link or a mapped drive: refused as bd_source_add refuses
+ * it). */
+bd_status bd_source_add_holding(bd_catalog *cat, const char *folder, int64_t *out_source_id);
+
 /* The active backup root that holds path (a file or folder), or NULL; free
  * it. A scan never backs up the open database or its side files, so a
  * database saved inside a root is not added to every backup again. */
 char *bd_root_holding(bd_catalog *cat, const char *path);
+
+/* How two folders lie, as bd_source_add compares backup roots (another
+ * spelling, a link or a mapped drive on the way count as the same): 1 the
+ * same folder, 2 a is inside b, 3 b is inside a, 0 neither. For the
+ * folders chosen for a new database, before it exists. */
+int bd_folders_overlap(const char *a, const char *b);
+
+/* The top of the BRODALF backup drive (of any database) that path, a file
+ * or folder there or to be made there, is on: the folder above it that
+ * holds BRODALF/<id>/BRODALF.media; malloc'd, or NULL when it is on none.
+ * A database kept there is lost with the drive. */
+char *bd_backup_drive_holding(const char *path);
 
 /* Point a backup root at where it is now, e.g. under another user name
  * or on another drive letter. The root keeps its name on the drives and
@@ -253,9 +282,34 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
  * with their size; nothing about the computer is used. Gives the folder
  * holding the most of them (free it), how many of how many checked are
  * there, and how many folders counted (places; 0 and NULL when none).
- * Changes nothing: a scan points a root that is not there at the folder
- * when places is 1, and the caller offers the folder otherwise. */
+ * Changes nothing. A scan points a root that is not there at the folder
+ * without asking only when it is the one place, at least 15 of every 16
+ * files checked are there, and the smallest few of them (up to 4) hold
+ * the contents the catalog has for them; never a root that waits for its
+ * disk (bd_source_wait_for_disk). Otherwise the caller offers the folders
+ * (bd_source_find_all). */
 char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t *checked, int *places);
+
+/* One folder that holds a missing backup root's files. */
+typedef struct {
+    const char *path;
+    int64_t found;   /* of the files checked, how many are there */
+    int64_t checked;
+} bd_place_info;
+typedef int (*bd_place_fn)(void *ctx, const bd_place_info *p);
+/* Every folder bd_source_find counts, the one holding the most first; fn
+ * returns nonzero to stop. How many were listed, or -1 out of memory. */
+int bd_source_find_all(bd_catalog *cat, int64_t source_id, bd_place_fn fn, void *ctx);
+
+/* Where a backup root was before a scan found its files somewhere else and
+ * pointed it there (bd_scan_stats.roots_found), malloc'd; NULL when it was
+ * not moved that way, or once the user chose where it is (bd_source_relocate,
+ * bd_source_keep_place). *back (may be NULL) gets 1 when that folder is
+ * there again and holds the root's files: the user should say which of
+ * the two is the real one, because only one is backed up. */
+char *bd_source_old_place(bd_catalog *cat, int64_t source_id, int *back);
+/* The backup root stays where it is now: forget where it was before. */
+bd_status bd_source_keep_place(bd_catalog *cat, int64_t source_id);
 
 /* Stop backing up a root (active 0), or start again (1). A stopped root is
  * not scanned or backed up and does not count toward the copies you want;
@@ -303,6 +357,10 @@ typedef struct {
      * files somewhere else (bd_source_find), in one place only: pointed
      * there (bd_source_relocate) and scanned there. Not in roots_missing. */
     int64_t roots_found;
+    /* Backup roots found that way earlier whose old folder is there again
+     * holding their files (bd_source_old_place): the user should say which
+     * is the real one. */
+    int64_t roots_back;
 } bd_scan_stats;
 
 /* The skip lists: files and folders a scan leaves out. One list for the
@@ -349,7 +407,7 @@ typedef struct {
  * anything deleted, and listed (bd_source_info.missing) so the user can
  * say where it is now (bd_source_relocate) or restore it. Before that, a
  * root that is not there is looked for by its files (bd_source_find): when
- * one folder holds them, the root is pointed there and scanned there
+ * one folder surely holds them, the root is pointed there and scanned there
  * (bd_scan_stats.roots_found). Files moved or renamed inside or between
  * roots are recognised by checksum and keep their versions and copies;
  * nothing on any drive is moved. A root whose folder is there but holds
@@ -363,8 +421,9 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
  * the catalog with their copies). Good for one scan; until this database
  * is closed. */
 bd_status bd_source_accept_gone(bd_catalog *cat, int64_t source_id);
-/* The backup root is on a disk that is usually unplugged (on: 1): while it
- * cannot be found, scans skip it quietly (bd_scan_stats.roots_waiting).
+/* The backup root is on a disk that is usually unplugged, or on a network
+ * share that is often out of reach (on: 1): while it cannot be found,
+ * scans skip it quietly (bd_scan_stats.roots_waiting).
  * The first scan that finds it again ends the wait. Kept in the catalog. */
 bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on);
 
@@ -1366,6 +1425,10 @@ typedef struct {
     int64_t deleted_short;
     int64_t old_versions_kept;
     int64_t old_versions_short;
+    /* Backup roots that are backed up but have never finished a scan
+     * (bd_source_info.last_scan_ms 0): the files they hold are not all in
+     * the catalog yet, so the counts above say nothing of them. */
+    int64_t roots_not_scanned;
 } bd_risk_stats;
 
 typedef int (*bd_risk_fn)(void *ctx, const bd_risk_info *info);

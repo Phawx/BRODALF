@@ -326,6 +326,332 @@ bd_status bd_source_add_ex(bd_catalog *cat, const char *folder, int64_t *out_id,
     return s;
 }
 
+/* ---- Making backup roots part of a new one -------------------------------- */
+
+typedef struct {
+    int64_t id;
+    char *path;
+    char *rel; /* its place in the new root: '/' between names, as its path writes them */
+} inner_root;
+
+static void inner_free(inner_root *r, int n)
+{
+    for (int i = 0; i < n; i++) {
+        free(r[i].path);
+        free(r[i].rel);
+    }
+    free(r);
+}
+
+/* folder as bd_source_add keeps it: a full path, no '/' at the end. */
+static char *root_path(const char *folder)
+{
+    char *path = bd_full_path(folder);
+    if (!path) return NULL;
+    size_t len = strlen(path);
+    while (len > 1 && (path[len - 1] == '/' || path[len - 1] == '\\') && !(len == 3 && path[1] == ':')) path[--len] = '\0';
+    return path;
+}
+
+/* The last n names of path, '/' between them; NULL if it has fewer, or a
+ * "." or ".." among them. */
+static char *last_names(const char *path, int n)
+{
+    size_t len = strlen(path);
+    char *out = malloc(len + 1);
+    if (!out) return NULL;
+    size_t end = len, used = 0;
+    char *r = out + len;
+    *r = '\0';
+    for (int k = 0; k < n; k++) {
+        while (end > 0 && (path[end - 1] == '/' || path[end - 1] == '\\')) end--;
+        size_t start = end;
+        while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\') start--;
+        size_t seg = end - start;
+        if (seg == 0 || (seg == 1 && path[start] == '.') || (seg == 2 && path[start] == '.' && path[start + 1] == '.')) {
+            free(out);
+            return NULL;
+        }
+        if (used) { *--r = '/'; used++; }
+        r -= seg;
+        memcpy(r, path + start, seg);
+        used += seg;
+        end = start;
+    }
+    memmove(out, r, used + 1);
+    return out;
+}
+
+/* The backup roots that are backed up (active) inside path, a full path
+ * as root_path gives it, with each one's place in it. *by_link (may be
+ * NULL) gets 1 when one is inside it only another way (a link or a mapped
+ * drive): its place cannot be told. */
+static bd_status roots_inside(bd_catalog *cat, const char *path, inner_root **out, int *count, int *by_link)
+{
+    *out = NULL;
+    *count = 0;
+    if (by_link) *by_link = 0;
+    root_keys k;
+    if (!keys_of(path, &k)) return BD_ERR_NOMEM;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id, path FROM sources WHERE active<>0 ORDER BY id", -1, &q, NULL) != SQLITE_OK) {
+        keys_free(&k);
+        return bd_fail_db(cat, "source lookup");
+    }
+    bd_status s = BD_OK;
+    inner_root *list = NULL;
+    int n = 0;
+    while (s == BD_OK && sqlite3_step(q) == SQLITE_ROW) {
+        const char *other = (const char *)sqlite3_column_text(q, 1);
+        root_keys o;
+        if (!other || !keys_of(other, &o)) { s = BD_ERR_NOMEM; break; }
+        if (key_inside(o.key, k.key)) {
+            size_t lo = strlen(k.key);
+            const char *tail = o.key + lo + (o.key[lo] == '/');
+            int names = 1;
+            for (const char *c = tail; *c; c++) names += *c == '/';
+            inner_root *more = realloc(list, sizeof(inner_root) * (size_t)(n + 1));
+            if (!more) s = BD_ERR_NOMEM;
+            else {
+                list = more;
+                list[n].id = sqlite3_column_int64(q, 0);
+                list[n].path = bd_strdup(other);
+                list[n].rel = last_names(other, names);
+                if (!list[n].path || !list[n].rel) {
+                    s = list[n].path && !list[n].rel ? bd_fail(cat, BD_ERR_INVALID, "the path of the backup root %s cannot be read", other)
+                                                     : BD_ERR_NOMEM;
+                    free(list[n].path);
+                    free(list[n].rel);
+                } else {
+                    n++;
+                }
+            }
+        } else if (by_link && keys_inside(&o, &k)) {
+            *by_link = 1;
+        }
+        keys_free(&o);
+    }
+    sqlite3_finalize(q);
+    keys_free(&k);
+    if (s != BD_OK) { inner_free(list, n); return s; }
+    *out = list;
+    *count = n;
+    return BD_OK;
+}
+
+int bd_roots_inside(bd_catalog *cat, const char *folder, bd_root_fn fn, void *ctx)
+{
+    char *path = root_path(folder);
+    if (!path) return -1;
+    inner_root *in;
+    int n;
+    bd_status s = roots_inside(cat, path, &in, &n, NULL);
+    free(path);
+    if (s != BD_OK) return -1;
+    for (int i = 0; i < n; i++)
+        if (fn && fn(ctx, in[i].id, in[i].path)) break;
+    inner_free(in, n);
+    return n;
+}
+
+/* A root's own skip list for the root it is now part of, at rel in it: a
+ * path from the root's top gets rel in front, and a name anywhere in it
+ * becomes that name anywhere under rel. (A * in such a name may then also
+ * stand for a folder or more under rel, as * does in a path.) Comments
+ * stay. */
+static char *skip_moved(const char *list, const char *rel)
+{
+    size_t cap = strlen(list) * 2 + 64, used = 0;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    out[0] = '\0';
+    for (const char *p = list; *p;) {
+        const char *end = p;
+        while (*end && *end != '\n') end++;
+        const char *a = p, *b = end;
+        while (a < b && (*a == ' ' || *a == '\t')) a++;
+        while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\r')) b--;
+        p = *end ? end + 1 : end;
+        char *line;
+        if (a == b || *a == '#') {
+            line = bd_sprintf("%.*s\n", (int)(b - a), a);
+        } else {
+            int anchored = *a == '/' || *a == '\\';
+            while (a < b && (*a == '/' || *a == '\\')) a++;
+            const char *body_end = b;
+            if (body_end - a > 1 && (body_end[-1] == '/' || body_end[-1] == '\\')) body_end--; /* a folder only */
+            int has_slash = 0;
+            for (const char *c = a; c < body_end; c++) has_slash |= *c == '/' || *c == '\\';
+            if (a == b) line = bd_strdup("");
+            else if (anchored || has_slash) line = bd_sprintf("/%s/%.*s\n", rel, (int)(b - a), a);
+            else line = bd_sprintf("/%s/%.*s\n/%s/*/%.*s\n", rel, (int)(b - a), a, rel, (int)(b - a), a);
+        }
+        if (!line) { free(out); return NULL; }
+        size_t ln = strlen(line);
+        if (used + ln + 1 > cap) {
+            cap = (used + ln + 1) * 2;
+            char *more = realloc(out, cap);
+            if (!more) { free(line); free(out); return NULL; }
+            out = more;
+        }
+        memcpy(out + used, line, ln + 1);
+        used += ln;
+        free(line);
+    }
+    return out;
+}
+
+static int exec_ids(bd_catalog *cat, const char *sql, int64_t a, int64_t b)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int64(q, 1, a);
+    if (sqlite3_bind_parameter_count(q) >= 2) sqlite3_bind_int64(q, 2, b);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* The folder node at rel in the root (made, with the folders it is in, if
+ * the root has none); 0 on a database error. */
+static int64_t folder_node(bd_catalog *cat, int64_t source_id, const char *rel, int64_t seen_ms)
+{
+    int64_t parent = 0;
+    for (const char *e = rel;; e++) {
+        if (*e != '/' && *e != '\0') continue;
+        char *part = bd_sprintf("%.*s", (int)(e - rel), rel);
+        if (!part) return 0;
+        sqlite3_stmt *q;
+        int64_t id = 0;
+        if (sqlite3_prepare_v2(cat->db, "SELECT id FROM nodes WHERE source_id=? AND rel_path=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, source_id);
+            sqlite3_bind_text(q, 2, part, -1, SQLITE_STATIC);
+            if (sqlite3_step(q) == SQLITE_ROW) id = sqlite3_column_int64(q, 0);
+            sqlite3_finalize(q);
+        }
+        if (!id && sqlite3_prepare_v2(cat->db, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms,rel_fold)"
+                                               " VALUES(?,?,?,?,1,?,?)", -1, &q, NULL) == SQLITE_OK) {
+            char *fold = bd_path_key(part);
+            sqlite3_bind_int64(q, 1, source_id);
+            if (parent) sqlite3_bind_int64(q, 2, parent);
+            else sqlite3_bind_null(q, 2);
+            sqlite3_bind_text(q, 3, part, -1, SQLITE_STATIC);
+            sqlite3_bind_text(q, 4, bd_rel_basename(part), -1, SQLITE_STATIC);
+            sqlite3_bind_int64(q, 5, seen_ms);
+            if (fold) sqlite3_bind_text(q, 6, fold, -1, SQLITE_STATIC);
+            else sqlite3_bind_null(q, 6);
+            if (sqlite3_step(q) == SQLITE_DONE) id = sqlite3_last_insert_rowid(cat->db);
+            sqlite3_finalize(q);
+            free(fold);
+        }
+        free(part);
+        if (!id) return 0;
+        parent = id;
+        if (*e == '\0') return id;
+    }
+}
+
+/* Root `in` becomes part of root `into`, in the catalog only: its files
+ * and folders (with their versions and copies, which keep their place on
+ * the drives), stars, encrypted folders and own skip list go to `into`
+ * at in->rel, and the root itself is gone. In the caller's transaction. */
+static bd_status take_in(bd_catalog *cat, int64_t into, const inner_root *in)
+{
+    int64_t now = bd_now_ms();
+    int64_t top = folder_node(cat, into, in->rel, now);
+    if (!top) return bd_fail_db(cat, "make the folder part of the new backup root");
+    char *fold = bd_path_key(in->rel);
+    sqlite3_stmt *q;
+    bd_status s = BD_OK;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE nodes SET source_id=?1, parent_id=COALESCE(parent_id,?2), rel_path=?3||'/'||rel_path,"
+                                    " rel_fold=CASE WHEN rel_fold IS NULL THEN NULL ELSE ?4||'/'||rel_fold END WHERE source_id=?5",
+                           -1, &q, NULL) != SQLITE_OK) {
+        s = bd_fail_db(cat, "make the folder part of the new backup root");
+    } else {
+        sqlite3_bind_int64(q, 1, into);
+        sqlite3_bind_int64(q, 2, top);
+        sqlite3_bind_text(q, 3, in->rel, -1, SQLITE_STATIC);
+        if (fold) sqlite3_bind_text(q, 4, fold, -1, SQLITE_STATIC);
+        else sqlite3_bind_null(q, 4);
+        sqlite3_bind_int64(q, 5, in->id);
+        if (sqlite3_step(q) != SQLITE_DONE) s = bd_fail_db(cat, "make the folder part of the new backup root");
+        sqlite3_finalize(q);
+    }
+    free(fold);
+    static const char *const marks[] = {
+        "UPDATE stars SET source_id=?1, rel_path=CASE WHEN rel_path='' THEN ?2 ELSE ?2||'/'||rel_path END WHERE source_id=?3",
+        "UPDATE encrypt_paths SET source_id=?1, rel_path=CASE WHEN rel_path='' THEN ?2 ELSE ?2||'/'||rel_path END WHERE source_id=?3",
+    };
+    for (size_t i = 0; s == BD_OK && i < sizeof(marks) / sizeof(marks[0]); i++) {
+        if (sqlite3_prepare_v2(cat->db, marks[i], -1, &q, NULL) != SQLITE_OK) { s = bd_fail_db(cat, "move the starred files"); break; }
+        sqlite3_bind_int64(q, 1, into);
+        sqlite3_bind_text(q, 2, in->rel, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(q, 3, in->id);
+        if (sqlite3_step(q) != SQLITE_DONE) s = bd_fail_db(cat, "move the starred files");
+        sqlite3_finalize(q);
+    }
+    if (s == BD_OK) {
+        char *own = bd_source_skip_get(cat, in->id), *have = bd_source_skip_get(cat, into);
+        char *moved = own && *own ? skip_moved(own, in->rel) : NULL;
+        if (!own || !have || (*own && !moved)) {
+            s = BD_ERR_NOMEM;
+        } else if (moved) {
+            size_t hl = strlen(have);
+            char *all = bd_sprintf("%s%s%s", have, hl && have[hl - 1] != '\n' ? "\n" : "", moved);
+            s = all ? bd_source_skip_set(cat, into, all) : BD_ERR_NOMEM;
+            free(all);
+        }
+        free(own);
+        free(have);
+        free(moved);
+    }
+    static const char *const keys[] = {"skip_list", "wait_disk", "moved_from", "scan_stopped"};
+    for (size_t i = 0; s == BD_OK && i < sizeof(keys) / sizeof(keys[0]); i++) {
+        char key[48];
+        snprintf(key, sizeof(key), "%s.%lld", keys[i], (long long)in->id);
+        if (bd_setting_del(cat, key) != 0) s = bd_fail_db(cat, "forget the folder's settings");
+    }
+    static const char *const gone[] = {
+        "DELETE FROM temp.missing_sources WHERE source_id=?", "DELETE FROM temp.accept_gone WHERE source_id=?",
+        "DELETE FROM temp.root_disks WHERE source_id=?",      "DELETE FROM temp.links WHERE source_id=?",
+        "DELETE FROM sources WHERE id=?",
+    };
+    for (size_t i = 0; s == BD_OK && i < sizeof(gone) / sizeof(gone[0]); i++)
+        if (exec_ids(cat, gone[i], in->id, 0) != 0) s = bd_fail_db(cat, "make the folder part of the new backup root");
+    return s;
+}
+
+bd_status bd_source_add_holding(bd_catalog *cat, const char *folder, int64_t *out_id)
+{
+    char *path = root_path(folder);
+    if (!path) return BD_ERR_NOMEM;
+    inner_root *in;
+    int n, by_link;
+    bd_status s = roots_inside(cat, path, &in, &n, &by_link);
+    free(path);
+    if (s != BD_OK) return s;
+    if (n == 0 || by_link) { /* nothing to take in, or not all of it can be: as bd_source_add */
+        inner_free(in, n);
+        return bd_source_add(cat, folder, out_id);
+    }
+    if (bd_exec(cat, "BEGIN") != 0) { inner_free(in, n); return bd_fail_db(cat, "add source"); }
+    for (int i = 0; s == BD_OK && i < n; i++)
+        if (exec_ids(cat, "UPDATE sources SET active=0 WHERE id=?", in[i].id, 0) != 0) s = bd_fail_db(cat, "add source");
+    int64_t id = 0;
+    int is_new = 0;
+    if (s == BD_OK) s = bd_source_add_ex(cat, folder, &id, &is_new);
+    if (s == BD_OK && !is_new) s = bd_fail(cat, BD_ERR_EXISTS, "%s is already a backup root", folder);
+    for (int i = 0; s == BD_OK && i < n; i++) s = take_in(cat, id, &in[i]);
+    inner_free(in, n);
+    if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "add source");
+    if (s != BD_OK) {
+        bd_exec(cat, "ROLLBACK");
+        return s;
+    }
+    if (out_id) *out_id = id;
+    return BD_OK;
+}
+
 bd_status bd_sources_fix_names(bd_catalog *cat, bd_log_fn log, void *log_ctx)
 {
     sqlite3_stmt *q;
@@ -394,7 +720,27 @@ static const char DEFAULT_SKIP[] =
     "__pycache__/\n"
     ".cache/\n"
     ".pytest_cache/\n"
-    ".gradle/\n";
+    ".gradle/\n"
+    "# Windows: a user's settings, always in use, and the caches and\n"
+    "# temporary files in a user's AppData folder (a folder named Cache\n"
+    "# elsewhere, like in Documents, is still backed up)\n"
+    "NTUSER.DAT*\n"
+    "UsrClass.dat*\n"
+    "INetCache/\n"
+    "AppData/Local/Temp/\n"
+    "*/AppData/Local/Temp/\n"
+    "AppData/Local/CrashDumps/\n"
+    "*/AppData/Local/CrashDumps/\n"
+    "AppData/*/Crash Dumps/\n"
+    "*/AppData/*/Crash Dumps/\n"
+    "AppData/*/Cache/\n"
+    "*/AppData/*/Cache/\n"
+    "AppData/*/Code Cache/\n"
+    "*/AppData/*/Code Cache/\n"
+    "AppData/*/GPUCache/\n"
+    "*/AppData/*/GPUCache/\n"
+    "AppData/*/cache2/\n"
+    "*/AppData/*/cache2/\n";
 
 const char *bd_skip_list_default(void)
 {
@@ -520,6 +866,14 @@ static void skip_free(skip_list *l)
     l->n = 0;
 }
 
+/* 1 if s has a byte beyond ASCII. */
+static int has_high(const char *s)
+{
+    for (; *s; s++)
+        if ((unsigned char)*s >= 0x80) return 1;
+    return 0;
+}
+
 static void skip_parse(const char *text, skip_list *l)
 {
     l->rules = NULL;
@@ -544,6 +898,12 @@ static void skip_parse(const char *text, skip_list *l)
         while (r.pat[0] == '/') memmove(r.pat, r.pat + 1, strlen(r.pat));
         r.whole_path = anchored || strchr(r.pat, '/') != NULL;
         if (!r.pat[0]) { free(r.pat); continue; }
+        /* Letters beyond ASCII ignore case as the file system's names do
+         * (bd_fold_case): the pattern is folded here, a name when matched. */
+        if (has_high(r.pat)) {
+            char *f = bd_fold_case(r.pat);
+            if (f) { free(r.pat); r.pat = f; }
+        }
         skip_rule *nr = realloc(l->rules, sizeof(skip_rule) * (size_t)(l->n + 1));
         if (!nr) { free(r.pat); continue; }
         l->rules = nr;
@@ -556,28 +916,47 @@ static int lower_c(int c)
     return c >= 'A' && c <= 'Z' ? c + 32 : c;
 }
 
-/* * and ? wildcards, ignoring ASCII case. */
+/* The character after the one s starts (UTF-8). */
+static const char *next_char(const char *s)
+{
+    s++;
+    while ((*s & 0xC0) == 0x80) s++;
+    return s;
+}
+
+/* * and ? wildcards, ignoring ASCII case (and other case where both were
+ * folded); ? is one character, not one byte. */
 static int glob_match(const char *p, const char *s)
 {
     const char *star = NULL, *mark = NULL;
     while (*s) {
         if (*p == '*') { star = p++; mark = s; continue; }
-        if (*p && (*p == '?' || lower_c((unsigned char)*p) == lower_c((unsigned char)*s))) { p++; s++; continue; }
-        if (star) { p = star + 1; s = ++mark; continue; }
+        if (*p == '?') { p++; s = next_char(s); continue; }
+        if (*p && lower_c((unsigned char)*p) == lower_c((unsigned char)*s)) { p++; s++; continue; }
+        if (star) { p = star + 1; s = mark = next_char(mark); continue; }
         return 0;
     }
     while (*p == '*') p++;
     return *p == '\0';
 }
 
-static int skip_one(const skip_list *l, const char *rel, int is_dir)
+/* rel as patterns are matched against it: folded when it has letters
+ * beyond ASCII (*fold gets the copy to free), else rel itself. */
+static const char *skip_key(const char *rel, char **fold)
 {
-    const char *name = strrchr(rel, '/');
-    name = name ? name + 1 : rel;
+    *fold = has_high(rel) ? bd_fold_case(rel) : NULL;
+    return *fold ? *fold : rel;
+}
+
+/* key: from skip_key. */
+static int skip_one_key(const skip_list *l, const char *key, int is_dir)
+{
+    const char *name = strrchr(key, '/');
+    name = name ? name + 1 : key;
     for (int i = 0; i < l->n; i++) {
         const skip_rule *r = &l->rules[i];
         if (r->dir_only && !is_dir) continue;
-        if (glob_match(r->pat, r->whole_path ? rel : name)) return 1;
+        if (glob_match(r->pat, r->whole_path ? key : name)) return 1;
     }
     return 0;
 }
@@ -586,12 +965,15 @@ static int skip_one(const skip_list *l, const char *rel, int is_dir)
 static int skip_any(const skip_list *l, const char *rel, int is_dir)
 {
     if (!l->n) return 0;
-    if (skip_one(l, rel, is_dir)) return 1;
-    char *dir = bd_strdup(rel);
+    char *fold;
+    const char *key = skip_key(rel, &fold);
+    if (skip_one_key(l, key, is_dir)) { free(fold); return 1; }
+    char *dir = bd_strdup(key);
+    free(fold);
     int hit = 0;
     for (char *slash = dir ? strrchr(dir, '/') : NULL; slash && !hit; slash = strrchr(dir, '/')) {
         *slash = '\0';
-        hit = skip_one(l, dir, 1);
+        hit = skip_one_key(l, dir, 1);
     }
     free(dir);
     return hit;
@@ -622,6 +1004,7 @@ int bd_skip_match(const char *patterns, const char *rel_path, int is_dir)
 
 int bd_test_scan_workers = 0;
 const char *bd_test_online_only = NULL;
+int bd_test_no_change_time = 0;
 
 static int bd_rel_ends_with(const char *rel, const char *tail)
 {
@@ -637,6 +1020,8 @@ typedef struct {
     int is_new, was_deleted;
     int bitrot;     /* unchanged by size and time: read again to find damage */
     int64_t node_id, old_version, size, mtime_ns, btime_ns;
+    int64_t ctime_ns, old_ctime; /* its change time now (0: not known), and as kept (had_ctime) */
+    int had_ctime;
     char expect[BD_HASH_HEX_LEN + 1]; /* with bitrot: the hash on record */
     /* From the worker. */
     int done, rc, in_use;
@@ -671,7 +1056,7 @@ typedef struct {
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
     sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged, *clear_damaged;
-    sqlite3_stmt *note_online, *note_link;
+    sqlite3_stmt *note_online, *note_link, *set_ctime;
     int have_damaged; /* damaged_files has rows: a file read again may clear one */
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
@@ -786,6 +1171,17 @@ static int forget_damage(scan_ctx *c, int64_t node_id)
     return 0;
 }
 
+/* Keep the change time a file has now (file_change_times). 0, or -1
+ * (db_error set) on a database error. */
+static int note_ctime(scan_ctx *c, int64_t node_id, int64_t ctime_ns)
+{
+    sqlite3_reset(c->set_ctime);
+    sqlite3_bind_int64(c->set_ctime, 1, node_id);
+    sqlite3_bind_int64(c->set_ctime, 2, ctime_ns);
+    if (sqlite3_step(c->set_ctime) != SQLITE_DONE) { c->db_error = 1; return -1; }
+    return 0;
+}
+
 /* Record one hashed file, as the scan always did. Frees the job's strings. */
 static void apply_hash(scan_ctx *c, hash_job *j)
 {
@@ -803,6 +1199,9 @@ static void apply_hash(scan_ctx *c, hash_job *j)
         goto done;
     }
     c->stats->bytes_hashed += j->hashed;
+    /* Read now: its change time is kept, so it is not read again until
+     * that moves (or its size or modified time do). */
+    if (j->ctime_ns && (!j->had_ctime || j->old_ctime != j->ctime_ns) && note_ctime(c, j->node_id, j->ctime_ns) != 0) goto done;
 
     if (j->bitrot) {
         /* Same size and time as before, but are the contents? A file that
@@ -1067,6 +1466,75 @@ char *bd_root_holding(bd_catalog *cat, const char *path)
     return found;
 }
 
+int bd_folders_overlap(const char *a, const char *b)
+{
+    root_keys ka, kb;
+    if (!a || !b || !keys_of(a, &ka)) return 0;
+    if (!keys_of(b, &kb)) {
+        keys_free(&ka);
+        return 0;
+    }
+    int r = keys_same(&ka, &kb) ? 1 : keys_inside(&ka, &kb) ? 2 : keys_inside(&kb, &ka) ? 3 : 0;
+    keys_free(&ka);
+    keys_free(&kb);
+    return r;
+}
+
+/* The folder p is in ("C:\x" for "C:\x\y", "C:\" for "C:\x", "/" for
+ * "/x"), or NULL at the top (of a drive, or of a network share). */
+static char *folder_above(const char *p)
+{
+    size_t n = strlen(p);
+    while (n > 1 && (p[n - 1] == '/' || p[n - 1] == '\\')) n--;
+    size_t i = n;
+    while (i > 0 && p[i - 1] != '/' && p[i - 1] != '\\') i--;
+    if (i == 0 || i == n) return NULL;
+    size_t keep = i;
+    if (keep > 1 && !(keep == 3 && p[1] == ':')) keep--; /* the '/' after it, but not a top folder's own */
+    int unc = (p[0] == '/' || p[0] == '\\') && (p[1] == '/' || p[1] == '\\');
+    if (unc) { /* not above \\server\share */
+        int seps = 0;
+        for (size_t k = 2; k < keep; k++) seps += p[k] == '/' || p[k] == '\\';
+        if (seps < 1) return NULL;
+    }
+    return bd_sprintf("%.*s", (int)keep, p);
+}
+
+typedef struct { const char *dir; int found; } drive_look;
+
+static int drive_look_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    drive_look *l = ctx;
+    if (!st->is_dir) return 0;
+    char *f = bd_sprintf("%s/%s/%s", l->dir, rel, BD_MEDIA_FILE);
+    bd_media_file mf;
+    if (f && bd_media_file_read(f, &mf) == 0) l->found = 1;
+    free(f);
+    return l->found ? 1 : BD_WALK_SKIP;
+}
+
+char *bd_backup_drive_holding(const char *path)
+{
+    char *d = path ? bd_full_path(path) : NULL;
+    while (d) {
+        char *m = bd_path_join(d, BD_MEDIA_DIR);
+        bd_stat_t st;
+        if (m && bd_stat(m, &st) == 0 && st.is_dir && !st.is_link) {
+            drive_look l = {m, 0};
+            bd_walk(m, drive_look_cb, NULL, &l);
+            if (l.found) {
+                free(m);
+                return d;
+            }
+        }
+        free(m);
+        char *up = folder_above(d);
+        free(d);
+        d = up;
+    }
+    return NULL;
+}
+
 /* 1 if path is in an active backup root. */
 static int in_a_root(bd_catalog *cat, const char *path)
 {
@@ -1152,7 +1620,11 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     }
     if (!st->is_dir && !st->is_file) return 0;
     /* Parent folders on the skip lists were never entered. */
-    if (skip_one(c->skip, rel, st->is_dir) || skip_one(c->own_skip, rel, st->is_dir)) {
+    char *fold = NULL;
+    const char *skey = c->skip->n || c->own_skip->n ? skip_key(rel, &fold) : rel;
+    int skipped = skip_one_key(c->skip, skey, st->is_dir) || skip_one_key(c->own_skip, skey, st->is_dir);
+    free(fold);
+    if (skipped) {
         c->stats->skipped++;
         return st->is_dir ? BD_WALK_SKIP : 0;
     }
@@ -1162,8 +1634,8 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     sqlite3_reset(c->find_node);
     sqlite3_bind_int64(c->find_node, 1, c->source_id);
     sqlite3_bind_text(c->find_node, 2, rel, -1, SQLITE_TRANSIENT);
-    int64_t node_id = 0, old_size = -1, old_mtime = -1, old_version = 0;
-    int was_deleted = 0;
+    int64_t node_id = 0, old_size = -1, old_mtime = -1, old_version = 0, old_ctime = 0;
+    int was_deleted = 0, had_ctime = 0;
     char old_hash[BD_HASH_HEX_LEN + 1] = "";
     if (sqlite3_step(c->find_node) == SQLITE_ROW) {
         node_id = sqlite3_column_int64(c->find_node, 0);
@@ -1173,6 +1645,8 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         was_deleted = sqlite3_column_int(c->find_node, 4);
         const char *h = (const char *)sqlite3_column_text(c->find_node, 5);
         if (h) snprintf(old_hash, sizeof(old_hash), "%s", h);
+        had_ctime = sqlite3_column_type(c->find_node, 6) != SQLITE_NULL;
+        old_ctime = sqlite3_column_int64(c->find_node, 6);
     }
     /* Where names ignore case (Windows), Photo.JPG that is now photo.jpg
      * was renamed: keep its node, versions and copies under the new name. */
@@ -1190,6 +1664,8 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
             was_deleted = sqlite3_column_int(c->find_case, 4);
             const char *h = (const char *)sqlite3_column_text(c->find_case, 5);
             if (h) snprintf(old_hash, sizeof(old_hash), "%s", h);
+            had_ctime = sqlite3_column_type(c->find_case, 6) != SQLITE_NULL;
+            old_ctime = sqlite3_column_int64(c->find_case, 6);
             sqlite3_reset(c->find_case);
             sqlite3_reset(c->rename_node);
             sqlite3_bind_text(c->rename_node, 1, rel, -1, SQLITE_TRANSIENT);
@@ -1239,12 +1715,27 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 
     int is_new = old_size < 0 || !old_version; /* no version yet: first read now */
     int bitrot = 0;
+    int64_t ctime_ns = bd_test_no_change_time ? 0 : st->ctime_ns;
     if (!is_new && old_version && old_size == st->size && old_mtime == st->mtime_ns) {
-        if (!c->bitrot || !old_hash[0] || st->online_only) {
-            if (was_deleted) c->stats->files_new++; /* back where it once was */
-            return 0;
+        /* The same size and modified time. If its change time moved, the
+         * contents may have changed with the modified time put back (some
+         * programs do that, VeraCrypt containers by default): read it again
+         * as a changed file. The same checksum is no new version. A file
+         * whose change time was never kept (scanned by an older BRODALF) is
+         * only recorded now; a cloud file is never read here. */
+        int ctime_moved = ctime_ns && had_ctime && old_ctime != ctime_ns && !st->online_only;
+        if (!ctime_moved) {
+            if (ctime_ns && !had_ctime && !st->online_only) {
+                if (note_ctime(c, node_id, ctime_ns) != 0) return 1;
+                had_ctime = 1;
+                old_ctime = ctime_ns;
+            }
+            if (!c->bitrot || !old_hash[0] || st->online_only) {
+                if (was_deleted) c->stats->files_new++; /* back where it once was */
+                return 0;
+            }
+            bitrot = 1;
         }
-        bitrot = 1;
     }
     /* A cloud file that is not on this PC would be downloaded by reading
      * it. Leave it alone: the catalog keeps what it knew, and nothing is
@@ -1288,6 +1779,9 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     j.size = st->size;
     j.mtime_ns = st->mtime_ns;
     j.btime_ns = st->btime_ns;
+    j.ctime_ns = st->online_only ? 0 : ctime_ns;
+    j.old_ctime = old_ctime;
+    j.had_ctime = had_ctime;
     j.bitrot = bitrot;
     if (bitrot) memcpy(j.expect, old_hash, sizeof(j.expect));
     if (pool_submit(c, &j) != 0) {
@@ -1459,6 +1953,28 @@ bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on)
     return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "remember the backup root's disk");
 }
 
+int bd_setting_del(bd_catalog *cat, const char *key)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM settings WHERE key=?", -1, &q, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* 1 if a backup root is on a network share: a \\server\share path, or a
+ * drive letter that stands for one (bd_real_path). */
+static int on_network(const char *root)
+{
+    char *real = bd_real_path(root);
+    const char *p = real ? real : root;
+    int unc = (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/');
+    int net = unc && p[2] && ((p[2] != '?' && p[2] != '.') || strncmp(p + 2, "?\\UNC\\", 5) == 0 || strncmp(p + 2, "?/UNC/", 5) == 0);
+    free(real);
+    return net;
+}
+
 static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot, hash_pool *pool, int64_t source_id,
                              const char *root, int64_t scan_ms, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
@@ -1471,7 +1987,10 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         note_missing(cat, source_id, 1, 0);
         if (waiting) {
             stats->roots_waiting++;
-            bd_logf(log, log_ctx, "backup root %s waits for its disk to be plugged in; skipped (nothing marked deleted)", root);
+            if (on_network(root))
+                bd_logf(log, log_ctx, "backup root %s waits until its network share can be reached; skipped (nothing marked deleted)", root);
+            else
+                bd_logf(log, log_ctx, "backup root %s waits for its disk to be plugged in; skipped (nothing marked deleted)", root);
         } else {
             bd_logf(log, log_ctx, "backup root %s is not reachable; skipped (nothing marked deleted)", root);
         }
@@ -1480,6 +1999,12 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     if (waiting) bd_source_wait_for_disk(cat, source_id, 0);
     note_missing(cat, source_id, 0, 0);
     bd_scan_stats before = *stats;
+    /* The last scan of this root was stopped part way: what it found new
+     * is new to this scan too (moved files are matched against it, and it
+     * says nothing about whether the folder holds the root's files). */
+    char stop_key[48], stop_val[8];
+    snprintf(stop_key, sizeof(stop_key), "scan_stopped.%lld", (long long)source_id);
+    int resumed = bd_setting_get(cat, stop_key, stop_val, sizeof(stop_val));
     char *own_text = bd_source_skip_get(cat, source_id);
     skip_list own;
     skip_parse(own_text, &own);
@@ -1498,14 +2023,15 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     c.pool = pool;
 
     struct { sqlite3_stmt **st; const char *sql; } stmts[] = {
-        {&c.find_node, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash FROM nodes n"
-                       " LEFT JOIN versions v ON v.id=n.current_version_id WHERE n.source_id=? AND n.rel_path=?"},
+        {&c.find_node, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash, t.ctime_ns FROM nodes n"
+                       " LEFT JOIN versions v ON v.id=n.current_version_id LEFT JOIN file_change_times t ON t.node_id=n.id"
+                       " WHERE n.source_id=? AND n.rel_path=?"},
         {&c.find_parent, "SELECT id FROM nodes WHERE source_id=? AND rel_path=?"},
         {&c.insert_node, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms,rel_fold,btime_ns)"
                          " VALUES(?,?,?,?,?,?,?,?)"},
         /* The same name in other letter case, not seen yet in this scan. */
-        {&c.find_case, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash FROM nodes n"
-                       " LEFT JOIN versions v ON v.id=n.current_version_id"
+        {&c.find_case, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash, t.ctime_ns FROM nodes n"
+                       " LEFT JOIN versions v ON v.id=n.current_version_id LEFT JOIN file_change_times t ON t.node_id=n.id"
                        " WHERE n.source_id=? AND n.rel_fold=? AND n.last_seen_ms<? ORDER BY n.deleted, n.id LIMIT 1"},
         {&c.rename_node, "UPDATE nodes SET rel_path=?, name=? WHERE id=?"},
         {&c.touch_node, "UPDATE nodes SET parent_id=?, is_dir=?, last_seen_ms=?, deleted=0, deleted_ack=0,"
@@ -1524,6 +2050,8 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         {&c.clear_damaged, "DELETE FROM damaged_files WHERE node_id=?"},
         {&c.note_online, "INSERT OR REPLACE INTO temp.online_only(node_id, changed) VALUES(?,?)"},
         {&c.note_link, "INSERT OR REPLACE INTO temp.links(source_id, rel_path, target, is_dir) VALUES(?,?,?,?)"},
+        {&c.set_ctime, "INSERT INTO file_change_times(node_id, ctime_ns) VALUES(?1,?2)"
+                       " ON CONFLICT(node_id) DO UPDATE SET ctime_ns=excluded.ctime_ns"},
     };
     bd_status s = BD_OK;
     size_t n = sizeof(stmts) / sizeof(stmts[0]);
@@ -1552,14 +2080,68 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         sqlite3_step(clear);
         sqlite3_finalize(clear);
     }
+    if (resumed) {
+        sqlite3_stmt *r;
+        if (sqlite3_prepare_v2(cat->db, "INSERT OR IGNORE INTO temp.scan_new(node_id) SELECT n.id FROM nodes n"
+                                        " WHERE n.source_id=?1 AND n.is_dir=0 AND n.deleted=0 AND NOT EXISTS(SELECT 1 FROM versions v"
+                                        " WHERE v.node_id=n.id AND v.first_seen_ms<=COALESCE((SELECT last_scan_ms FROM sources"
+                                        " WHERE id=?1),0))",
+                               -1, &r, NULL) != SQLITE_OK) {
+            s = bd_fail_db(cat, "prepare scan");
+            bd_exec(cat, "ROLLBACK");
+            goto done;
+        }
+        sqlite3_bind_int64(r, 1, source_id);
+        int rc = sqlite3_step(r);
+        sqlite3_finalize(r);
+        if (rc != SQLITE_DONE) {
+            s = bd_fail_db(cat, "prepare scan");
+            bd_exec(cat, "ROLLBACK");
+            goto done;
+        }
+    }
     find_own_files(&c);
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
-    /* The files still with the workers. */
-    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
+    /* The files still with the workers: those read to the end are kept,
+     * also when the scan is being stopped. */
+    pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error);
+    if (c.cancelled && walk_rc == 0 && !c.db_error) {
+        /* Stopped: keep the files read so far, but a half-scanned folder
+         * would look like files deleted, so nothing is marked deleted and
+         * the root is not counted as scanned. The next scan goes on from
+         * there (its files are not read again). A folder in which none of
+         * the files the catalog knows turned up may not be the root at
+         * all: that one is left as the last full scan saw it. */
+        int64_t seen = stats->files_seen - before.files_seen, known_seen = seen - c.inserted_files;
+        sqlite3_stmt *lq;
+        int64_t last_ms = 0, had_files = 0;
+        if (sqlite3_prepare_v2(cat->db, "SELECT COALESCE(last_scan_ms,0), EXISTS(SELECT 1 FROM nodes n WHERE n.source_id=?1"
+                                        " AND n.is_dir=0 AND n.last_seen_ms<?2) FROM sources WHERE id=?1",
+                               -1, &lq, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(lq, 1, source_id);
+            sqlite3_bind_int64(lq, 2, scan_ms);
+            if (sqlite3_step(lq) == SQLITE_ROW) {
+                last_ms = sqlite3_column_int64(lq, 0);
+                had_files = sqlite3_column_int64(lq, 1);
+            }
+            sqlite3_finalize(lq);
+        }
+        if (last_ms > 0 && had_files && known_seen <= 0) {
+            bd_exec(cat, "ROLLBACK");
+            *stats = before;
+        } else if (bd_setting_set(cat, stop_key, "1") != 0 || bd_exec(cat, "COMMIT") != 0) {
+            bd_exec(cat, "ROLLBACK");
+            *stats = before;
+        } else {
+            bd_logf(log, log_ctx, "scan of %s stopped: the %lld files it read are kept; nothing was marked deleted", root,
+                    (long long)seen);
+        }
+        s = bd_fail_cancelled(cat);
+        goto done;
+    }
     if (c.cancelled) {
-        /* A half-scanned folder would look like files deleted: leave this
-         * one as the last full scan saw it. */
         bd_exec(cat, "ROLLBACK");
+        *stats = before;
         s = bd_fail_cancelled(cat);
         goto done;
     }
@@ -1588,7 +2170,20 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     s = mark_deleted(&c, 1, &gone, &moved);
     int64_t seen = stats->files_seen - before.files_seen;
     int64_t changed = stats->files_changed - before.files_changed + stats->files_cloud_changed - before.files_cloud_changed;
-    int64_t known = gone + seen - c.inserted_files;
+    /* After a stopped scan, the files it found new count as new here too. */
+    int64_t inserted = c.inserted_files;
+    if (resumed && s == BD_OK) {
+        sqlite3_stmt *iq;
+        if (sqlite3_prepare_v2(cat->db, "SELECT COUNT(*) FROM temp.scan_new w JOIN nodes n ON n.id=w.node_id"
+                                        " WHERE n.source_id=? AND n.is_dir=0 AND n.last_seen_ms=?",
+                               -1, &iq, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(iq, 1, source_id);
+            sqlite3_bind_int64(iq, 2, scan_ms);
+            if (sqlite3_step(iq) == SQLITE_ROW) inserted = sqlite3_column_int64(iq, 0);
+            sqlite3_finalize(iq);
+        }
+    }
+    int64_t known = gone + seen - inserted;
     int64_t lost = gone - moved;
     int64_t kept = known - lost - changed;
     if (s == BD_OK && lost > 0 && kept * 10 <= known && lost > changed && !take_accept_gone(cat, source_id)) {
@@ -1611,6 +2206,7 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
             sqlite3_step(u);
             sqlite3_finalize(u);
         }
+        if (resumed && bd_setting_del(cat, stop_key) != 0) s = bd_fail_db(cat, "record scan results");
     }
     if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "commit scan");
     if (s != BD_OK) bd_exec(cat, "ROLLBACK");
@@ -1928,14 +2524,31 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
      * and older), which then gets its full path. */
     for (size_t i = 0; i < len; i++) {
         bd_stat_t rst;
-        if (!list[i].path || (bd_path_is_full(list[i].path) && bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
-        int64_t found = 0, checked = 0;
+        int full = list[i].path && bd_path_is_full(list[i].path);
+        if (!list[i].path || (full && bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
+        /* A root that waits for its disk is on that disk: a copy of it
+         * somewhere else is not it. */
+        char wkey[48], wval[8];
+        snprintf(wkey, sizeof(wkey), "wait_disk.%lld", (long long)list[i].id);
+        if (full && bd_setting_get(cat, wkey, wval, sizeof(wval))) continue;
+        int64_t found = 0, checked = 0, sure_found = 0, sure_checked = 0;
         int places = 0;
         char *p = bd_source_find(cat, list[i].id, &found, &checked, &places);
-        if (p && places == 1 && bd_source_relocate(cat, list[i].id, p) == BD_OK) {
-            bd_logf(log, log_ctx, "backup root %s is now at %s: found it there by its files (%lld of %lld checked)",
-                    list[i].path, p, (long long)found, (long long)checked);
+        /* Pointed there without asking only when nearly every file is
+         * there and a few hold their contents; otherwise the user is asked
+         * (the root stays missing, and the window offers the folders). */
+        int sure = p && places == 1 && bd_source_place_sure(cat, list[i].id, p, &sure_found, &sure_checked);
+        if (sure && bd_source_relocate(cat, list[i].id, p) == BD_OK) {
+            bd_logf(log, log_ctx, "backup root %s is now at %s: found it there by its files (%lld of %lld checked, and the "
+                                  "contents of the smallest ones)",
+                    list[i].path, p, (long long)sure_found, (long long)sure_checked);
             stats->roots_found++;
+            /* Where it was, to say so if that folder comes back. */
+            if (full) {
+                char key[48];
+                snprintf(key, sizeof(key), "moved_from.%lld", (long long)list[i].id);
+                bd_setting_set(cat, key, list[i].path);
+            }
             free(list[i].path);
             list[i].path = p;
             continue;
@@ -1944,7 +2557,24 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
             bd_logf(log, log_ctx, "backup root %s is not where it was, and %lld folders hold its files, so none was picked: "
                                   "say where it is now. One is %s (%lld of %lld checked)",
                     list[i].path, (long long)places, p, (long long)found, (long long)checked);
+        else if (p)
+            bd_logf(log, log_ctx, "backup root %s is not where it was. %s holds %lld of the %lld of its files checked, which is "
+                                  "not enough to point the root there without asking: say where it is now",
+                    list[i].path, p, (long long)found, (long long)checked);
         free(p);
+    }
+    /* A root pointed somewhere else by its files whose old folder is back,
+     * holding them: say so, as only one of the two is backed up. */
+    for (size_t i = 0; i < len; i++) {
+        int back = 0;
+        char *old = bd_source_old_place(cat, list[i].id, &back);
+        if (old && back) {
+            stats->roots_back++;
+            bd_logf(log, log_ctx, "the folder backup root %s was in before, %s, is there again and holds its files: only %s "
+                                  "is backed up. If %s is the real one, point the root back there",
+                    list[i].path, old, list[i].path, old);
+        }
+        free(old);
     }
     note_root_disks(cat, list, len);
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);
@@ -1968,7 +2598,6 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
         bd_logf(log, log_ctx, "scanning %s", list[i].path);
         bd_scan_stats before = *stats;
         s = scan_source(cat, &skip, bitrot, &pool, list[i].id, list[i].path, scan_ms, stats, log, log_ctx);
-        if (s == BD_ERR_CANCELLED) *stats = before; /* that folder was rolled back */
         if (s == BD_OK && stats->roots_emptied > before.roots_emptied) {
             /* The folder there holds other files: say where its own are,
              * when another folder holds them. The user decides. */

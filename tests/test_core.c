@@ -1214,7 +1214,8 @@ static void test_cancel(void)
     REQUIRE_OK(bd_source_add(cat, at("cx/Src"), &src), cat);
     cancel_at ca;
 
-    /* A scan stopped halfway leaves the folder as the catalog knew it. */
+    /* A scan stopped halfway keeps the files it read, marks nothing
+     * deleted, and the root is not counted as scanned yet. */
     memset(&ca, 0, sizeof(ca));
     ca.cat = cat;
     ca.phase = "scan";
@@ -1222,10 +1223,14 @@ static void test_cancel(void)
     bd_catalog_set_progress(cat, cancel_progress, &ca);
     bd_scan_stats ss;
     CHECK(bd_scan(cat, &ss, quiet, NULL) == BD_ERR_CANCELLED && ca.fired);
-    CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes") == 0 && ss.files_new == 0);
-    /* The next scan clears the request and runs to the end. */
+    int64_t kept = count_rows(cat, "SELECT COUNT(*) FROM versions");
+    CHECK(kept == ss.files_new && kept < 40);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM sources WHERE last_scan_ms IS NULL") == 1);
+    /* The next scan clears the request, reads only the rest and runs to
+     * the end. */
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 40);
+    CHECK(ss.files_new == 40 - kept);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 40);
 
     REQUIRE_OK(bd_media_init(cat, at("cx/drive"), "Stop", 0, &drive), cat);
 
@@ -1382,6 +1387,12 @@ static void test_mtimes(void)
     bd_remove(at("mt/Src/big.bin"));
     REQUIRE_OK(bd_restore(cat, src, "big.bin", at("mt/Src"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1 && time_of(at("mt/Src/big.bin")) == t2);
+    /* (It is a new file on disk, with a change time of its own, so it is
+     * read once to be sure; the same checksum is no new version.) */
+    int64_t versions = count_rows(cat, "SELECT COUNT(*) FROM versions");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_changed == 0 && ss.files_new == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == versions);
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_changed == 0 && ss.files_new == 0 && ss.bytes_hashed == 0);
 
@@ -1498,8 +1509,11 @@ static void test_case_rename(void)
 
     CHECK(rename(at("cr/Src/Photo.JPG"), at("cr/Src/photo.jpg")) == 0);
     CHECK(rename(at("cr/Src/Album"), at("cr/Src/album")) == 0);
+    /* (A rename moves the file's change time, so it is read once; the same
+     * checksum is no new version.) */
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(ss.files_new == 0 && ss.files_deleted == 0 && ss.files_changed == 0 && ss.bytes_hashed == 0);
+    CHECK(ss.files_new == 0 && ss.files_deleted == 0 && ss.files_changed == 0);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM versions") == 2);
     CHECK(count_rows(cat, "SELECT id FROM nodes WHERE rel_path='photo.jpg' AND name='photo.jpg' AND deleted=0") == photo);
     CHECK(count_rows(cat, "SELECT id FROM nodes WHERE rel_path='album/One.txt' AND deleted=0") == one);
     CHECK(count_rows(cat, "SELECT COUNT(*) FROM nodes WHERE rel_path IN ('Photo.JPG','Album','Album/One.txt')") == 0);
@@ -2084,7 +2098,9 @@ static void test_bitrot_and_sizes(void)
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 3);
 
-    /* A plain scan trusts size and time; the bit-rot scan reads everything. */
+    /* A plain scan trusts size and time; the bit-rot scan reads everything.
+     * Bit rot leaves the change time as it was, which a test can't do. */
+    bd_test_no_change_time = 1;
     rot_byte(at("br/S/a.txt"));
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     CHECK(ss.files_changed == 0 && ss.files_damaged == 0);
@@ -2122,6 +2138,7 @@ static void test_bitrot_and_sizes(void)
     CHECK(bs.files_copied == 1 && bs.copies_alongside == 1);
     REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
     CHECK(ss.files_damaged == 0);
+    bd_test_no_change_time = 0;
 
     /* Largest first. */
     largest_list ll = {0, 0};

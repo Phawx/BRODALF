@@ -26,6 +26,7 @@
 #include <sddl.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <winnetwk.h>
 #include <stdarg.h>
 
 #include <stdio.h>
@@ -772,6 +773,7 @@ static void cmd_backup_all(int offer_scan);
 static void cmd_backup_at(HWND anchor);
 static void cmd_add_place(void);
 static void toggle_star_selected(void);
+static int network_place(const wchar_t *path, wchar_t *share, size_t cap);
 static void toggle_encrypt_selected(void);
 static void load_marks(void);
 static int good_description(const wchar_t *s);
@@ -1715,6 +1717,7 @@ typedef struct job {
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
     int64_t links;         /* scan: links not followed, leading somewhere no backup root holds */
+    int64_t roots_back;    /* scan: roots found somewhere else whose old folder is back */
     int problems;
     int saving;         /* refresh: a change made in the window is saved */
     int skip_figures;   /* another job is waiting: it reads the figures after it */
@@ -2231,7 +2234,8 @@ static SRWLOCK g_report_lock = SRWLOCK_INIT;
 enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS, CL_WAIT_PASSPHRASE };
 static const struct { const char *pat; const wchar_t *say; int plural; } g_core_lines[] = {
     {"scanning %p", N_(L"Scanning %ls")},
-    {"contents changed but size and time did not (damage?): %p", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
+    {"contents changed but size and time did not (damage?): %p",
+     N_(L"Changed although its size and time did not (damage, or a program that keeps its dates?): %ls")},
     {"something else is already at %p; left alone", N_(L"Left alone, because something else is already at %ls")},
     {"backup root %p is not reachable; skipped (nothing marked deleted)", N_(L"Backup root %ls cannot be reached, so it was skipped. Nothing in it was marked deleted.")},
     {"%n backup root(s) could not be found; nothing in them was marked deleted", NULL, CL_ROOTS_MISSING},
@@ -2255,12 +2259,25 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
     {"online-only, changed in the cloud and not backed up: %p", N_(L"Online only and changed in the cloud, so it is not backed up: %ls")},
     {"backup root %p waits for its disk to be plugged in; skipped (nothing marked deleted)",
      N_(L"Backup root %ls waits for its disk to be plugged in, so it was skipped. Nothing in it was marked deleted.")},
+    {"backup root %p waits until its network share can be reached; skipped (nothing marked deleted)",
+     N_(L"Backup root %ls waits until its network share can be reached, so it was skipped. Nothing in it was marked deleted.")},
     {"backup root %p is there, but %n of the %n files the catalog knows in it are not: left as it was (nothing marked deleted). "
      "Another folder with the same name?",
      N_(L"Backup root %ls is there, but %ls of the %ls files the database knows in it are not, so it was left as it was. Nothing was "
         L"marked deleted. Is it another folder with the same name?")},
-    {"backup root %p is now at %p: found it there by its files (%n of %n checked)",
-     N_(L"Backup root %ls is now at %ls: BRODALF found its files there (%ls of the %ls it checked).")},
+    {"backup root %p is now at %p: found it there by its files (%n of %n checked, and the contents of the smallest ones)",
+     N_(L"Backup root %ls is now at %ls: BRODALF found its files there (%ls of the %ls it checked, and the contents of the smallest "
+        L"ones).")},
+    {"backup root %p is not where it was. %p holds %n of the %n of its files checked, which is not enough to point the root there "
+     "without asking: say where it is now",
+     N_(L"Backup root %ls is not where it was. %ls holds %ls of the %ls files BRODALF checked, which is not enough to point the "
+        L"backup root there without asking: say where it is now.")},
+    {"the folder backup root %p was in before, %p, is there again and holds its files: only %p is backed up. If %p is the real one, "
+     "point the root back there",
+     N_(L"The folder backup root %ls was in before, %ls, is there again and holds its files, but only %ls is backed up. If %ls is the "
+        L"real one, point the backup root back there.")},
+    {"scan of %p stopped: the %n files it read are kept; nothing was marked deleted",
+     N_(L"The scan of %ls was stopped. The %ls files it read are kept, and nothing was marked deleted.")},
     {"backup root %p is not where it was, and %n folders hold its files, so none was picked: say where it is now. One is %p "
      "(%n of %n checked)",
      N_(L"Backup root %ls is not where it was, and %ls folders hold its files, so BRODALF picked none: say where it is now. One "
@@ -2372,6 +2389,11 @@ static const struct { const char *pat; const wchar_t *say; } g_core_errs[] = {
     {"cannot create the folder for %p", N_(L"could not create the folder for %ls")},
     {"cannot write %p", N_(L"could not write %ls")},
     {"cannot move %p to %p", N_(L"could not move %ls to %ls")},
+    {"the name \"%s\" in this folder is not valid Unicode, so it cannot be read",
+     N_(L"the name \"%ls\" in this folder is not valid Unicode, so it cannot be read. Rename it to back it up")},
+    {"these names in this folder are not valid Unicode, so they cannot be read: %s (%n in all)",
+     N_(L"these names in this folder are not valid Unicode, so they cannot be read: %ls (%ls in all). Rename them to back them up")},
+    {"the folder could not be read to the end (error %n)", N_(L"the folder could not be read to the end (error %ls)")},
 };
 
 /* The lines that say how many, in the right form for the number. */
@@ -2927,8 +2949,8 @@ static DWORD WINAPI worker(LPVOID arg)
                       L" %lld links to folders or files outside your backup roots were not followed, so what they lead to is not backed up."),
                 (long long)st.links_not_followed);
         if (st.files_damaged)
-            say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: it may be damaged.",
-                      L" %lld files changed without their size or time changing: they may be damaged."),
+            say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: damage, or a program that keeps its dates?",
+                      L" %lld files changed without their size or time changing: damage, or a program that keeps their dates?"),
                 (long long)st.files_damaged);
         int64_t not_found = st.roots_missing - st.roots_emptied - st.roots_waiting;
         if (not_found > 0)
@@ -2941,9 +2963,13 @@ static DWORD WINAPI worker(LPVOID arg)
             say(j, TN(st.roots_found, L" %lld backup root was not where it was and was found by its files.",
                       L" %lld backup roots were not where they were and were found by their files."),
                 (long long)st.roots_found);
+        if (st.roots_back)
+            say(j, TN(st.roots_back, L" %lld backup root's old folder is back: say which one to back up.",
+                      L" %lld backup roots' old folders are back: say which ones to back up."),
+                (long long)st.roots_back);
         if (st.roots_waiting)
-            say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk to be plugged in.",
-                      L" %lld backup roots wait for their disks to be plugged in."),
+            say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk or network share.",
+                      L" %lld backup roots wait for their disks or network shares."),
                 (long long)st.roots_waiting);
         if (st.roots_stopped)
             say(j, TN(st.roots_stopped, L" %lld stopped root left alone.", L" %lld stopped roots left alone."), (long long)st.roots_stopped);
@@ -2959,6 +2985,7 @@ static DWORD WINAPI worker(LPVOID arg)
         j->found_deleted = st.files_deleted;
         j->roots_missing = st.roots_missing - st.roots_waiting;
         j->links = st.links_not_followed;
+        j->roots_back = st.roots_back;
         break;
     }
     case JOB_BACKUP: {
@@ -4232,10 +4259,12 @@ static void rebuild_tree(void)
         wchar_t counts[512], text[1600];
         item_text(&as_folder, l.names[i], NULL, counts, 512);
         wchar_t *wp = widen(l.paths[i]);
-        wchar_t bytes[64];
+        wchar_t bytes[64], share[MAX_PATH * 2 + 16];
         format_bytes(l.items[i].bytes_total, bytes, 64);
+        int on_net = l.items[i].missing && l.items[i].wait_for_disk && wp && network_place(wp, share, COUNT_OF(share));
         swprintf(text, COUNT_OF(text), L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
                  l.items[i].missing && l.items[i].files_gone > 0 ? T(L"   - its folder holds other files, or none")
+                 : on_net ? T(L"   - waits until its network share can be reached")
                  : l.items[i].missing && l.items[i].wait_for_disk ? T(L"   - waits for its disk to be plugged in")
                  : l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
                  : !l.items[i].active ? T(L"   - no longer backed up") : L"");
@@ -6115,10 +6144,13 @@ static void update_drives_label(void)
             warn_item *w = warn_add(TONE_BAD, GLYPH_CROSS, L"damaged");
             if (w) {
                 long long n = (long long)g_figs->n_damaged;
-                swprintf(w->title, 200, TN(n, L"%lld file in your backup roots may be damaged", L"%lld files in your backup roots may be damaged"), n);
+                swprintf(w->title, 200, TN(n, L"%lld file in your backup roots changed without its date changing",
+                                           L"%lld files in your backup roots changed without their dates changing"), n);
                 swprintf(w->text, 900, L"%ls",
-                         TN(n, L"A bit-rot scan found it changed without its size or time changing. You can restore it from a backup drive.",
-                            L"A bit-rot scan found them changed without their size or time changing. You can restore them from a backup drive."));
+                         TN(n, L"A bit-rot scan found it changed although its size and time did not: damage, or a program that keeps its "
+                               L"dates? Back up this version if the change is yours, or restore the good copy from a backup drive.",
+                            L"A bit-rot scan found them changed although their size and time did not: damage, or a program that keeps "
+                            L"their dates? Back up the new versions of the changes that are yours, and restore the good copies of the others."));
                 warn_button(w, 0, WA_DAMAGED, 0, L"%ls", TN(n, L"Show it", L"Show them"));
             }
         }
@@ -6615,8 +6647,8 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 
 /* IDD_TABLE in one of four modes: the status of every drive (double-click
  * or Details... opens one), the largest files, the files a bit-rot scan
- * found changed by themselves (Keep as it is now records one as a new
- * version), and the files the last restore left alone. */
+ * found changed without their dates changing (Back up this version records
+ * one as a new version), and the files the last restore left alone. */
 enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGED, TABLE_REPORT, TABLE_VERSIONS };
 /* What the engine reported during the last job that had problems. */
 static wchar_t **g_report;
@@ -6944,9 +6976,9 @@ static void table_damaged(HWND lv)
     swprintf(g_table_empty, 400, L"%ls", T(L"No damaged files."));
     lv_fit_all(lv, 0);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    t.rows ? T(L"These files changed although their size and modified time did not: that is what a failing drive or bit rot "
-                             L"looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... "
-                             L"to get it back. If you changed one on purpose, pick it and choose Keep as it is now.")
+                    t.rows ? T(L"These files changed although their size and modified time did not: damage (a failing disk, bit rot), or a "
+                             L"program that keeps a file's dates when it changes it? Pick a file. If the change is yours, press Back up this "
+                             L"version. If not, press Restore the good copy... to get the copy on your drives back.")
                            : T(L"A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them."));
 }
 
@@ -7071,7 +7103,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         static const wchar_t *titles[] = {N_(L"Status of every drive"), N_(L"Largest files"), N_(L"Damaged files"), N_(L"Left alone by the last restore"),
                                           N_(L"Changed since the copy on the drive"), N_(L"What went wrong"),
                                           N_(L"Older versions using the most space")};
-        static const wchar_t *buttons[] = {N_(L"Details..."), N_(L"Leave it out..."), N_(L"Keep as it is now"), N_(L"Open in Explorer"), L"",
+        static const wchar_t *buttons[] = {N_(L"Details..."), N_(L"Leave it out..."), N_(L"Back up this version"), N_(L"Open in Explorer"), L"",
                                            N_(L"Show the app log"), N_(L"Leave it out...")};
         /* The lists that say to restore have a button that does it. */
         static const wchar_t *restores[] = {L"", L"", N_(L"Restore the good copy..."), N_(L"Restore it to another folder..."),
@@ -7148,8 +7180,8 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 return TRUE;
             }
             if (g_table_mode == TABLE_DAMAGED) {
-                if (ask_verbs(dlg, T(L"Keep this file as it is now? It is recorded as a new version and backed up like any "
-                                     L"change; the older copies on your drives stay as they are."), MB_YESNO | MB_ICONQUESTION, T(L"Keep it as it is"), T(L"Cancel")) != IDYES)
+                if (ask_verbs(dlg, T(L"Back up this version of the file? It is recorded as a new version and backed up like any "
+                                     L"change; the older copies on your drives stay as they are."), MB_YESNO | MB_ICONQUESTION, T(L"Back it up"), T(L"Cancel")) != IDYES)
                     return TRUE;
                 if (bd_damaged_accept(g_cat, g_table_nodes[row]) != BD_OK) {
                     wchar_t *e = widen(bd_catalog_error(g_cat));
@@ -9354,18 +9386,36 @@ static int folder_is_empty(const wchar_t *dir)
     return empty;
 }
 
-/* The folder that holds a backup root's files now, found by them
- * (bd_source_find): out gets it, found and checked how many of the files
- * looked at are in it. 0 if no folder holds them. */
-static int guess_new_place(int64_t source_id, wchar_t *out, size_t cap, int64_t *found, int64_t *checked)
+/* The folders that hold a backup root's files now, found by them
+ * (bd_source_find_all), the one holding the most first: up to
+ * PLACES_SHOWN of them, with how many of the files looked at are in each,
+ * and how many there are in all. */
+#define PLACES_SHOWN 4
+typedef struct {
+    wchar_t path[PLACES_SHOWN][MAX_PATH * 4];
+    int64_t found[PLACES_SHOWN], checked[PLACES_SHOWN];
+    int n, total;
+} new_places;
+
+static int new_place_cb(void *ctx, const bd_place_info *p)
 {
-    char *p = bd_source_find(g_cat, source_id, found, checked, NULL);
-    wchar_t *w = p ? widen(p) : NULL;
-    free(p);
-    int ok = w && wcslen(w) < cap;
-    if (ok) wcscpy(out, w);
+    new_places *l = ctx;
+    wchar_t *w = widen(p->path);
+    if (w && wcslen(w) < MAX_PATH * 4 && l->n < PLACES_SHOWN) {
+        wcscpy(l->path[l->n], w);
+        l->found[l->n] = p->found;
+        l->checked[l->n] = p->checked;
+        l->n++;
+    }
     free(w);
-    return ok;
+    l->total++;
+    return 0;
+}
+
+static void guess_new_places(int64_t source_id, new_places *l)
+{
+    memset(l, 0, sizeof(*l));
+    bd_source_find_all(g_cat, source_id, new_place_cb, l);
 }
 
 typedef struct { int64_t id; wchar_t *name, *path; int active, missing, waiting; int64_t gone, total; } source_place;
@@ -9402,7 +9452,33 @@ static void source_places_free(source_places *l)
     memset(l, 0, sizeof(*l));
 }
 
-enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE, PLACE_GONE, PLACE_WAIT };
+enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE, PLACE_GONE, PLACE_WAIT, PLACE_FOUND };
+/* PLACE_FOUND + i: the i-th folder that holds the files (new_places). */
+
+/* A backup root on the network: a \\server\share path, or a drive letter
+ * mapped to a network share (connected or not, as Windows keeps it). share
+ * gets where it is, like "\\server\share" or "Z: (\\server\share)". */
+static int network_place(const wchar_t *path, wchar_t *share, size_t cap)
+{
+    const wchar_t *server = NULL;
+    if (wcsncmp(path, L"\\\\?\\UNC\\", 8) == 0) server = path + 8;
+    else if (path[0] == L'\\' && path[1] == L'\\' && path[2] && path[2] != L'?' && path[2] != L'.') server = path + 2;
+    if (server) {
+        const wchar_t *e = server;
+        int seps = 0;
+        while (*e && !(*e == L'\\' && ++seps == 2)) e++;
+        swprintf(share, cap, L"\\\\%.*ls", (int)(e - server), server);
+        return 1;
+    }
+    if (wcslen(path) < 2 || path[1] != L':' || !iswalpha(path[0])) return 0;
+    wchar_t root[4] = {path[0], L':', L'\\', 0}, dev[3] = {towupper(path[0]), L':', 0}, remote[MAX_PATH] = L"";
+    if (GetDriveTypeW(root) != DRIVE_REMOTE) return 0;
+    DWORD n = MAX_PATH;
+    DWORD rc = WNetGetConnectionW(dev, remote, &n);
+    if ((rc == NO_ERROR || rc == ERROR_CONNECTION_UNAVAIL) && remote[0]) swprintf(share, cap, L"%ls (%ls)", dev, remote);
+    else swprintf(share, cap, L"%ls", dev);
+    return 1;
+}
 
 /* A missing backup root's disk is not plugged in: no disk at all has its
  * drive letter now. disk gets the letter, like "E:". */
@@ -9421,18 +9497,20 @@ static int disk_unplugged(const wchar_t *path, wchar_t *disk, size_t cap)
  * waits for its disk. Nothing is scanned here; the caller saves and scans. */
 static int relocate_source(const source_place *sp)
 {
-    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 512], disk[8];
-    int64_t guess_found = 0, guess_checked = 0;
-    int have_guess = guess_new_place(sp->id, guess, MAX_PATH * 4, &guess_found, &guess_checked);
+    wchar_t guess_btn[PLACES_SHOWN][MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 800], disk[8], share[MAX_PATH * 2 + 16];
+    new_places places;
+    guess_new_places(sp->id, &places);
     int here = is_folder(sp->path);
     int emptied = here && sp->missing && sp->gone > 0;
-    int unplugged = !here && disk_unplugged(sp->path, disk, COUNT_OF(disk));
+    int network = !here && network_place(sp->path, share, COUNT_OF(share));
+    int unplugged = !here && !network && disk_unplugged(sp->path, disk, COUNT_OF(disk));
     if (emptied) swprintf(head, 512, T(L"\"%ls\" does not hold its files"), sp->name);
+    else if (network) swprintf(head, 512, T(L"\"%ls\" cannot be reached on the network"), sp->name);
     else if (unplugged) swprintf(head, 512, T(L"Plug in the disk with \"%ls\""), sp->name);
     else if (here) swprintf(head, 512, T(L"Where is \"%ls\" now?"), sp->name);
     else swprintf(head, 512, T(L"\"%ls\" cannot be found"), sp->name);
     if (emptied)
-        swprintf(body, MAX_PATH * 4 + 512, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not, so it "
+        swprintf(body, MAX_PATH * 4 + 800, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not, so it "
                                                        L"may be another folder with the same name. Nothing is marked deleted. If the "
                                                        L"files are somewhere else, choose where. To get them back, restore them from "
                                                        L"your backup drives.",
@@ -9441,30 +9519,50 @@ static int relocate_source(const source_place *sp)
                                               L"files are somewhere else, choose where. To get them back, restore them from "
                                               L"your backup drives."),
                  sp->path, (long long)sp->gone, (long long)(sp->total > sp->gone ? sp->total : sp->gone));
+    else if (network)
+        swprintf(body, MAX_PATH * 4 + 800, T(L"%ls is on the network share %ls, which cannot be reached now, for example while this "
+                                            L"PC is away from that network. Connect to it and scan again. Nothing in it is marked "
+                                            L"deleted."), sp->path, share);
     else if (unplugged)
-        swprintf(body, MAX_PATH * 4 + 512, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
+        swprintf(body, MAX_PATH * 4 + 800, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
                                             L"Nothing in it is marked deleted."), sp->path, disk, disk);
     else if (here)
-        swprintf(body, MAX_PATH * 4 + 512, T(L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
+        swprintf(body, MAX_PATH * 4 + 800, T(L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
                                             L"keep their copies and history."), sp->path);
     else
-        swprintf(body, MAX_PATH * 4 + 512, T(L"%ls was not there when BRODALF scanned. Nothing in it is marked deleted. If it is "
+        swprintf(body, MAX_PATH * 4 + 800, T(L"%ls was not there when BRODALF scanned. Nothing in it is marked deleted. If it is "
                                             L"somewhere else, for example under another user name or on another drive letter, choose "
                                             L"where it is now: its files keep their copies and history."), sp->path);
+    if (places.n > 1 || places.total > places.n) {
+        size_t len = wcslen(body);
+        swprintf(body + len, COUNT_OF(body) - len,
+                 TN(places.total, L"\n\n%d folder holds files of this backup root. Pick the one that is it: only one is backed up.",
+                    L"\n\n%d folders hold files of this backup root. Pick the one that is it: only one is backed up."),
+                 places.total);
+        if (places.total > places.n) {
+            len = wcslen(body);
+            swprintf(body + len, COUNT_OF(body) - len, TN(places.total - places.n, L" %d more is not listed here.", L" %d more are not listed here."),
+                     places.total - places.n);
+        }
+    }
     for (;;) {
-        TASKDIALOG_BUTTON b[6];
+        TASKDIALOG_BUTTON b[6 + PLACES_SHOWN];
         int n = 0;
         if (unplugged) {
             b[n].nButtonID = PLACE_WAIT;
             b[n++].pszButtonText = T(L"Skip it until the disk is plugged in\nBRODALF stops asking about this backup root. Once the disk "
                                      L"is back, the next scan backs it up as usual.");
+        } else if (network) {
+            b[n].nButtonID = PLACE_WAIT;
+            b[n++].pszButtonText = T(L"Wait until it can be reached\nBRODALF stops asking about this backup root. Once the network "
+                                     L"share can be reached again, the next scan backs it up as usual.");
         }
-        if (have_guess) {
-            swprintf(guess_btn, MAX_PATH * 4 + 256, TN(guess_checked, L"Use %ls\nBRODALF found %lld of the %lld file it checked there",
-                                                       L"Use %ls\nBRODALF found %lld of the %lld files it checked there"),
-                     guess, (long long)guess_found, (long long)guess_checked);
-            b[n].nButtonID = PLACE_GUESS;
-            b[n++].pszButtonText = guess_btn;
+        for (int k = 0; k < places.n; k++) {
+            swprintf(guess_btn[k], MAX_PATH * 4 + 256, TN(places.checked[k], L"Use %ls\nBRODALF found %lld of the %lld file it checked there",
+                                                          L"Use %ls\nBRODALF found %lld of the %lld files it checked there"),
+                     places.path[k], (long long)places.found[k], (long long)places.checked[k]);
+            b[n].nButtonID = PLACE_FOUND + k;
+            b[n++].pszButtonText = guess_btn[k];
         }
         b[n].nButtonID = PLACE_PICK;
         b[n++].pszButtonText = here && !emptied ? T(L"Choose where it is now...") : T(L"It is somewhere else: choose where...");
@@ -9501,7 +9599,9 @@ static int relocate_source(const source_place *sp)
         if (pressed == PLACE_WAIT) {
             if (bd_source_wait_for_disk(g_cat, sp->id, 1) != BD_OK) return 0;
             wchar_t line[600];
-            swprintf(line, 600, T(L"Backup root \"%ls\" waits for its disk to be plugged in"), sp->name);
+            swprintf(line, 600, network ? T(L"Backup root \"%ls\" waits until its network share can be reached")
+                                        : T(L"Backup root \"%ls\" waits for its disk to be plugged in"),
+                     sp->name);
             log_append(line);
             return 4;
         }
@@ -9516,7 +9616,7 @@ static int relocate_source(const source_place *sp)
             if (bd_source_accept_gone(g_cat, sp->id) != BD_OK) return 0;
             return 3;
         }
-        if (pressed == PLACE_GUESS) chosen = _wcsdup(guess);
+        if (pressed >= PLACE_FOUND && pressed < PLACE_FOUND + places.n) chosen = _wcsdup(places.path[pressed - PLACE_FOUND]);
         else if (pressed == PLACE_PICK) {
             char *f = pick_folder(g_main, T(L"Choose where this backup root is now."));
             if (!f) continue;
@@ -9587,6 +9687,67 @@ static void ask_missing_roots(void)
     }
 }
 
+/* A backup root a scan found somewhere else by its files, whose old
+ * folder is back holding them (bd_source_old_place): only one of the two
+ * is backed up, so the user says which. */
+static void ask_old_places(void)
+{
+    source_places l;
+    memset(&l, 0, sizeof(l));
+    bd_list_sources(g_cat, source_place_cb, &l);
+    int moved = 0, kept = 0;
+    for (int i = 0; i < l.n; i++) {
+        const source_place *sp = &l.items[i];
+        int back = 0;
+        char *old = sp->active ? bd_source_old_place(g_cat, sp->id, &back) : NULL;
+        wchar_t *wold = old && back ? widen(old) : NULL;
+        if (!wold) { free(old); continue; }
+        wchar_t head[600], body[MAX_PATH * 8 + 800], b_old[MAX_PATH * 4 + 200], b_here[MAX_PATH * 4 + 200];
+        swprintf(head, COUNT_OF(head), T(L"Which folder is \"%ls\"?"), sp->name);
+        swprintf(body, COUNT_OF(body), T(L"When %ls was not there, BRODALF found the files of this backup root in %ls and backs that "
+                                         L"folder up now. %ls is back and holds the files too. Only one of the two is backed up: "
+                                         L"changes made in the other are not."),
+                 wold, sp->path, wold);
+        swprintf(b_old, COUNT_OF(b_old), T(L"Back up %ls\nThat is the real folder: the backup root goes back there."), wold);
+        swprintf(b_here, COUNT_OF(b_here), T(L"Keep backing up %ls\nBRODALF stops asking about the old folder."), sp->path);
+        TASKDIALOG_BUTTON b[3] = {{PLACE_FOUND, b_old}, {PLACE_PICK, b_here}, {PLACE_LATER, T(L"Not now\nThe next scan asks again.")}};
+        TASKDIALOGCONFIG tc;
+        memset(&tc, 0, sizeof(tc));
+        tc.cbSize = sizeof(tc);
+        tc.hwndParent = g_main;
+        tc.hInstance = g_inst;
+        tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+        tc.pszWindowTitle = APP_NAME;
+        tc.pszMainIcon = TD_WARNING_ICON;
+        tc.pszMainInstruction = head;
+        tc.pszContent = body;
+        tc.cButtons = 3;
+        tc.pButtons = b;
+        int pressed = IDCANCEL;
+        if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) {
+            if (pressed == PLACE_FOUND) {
+                if (bd_source_relocate(g_cat, sp->id, old) == BD_OK) {
+                    wchar_t line[MAX_PATH * 4 + 128];
+                    swprintf(line, COUNT_OF(line), T(L"Backup root \"%ls\" is now at %ls"), sp->name, wold);
+                    log_append(line);
+                    moved = 1;
+                } else {
+                    wchar_t *e = widen(bd_catalog_error(g_cat));
+                    MessageBoxW(g_main, e ? e : T(L"That folder cannot be used."), APP_NAME, MB_ICONWARNING);
+                    free(e);
+                }
+            } else if (pressed == PLACE_PICK) {
+                if (bd_source_keep_place(g_cat, sp->id) == BD_OK) kept = 1;
+            }
+        }
+        free(wold);
+        free(old);
+    }
+    source_places_free(&l);
+    if (moved || kept) places_changed();
+    if (moved) enqueue(new_job(JOB_SCAN));
+}
+
 static void relocate_one(const source_place *sp)
 {
     int r = relocate_source(sp);
@@ -9653,6 +9814,67 @@ static void already_root_line(int64_t id, const char *folder, wchar_t *line, siz
     free(w);
 }
 
+typedef struct {
+    int n;
+    wchar_t text[MAX_PATH * 4 + 200];
+} inside_ctx;
+
+static int inside_cb(void *ctx, int64_t id, const char *path)
+{
+    inside_ctx *c = ctx;
+    (void)id;
+    if (c->n < 4) {
+        wchar_t *w = widen(path);
+        size_t len = wcslen(c->text);
+        swprintf(c->text + len, COUNT_OF(c->text) - len, L"\n%ls", w ? w : L"");
+        free(w);
+    }
+    c->n++;
+    return 0;
+}
+
+/* bd_source_add refused folder because it holds backup roots: offer to
+ * make them part of it (their copies stay where they are, so nothing is
+ * copied again). 1 when it was offered. */
+static int offer_take_in(const char *folder)
+{
+    inside_ctx c;
+    memset(&c, 0, sizeof(c));
+    if (bd_roots_inside(g_cat, folder, inside_cb, &c) <= 0) return 0;
+    if (c.n > 4) {
+        size_t len = wcslen(c.text);
+        swprintf(c.text + len, COUNT_OF(c.text) - len, TN(c.n - 4, L"\nand %d more", L"\nand %d more"), c.n - 4);
+    }
+    wchar_t *wf = widen(folder), q[MAX_PATH * 6 + 1200];
+    swprintf(q, COUNT_OF(q),
+             TN(c.n, L"Back up all of %ls, with the backup root inside it?\n\nA folder can be in only one backup root, and this "
+                     L"one is already backed up:%ls\n\nBRODALF can make it part of the new backup root. Its files keep their "
+                     L"copies on your drives, and nothing on a drive is moved, so only the files that are new are copied.",
+                 L"Back up all of %ls, with the backup roots inside it?\n\nA folder can be in only one backup root, and these "
+                 L"are already backed up:%ls\n\nBRODALF can make them part of the new backup root. Their files keep their "
+                 L"copies on your drives, and nothing on a drive is moved, so only the files that are new are copied."),
+             wf ? wf : L"", c.text);
+    if (ask_verbs(g_main, q, MB_YESNO | MB_ICONQUESTION, TN(c.n, L"Make it part of the new root", L"Make them part of the new root"),
+                  T(L"Cancel")) == IDYES) {
+        int64_t id;
+        if (bd_source_add_holding(g_cat, folder, &id) != BD_OK) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
+            free(e);
+        } else {
+            wchar_t line[MAX_PATH * 6 + 600];
+            swprintf(line, COUNT_OF(line), TN(c.n, L"New backup root: %ls. The backup root that was inside it is now part of it:%ls",
+                                              L"New backup root: %ls. The backup roots that were inside it are now part of it:%ls"),
+                     wf ? wf : L"", c.text);
+            log_append(line);
+            rebuild_tree();
+            enqueue(new_job(JOB_SCAN));
+        }
+    }
+    free(wf);
+    return 1;
+}
+
 static void cmd_add_folder(void)
 {
     char *folder = pick_folder(g_main, T(L"Choose a folder to back up. BRODALF will scan it and keep track of every file inside."));
@@ -9678,9 +9900,11 @@ static void cmd_add_folder(void)
     int is_new = 0;
     wchar_t line[MAX_PATH * 8 + 600];
     if (bd_source_add_ex(g_cat, folder, &id, &is_new) != BD_OK) {
-        wchar_t *e = widen(bd_catalog_error(g_cat));
-        MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
-        free(e);
+        if (!offer_take_in(folder)) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
+            free(e);
+        }
     } else if (!is_new) {
         already_root_line(id, folder, line, COUNT_OF(line));
         log_append(line);
@@ -11544,15 +11768,16 @@ static void ask_links(void)
 static void after_scan(job *j)
 {
     if (j->roots_missing) ask_missing_roots();
+    if (j->roots_back) ask_old_places();
     if (j->links) ask_links();
     if (j->damaged) {
         wchar_t q[600];
-        swprintf(q, 600, TN(j->damaged, L"%lld file changed although its size and time did not. That usually means damage on this PC's disk "
-                                        L"(bit rot), and the copies on your drives are the good ones.\n\nShow it now? You can restore it or "
-                                        L"accept it as it is.",
-                            L"%lld files changed although their size and time did not. That usually means damage on this PC's disk "
-                            L"(bit rot), and the copies on your drives are the good ones.\n\nShow them now? You can restore them or "
-                            L"accept them as they are."),
+        swprintf(q, 600, TN(j->damaged, L"%lld file changed although its size and modified time did not: damage on this PC's disk "
+                                        L"(bit rot), or a program that keeps a file's dates when it changes it?\n\nShow it now? If the "
+                                        L"change is yours, back up this version; if not, restore the good copy from your drives.",
+                            L"%lld files changed although their size and modified time did not: damage on this PC's disk "
+                            L"(bit rot), or a program that keeps a file's dates when it changes it?\n\nShow them now? Back up the "
+                            L"changes that are yours, and restore the good copies of the others from your drives."),
                  (long long)j->damaged);
         if (ask_verbs(g_main, q, MB_ICONWARNING | MB_YESNO, TN(j->damaged, L"Show it", L"Show them"), T(L"Not now")) == IDYES) cmd_table(TABLE_DAMAGED);
     }
@@ -12613,14 +12838,20 @@ static void fill_next(void)
             format_bytes(rs.bytes_at_risk, a, 64);
             if (root_count() == 0)
                 wadd(&t, T(L"Nothing to back up yet. Add a backup root first."));
-            else if (rs.files_at_risk == 0)
+            else if (rs.files_at_risk == 0 && !rs.roots_not_scanned)
                 wadd(&t, T(L"Every file has the %d copies in %d places you want. Nothing waits for a backup."), tg.copies, tg.places);
+            else if (rs.files_at_risk == 0)
+                wadd(&t, T(L"Every file scanned so far has the %d copies in %d places you want."), tg.copies, tg.places);
             else {
                 wadd(&t, T(L"%lld of your %lld files (%ls) do not have the %d copies in %d places you want yet"),
                      (long long)rs.files_at_risk, (long long)rs.files_total, a, tg.copies, tg.places);
                 if (rs.files_no_copy) wadd(&t, T(L", and %lld of them have no copy anywhere"), (long long)rs.files_no_copy);
                 wadd(&t, L".");
             }
+            if (rs.roots_not_scanned)
+                wadd(&t, TN(rs.roots_not_scanned, L" %lld backup root has not finished a scan yet, so not all its files are counted: scan to finish it.",
+                            L" %lld backup roots have not finished a scan yet, so not all their files are counted: scan to finish them."),
+                     (long long)rs.roots_not_scanned);
         }
         if (root_count() > 0) wadd(&t, T(L"\r\nEach Copy column is one full copy: \x2713 means the file is in it, \x2013 that it is not."));
     } else if (!o->secondary) {
@@ -14893,6 +15124,20 @@ static void header_refresh(void)
         g_verdict_tone = TONE_NEUTRAL;
         g_verdict_glyph = GLYPH_INFO;
         swprintf(g_verdict, 400, L"%ls", T(L"BRODALF could not tell how many copies your files have"));
+    } else if (f->risk.roots_not_scanned > 0 && f->risk.files_at_risk == 0) {
+        /* A root that never finished a scan has files the catalog does
+         * not know yet: "every file has its copies" would not be true. */
+        int64_t n = f->risk.roots_not_scanned;
+        g_verdict_tone = TONE_WARN;
+        g_verdict_glyph = GLYPH_BANG;
+        swprintf(g_verdict, 400, TN(n, L"%lld backup root is not scanned yet", L"%lld backup roots are not scanned yet"), (long long)n);
+        swprintf(g_verdict_sub, 600, L"%ls",
+                 TN(n, L"Its files are counted once a scan of it finishes. A scan you stop keeps what it read, and the next one goes on "
+                       L"from there.",
+                    L"Their files are counted once a scan of them finishes. A scan you stop keeps what it read, and the next one goes on "
+                    L"from there."));
+        swprintf(btn, 200, L"%ls", T(L"Scan now"));
+        g_next_kind = NEXT_SCAN;
     } else if (f->risk.files_total == 0) {
         g_verdict_tone = TONE_NEUTRAL;
         g_verdict_glyph = GLYPH_INFO;
@@ -14945,6 +15190,13 @@ static void header_refresh(void)
             size_t len = wcslen(g_verdict_sub);
             swprintf(g_verdict_sub + len, 600 - len, TN(none, L" %lld of them has no copy at all.", L" %lld of them have no copy at all."),
                      (long long)none);
+        }
+        if (f->risk.roots_not_scanned > 0) {
+            size_t len = wcslen(g_verdict_sub);
+            swprintf(g_verdict_sub + len, 600 - len,
+                     TN(f->risk.roots_not_scanned, L" %lld backup root is not scanned yet, so not all its files are counted.",
+                        L" %lld backup roots are not scanned yet, so not all their files are counted."),
+                     (long long)f->risk.roots_not_scanned);
         }
     }
     if (g_next_btn) {
@@ -18018,7 +18270,24 @@ static int save_dialog(wchar_t *out, DWORD cap, const wchar_t *title)
         of.lpstrTitle = title;
         of.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if (!GetSaveFileNameW(&of)) return 0;
-        if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) return 1;
+        if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) {
+            /* On a backup drive the database is lost with the drive. */
+            char *p = narrow(out);
+            char *drive = p ? bd_backup_drive_holding(p) : NULL;
+            free(p);
+            if (!drive) return 1;
+            wchar_t *wd = widen(drive), q[MAX_PATH * 4 + 800];
+            free(drive);
+            swprintf(q, COUNT_OF(q),
+                     T(L"Keep the database on a backup drive?\n\n%ls is a BRODALF backup drive. A database kept there is lost "
+                       L"with the drive, and it cannot be opened while the drive is not plugged in. Keep it on this PC instead, "
+                       L"in Documents for example: every backup puts a copy of the database on the drive anyway."),
+                     wd ? wd : L"");
+            free(wd);
+            if (ask_verbs(g_main, q, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2, T(L"Keep it there"), T(L"Choose another place")) == IDYES)
+                return 1;
+            continue;
+        }
         MessageBoxW(g_main, T(L"A file with that name is already there. Choose another name, so nothing is overwritten."), APP_NAME,
                     MB_ICONINFORMATION);
     }
@@ -18296,6 +18565,78 @@ static int try_open(const wchar_t *path)
 
 static struct { char **paths; int n; } g_newdb;
 
+/* A folder chosen for the new database, checked against the list before
+ * the database is saved, as bd_source_add checks backup roots: a link is
+ * offered the folder it leads to, a folder inside one in the list is not
+ * added, and one that holds folders in the list takes their place if the
+ * user says so. 1 to add *folder (it may now be another), 0 not. */
+static int newdb_check(HWND dlg, char **folder)
+{
+    char *target = bd_path_link_target(*folder);
+    if (target) {
+        wchar_t *wf = widen(*folder), *wt = widen(target), q[MAX_PATH * 8 + 400];
+        swprintf(q, COUNT_OF(q), T(L"Back up %ls instead?\n\n%ls is a link to %ls. BRODALF does not follow links, so nothing "
+                                  L"would be backed up through it."),
+                 wt ? wt : L"", wf ? wf : L"", wt ? wt : L"");
+        free(wf);
+        free(wt);
+        if (ask_verbs(dlg, q, MB_YESNO | MB_ICONQUESTION, T(L"Back it up"), T(L"Cancel")) != IDYES) {
+            free(target);
+            return 0;
+        }
+        free(*folder);
+        *folder = target;
+    }
+    wchar_t held[MAX_PATH * 4 + 200] = L"";
+    int holds = 0;
+    for (int i = 0; i < g_newdb.n; i++) {
+        int how = bd_folders_overlap(*folder, g_newdb.paths[i]);
+        if (how == 1 && _stricmp(g_newdb.paths[i], *folder) != 0) return 0; /* the same folder, spelled another way */
+        if (how == 2) {
+            wchar_t *wf = widen(*folder), *wo = widen(g_newdb.paths[i]), m[MAX_PATH * 6 + 400];
+            swprintf(m, COUNT_OF(m), T(L"%ls is inside %ls, which is in the list already. Its files are backed up with it."),
+                     wf ? wf : L"", wo ? wo : L"");
+            free(wf);
+            free(wo);
+            MessageBoxW(dlg, m, APP_NAME, MB_ICONINFORMATION);
+            return 0;
+        }
+        if (how == 3) {
+            if (holds < 4) {
+                wchar_t *wo = widen(g_newdb.paths[i]);
+                size_t len = wcslen(held);
+                swprintf(held + len, COUNT_OF(held) - len, L"\n%ls", wo ? wo : L"");
+                free(wo);
+            }
+            holds++;
+        }
+    }
+    if (!holds) return 1;
+    if (holds > 4) {
+        size_t len = wcslen(held);
+        swprintf(held + len, COUNT_OF(held) - len, TN(holds - 4, L"\nand %d more", L"\nand %d more"), holds - 4);
+    }
+    wchar_t *wf = widen(*folder), q[MAX_PATH * 6 + 800];
+    swprintf(q, COUNT_OF(q),
+             TN(holds, L"Back up all of %ls instead?\n\nIt holds a folder that is in the list already:%ls\n\nA folder can be "
+                       L"in only one backup root, so that one comes off the list.",
+                L"Back up all of %ls instead?\n\nIt holds folders that are in the list already:%ls\n\nA folder can be in "
+                L"only one backup root, so those come off the list."),
+             wf ? wf : L"", held);
+    free(wf);
+    if (ask_verbs(dlg, q, MB_YESNO | MB_ICONQUESTION, T(L"Back up all of it"), T(L"Cancel")) != IDYES) return 0;
+    HWND lb = GetDlgItem(dlg, IDC_NEWDB_LIST);
+    for (int i = g_newdb.n - 1; i >= 0; i--) {
+        if (bd_folders_overlap(*folder, g_newdb.paths[i]) != 3) continue;
+        free(g_newdb.paths[i]);
+        memmove(&g_newdb.paths[i], &g_newdb.paths[i + 1], sizeof(char *) * (size_t)(g_newdb.n - i - 1));
+        g_newdb.n--;
+        SendMessageW(lb, LB_DELETESTRING, (WPARAM)i, 0);
+    }
+    EnableWindow(GetDlgItem(dlg, IDC_NEWDB_REMOVE), FALSE);
+    return 1;
+}
+
 static INT_PTR CALLBACK newdb_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     INT_PTR themed;
@@ -18311,6 +18652,10 @@ static INT_PTR CALLBACK newdb_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         switch (LOWORD(wp)) {
         case IDC_NEWDB_ADD: {
             char *folder = pick_folder(dlg, T(L"Choose a folder to back up (a backup root)."));
+            if (folder && !newdb_check(dlg, &folder)) {
+                free(folder);
+                folder = NULL;
+            }
             if (folder) {
                 int dup = 0;
                 for (int i = 0; i < g_newdb.n; i++)

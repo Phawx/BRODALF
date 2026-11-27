@@ -1606,6 +1606,7 @@ static int print_risk_stats(bd_catalog *cat, int64_t source_id, int all)
         j_int("deleted_short", st.deleted_short);
         j_int("old_versions_kept", st.old_versions_kept);
         j_int("old_versions_short", st.old_versions_short);
+        j_int("roots_not_scanned", st.roots_not_scanned);
         J_ARR("files");
         bd_list_at_risk(cat, source_id, print_risk, &rp, NULL);
         J_END_ARR();
@@ -1620,6 +1621,9 @@ static int print_risk_stats(bd_catalog *cat, int64_t source_id, int all)
     printf("target: %d %s in %d %s\n", t.copies, t.copies == 1 ? "copy" : "copies", t.places, t.places == 1 ? "place" : "places");
     printf("%lld of %lld files are short of it (%s), %lld with no copy at all\n", (long long)st.files_at_risk,
            (long long)st.files_total, size, (long long)st.files_no_copy);
+    if (st.roots_not_scanned)
+        printf("%lld backup roots have not finished a scan yet, so their files are not all counted here: scan to finish\n",
+               (long long)st.roots_not_scanned);
     if (st.deleted_kept)
         printf("%lld deleted files are kept on drives, %lld of them with fewer than %d copies\n",
                (long long)st.deleted_kept, (long long)st.deleted_short, t.copies);
@@ -2627,6 +2631,7 @@ static int run(int argc, char **argv)
             j_int("roots_missing", st.roots_missing);
             j_int("roots_emptied", st.roots_emptied);
             j_int("roots_found", st.roots_found);
+            j_int("roots_back", st.roots_back);
             j_int("roots_waiting", st.roots_waiting);
             j_int("roots_stopped", st.roots_stopped);
             j_int("files_cloud_changed", st.files_cloud_changed);
@@ -2650,6 +2655,11 @@ static int run(int argc, char **argv)
             if (st.roots_found)
                 printf("%lld backup roots were not where they were and were found by their files (the log says where)\n",
                        (long long)st.roots_found);
+            if (st.roots_back)
+                printf("%lld backup roots found that way before have their old folder back, holding their files: only one\n"
+                       "is backed up. With root-move, point each root at the one that is real, the old folder or where it\n"
+                       "is now (the log says which)\n",
+                       (long long)st.roots_back);
             if (st.roots_emptied)
                 printf("%lld backup roots have a folder that does not hold their files (another folder with the same name?)\n"
                        "and were left as they were: say where they are with root-move, restore them, or if their files\n"
@@ -2672,13 +2682,13 @@ static int run(int argc, char **argv)
                 printf("%lld links lead outside your backup roots and were not followed, so what they lead to is not\n"
                        "backed up (the log says where each leads): add it as a backup root\n", (long long)st.links_not_followed);
             if (listed) {
-                printf("%lld files changed without their size or modified time changing (a bit-rot scan found them).\n"
-                       "That is what damage on this PC's disk looks like; their copies on the drives are the good ones:\n",
+                printf("%lld files changed without their size or modified time changing (a bit-rot scan found them):\n"
+                       "damage on this PC's disk, or a program that keeps a file's dates when it changes it?\n",
                        (long long)listed);
                 bd_list_damaged(cat, print_damaged, &dc);
                 if (dc.shown)
-                    puts("restore them from a drive, or if you changed one on purpose, scan again with\n"
-                         "--accept ROOT/PATH to record it as a new version");
+                    puts("if a change is yours, scan again with --accept ROOT/PATH to back up that version;\n"
+                         "if not, restore the good copy from a drive");
             } else if (so.bitrot) {
                 puts("no damaged files found");
             }
@@ -3262,6 +3272,7 @@ static int run(int argc, char **argv)
             j_int("files_total", rs.files_total);
             j_int("files_at_risk", rs.files_at_risk);
             j_int("bytes_at_risk", rs.bytes_at_risk);
+            j_int("roots_not_scanned", rs.roots_not_scanned);
             if (have) risk_help_json("plug_in", &h);
             J_END();
         } else {
@@ -3269,6 +3280,9 @@ static int run(int argc, char **argv)
             human_bytes(rs.bytes_at_risk, size, sizeof(size));
             printf("%lld of %lld files (%s) have fewer than %d copies in %d places\n", (long long)rs.files_at_risk,
                    (long long)rs.files_total, size, t.copies, t.places);
+            if (rs.roots_not_scanned)
+                printf("%lld backup roots have not finished a scan yet, so their files are not all counted: scan to finish\n",
+                       (long long)rs.roots_not_scanned);
             if (have) {
                 printf("plug in next:\n");
                 print_risk_help(NULL, &h);

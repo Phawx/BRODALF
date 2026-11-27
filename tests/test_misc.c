@@ -705,6 +705,7 @@ static bd_catalog *reopen(bd_catalog *cat)
 static void test_bitrot_kept(void)
 {
     begin("bitrot");
+    bd_test_no_change_time = 1; /* bit rot leaves the change time as it was */
     write_file(at("src/a.txt"), "alpha alpha");
     write_file(at("src/b.txt"), "beta beta");
     setup u = make_setup();
@@ -765,6 +766,7 @@ static void test_bitrot_kept(void)
     scan(u.cat);
     CHECK(list_damaged(u.cat).n == 0);
     bd_catalog_close(u.cat);
+    bd_test_no_change_time = 0;
 }
 
 static char *read_all(const char *path)

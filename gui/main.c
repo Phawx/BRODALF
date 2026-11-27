@@ -2902,8 +2902,8 @@ static DWORD WINAPI worker(LPVOID arg)
                       L" %lld links to folders or files outside your backup roots were not followed, so what they lead to is not backed up."),
                 (long long)st.links_not_followed);
         if (st.files_damaged)
-            say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: it may be damaged.",
-                      L" %lld files changed without their size or time changing: they may be damaged."),
+            say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: damage, or a program that keeps its dates?",
+                      L" %lld files changed without their size or time changing: damage, or a program that keeps their dates?"),
                 (long long)st.files_damaged);
         int64_t not_found = st.roots_missing - st.roots_emptied - st.roots_waiting;
         if (not_found > 0)
@@ -6083,10 +6083,13 @@ static void update_drives_label(void)
             warn_item *w = warn_add(TONE_BAD, GLYPH_CROSS, L"damaged");
             if (w) {
                 long long n = (long long)g_figs->n_damaged;
-                swprintf(w->title, 200, TN(n, L"%lld file in your backup roots may be damaged", L"%lld files in your backup roots may be damaged"), n);
+                swprintf(w->title, 200, TN(n, L"%lld file in your backup roots changed without its date changing",
+                                           L"%lld files in your backup roots changed without their dates changing"), n);
                 swprintf(w->text, 900, L"%ls",
-                         TN(n, L"A bit-rot scan found it changed without its size or time changing. You can restore it from a backup drive.",
-                            L"A bit-rot scan found them changed without their size or time changing. You can restore them from a backup drive."));
+                         TN(n, L"A bit-rot scan found it changed although its size and time did not: damage, or a program that keeps its "
+                               L"dates? Back up this version if the change is yours, or restore the good copy from a backup drive.",
+                            L"A bit-rot scan found them changed although their size and time did not: damage, or a program that keeps "
+                            L"their dates? Back up the new versions of the changes that are yours, and restore the good copies of the others."));
                 warn_button(w, 0, WA_DAMAGED, 0, L"%ls", TN(n, L"Show it", L"Show them"));
             }
         }
@@ -6583,8 +6586,8 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 
 /* IDD_TABLE in one of four modes: the status of every drive (double-click
  * or Details... opens one), the largest files, the files a bit-rot scan
- * found changed by themselves (Keep as it is now records one as a new
- * version), and the files the last restore left alone. */
+ * found changed without their dates changing (Back up this version records
+ * one as a new version), and the files the last restore left alone. */
 enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGED, TABLE_REPORT, TABLE_VERSIONS };
 /* What the engine reported during the last job that had problems. */
 static wchar_t **g_report;
@@ -6912,9 +6915,9 @@ static void table_damaged(HWND lv)
     swprintf(g_table_empty, 400, L"%ls", T(L"No damaged files."));
     lv_fit_all(lv, 0);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    t.rows ? T(L"These files changed although their size and modified time did not: that is what a failing drive or bit rot "
-                             L"looks like. Their copies on your drives are the good ones: pick a file and press Restore the good copy... "
-                             L"to get it back. If you changed one on purpose, pick it and choose Keep as it is now.")
+                    t.rows ? T(L"These files changed although their size and modified time did not: damage (a failing disk, bit rot), or a "
+                             L"program that keeps a file's dates when it changes it? Pick a file. If the change is yours, press Back up this "
+                             L"version. If not, press Restore the good copy... to get the copy on your drives back.")
                            : T(L"A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them."));
 }
 
@@ -7039,7 +7042,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         static const wchar_t *titles[] = {N_(L"Status of every drive"), N_(L"Largest files"), N_(L"Damaged files"), N_(L"Left alone by the last restore"),
                                           N_(L"Changed since the copy on the drive"), N_(L"What went wrong"),
                                           N_(L"Older versions using the most space")};
-        static const wchar_t *buttons[] = {N_(L"Details..."), N_(L"Leave it out..."), N_(L"Keep as it is now"), N_(L"Open in Explorer"), L"",
+        static const wchar_t *buttons[] = {N_(L"Details..."), N_(L"Leave it out..."), N_(L"Back up this version"), N_(L"Open in Explorer"), L"",
                                            N_(L"Show the app log"), N_(L"Leave it out...")};
         /* The lists that say to restore have a button that does it. */
         static const wchar_t *restores[] = {L"", L"", N_(L"Restore the good copy..."), N_(L"Restore it to another folder..."),
@@ -7116,8 +7119,8 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 return TRUE;
             }
             if (g_table_mode == TABLE_DAMAGED) {
-                if (ask_verbs(dlg, T(L"Keep this file as it is now? It is recorded as a new version and backed up like any "
-                                     L"change; the older copies on your drives stay as they are."), MB_YESNO | MB_ICONQUESTION, T(L"Keep it as it is"), T(L"Cancel")) != IDYES)
+                if (ask_verbs(dlg, T(L"Back up this version of the file? It is recorded as a new version and backed up like any "
+                                     L"change; the older copies on your drives stay as they are."), MB_YESNO | MB_ICONQUESTION, T(L"Back it up"), T(L"Cancel")) != IDYES)
                     return TRUE;
                 if (bd_damaged_accept(g_cat, g_table_nodes[row]) != BD_OK) {
                     wchar_t *e = widen(bd_catalog_error(g_cat));
@@ -11463,12 +11466,12 @@ static void after_scan(job *j)
     if (j->links) ask_links();
     if (j->damaged) {
         wchar_t q[600];
-        swprintf(q, 600, TN(j->damaged, L"%lld file changed although its size and time did not. That usually means damage on this PC's disk "
-                                        L"(bit rot), and the copies on your drives are the good ones.\n\nShow it now? You can restore it or "
-                                        L"accept it as it is.",
-                            L"%lld files changed although their size and time did not. That usually means damage on this PC's disk "
-                            L"(bit rot), and the copies on your drives are the good ones.\n\nShow them now? You can restore them or "
-                            L"accept them as they are."),
+        swprintf(q, 600, TN(j->damaged, L"%lld file changed although its size and modified time did not: damage on this PC's disk "
+                                        L"(bit rot), or a program that keeps a file's dates when it changes it?\n\nShow it now? If the "
+                                        L"change is yours, back up this version; if not, restore the good copy from your drives.",
+                            L"%lld files changed although their size and modified time did not: damage on this PC's disk "
+                            L"(bit rot), or a program that keeps a file's dates when it changes it?\n\nShow them now? Back up the "
+                            L"changes that are yours, and restore the good copies of the others from your drives."),
                  (long long)j->damaged);
         if (ask_verbs(g_main, q, MB_ICONWARNING | MB_YESNO, TN(j->damaged, L"Show it", L"Show them"), T(L"Not now")) == IDYES) cmd_table(TABLE_DAMAGED);
     }

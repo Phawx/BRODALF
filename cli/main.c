@@ -1891,13 +1891,13 @@ static int run(int argc, char **argv)
                 printf("%lld links lead outside your backup roots and were not followed, so what they lead to is not\n"
                        "backed up (the log says where each leads): add it as a backup root\n", (long long)st.links_not_followed);
             if (listed) {
-                printf("%lld files changed without their size or modified time changing (a bit-rot scan found them).\n"
-                       "That is what damage on this PC's disk looks like; their copies on the drives are the good ones:\n",
+                printf("%lld files changed without their size or modified time changing (a bit-rot scan found them):\n"
+                       "damage on this PC's disk, or a program that keeps a file's dates when it changes it?\n",
                        (long long)listed);
                 bd_list_damaged(cat, print_damaged, &dc);
                 if (dc.shown)
-                    puts("restore them from a drive, or if you changed one on purpose, scan again with\n"
-                         "--accept ROOT/PATH to record it as a new version");
+                    puts("if a change is yours, scan again with --accept ROOT/PATH to back up that version;\n"
+                         "if not, restore the good copy from a drive");
             } else if (so.bitrot) {
                 puts("no damaged files found");
             }

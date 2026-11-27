@@ -418,6 +418,21 @@ bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_
     return *media_id ? BD_OK : bd_fail(cat, BD_ERR_NOT_FOUND, "the disk at %s is not one of your drives", root);
 }
 
+int64_t bd_biggest_drive(bd_catalog *cat)
+{
+    sqlite3_stmt *q;
+    int64_t big = -1;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT COUNT(*), MIN(COALESCE(total_bytes,0)), MAX(total_bytes) FROM media"
+                           " WHERE kind='drive' AND retired_ms IS NULL AND secondary=0",
+                           -1, &q, NULL) != SQLITE_OK)
+        return -1;
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int64(q, 0) > 0 && sqlite3_column_int64(q, 1) > 0)
+        big = sqlite3_column_int64(q, 2);
+    sqlite3_finalize(q);
+    return big;
+}
+
 bd_status bd_media_erased(bd_catalog *cat, int64_t media_id, const char *root)
 {
     sqlite3_stmt *q;

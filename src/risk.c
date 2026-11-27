@@ -236,6 +236,38 @@ bd_status bd_list_largest(bd_catalog *cat, int limit, bd_risk_fn fn, void *ctx)
     return BD_OK;
 }
 
+bd_status bd_list_version_space(bd_catalog *cat, int limit, bd_version_space_fn fn, void *ctx)
+{
+    sqlite3_stmt *q;
+    if (limit <= 0) limit = 100;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT n.id, n.source_id, s.name, n.rel_path, COALESCE(cv.size, n.size),"
+                           " COUNT(DISTINCT v.id), SUM(c.stored_size) AS used"
+                           " FROM nodes n JOIN sources s ON s.id=n.source_id AND s.active=1"
+                           " LEFT JOIN versions cv ON cv.id=n.current_version_id"
+                           " JOIN versions v ON v.node_id=n.id AND v.id IS NOT n.current_version_id"
+                           " JOIN copies c ON c.version_id=v.id AND c.state<>'missing'"
+                           " WHERE n.is_dir=0 AND n.deleted=0"
+                           " GROUP BY n.id ORDER BY used DESC, n.id LIMIT ?",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list the files whose older versions take the most space");
+    sqlite3_bind_int(q, 1, limit);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_version_space info;
+        memset(&info, 0, sizeof(info));
+        info.node_id = sqlite3_column_int64(q, 0);
+        info.source_id = sqlite3_column_int64(q, 1);
+        info.source_name = (const char *)sqlite3_column_text(q, 2);
+        info.rel_path = (const char *)sqlite3_column_text(q, 3);
+        info.size = sqlite3_column_int64(q, 4);
+        info.old_versions = sqlite3_column_int64(q, 5);
+        info.old_bytes = sqlite3_column_int64(q, 6);
+        if (fn && fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
+}
+
 bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
 {
     bd_target t;

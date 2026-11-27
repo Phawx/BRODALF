@@ -362,6 +362,34 @@ bd_status bd_source_skip_set(bd_catalog *cat, int64_t source_id, const char *pat
     return bd_setting_set(cat, key, patterns) == 0 ? BD_OK : bd_fail_db(cat, "save the folder's skip list");
 }
 
+bd_status bd_leave_out(bd_catalog *cat, int64_t node_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT source_id, rel_path, is_dir FROM nodes WHERE id=?", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "find the file to leave out");
+    sqlite3_bind_int64(q, 1, node_id);
+    if (sqlite3_step(q) != SQLITE_ROW) {
+        sqlite3_finalize(q);
+        return bd_fail(cat, BD_ERR_NOT_FOUND, "no such file in the catalog");
+    }
+    int64_t source_id = sqlite3_column_int64(q, 0);
+    char *line = bd_sprintf("/%s%s", (const char *)sqlite3_column_text(q, 1), sqlite3_column_int(q, 2) ? "/" : "");
+    sqlite3_finalize(q);
+    char *list = bd_source_skip_get(cat, source_id);
+    bd_status s = BD_OK;
+    if (!line || !list) s = bd_fail(cat, BD_ERR_NOMEM, "out of memory");
+    else if (bd_skip_match(list, line + 1, line[strlen(line) - 1] == '/')) s = BD_OK; /* left out already */
+    else {
+        size_t len = strlen(list);
+        char *more = bd_sprintf("%s%s%s\n", list, len && list[len - 1] != '\n' ? "\n" : "", line);
+        s = more ? bd_source_skip_set(cat, source_id, more) : bd_fail(cat, BD_ERR_NOMEM, "out of memory");
+        free(more);
+    }
+    free(line);
+    free(list);
+    return s;
+}
+
 bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active)
 {
     sqlite3_stmt *u;
@@ -429,6 +457,7 @@ static void skip_parse(const char *text, skip_list *l)
         p = *end ? end + 1 : end;
         if (a == b || *a == '#') continue;
         skip_rule r = {0};
+        int anchored = *a == '/' || *a == '\\'; /* a path from the top of the root */
         size_t n = (size_t)(b - a);
         r.pat = malloc(n + 1);
         if (!r.pat) continue;
@@ -437,7 +466,7 @@ static void skip_parse(const char *text, skip_list *l)
         for (char *c = r.pat; *c; c++) if (*c == '\\') *c = '/';
         if (n > 1 && r.pat[n - 1] == '/') { r.dir_only = 1; r.pat[--n] = '\0'; }
         while (r.pat[0] == '/') memmove(r.pat, r.pat + 1, strlen(r.pat));
-        r.whole_path = strchr(r.pat, '/') != NULL;
+        r.whole_path = anchored || strchr(r.pat, '/') != NULL;
         if (!r.pat[0]) { free(r.pat); continue; }
         skip_rule *nr = realloc(l->rules, sizeof(skip_rule) * (size_t)(l->n + 1));
         if (!nr) { free(r.pat); continue; }

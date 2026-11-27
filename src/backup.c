@@ -1063,6 +1063,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
     int64_t last_id = 0, items_done = 0, rehashed_total = 0, last_save_ms = bd_now_ms();
     int cancelled = 0, gone = 0;
     int full_said[MAX_DESTS] = {0}, limit_said[MAX_DESTS] = {0};
+    int64_t biggest = bd_biggest_drive(cat); /* a file over it fits no drive you have */
     while (!cancelled && !gone) {
         size_t ni = 0;
         sqlite3_reset(q);
@@ -1174,7 +1175,13 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                     continue;
                 }
                 if (d->space_free >= 0 && need > d->space_free - d->reserve) {
-                    if (!full_said[k]++) {
+                    if (biggest > 0 && need > biggest) {
+                        /* No drive you have could take it. */
+                        if (stats[k].files_bigger_than_drives < 20)
+                            bd_logf(log, log_ctx, "%s is bigger than every backup drive you have: leave it out, or back it up to a bigger drive", it->rel);
+                        stats[k].files_bigger_than_drives++;
+                        stats[k].bytes_bigger_than_drives += it->version_size;
+                    } else if (!full_said[k]++) {
                         if (n > 1) bd_logf(log, log_ctx, "\"%s\" is full; files that do not fit wait for another drive", d->label);
                         else bd_logf(log, log_ctx, "the drive is full; files that do not fit wait for another drive");
                     }

@@ -1622,6 +1622,8 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         j_int("files_too_big", bs->files_too_big);
         j_int("bytes_too_big", bs->bytes_too_big);
         if (bs->too_big_why) j_str("too_big_why", bs->too_big_why);
+        j_int("files_bigger_than_drives", bs->files_bigger_than_drives);
+        j_int("bytes_bigger_than_drives", bs->bytes_bigger_than_drives);
         report_in_use(cat, bs->files_in_use);
         J_END();
         return;
@@ -1652,6 +1654,13 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         human_bytes(bs->bytes_too_big, size, sizeof(size));
         printf("of those, %lld file%s (%s) did not fit because %s\n", (long long)bs->files_too_big,
                bs->files_too_big == 1 ? "" : "s", size, bs->too_big_why);
+    }
+    if (bs->files_bigger_than_drives) {
+        human_bytes(bs->bytes_bigger_than_drives, size, sizeof(size));
+        printf("of those, %lld file%s (%s) %s bigger than every backup drive you have: leave %s out (brodalf skip), or back %s up to a bigger drive\n",
+               (long long)bs->files_bigger_than_drives, bs->files_bigger_than_drives == 1 ? "" : "s", size,
+               bs->files_bigger_than_drives == 1 ? "is" : "are", bs->files_bigger_than_drives == 1 ? "it" : "them",
+               bs->files_bigger_than_drives == 1 ? "it" : "them");
     }
 }
 
@@ -2174,6 +2183,8 @@ static int run(int argc, char **argv)
                     bs.files_too_big = first.files_too_big;
                     bs.bytes_too_big = first.bytes_too_big;
                     bs.too_big_why = first.too_big_why;
+                    bs.files_bigger_than_drives = first.files_bigger_than_drives;
+                    bs.bytes_bigger_than_drives = first.bytes_bigger_than_drives;
                     bs.copies_alongside += first.copies_alongside;
                     bs.files_rehashed += first.files_rehashed;
                     bs.files_online_only = first.files_online_only;

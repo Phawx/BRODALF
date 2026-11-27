@@ -297,6 +297,12 @@ bd_status bd_skip_list_set(bd_catalog *cat, const char *patterns);
 char *bd_source_skip_get(bd_catalog *cat, int64_t source_id);
 /* NULL or "" clears it. */
 bd_status bd_source_skip_set(bd_catalog *cat, int64_t source_id, const char *patterns);
+/* Leave one file (or folder) out of its root's scans from now on: its path
+ * is added to that root's own list, as a line starting with / (a path from
+ * the top of the root, so files of the same name elsewhere are still
+ * backed up). Nothing is deleted: the next scan shows it among the deleted
+ * files, and the copies already made stay on the drives and still restore. */
+bd_status bd_leave_out(bd_catalog *cat, int64_t node_id);
 /* 1 if rel_path (inside a backup root, '/'-separated) is skipped. */
 int bd_skip_match(const char *patterns, const char *rel_path, int is_dir);
 
@@ -569,7 +575,18 @@ typedef struct {
     int64_t files_too_big;
     int64_t bytes_too_big;
     const char *too_big_why;
+    /* Of files_no_room (and not too big for the file system), those bigger
+     * than every backup drive you have (bd_biggest_drive): no drive can
+     * take them, so they wait for a bigger drive, or for you to leave them
+     * out. */
+    int64_t files_bigger_than_drives;
+    int64_t bytes_bigger_than_drives;
 } bd_backup_stats;
+
+/* The size of the biggest backup drive that counts (not lost or broken,
+ * not an extra place), or -1 when there is none or one of them has never
+ * said how big it is. */
+int64_t bd_biggest_drive(bd_catalog *cat);
 
 /* Why files of 4 GiB or more do not fit on a FAT32 drive (the file system
  * holds files up to 4 GiB less one byte; Windows' "FAT" for FAT12 and FAT16
@@ -1276,6 +1293,23 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
  * see where the space goes. At most limit (0: 100). The copies and places
  * fields of each entry are filled as for bd_list_at_risk. */
 bd_status bd_list_largest(bd_catalog *cat, int limit, bd_risk_fn fn, void *ctx);
+
+typedef struct {
+    int64_t node_id;
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    int64_t size;          /* the current version */
+    int64_t old_versions;  /* older versions with a copy on a drive or extra place */
+    int64_t old_bytes;     /* what their copies take there, all drives together */
+} bd_version_space;
+
+typedef int (*bd_version_space_fn)(void *ctx, const bd_version_space *info);
+
+/* Live files whose older versions take the most space on your drives (every
+ * change adds a whole copy, and none is ever removed), most first. At most
+ * limit (0: 100); files with no older version on a drive are left out. */
+bd_status bd_list_version_space(bd_catalog *cat, int limit, bd_version_space_fn fn, void *ctx);
 
 typedef struct {
     int64_t media_id;

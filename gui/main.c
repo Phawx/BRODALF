@@ -89,6 +89,7 @@ enum {
     ID_DB_DAMAGED,
     ID_DB_IN_USE,
     ID_DB_LARGEST,
+    ID_DB_VERSIONS,
     ID_DB_EXPORT,
     ID_NEXT_FOR_LABEL,
     ID_NEXT_FOR,
@@ -177,6 +178,7 @@ enum {
     ID_M_SCAN_FIRST, /* a backup warning's "scan first" button */
     ID_M_BITROT,
     ID_M_LARGEST,
+    ID_M_VERSIONS,
     ID_M_DAMAGED,
     ID_M_CONFLICTS,
     ID_M_NEW_DB,
@@ -1690,6 +1692,7 @@ typedef struct job {
     int64_t many[16];   /* backup: several drives and extra places in one job */
     int n_many, many_places;
     int64_t no_room, bytes_no_room; /* backup: what did not fit */
+    int64_t bigger;     /* backup: files bigger than every drive you have */
     int64_t erased_id;  /* backup: the disk at root is this drive, wiped: put it back first (bd_media_erased) */
     int64_t leftovers;  /* check: half-written files left on the drive */
     int64_t offline;    /* restore: files on drives not plugged in */
@@ -2802,6 +2805,7 @@ static bd_status run_backup_many(job *j)
         failed += bs[i].files_failed;
         no_room += bs[i].files_no_room;
         no_room_bytes += bs[i].bytes_no_room;
+        if (bs[i].files_bigger_than_drives > j->bigger) j->bigger = bs[i].files_bigger_than_drives;
         alongside += bs[i].copies_alongside;
         if (bs[i].files_in_use > j->in_use) j->in_use = bs[i].files_in_use;
         media_name(j->many[i], name, 600);
@@ -2830,6 +2834,10 @@ static bd_status run_backup_many(job *j)
         say(j, TN(no_room, L" %lld copy (%ls) did not fit and waits for another drive.", L" %lld copies (%ls) did not fit and wait for another drive."),
             (long long)no_room, size);
     }
+    if (j->bigger)
+        say(j, TN(j->bigger, L" %lld file is bigger than every backup drive you have, so no drive can take it.",
+                  L" %lld files are bigger than every backup drive you have, so no drive can take them."),
+            (long long)j->bigger);
     return s;
 }
 
@@ -2944,11 +2952,22 @@ static DWORD WINAPI worker(LPVOID arg)
             if (bs.files_rehashed) say(j, T(L" %lld changed since the scan and were read again first."), (long long)bs.files_rehashed);
             if (bs.files_in_use) say(j, T(L" %lld in use by another program."), (long long)bs.files_in_use);
             if (bs.files_online_only) say(j, T(L" %lld online-only cloud files not copied."), (long long)bs.files_online_only);
-            if (bs.files_no_room > bs.files_too_big) {
-                format_bytes(bs.bytes_no_room - bs.bytes_too_big, size, 64);
-                say(j, TN(bs.files_no_room - bs.files_too_big, L" The drive is full: %lld file (%ls) did not fit and waits for another drive.",
+            int64_t full = bs.files_no_room - bs.files_too_big - bs.files_bigger_than_drives;
+            int64_t full_bytes = bs.bytes_no_room - bs.bytes_too_big - bs.bytes_bigger_than_drives;
+            if (full > 0) {
+                format_bytes(full_bytes, size, 64);
+                say(j, TN(full, L" The drive is full: %lld file (%ls) did not fit and waits for another drive.",
                           L" The drive is full: %lld files (%ls) did not fit and wait for another drive."),
-                    (long long)(bs.files_no_room - bs.files_too_big), size);
+                    (long long)full, size);
+            }
+            if (bs.files_bigger_than_drives) {
+                format_bytes(bs.bytes_bigger_than_drives, size, 64);
+                say(j, TN(bs.files_bigger_than_drives,
+                          L" %lld file (%ls) is bigger than every backup drive you have, so no drive can take it. Leave it out, or back it "
+                          L"up to a bigger drive.",
+                          L" %lld files (%ls) are bigger than every backup drive you have, so no drive can take them. Leave them out, or "
+                          L"back them up to a bigger drive."),
+                    (long long)bs.files_bigger_than_drives, size);
             }
             if (bs.files_too_big) {
                 format_bytes(bs.bytes_too_big, size, 64);
@@ -2960,8 +2979,9 @@ static DWORD WINAPI worker(LPVOID arg)
             }
             /* "The drive is full" is asked about only for what did not fit
              * for want of room; files too big for FAT32 are said above. */
-            j->no_room = bs.files_no_room - bs.files_too_big;
-            j->bytes_no_room = bs.bytes_no_room - bs.bytes_too_big;
+            j->no_room = full > 0 ? full : 0;
+            j->bytes_no_room = full > 0 ? full_bytes : 0;
+            j->bigger = bs.files_bigger_than_drives;
             j->in_use = bs.files_in_use;
             /* What did not fit gets its own question after the backup. */
             j->n_problems = bs.files_failed + bs.files_no_room;
@@ -6536,7 +6556,7 @@ static INT_PTR CALLBACK risk_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
  * or Details... opens one), the largest files, the files a bit-rot scan
  * found changed by themselves (Keep as it is now records one as a new
  * version), and the files the last restore left alone. */
-enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGED, TABLE_REPORT };
+enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGED, TABLE_REPORT, TABLE_VERSIONS };
 /* What the engine reported during the last job that had problems. */
 static wchar_t **g_report;
 static int g_n_report;
@@ -6545,7 +6565,21 @@ static int g_table_everywhere; /* changed: the drive holds too few files to tell
 static void drive_name(const char *label, const char *location, wchar_t *out, size_t cap);
 static int g_table_mode;
 static int64_t g_table_ids[256];
-static int64_t *g_table_nodes; /* damaged: node id by row */
+static int64_t *g_table_nodes; /* damaged, largest, older versions: node id by row */
+static int g_table_cnodes;
+
+static void table_add_node(int row, int64_t id)
+{
+    if (row >= g_table_cnodes) {
+        int cap = g_table_cnodes ? g_table_cnodes * 2 : 64;
+        while (cap <= row) cap *= 2;
+        int64_t *grown = realloc(g_table_nodes, sizeof(int64_t) * (size_t)cap);
+        if (!grown) return;
+        g_table_nodes = grown;
+        g_table_cnodes = cap;
+    }
+    g_table_nodes[row] = id;
+}
 /* Damaged, changed and left-alone files: the version to restore, by row;
  * and the one picked to restore once the table is closed. */
 static int64_t *g_table_vers, g_table_restore_vid;
@@ -6565,6 +6599,7 @@ static void table_add_version(int64_t vid)
 
 static void restore_version(int64_t version_id);
 static int g_table_n, g_table_pick;
+static int g_table_left_out; /* a file was left out from the table: scan again */
 /* The files the last restore left alone, from its job. */
 static conflict_row *g_conflicts;
 static int g_n_conflicts;
@@ -6706,7 +6741,7 @@ static int table_largest_cb(void *ctx, const bd_risk_info *r)
     root_path(src, rel, file, 1200);
     const wchar_t *cells[] = {file, size, copies, places};
     lv_row(t->lv, cells, 4);
-    t->rows++;
+    table_add_node(t->rows++, r->node_id);
     free(src);
     free(rel);
     return 0;
@@ -6724,11 +6759,75 @@ static void table_largest(HWND lv)
     HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT));
     bd_list_largest(g_cat, 200, table_largest_cb, &t);
     SetCursor(old);
+    g_table_n = t.rows;
     swprintf(g_table_empty, 400, L"%ls", T(L"No files yet. Add a backup root and scan it."));
     lv_fit_all(lv, 0);
     SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
-                    t.rows ? T(L"The largest files in your backup roots, largest first (the top 200): where the space on your drives goes.")
+                    t.rows ? T(L"The largest files in your backup roots, largest first (the top 200): where the space on your drives goes. "
+                             L"To stop backing one up, pick it and choose Leave it out.")
                            : T(L"The largest files in your backup roots are listed here once they are scanned."));
+}
+
+static int table_versions_cb(void *ctx, const bd_version_space *v)
+{
+    table_rows *t = ctx;
+    wchar_t *src = widen(v->source_name), *rel = widen(v->rel_path), file[1200], count[32], used[64], now[64];
+    root_path(src, rel, file, 1200);
+    swprintf(count, 32, L"%lld", (long long)v->old_versions);
+    format_bytes(v->old_bytes, used, 64);
+    format_bytes(v->size, now, 64);
+    const wchar_t *cells[] = {file, count, used, now};
+    lv_row(t->lv, cells, 4);
+    table_add_node(t->rows++, v->node_id);
+    free(src);
+    free(rel);
+    return 0;
+}
+
+/* Every change to a file adds a whole copy, and none is ever removed: the
+ * files whose older versions take the most room on the drives. */
+static void table_versions(HWND lv)
+{
+    static const wchar_t *cols[] = {N_(L"File"), N_(L"Older versions"), N_(L"Space they use"), N_(L"Size now")};
+    static const int w[] = {420, 100, 110, 80};
+    lv_columns(lv, cols, w, 4);
+    table_rows t = {lv, 0};
+    HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    bd_list_version_space(g_cat, 200, table_versions_cb, &t);
+    SetCursor(old);
+    g_table_n = t.rows;
+    swprintf(g_table_empty, 400, L"%ls", T(L"No file has an older version on your drives yet."));
+    lv_fit_all(lv, 0);
+    SetDlgItemTextW(GetParent(lv), IDC_TABLE_TEXT,
+                    t.rows ? T(L"Every change to a file adds a whole copy of it to your drives, and BRODALF never removes one. These files' "
+                             L"older versions take the most space, most first (the top 200; \"Space they use\" is on all your drives "
+                             L"together). To stop backing one up, pick it and choose Leave it out.")
+                           : T(L"Files whose older versions take space on your drives are listed here once they have changed and been backed up again."));
+}
+
+/* Leave the file in the picked row out of backups from now on. 1 if it was. */
+static int table_leave_out(HWND dlg, HWND lv, int item, int row)
+{
+    if (!g_table_nodes || row >= g_table_cnodes) return 0;
+    wchar_t file[1200] = L"", msg[1800];
+    ListView_GetItemText(lv, item, 0, file, 1200);
+    swprintf(msg, 1800,
+             T(L"Leave %ls out of backups from now on?\n\nNothing is deleted: the copies already on your drives stay there and still "
+               L"restore. After the next scan it shows among the deleted files. To back it up again, take it off What to leave out in "
+               L"its backup root."),
+             file);
+    if (ask_verbs(dlg, msg, MB_YESNO | MB_ICONQUESTION, T(L"Leave it out"), T(L"Cancel")) != IDYES) return 0;
+    if (bd_leave_out(g_cat, g_table_nodes[row]) != BD_OK) {
+        wchar_t *e = widen(bd_catalog_error(g_cat));
+        MessageBoxW(dlg, e ? e : T(L"Could not record it."), APP_NAME, MB_ICONWARNING);
+        free(e);
+        return 0;
+    }
+    ui_save();
+    swprintf(msg, 1800, T(L"Left out of backups from now on: %ls."), file);
+    log_append(msg);
+    ListView_DeleteItem(lv, item);
+    return 1;
 }
 
 typedef struct { HWND lv; int rows, cap; } damaged_rows;
@@ -6777,7 +6876,9 @@ static void table_damaged(HWND lv)
     damaged_rows t = {lv, 0, 0};
     free(g_table_nodes);
     g_table_nodes = NULL;
+    g_table_cnodes = 0;
     bd_list_damaged(g_cat, table_damaged_cb, &t);
+    g_table_cnodes = t.cap;
     g_table_n = t.rows;
     swprintf(g_table_empty, 400, L"%ls", T(L"No damaged files."));
     lv_fit_all(lv, 0);
@@ -6907,11 +7008,13 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_INITDIALOG: {
         static const wchar_t *titles[] = {N_(L"Status of every drive"), N_(L"Largest files"), N_(L"Damaged files"), N_(L"Left alone by the last restore"),
-                                          N_(L"Changed since the copy on the drive"), N_(L"What went wrong")};
-        static const wchar_t *buttons[] = {N_(L"Details..."), L"", N_(L"Keep as it is now"), N_(L"Open in Explorer"), L"", N_(L"Show the app log")};
+                                          N_(L"Changed since the copy on the drive"), N_(L"What went wrong"),
+                                          N_(L"Older versions using the most space")};
+        static const wchar_t *buttons[] = {N_(L"Details..."), N_(L"Leave it out..."), N_(L"Keep as it is now"), N_(L"Open in Explorer"), L"",
+                                           N_(L"Show the app log"), N_(L"Leave it out...")};
         /* The lists that say to restore have a button that does it. */
         static const wchar_t *restores[] = {L"", L"", N_(L"Restore the good copy..."), N_(L"Restore it to another folder..."),
-                                            N_(L"Restore the drive's copy..."), L""};
+                                            N_(L"Restore the drive's copy..."), L"", L""};
         SetWindowTextW(dlg, T(titles[g_table_mode]));
         SetDlgItemTextW(dlg, IDC_TABLE_OPEN, T(buttons[g_table_mode]));
         ShowWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), *buttons[g_table_mode] ? SW_SHOW : SW_HIDE);
@@ -6926,6 +7029,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         else if (g_table_mode == TABLE_DAMAGED) table_damaged(lv);
         else if (g_table_mode == TABLE_CHANGED) table_changed(lv);
         else if (g_table_mode == TABLE_REPORT) table_report(lv);
+        else if (g_table_mode == TABLE_VERSIONS) table_versions(lv);
         else table_conflicts(lv);
         EnableWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), g_table_n > 0 || g_table_mode == TABLE_REPORT);
         EnableWindow(GetDlgItem(dlg, IDC_TABLE_RESTORE), g_table_nvers > 0);
@@ -6971,9 +7075,15 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (LOWORD(wp) == IDC_TABLE_OPEN) {
             HWND lv = GetDlgItem(dlg, IDC_TABLE_LIST);
-            int row = lv_index(lv, ListView_GetNextItem(lv, -1, LVNI_SELECTED));
+            int item = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+            int row = lv_index(lv, item);
             if (row < 0 || row >= g_table_n) {
                 MessageBoxW(dlg, T(L"Pick a row in the list first."), APP_NAME, MB_ICONINFORMATION);
+                return TRUE;
+            }
+            if (g_table_mode == TABLE_LARGEST || g_table_mode == TABLE_VERSIONS) {
+                if (table_leave_out(dlg, lv, item, row)) g_table_left_out = 1;
+                EnableWindow(GetDlgItem(dlg, IDC_TABLE_OPEN), ListView_GetItemCount(lv) > 0);
                 return TRUE;
             }
             if (g_table_mode == TABLE_DAMAGED) {
@@ -7029,6 +7139,7 @@ static INT_PTR CALLBACK table_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 static void cmd_table(int mode)
 {
     g_table_mode = mode;
+    g_table_left_out = 0;
     for (;;) {
         INT_PTR r = DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_TABLE), g_main, table_proc);
         if (r == IDC_TABLE_RESTORE) {
@@ -7039,6 +7150,8 @@ static void cmd_table(int mode)
         edit_drive(g_table_ids[g_table_pick]);
     }
     if (mode == TABLE_DAMAGED) rebuild_tree();
+    if (g_table_left_out)
+        log_append(T(L"The next scan takes what you left out off the list of files to back up."));
 }
 
 /* The files changed since their copies on a drive were made. button names
@@ -8035,8 +8148,64 @@ static void start_backup(job *b, int offer_scan)
 
 /* What did not fit waits for another drive: every drive gets whatever it
  * is missing, so any drive with room carries the backup on. */
+typedef struct { int64_t biggest; int n; int64_t ids[20]; wtext names; } too_big_list;
+
+static int too_big_cb(void *ctx, const bd_risk_info *r)
+{
+    too_big_list *l = ctx;
+    if (r->size <= l->biggest || l->n >= 20) return 1; /* largest first: the rest fit */
+    wchar_t *src = widen(r->source_name), *rel = widen(r->rel_path), file[1200], size[64];
+    root_path(src, rel, file, 1200);
+    format_bytes(r->size, size, 64);
+    wadd(&l->names, L"    %ls (%ls)\n", file, size);
+    l->ids[l->n++] = r->node_id;
+    free(src);
+    free(rel);
+    return 0;
+}
+
+/* Files bigger than every drive you have: no drive can take them, so offer
+ * to leave them out (nothing is deleted). */
+static void offer_too_big(void)
+{
+    too_big_list l;
+    memset(&l, 0, sizeof(l));
+    l.biggest = bd_biggest_drive(g_cat);
+    if (l.biggest <= 0) return;
+    bd_list_largest(g_cat, 20, too_big_cb, &l);
+    if (l.n) {
+        wtext t = {0};
+        wadd(&t, TN(l.n, L"%d file is bigger than every backup drive you have, so it can't be backed up:\n\n",
+                    L"%d files are bigger than every backup drive you have, so they can't be backed up:\n\n"), l.n);
+        for (const wchar_t *p = l.names.p; p && *p;) { /* a line at a time: wadd takes lines */
+            const wchar_t *e = wcschr(p, L'\n');
+            size_t n = e ? (size_t)(e - p) + 1 : wcslen(p);
+            wadd(&t, L"%.*ls", (int)n, p);
+            p += n;
+        }
+        wadd(&t, L"\n%ls",
+             TN(l.n, L"Leave it out of backups, or back it up once you have a bigger drive. Leaving it out deletes nothing: it shows "
+                     L"among the deleted files, and you can take it off What to leave out later.",
+                L"Leave them out of backups, or back them up once you have a bigger drive. Leaving them out deletes nothing: they show "
+                L"among the deleted files, and you can take them off What to leave out later."));
+        if (t.p && ask_verbs(g_main, t.p, MB_YESNO | MB_ICONQUESTION, TN(l.n, L"Leave it out", L"Leave them out"), T(L"Not now")) == IDYES) {
+            int done = 0;
+            for (int i = 0; i < l.n; i++)
+                if (bd_leave_out(g_cat, l.ids[i]) == BD_OK) done++;
+            ui_save();
+            wchar_t line[200];
+            swprintf(line, 200, TN(done, L"%d file left out of backups from now on. The next scan takes it off the list of files to back up.",
+                                   L"%d files left out of backups from now on. The next scan takes them off the list of files to back up."), done);
+            log_append(line);
+        }
+        free(t.p);
+    }
+    free(l.names.p);
+}
+
 static void after_backup(job *j)
 {
+    if (j->bigger > 0) offer_too_big();
     if (j->no_room <= 0 || j->n_many) return;
     wchar_t name[600], size[64], msg[1600];
     media_name(j->media_id, name, 600);
@@ -8552,15 +8721,16 @@ static INT_PTR CALLBACK skip_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             swprintf(title, 400, T(L"What to leave out in %ls"), g_skip_root_name);
             SetWindowTextW(dlg, title);
             swprintf(text, 900, T(L"Scans of %ls leave out what matches these, as well as what the list for every backup root (Settings) "
-                                L"leaves out. One per line: * matches anything, ? one character, a line ending in / matches folders. "
+                                L"leaves out. One per line: * matches anything, ? one character, a line ending in / matches folders, a line starting with / is a "
+                                L"path from the top of the root. "
                                 L"A file now left out shows among the deleted files, for you to keep or forget."), g_skip_root_name);
             SetDlgItemTextW(dlg, IDC_SKIP_TEXT, text);
             SetDlgItemTextW(dlg, IDC_SKIP_DEFAULT, T(L"Clear"));
         } else {
             SetDlgItemTextW(dlg, IDC_SKIP_TEXT,
                             T(L"Scans of every backup root leave out files and folders that match these, one per line. * matches anything, "
-                            L"? one character. End a line with / for folders only (and everything in them). A line with / in the middle, "
-                            L"like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes."));
+                            L"? one character. End a line with / for folders only (and everything in them). A line with / at the start or in "
+                            L"the middle, like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes."));
         }
         SetFocus(GetDlgItem(dlg, IDC_SKIP_EDIT));
         SendDlgItemMessageW(dlg, IDC_SKIP_EDIT, EM_SETSEL, 0, 0);
@@ -10382,6 +10552,7 @@ static void create_menu_bar(HWND hwnd)
     AppendMenuW(g_menu_view, MF_STRING, ID_M_STATUS_ALL, T(L"Status of every &drive..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_RISK, T(L"Files at ris&k, and which drive to plug in..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_LARGEST, T(L"Lar&gest files..."));
+    AppendMenuW(g_menu_view, MF_STRING, ID_M_VERSIONS, T(L"Older &versions using the most space..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_DELETED, T(L"Deleted f&iles..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_DAMAGED, T(L"Da&maged files (found by a bit-rot scan)..."));
     AppendMenuW(g_menu_view, MF_STRING, ID_M_IN_USE, T(L"Files that were in &use at the last scan..."));
@@ -10464,9 +10635,9 @@ static void update_menus(void)
         for (int i = 0; i < 2; i++) EnableMenuItem(file, need_cat[i], MF_BYCOMMAND | (g_cat ? MF_ENABLED : MF_GRAYED));
     }
     if (g_menu_view) {
-        static const UINT views[] = {ID_M_STATUS_ALL, ID_M_RISK, ID_M_LARGEST, ID_M_DELETED, ID_M_DAMAGED, ID_M_IN_USE,
+        static const UINT views[] = {ID_M_STATUS_ALL, ID_M_RISK, ID_M_LARGEST, ID_M_VERSIONS, ID_M_DELETED, ID_M_DAMAGED, ID_M_IN_USE,
                                      ID_M_CONFLICTS, ID_M_REFRESH};
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 9; i++)
             EnableMenuItem(g_menu_view, views[i], MF_BYCOMMAND | (g_cat && !g_busy ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(g_menu_view, ID_M_FIND, MF_BYCOMMAND | (g_cat ? MF_ENABLED : MF_GRAYED));
     }
@@ -10840,6 +11011,7 @@ static void menu_command(int cmd)
     case ID_M_RESTORE_DELETED: cmd_deleted(); break;
     case ID_M_DAMAGED: cmd_table(TABLE_DAMAGED); break;
     case ID_M_LARGEST: cmd_table(TABLE_LARGEST); break;
+    case ID_M_VERSIONS: cmd_table(TABLE_VERSIONS); break;
     case ID_M_CONFLICTS: cmd_table(TABLE_CONFLICTS); break;
     case ID_M_RESTORE: cmd_restore(); break;
     case ID_M_RISK: cmd_risk(); break;
@@ -11402,7 +11574,7 @@ static int g_page_stale[N_TABS] = {1, 1, 1, 1, 1, 1};
 static int g_filling; /* >0 while a page refills its lists: their notifications are not the user's */
 
 static const int g_db_btns[] = {ID_DB_ADD, ID_DB_STAR, ID_DB_ENCRYPT, ID_DB_BITROT, ID_DB_RELOCATE, ID_DB_SKIP,
-                                ID_DB_DELETED, ID_DB_DAMAGED, ID_DB_IN_USE, ID_DB_LARGEST, ID_DB_EXPORT};
+                                ID_DB_DELETED, ID_DB_DAMAGED, ID_DB_IN_USE, ID_DB_LARGEST, ID_DB_VERSIONS, ID_DB_EXPORT};
 static const int g_next_btns[] = {ID_NEXT_BACKUP, ID_NEXT_ALL, ID_NEXT_CHANGED, ID_NEXT_RISK, ID_NEXT_REFRESH};
 static const int g_local_btns[] = {ID_LOCAL_BACKUP, ID_LOCAL_ADD, ID_LOCAL_ALL, ID_LOCAL_CHECK, ID_LOCAL_VERIFY, ID_LOCAL_OPEN,
                                    ID_LOCAL_COMPRESS, ID_LOCAL_CHANGED, ID_LOCAL_EDIT, ID_LOCAL_LOST, ID_LOCAL_STATUS, ID_LOCAL_RISK, ID_LOCAL_PARALLEL};
@@ -11911,6 +12083,7 @@ static void create_pages(HWND hwnd)
     page_button(TAB_DB, T(L"Damaged files..."), ID_DB_DAMAGED);
     page_button(TAB_DB, T(L"In use at the last scan..."), ID_DB_IN_USE);
     page_button(TAB_DB, T(L"Largest files..."), ID_DB_LARGEST);
+    page_button(TAB_DB, T(L"Older versions..."), ID_DB_VERSIONS);
     page_button(TAB_DB, T(L"Export the list (CSV)..."), ID_DB_EXPORT);
 
     page_label(TAB_NEXT, ID_NEXT_FOR_LABEL, T(L"What the next backup copies to:"));
@@ -14013,6 +14186,7 @@ static void page_command(int id, int code)
     case ID_DB_DAMAGED: cmd_table(TABLE_DAMAGED); break;
     case ID_DB_IN_USE: show_in_use(1, NULL); break;
     case ID_DB_LARGEST: cmd_table(TABLE_LARGEST); break;
+    case ID_DB_VERSIONS: cmd_table(TABLE_VERSIONS); break;
     case ID_DB_EXPORT: cmd_export(); break;
 
     case ID_NEXT_FOR:

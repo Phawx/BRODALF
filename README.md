@@ -456,8 +456,10 @@ Scans skip temp files, caches and things a program can rebuild, such as
 every backup root (**Settings > What to leave out in every backup root**)
 and one per root (right-click it). One pattern per line, `*` and `?` as
 wildcards, a trailing `/` for folders only, and a `/` in the middle (like
-`Photos/Exports/`) for a path inside a backup root. A file that is newly
-left out shows among the deleted files, for you to keep or forget.
+`Photos/Exports/`) or at the start (like `/big.vhdx`) for a path inside a
+backup root. A file that is newly left out shows among the deleted files,
+for you to keep or forget. **Largest files** and **Older versions using the
+most space** (View menu) can leave a file out for you.
 
 Files in OneDrive or Dropbox are scanned like any other; one that is
 online-only (in the cloud, not on this PC) is left alone until it is on the

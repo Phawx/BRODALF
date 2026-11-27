@@ -777,6 +777,103 @@ static void test_database_in_root(void)
     bd_catalog_close(cat);
 }
 
+/* ---- Convenience 2 and 4: a file bigger than every drive; older versions -- */
+
+typedef struct { int64_t node; char rel[256]; } first_file;
+
+static int first_largest(void *ctx, const bd_risk_info *r)
+{
+    first_file *f = ctx;
+    f->node = r->node_id;
+    snprintf(f->rel, sizeof(f->rel), "%s", r->rel_path);
+    return 1;
+}
+
+typedef struct { int n; char rel[4][256]; int64_t versions[4], bytes[4]; } space_rows;
+
+static int space_cb(void *ctx, const bd_version_space *v)
+{
+    space_rows *r = ctx;
+    if (r->n < 4) {
+        snprintf(r->rel[r->n], sizeof(r->rel[0]), "%s", v->rel_path);
+        r->versions[r->n] = v->old_versions;
+        r->bytes[r->n] = v->old_bytes;
+    }
+    r->n++;
+    return 0;
+}
+
+static void test_too_big_and_versions(void)
+{
+    char huge[101];
+    memset(huge, 'x', 100);
+    huge[100] = 0;
+    write_file(at("big/Data/huge.bin"), huge);
+    write_file(at("big/Data/sub/huge.bin"), "small one");
+    write_file(at("big/Data/notes.txt"), "v1");
+    bd_mkdirs(at("big/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("big/db.brodalf"), &cat), NULL);
+    target_one(cat);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("big/Data"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("big/drive"), "Blue", 0, &drive), cat);
+    /* A drive of 50 bytes, 40 of them free. */
+    sqlite3_exec(cat->db, "UPDATE media SET total_bytes=50", NULL, NULL, NULL);
+    CHECK(bd_biggest_drive(cat) == 50);
+    bd_backup_stats bs;
+    bd_test_free_bytes = 40;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2 && bs.files_no_room == 1);
+    CHECK(bs.files_bigger_than_drives == 1 && bs.bytes_bigger_than_drives == 100); /* 0.11.0: "waits for another drive" */
+
+    /* Left out: only the file at the top of the root, not the one of the same name in sub. */
+    first_file f = {0, ""};
+    REQUIRE_OK(bd_list_largest(cat, 1, first_largest, &f), cat);
+    CHECK(strcmp(f.rel, "huge.bin") == 0);
+    REQUIRE_OK(bd_leave_out(cat, f.node), cat);
+    REQUIRE_OK(bd_leave_out(cat, f.node), cat); /* twice: listed once */
+    char *list = bd_source_skip_get(cat, src);
+    CHECK(list && strcmp(list, "/huge.bin\n") == 0);
+    CHECK(list && bd_skip_match(list, "huge.bin", 0) && !bd_skip_match(list, "sub/huge.bin", 0));
+    free(list);
+    CHECK(exists(at("big/Data/huge.bin"))); /* nothing deleted */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_no_room == 0 && bs.files_bigger_than_drives == 0);
+
+    /* A drive that never said its size: no "bigger than every drive". */
+    int64_t other;
+    bd_mkdirs(at("big/drive2"));
+    REQUIRE_OK(bd_media_init(cat, at("big/drive2"), "Red", 0, &other), cat);
+    sqlite3_exec(cat->db, "UPDATE media SET total_bytes=NULL WHERE label='Red'", NULL, NULL, NULL);
+    CHECK(bd_biggest_drive(cat) == -1);
+
+    /* Older versions: notes.txt changed twice, sub/huge.bin once. */
+    bd_test_free_bytes = 1000;
+    write_file(at("big/Data/notes.txt"), "version 2");
+    write_file(at("big/Data/sub/huge.bin"), "small one, changed");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    write_file(at("big/Data/notes.txt"), "version three");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    bd_test_free_bytes = -1;
+    space_rows r;
+    memset(&r, 0, sizeof(r));
+    REQUIRE_OK(bd_list_version_space(cat, 10, space_cb, &r), cat);
+    CHECK(r.n == 2);
+    CHECK(strcmp(r.rel[0], "notes.txt") == 0 || strcmp(r.rel[0], "sub/huge.bin") == 0);
+    for (int i = 0; i < r.n && i < 4; i++) {
+        if (strcmp(r.rel[i], "notes.txt") == 0) CHECK(r.versions[i] == 2 && r.bytes[i] == 2 + 9);
+        else CHECK(strcmp(r.rel[i], "sub/huge.bin") == 0 && r.versions[i] == 1 && r.bytes[i] == 9);
+    }
+    CHECK(r.n == 2 && r.bytes[0] >= r.bytes[1]);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -798,6 +895,7 @@ int main(void)
     test_mass_change_new_drive();
     test_damaged_catalog_copy();
     test_database_in_root();
+    test_too_big_and_versions();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

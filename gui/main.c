@@ -5292,6 +5292,26 @@ static LRESULT CALLBACK detail_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT
         ReleaseDC(h, dc);
         return res;
     }
+    if (msg == WM_PAINT && g_dark && !g_hc) {
+        /* The dark theme draws its line between the columns over the rows;
+         * a heading (a long file name) runs across both, so it is drawn
+         * again over the line. */
+        LRESULT res = DefSubclassProc(h, msg, wp, lp);
+        HDC dc = GetDC(h);
+        int top = ListView_GetTopIndex(h), last = top + ListView_GetCountPerPage(h) + 1, n = ListView_GetItemCount(h);
+        for (int i = top; i < n && i <= last; i++) {
+            if (lv_index(h, i) != KV_HEAD) continue;
+            NMLVCUSTOMDRAW cd;
+            memset(&cd, 0, sizeof(cd));
+            cd.nmcd.hdr.hwndFrom = h;
+            cd.nmcd.hdc = dc;
+            cd.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
+            cd.nmcd.dwItemSpec = (DWORD_PTR)i;
+            kv_draw(&cd);
+        }
+        ReleaseDC(h, dc);
+        return res;
+    }
     if (msg == WM_SIZE && g_detail_empty[0]) InvalidateRect(h, NULL, TRUE);
     return DefSubclassProc(h, msg, wp, lp);
 }

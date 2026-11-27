@@ -224,6 +224,11 @@ void bd_catalog_cancel(bd_catalog *cat);
  * roots (bd_source_set_active 0) do not count. */
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
 
+/* The active backup root that holds path (a file or folder), or NULL; free
+ * it. A scan never backs up the open database or its side files, so a
+ * database saved inside a root is not added to every backup again. */
+char *bd_root_holding(bd_catalog *cat, const char *path);
+
 /* Point a backup root at where it is now, e.g. on a new PC with another
  * user name. The root keeps its name on the drives and its files keep
  * their versions and copies; the next scan finds them by their path inside

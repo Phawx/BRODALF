@@ -574,6 +574,8 @@ typedef struct {
     int cancelled;
     int64_t inserted_files; /* files new to the catalog in this root */
     hash_pool *pool;
+    char *own_keys[12]; /* the open database and its side files, when in this root */
+    int n_own_keys;
 } scan_ctx;
 
 static int64_t lookup_parent(scan_ctx *c, const char *rel)
@@ -880,6 +882,63 @@ static int is_own_store(const scan_ctx *c, const char *rel)
     return own;
 }
 
+/* The open database and the files kept beside it (its lock, a save or a
+ * recovery under way, the working copy): a backup root that holds them
+ * never backs them up, or every backup would add the whole database again. */
+static void find_own_files(scan_ctx *c)
+{
+    const bd_catalog *cat = c->cat;
+    char *rk = root_key(c->root);
+    if (!rk) return;
+    static const char *const side[] = {"", ".lock", ".saving", ".recovering"};
+    static const char *const work[] = {"", "-wal", "-shm", "-journal", ".snapshot"};
+    char *cand[12];
+    int n = 0;
+    for (size_t i = 0; cat->path && i < sizeof(side) / sizeof(side[0]); i++) cand[n++] = bd_sprintf("%s%s", cat->path, side[i]);
+    for (size_t i = 0; cat->work_path && i < sizeof(work) / sizeof(work[0]); i++) cand[n++] = bd_sprintf("%s%s", cat->work_path, work[i]);
+    if (cat->owner_path) cand[n++] = bd_sprintf("%s", cat->owner_path);
+    for (int i = 0; i < n; i++) {
+        char *k = cand[i] ? root_key(cand[i]) : NULL;
+        if (k && key_inside(k, rk) && c->n_own_keys < (int)(sizeof(c->own_keys) / sizeof(c->own_keys[0])))
+            c->own_keys[c->n_own_keys++] = k;
+        else
+            free(k);
+        free(cand[i]);
+    }
+    free(rk);
+}
+
+static int is_own_file(const scan_ctx *c, const char *rel)
+{
+    if (!c->n_own_keys) return 0;
+    char *full = bd_path_join(c->root, rel);
+    char *k = full ? root_key(full) : NULL;
+    int own = 0;
+    for (int i = 0; k && !own && i < c->n_own_keys; i++) own = strcmp(k, c->own_keys[i]) == 0;
+    free(full);
+    free(k);
+    return own;
+}
+
+char *bd_root_holding(bd_catalog *cat, const char *path)
+{
+    char *key = cat && path ? root_key(path) : NULL;
+    if (!key) return NULL;
+    sqlite3_stmt *q;
+    char *found = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE active=1 ORDER BY id", -1, &q, NULL) == SQLITE_OK) {
+        while (!found && sqlite3_step(q) == SQLITE_ROW) {
+            const char *root = (const char *)sqlite3_column_text(q, 0);
+            char *okey = root ? root_key(root) : NULL;
+            if (okey && key_inside(key, okey)) found = bd_strdup(root);
+            free(okey);
+        }
+        sqlite3_finalize(q);
+    }
+    free(key);
+    return found;
+}
+
 /* 1 if path is in an active backup root. */
 static int in_a_root(bd_catalog *cat, const char *path)
 {
@@ -970,6 +1029,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         return st->is_dir ? BD_WALK_SKIP : 0;
     }
     if (st->is_dir && is_own_store(c, rel)) return BD_WALK_SKIP;
+    if (st->is_file && is_own_file(c, rel)) return 0;
 
     sqlite3_reset(c->find_node);
     sqlite3_bind_int64(c->find_node, 1, c->source_id);
@@ -1334,6 +1394,7 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         sqlite3_step(clear);
         sqlite3_finalize(clear);
     }
+    find_own_files(&c);
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
     /* The files still with the workers. */
     pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);
@@ -1389,6 +1450,7 @@ done:
     for (size_t i = 0; i < n; i++) sqlite3_finalize(*stmts[i].st);
     for (size_t i = 0; i < c.failed_len; i++) free(c.failed_dirs[i]);
     free(c.failed_dirs);
+    for (int i = 0; i < c.n_own_keys; i++) free(c.own_keys[i]);
     skip_free(&own);
     return s;
 }

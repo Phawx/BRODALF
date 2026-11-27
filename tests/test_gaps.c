@@ -745,6 +745,38 @@ static void test_root_waits_for_disk(void)
     bd_catalog_close(cat);
 }
 
+/* ---- Convenience 1: the database saved inside a backup root -------------- */
+
+static void test_database_in_root(void)
+{
+    write_file(at("inroot/Documents/letter.txt"), "a letter");
+    bd_mkdirs(at("inroot/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("inroot/Documents/db.brodalf"), &cat), NULL);
+    target_one(cat);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("inroot/Documents"), &src), cat);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    write_file(at("inroot/Documents/db.brodalf.saving"), "a save cut short");
+    char *holder = bd_root_holding(cat, at("inroot/Documents/db.brodalf"));
+    CHECK(holder && strstr(holder, "inroot/Documents"));
+    free(holder);
+    CHECK(bd_root_holding(cat, at("inroot/elsewhere.brodalf")) == NULL);
+
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 1); /* 0.11.0: the database, its lock and the cut-short save too */
+    CHECK(node_of(cat, src, "letter.txt").state >= 0);
+    CHECK(node_of(cat, src, "db.brodalf").state < 0);
+    CHECK(node_of(cat, src, "db.brodalf.lock").state < 0);
+    CHECK(node_of(cat, src, "db.brodalf.saving").state < 0);
+    REQUIRE_OK(bd_media_init(cat, at("inroot/drive"), "Blue", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 1);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -765,6 +797,7 @@ int main(void)
     test_wiped_drive();
     test_mass_change_new_drive();
     test_damaged_catalog_copy();
+    test_database_in_root();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

@@ -17745,6 +17745,22 @@ static void database_opened(const wchar_t *path, int created, int recovered)
     else
         log_append(T(L"Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed "
                    L"up until you press Back up."));
+    /* A database inside a backup root is left out of that root's backups
+     * (the scan skips it), so say so where it was just saved. */
+    char *p8 = narrow(path);
+    char *holder = p8 ? bd_root_holding(g_cat, p8) : NULL;
+    free(p8);
+    if (holder) {
+        wchar_t *h = widen(holder), msg[MAX_PATH * 2 + 512];
+        swprintf(msg, MAX_PATH * 2 + 512,
+                 T(L"This database is inside the backup root %ls. BRODALF leaves it out of that root's backups: every backup "
+                   L"puts a copy of it on the drive instead."),
+                 h ? h : L"");
+        log_append(msg);
+        if (created || recovered) MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+        free(h);
+        free(holder);
+    }
     job *d = new_job(JOB_DRIVES);
     if (d) {
         d->startup = 1;

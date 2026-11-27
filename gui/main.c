@@ -15779,7 +15779,10 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
         if (g_sys_il) ImageList_GetIconSize(g_sys_il, &iw, &ih);
         int ix = tr.left - S(3) - iw, iy = row.top + (rh - ih) / 2;
         /* Faded as the cut folders under it are, except while the row is
-         * selected or under the pointer (its background is the theme's). */
+         * selected or under the pointer (its background is the theme's).
+         * Its name is greyed here too, not by tree_custom_draw: in the
+         * screenshots a bold item given another text colour stopped the
+         * tree drawing that row and the rows after it. */
         if (r->ghost && !(cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_HOT))) {
             RECT ir = {ix, iy, ix + iw, iy + ih};
             fill_color(dc, &ir, tree_bg());
@@ -15788,6 +15791,21 @@ static void tree_post_paint(NMTVCUSTOMDRAW *cd, const node_ref *r)
             if ((TreeView_GetItemState(tv, h, TVIS_EXPANDED) & TVIS_EXPANDED) && g_icon_folder_open >= 0) icon = g_icon_folder_open;
 #endif
             draw_shell_icon(dc, icon, ix, iy, 1);
+            wchar_t name[MAX_PATH];
+            TVITEMW it;
+            memset(&it, 0, sizeof(it));
+            it.mask = TVIF_TEXT;
+            it.hItem = h;
+            it.pszText = name;
+            it.cchTextMax = COUNT_OF(name);
+            name[0] = 0;
+            if (SendMessageW(tv, TVM_GETITEMW, 0, (LPARAM)&it) && name[0]) {
+                RECT nr = tr;
+                nr.top = row.top;
+                nr.bottom = row.bottom;
+                fill_color(dc, &nr, tree_bg());
+                draw_str(dc, g_font_bold, theme_gray(), name, nr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
         }
         draw_state_icon(dc, ix + iw - cs + S(2), iy + ih - cs + S(2), cs, TONE_BAD, GLYPH_CROSS);
     }
@@ -15863,8 +15881,9 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
         int sel = (cd->nmcd.uItemState & CDIS_SELECTED) != 0;
         HFONT font = NULL;
         /* Faded, as its icon is: not on this PC, and no drive that is
-         * plugged in has it. Struck through: deleted from its folder. */
-        if ((r->ghost || r->state == BD_STATE_DELETED) && !sel) cd->clrText = theme_gray();
+         * plugged in has it (a root is greyed by tree_post_paint). Struck
+         * through: deleted from its folder. */
+        if ((r->ghost || r->state == BD_STATE_DELETED) && !sel && !r->root) cd->clrText = theme_gray();
         if (r->state == BD_STATE_DELETED) font = g_font_strike;
         LRESULT ret = CDRF_NOTIFYPOSTPAINT;
         if (font && !r->root) {

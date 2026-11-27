@@ -19,12 +19,15 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.10.2** (2026-11-26) keeps an encrypted database in memory
-while it is open, so nothing of it is ever written to the disk
-unencrypted, not even by a crash or a power cut. 0.10.1 (2026-11-26) fixed
-twelve window problems that screenshots of 0.10.0 showed, and 0.10.0
-(2026-11-25) what two independent reviews of 0.9.0 found; see
-[History](#history). Builds are
+Version **0.11.0** (2026-11-27) redraws the window. The Primary Database
+tab looks like Windows Explorer, and a file or folder that no plugged-in
+drive holds is drawn faded, with the drives it is on named beside it, so a
+database opened on a PC with none of its files still shows where each one
+is. The log is in the window's language too. 0.10.2 (2026-11-26) keeps an
+encrypted database in memory while it is open, so nothing of it is ever
+written to the disk unencrypted; 0.10.1 (2026-11-26) fixed twelve window
+problems that screenshots of 0.10.0 showed, and 0.10.0 (2026-11-25) what
+two independent reviews of 0.9.0 found; see [History](#history). Builds are
 on the [Releases](https://github.com/Phawx/BRODALF/releases) page: an installer
 that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
@@ -814,6 +817,32 @@ on a local machine needs to pick the work up without the chat history.
   a database is in memory. `tests/test_memory.c` checks that SQLite opens
   no file and the temp folder stays empty, also after a crash. No change
   to the database format: 0.10.1 opens the files 0.10.2 saves.
+- v0.11.0 (2026-11-27, built on the `ui-judge` and `explorer-view` branches
+  first): the window redrawn. The header says at a glance whether every
+  file has its copies, with a card for each drive and extra place, and a
+  low window keeps the log closed until asked. Local backups groups the
+  drives by plugged in, not plugged in and lost or broken; the details
+  pane, a drive's details and Settings (now one window) read like forms;
+  Next backup, Restore, Search, Files at risk and the Encryption tab say
+  plainly what they hold; the Back up and Check drive menus say what each
+  choice does; an error on opening offers the way out; dark mode covers
+  tick boxes and choices. The Primary Database tab is laid out as Windows
+  Explorer: the folders, the file list (Name, Status, Copies on, Date
+  modified, Type, Size) and the details. A file or folder that is not on
+  this PC and that no plugged-in drive holds is drawn faded with a grey
+  name, a backup root that is not here gets a red cross, and Copies on
+  names each one's drives, so a database opened with none of its files
+  still shows where everything is. The engine says where the copies are
+  (`copies_on`, `copies_on_plugged`, `older_on` and `files_backed_up` in
+  `bd_node_info` and `bd_source_info`) and counts each folder's
+  subfolders; a drive marked lost or broken is named among a file's
+  drives only while it is plugged in. BRODALF's own log lines are
+  translated into German and Spanish. The main window clips its children
+  (`WS_CLIPCHILDREN`), so nothing paints over the folder pane. Seen in
+  automated screenshots in English, German and Spanish, light and dark,
+  on a Windows CI runner, with a database opened with no local data and
+  its drives unplugged. No change to the database format: 0.10.2 opens
+  the files 0.11.0 saves.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -969,19 +998,26 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-1. The encrypted database in memory (0.10.2), tested on Linux and by the
+1. Everything new in 0.11.0, seen only in automated screenshots on a
+   Windows CI runner and never used by a person: the Explorer-style tab
+   with real files (double-click, Backspace, sorting, right-click in both
+   panes, a large database), faded files with a real USB drive unplugged
+   and plugged back in, a database opened on a PC without its files, the
+   low-window log and its strip, Settings in one window, dark mode on a
+   real display, and the German and Spanish log.
+2. The encrypted database in memory (0.10.2), tested on Linux and by the
    Windows CI build only: **Encrypt the database file** turned on and off
    while a database is open, with `%TEMP%` holding no `brodalf-*.db`
    files meanwhile; a backup and a save of a large encrypted database,
    and the memory it takes; a crash report (Windows Error Reporting) with
    an encrypted database open.
-2. Everything new in 0.10.1: it was seen only in automated screenshots
+3. Everything new in 0.10.1: it was seen only in automated screenshots
    on a Windows CI runner, never used by a person. In particular a real
    USB drive for Recover the database (the screenshots used folder
    drives), the restore buttons in Damaged files, Changed since the copy
    and Left alone by the last restore, and the bars during a backup to
    several drives.
-3. Everything new in 0.10.0, which was only compiled and tested by the
+4. Everything new in 0.10.0, which was only compiled and tested by the
    Windows CI build and never run on a PC: the keyboard (Tab order, the &
    letters in German and Spanish, the shortcuts), job results with
    problems and Show what went wrong, the window staying responsive on a
@@ -993,7 +1029,7 @@ in 0.4.0 came from the code review of the same day and this test:
    damaged copy on one of two drives; a FAT32 stick with a file of 4 GB
    or more; a network-share backup root; the shadow helper's access
    check; the installer's question with BRODALF open.
-4. Everything new in 0.9.0, none of which has run on Windows (it was built
+5. Everything new in 0.9.0, none of which has run on Windows (it was built
    for Windows and the Windows CI build passes, but the window has not been
    looked at): dark mode in every tab and dialog, and switching while
    BRODALF is open; the German and Spanish window, above all whether longer
@@ -1005,7 +1041,7 @@ in 0.4.0 came from the code review of the same day and this test:
    and the refusal on exFAT; the start-up choice with the last
    database from `%LOCALAPPDATA%`, and the window greyed out until one is
    open.
-5. Everything new in 0.8.0, none of which has run on Windows, and the
+6. Everything new in 0.8.0, none of which has run on Windows, and the
    window has not been looked at since the tabs went in: the six tabs and
    their buttons and tables, the File, View, Tools and Help menus, the tab
    remembered between runs; starring and encrypting from the tree, ★ and
@@ -1014,11 +1050,11 @@ in 0.4.0 came from the code review of the same day and this test:
    to it; an encrypted folder on a plain drive, and the time it says
    encrypting takes against a real backup; backing up to two or more USB
    drives at once against one after another.
-6. Plugging in a known disk while BRODALF is open: the device-change
+7. Plugging in a known disk while BRODALF is open: the device-change
    notification should only add a line to the log ("... is plugged in") and
    light up its files; nothing else should start. The test had the stick
    plugged in before launch, so this never fired.
-7. Everything new in 0.7.0, none of which has run on Windows: the menus
+8. Everything new in 0.7.0, none of which has run on Windows: the menus
    and right-click menus; New database, Open and Recover from a drive; the
    scan on open and the question about a backup root that moved; the line
    beside the buttons and the three kinds of progress bar; backing up with
@@ -1029,15 +1065,15 @@ in 0.4.0 came from the code review of the same day and this test:
    the bit-rot scan and damaged files; restores that never overwrite, Files
    the last restore left alone, restoring one version and the deleted
    files; backups at low priority; the installer's desktop shortcut.
-8. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
+9. From 0.6.0: Status of every disk, the CSV export opened in Excel (the
    accented names, the leading-quote guard against formulas), and OneDrive
    online-only files left alone.
-9. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
+10. **Drives...** with internal disks: SMART from NVMe and SATA, the admin
    fallback (whose reading is currently replaced by the next unprivileged
    one), and RAID-mode laptops. The USB stick path is confirmed. Since 0.5.0
    the temperature comes from property 52 and the ATA table is only read
    from ATA disks.
-10. Everything new in 0.5.0, none of which has run on Windows:
+11. Everything new in 0.5.0, none of which has run on Windows:
     - speed: the AVX2/AVX-512 paths in the MSVC build, the copy writer
       thread, and how much the scan pool and batched fsyncs gain on real
       disks (spinning disks especially; `NtFlushBuffersFileEx(NO_SYNC)` on

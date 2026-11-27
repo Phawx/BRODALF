@@ -734,8 +734,9 @@ typedef struct {
     int64_t last_scan_ms;
     /* Where its files' copies are: the drives and extra places holding a
      * good copy of the current version of any live file in it, names
-     * sorted, ", " between them ("" if none; drives marked lost or broken
-     * are left out), and those of them plugged in now. */
+     * sorted, ", " between them ("" if none; a drive marked lost or broken
+     * is named only while it is plugged in), and those of them plugged in
+     * now. */
     const char *copies_on;
     const char *copies_on_plugged;
     int64_t files_backed_up; /* live files with a good copy of the current version on a drive that counts */
@@ -759,7 +760,8 @@ typedef struct {
      * still says where each one is: the drives and extra places holding a
      * good copy of the current version (folders: of any file inside, or of
      * any file at all in a deleted folder), names sorted, ", " between
-     * them, "" if none. Drives marked lost or broken are left out. */
+     * them, "" if none. A drive marked lost or broken is named only while
+     * it is plugged in. */
     const char *copies_on;
     const char *copies_on_plugged; /* those of them plugged in now, the same way */
     const char *older_on;    /* files with no good copy of the current version: where an older one is; "" if none */

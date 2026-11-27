@@ -40,8 +40,9 @@ jobs:
           "-DBRODALF_BUILD_ID=${{ github.sha }}"
       - name: Build
         run: cmake --build build --config Release --parallel
-      # Real FAT32 and exFAT volumes (small virtual disks, attached and
-      # given drive letters) and a share of this PC, for
+      # Real FAT32 and exFAT volumes (virtual disks of 1 GB, more than the
+      # 512 MB BRODALF keeps free on a drive, attached and given drive
+      # letters) and a share of this PC, for
       # tests/test_windows_volumes.c, which fails on CI without them.
       - name: Make FAT32 and exFAT volumes and a share
         if: runner.os == 'Windows'
@@ -56,7 +57,7 @@ jobs:
             $vhd = Join-Path $dir "$name.vhdx"
             $script = Join-Path $dir "$name.txt"
             Set-Content -Path $script -Encoding Ascii -Value @(
-              "create vdisk file=`"$vhd`" maximum=320 type=expandable",
+              "create vdisk file=`"$vhd`" maximum=1024 type=expandable",
               "select vdisk file=`"$vhd`"", "attach vdisk", "create partition primary",
               "format fs=$fs quick label=$name unit=$unit", "assign letter=$letter")
             $out = & diskpart.exe /s $script

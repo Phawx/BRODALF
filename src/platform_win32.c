@@ -155,8 +155,9 @@ int bd_path_is_full(const char *path)
 
 char *bd_full_path(const char *path)
 {
-    if (is_sep_w(path[0]) && is_sep_w(path[1]) && (path[2] == '?' || path[2] == '.') && is_sep_w(path[3]))
-        return _strdup(path); /* \\?\ and \\.\ paths are taken as they are */
+    /* A full path is kept as it was typed, as 0.13.0 and older kept every
+     * path (its "." and ".." are dealt with wherever it is compared). */
+    if (bd_path_is_full(path)) return _strdup(path);
     size_t len = strlen(path);
     char *tmp = malloc(len + 1);
     if (!tmp) return NULL;

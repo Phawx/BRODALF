@@ -36,7 +36,8 @@ int bd_path_is_full(const char *path);
 /* A path typed from the current folder (on Windows also from the current
  * folder of a drive) as a full path, with "." and ".." names worked out
  * by name; no link is followed and nothing need be there. A full path
- * comes back with only that done. malloc'd; NULL when out of memory. */
+ * comes back as it was typed, as 0.13.0 and older kept every path.
+ * malloc'd; NULL when out of memory. */
 char *bd_full_path(const char *path);
 
 /* The folder a path names, however it was reached: every link on the way

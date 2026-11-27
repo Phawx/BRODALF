@@ -72,8 +72,14 @@ int bd_path_is_full(const char *path) { return path && path[0] == '/'; }
 
 char *bd_full_path(const char *path)
 {
+    if (bd_path_is_full(path)) { /* kept as typed, as 0.13.0 and older kept every path */
+        size_t n = strlen(path) + 1;
+        char *same = malloc(n);
+        if (same) memcpy(same, path, n);
+        return same;
+    }
     char *cwd = NULL;
-    if (!bd_path_is_full(path)) {
+    {
         size_t cap = 256;
         for (;;) {
             char *b = realloc(cwd, cap);

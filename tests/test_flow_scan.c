@@ -494,6 +494,41 @@ static void test_stopped_scan_kept(void)
     bd_catalog_close(cat);
 }
 
+/* C2: Windows' always-changing profile files are left out by default, by
+ * their place in the profile, not by a name a user's own folder may have. */
+static void test_default_skips_profile_churn(void)
+{
+    const char *d = bd_skip_list_default();
+    static const char *const skipped[] = {
+        "NTUSER.DAT", "ntuser.dat.LOG1", "NTUSER.DAT{016888bd-6c6f-11de-8d1d-001e0bcde3ec}.TM.blf",
+        "NTUSER.DAT{016888bd-6c6f-11de-8d1d-001e0bcde3ec}.TMContainer00000000000000000001.regtrans-ms",
+        "AppData/Local/Microsoft/Windows/UsrClass.dat", "AppData/Local/Microsoft/Windows/UsrClass.dat.LOG2",
+        "AppData/Local/Temp/setup.log", "sam/AppData/Local/Temp/x/y.bin",
+        "AppData/Local/Microsoft/Windows/INetCache/IE/a.htm",
+        "AppData/Local/Google/Chrome/User Data/Default/Cache/Cache_Data/f_000001",
+        "Users/sam/AppData/Local/Microsoft/Edge/User Data/Default/Code Cache/js/index",
+        "AppData/Roaming/Slack/GPUCache/data_0",
+        "AppData/Local/Mozilla/Firefox/Profiles/x.default/cache2/entries/A1",
+        "AppData/Local/CrashDumps/app.exe.1234.dmp",
+        "AppData/Local/Google/Chrome/User Data/Crash Dumps/x.dmp",
+    };
+    static const char *const kept[] = {
+        "Documents/Cache/notes.txt", "Documents/Temp/draft.docx", "Pictures/Code Cache/a.jpg",
+        "AppData/Roaming/Code/User/settings.json", "AppData/Local/Packages/App/LocalState/data.db",
+        "Documents/NTUSER notes.txt", "Projects/GPUCache.c", "Local/Temp/x.txt",
+    };
+    for (size_t i = 0; i < sizeof(skipped) / sizeof(skipped[0]); i++) {
+        int hit = bd_skip_match(d, skipped[i], 0);
+        if (!hit) fprintf(stderr, "not left out: %s\n", skipped[i]);
+        CHECK(hit);
+    }
+    for (size_t i = 0; i < sizeof(kept) / sizeof(kept[0]); i++) {
+        int hit = bd_skip_match(d, kept[i], 0);
+        if (hit) fprintf(stderr, "left out: %s\n", kept[i]);
+        CHECK(!hit);
+    }
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -509,6 +544,7 @@ int main(void)
     test_root_moved_only_when_sure();
     test_every_place_listed();
     test_stopped_scan_kept();
+    test_default_skips_profile_churn();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

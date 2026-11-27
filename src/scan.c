@@ -394,7 +394,27 @@ static const char DEFAULT_SKIP[] =
     "__pycache__/\n"
     ".cache/\n"
     ".pytest_cache/\n"
-    ".gradle/\n";
+    ".gradle/\n"
+    "# Windows: a user's settings, always in use, and the caches and\n"
+    "# temporary files in a user's AppData folder (a folder named Cache\n"
+    "# elsewhere, like in Documents, is still backed up)\n"
+    "NTUSER.DAT*\n"
+    "UsrClass.dat*\n"
+    "INetCache/\n"
+    "AppData/Local/Temp/\n"
+    "*/AppData/Local/Temp/\n"
+    "AppData/Local/CrashDumps/\n"
+    "*/AppData/Local/CrashDumps/\n"
+    "AppData/*/Crash Dumps/\n"
+    "*/AppData/*/Crash Dumps/\n"
+    "AppData/*/Cache/\n"
+    "*/AppData/*/Cache/\n"
+    "AppData/*/Code Cache/\n"
+    "*/AppData/*/Code Cache/\n"
+    "AppData/*/GPUCache/\n"
+    "*/AppData/*/GPUCache/\n"
+    "AppData/*/cache2/\n"
+    "*/AppData/*/cache2/\n";
 
 const char *bd_skip_list_default(void)
 {

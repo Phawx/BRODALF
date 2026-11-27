@@ -1,4 +1,5 @@
-# run-all.ps1: takes the screenshots in each language and appearance.
+# run-all.ps1: takes the screenshots in each language and appearance, and
+# fails when the screenshot driver found something wrong in one of them.
 # Test tool only, for a throwaway Windows machine (see make-sample.ps1).
 param(
     [Parameter(Mandatory = $true)] [string] $Exe,
@@ -59,7 +60,9 @@ foreach ($combo in $Combos.Split(",")) {
     $n = (Get-ChildItem -Path $dir -Filter *.png -ErrorAction SilentlyContinue).Count
     Write-Host "$combo`: $n screenshots"
     Write-Host "::endgroup::"
+    $f = Join-Path $dir "failures.txt"
+    if (Test-Path $f) { Get-Content $f | ForEach-Object { Write-Host "$combo`: $_" } }
 }
 foreach ($s in "detach-red.txt", "detach-new.txt") { & diskpart.exe /s (Join-Path $VhdDir $s) | Out-Null }
-if ($failed.Count) { Write-Host "Did not finish: $($failed -join ', ')"; exit 1 }
+if ($failed.Count) { Write-Host "Something went wrong in: $($failed -join ', ') (failures.txt beside the screenshots says what)"; exit 1 }
 exit 0

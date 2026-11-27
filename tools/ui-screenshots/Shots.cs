@@ -2,11 +2,21 @@
 // menus and dialogs, and saves a screenshot of each, for people to look
 // at. It is a test tool only: it is not part of BRODALF and not shipped.
 //
+// It is also a check, run by CI on every push (.github/workflows/
+// ui-screenshots.yml): it exits with 1, and lists what went wrong in
+// failures.txt beside the screenshots, when BRODALF crashes or ends by
+// itself, stops responding, writes an error to its log (a crash or a fault
+// it reports to its developers), does not close when asked, or when a step
+// does not get the window, dialog, menu, job, tree item or list row it
+// expects. Everything else is the same as before: the screenshots,
+// manifest.tsv and driver.log.
+//
 // It works from outside, as a person would: it sends the window the same
 // WM_COMMAND messages its menus and buttons send, presses keys, and copies
 // what is on the screen. Every dialog it opens it closes with Cancel or
-// No, so it changes nothing, except where a step says so (the backup at
-// the end, to show the window while a job runs).
+// No, so it changes nothing, except where a step says so (a quick check,
+// a backup to the extra place and to every drive, restores, to show the
+// window while a job runs).
 //
 // Written for the C# 5 compiler in .NET Framework (csc.exe), which every
 // Windows PC has:
@@ -156,6 +166,14 @@ static class Shots {
     static StreamWriter manifest, log;
     static HashSet<IntPtr> handled = new HashSet<IntPtr>();
 
+    // What went wrong, in order; the run fails when there is anything here.
+    static List<string> failures = new List<string>();
+    static string phase = "";
+    // Where brodalf.log was when BRODALF last started: what it writes after that is read for errors.
+    static string appLog;
+    static long appLogAt;
+    static Stopwatch unresponsive = new Stopwatch();
+
     static int Main(string[] args) {
         N.SetProcessDPIAware();
         try {
@@ -175,16 +193,107 @@ static class Shots {
             manifest = new StreamWriter(Path.Combine(outDir, "manifest.tsv"), false, new UTF8Encoding(false));
             log = new StreamWriter(Path.Combine(outDir, "driver.log"), false, new UTF8Encoding(false));
             manifest.AutoFlush = log.AutoFlush = true;
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            appLog = Path.Combine(Path.Combine(local, "BRODALF"), "brodalf.log");
             Run();
-            return 0;
         } catch (Exception e) {
-            Log("FAILED: " + e);
-            Console.Error.WriteLine(e);
-            return 1;
+            Fail("the run stopped: " + e);
         } finally {
             try { if (proc != null && !proc.HasExited) { Log("killing brodalf.exe"); proc.Kill(); } } catch (Exception) { }
+            if (outDir != null) {
+                try { File.WriteAllLines(Path.Combine(outDir, "failures.txt"), failures.ToArray(), new UTF8Encoding(false)); } catch (Exception) { }
+                Log(failures.Count == 0 ? "every step did what it should" : failures.Count + " step(s) went wrong:");
+                foreach (string f in failures) Log("  " + f);
+            }
             if (manifest != null) manifest.Close();
             if (log != null) log.Close();
+        }
+        return failures.Count == 0 ? 0 : 1;
+    }
+
+    // ---- Checks ----------------------------------------------------------
+
+    // BRODALF ended by itself, or was ended because it stopped responding:
+    // the rest of the phase is skipped (the next one starts it again).
+    class AppGone : Exception { public AppGone(string m) : base(m) { } }
+
+    static void Fail(string what) {
+        string s = (phase.Length > 0 ? phase + ": " : "") + what;
+        failures.Add(s);
+        Log("FAIL: " + s);
+        Console.WriteLine("::error::" + s.Replace("\r", " ").Replace("\n", " "));
+    }
+
+    // Still running? A crash, or BRODALF closing by itself, fails the step.
+    static void Alive(string where) {
+        if (proc == null || closing) return;
+        if (!proc.HasExited) return;
+        int code = proc.ExitCode;
+        proc = null;
+        main = IntPtr.Zero;
+        Fail(string.Format("BRODALF ended by itself ({0}), exit code 0x{1:X8}", where, code));
+        CheckAppLog();
+        throw new AppGone("BRODALF ended by itself");
+    }
+
+    // Does the window answer? It does even while a dialog or menu of its own
+    // is open; it does not when its thread is stuck. After 45 seconds of
+    // no answer the step fails and BRODALF is ended.
+    static void Responsive(string where) {
+        if (proc == null || main == IntPtr.Zero) return;
+        Alive(where);
+        IntPtr r;
+        bool ok = N.SendMessageTimeout(main, 0 /* WM_NULL */, IntPtr.Zero, IntPtr.Zero, 2 /* SMTO_ABORTIFHUNG */, 3000, out r) != IntPtr.Zero;
+        if (ok) { unresponsive.Reset(); return; }
+        if (!N.IsWindow(main)) { Alive(where); return; }
+        if (!unresponsive.IsRunning) unresponsive.Start();
+        if (unresponsive.ElapsedMilliseconds < 45000) return;
+        unresponsive.Reset();
+        try { Save(Bounds(main), "not-responding-" + where, "window", IntPtr.Zero); } catch (Exception) { }
+        Fail("BRODALF stopped responding for 45 seconds (" + where + "); ended it");
+        try { proc.Kill(); proc.WaitForExit(10000); } catch (Exception) { }
+        proc = null;
+        main = IntPtr.Zero;
+        CheckAppLog();
+        throw new AppGone("BRODALF stopped responding");
+    }
+
+    // An error in BRODALF's log since it started: a crash, or a fault it
+    // reports to its developers (report_error in gui/main.c writes "ERROR:").
+    static void CheckAppLog() {
+        if (appLog == null || !File.Exists(appLog)) return;
+        try {
+            using (FileStream f = new FileStream(appLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+                if (f.Length < appLogAt) appLogAt = 0; // started again when it grew too big
+                f.Seek(appLogAt, SeekOrigin.Begin);
+                string text = new StreamReader(f, Encoding.UTF8).ReadToEnd();
+                appLogAt = f.Length;
+                int n = 0;
+                foreach (string line in text.Split('\n')) {
+                    if (line.IndexOf("  ERROR: ", StringComparison.Ordinal) < 0) continue;
+                    if (++n <= 5) Fail("BRODALF's log says: " + line.Trim());
+                }
+            }
+        } catch (IOException e) { Log("could not read BRODALF's log: " + e.Message); }
+    }
+
+    static long AppLogLength() {
+        try { return appLog != null && File.Exists(appLog) ? new FileInfo(appLog).Length : 0; } catch (Exception) { return 0; }
+    }
+
+    // A phase starts BRODALF itself; whatever happens in it, BRODALF is
+    // closed at its end, and the next phase goes on.
+    static void Phase(string name, Action body) {
+        phase = name;
+        Log("---- " + name);
+        try {
+            body();
+        } catch (AppGone) {
+        } catch (Exception e) {
+            Fail("stopped: " + e.Message);
+        } finally {
+            try { Stop(); } catch (AppGone) { } catch (Exception e) { Fail("closing BRODALF: " + e.Message); }
+            phase = "";
         }
     }
 
@@ -247,7 +356,7 @@ static class Shots {
 
     static void Save(Rectangle r, string name, string kind, IntPtr h) {
         r = OnScreen(r);
-        if (r.Width < 8 || r.Height < 8) { Log("nothing on screen to capture for " + name); return; }
+        if (r.Width < 8 || r.Height < 8) { Fail("nothing on the screen to capture for " + name); return; }
         string file = string.Format("{0:000}-{1}.png", ++shotNo, Slug(name));
         using (Bitmap bmp = new Bitmap(r.Width, r.Height, PixelFormat.Format24bppRgb)) {
             using (Graphics g = Graphics.FromImage(bmp)) g.CopyFromScreen(r.Left, r.Top, 0, 0, r.Size);
@@ -263,6 +372,8 @@ static class Shots {
 
     static void Shot(IntPtr h, string name) {
         Thread.Sleep(500);
+        Alive("before the screenshot " + name);
+        if (h == IntPtr.Zero || !N.IsWindow(h)) { Fail("no window to capture for " + name); return; }
         Save(Bounds(h), name, Kind(h), h);
     }
 
@@ -351,6 +462,7 @@ static class Shots {
     static IntPtr WaitDialog(int ms, IntPtr not) {
         Stopwatch sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < ms) {
+            Alive("waiting for a dialog");
             IntPtr d = TopDialog();
             if (d != IntPtr.Zero && d != not) { Thread.Sleep(700); return TopDialog() != IntPtr.Zero ? TopDialog() : d; }
             Thread.Sleep(100);
@@ -415,7 +527,7 @@ static class Shots {
             if (WaitGone(d, 1200)) return;
         }
         Post(d, WM_CLOSE, 0, IntPtr.Zero);
-        if (!WaitGone(d, 1500)) Log("could not close a dialog: " + Clean(DialogWords(d)));
+        if (!WaitGone(d, 1500)) Fail("could not close a dialog: " + Clean(Text(d) + " " + DialogWords(d)));
     }
 
     static void Foreground(IntPtr h) {
@@ -449,7 +561,7 @@ static class Shots {
     // selected, Windows opens no other menu (a button's menu stays shut).
     static void CloseMenus() {
         for (int i = 0; i < 4 && Windows("#32768").Count > 0; i++) Key(VK_ESCAPE);
-        if (Windows("#32768").Count > 0) Log("a menu stayed open");
+        if (Windows("#32768").Count > 0) Fail("a menu stayed open");
         Send(main, WM_CANCELMODE, IntPtr.Zero, IntPtr.Zero);
         Thread.Sleep(300);
     }
@@ -475,7 +587,11 @@ static class Shots {
         try { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\BRODALF\IgnoredDisks"); } catch (Exception) { }
     }
 
+    static bool closing; // Stop asked BRODALF to close: its ending is no failure
+
     static void Start(string arg) {
+        appLogAt = AppLogLength();
+        unresponsive.Reset();
         ProcessStartInfo si = new ProcessStartInfo(exe);
         if (arg != null) si.Arguments = "\"" + arg + "\"";
         si.UseShellExecute = false;
@@ -485,48 +601,72 @@ static class Shots {
         Stopwatch sw = Stopwatch.StartNew();
         main = IntPtr.Zero;
         while (main == IntPtr.Zero && sw.ElapsedMilliseconds < 30000) {
+            Alive("opening");
             List<IntPtr> l = Windows("BrodalfMain");
             if (l.Count > 0) main = l[0];
             else Thread.Sleep(200);
         }
-        if (main == IntPtr.Zero) throw new Exception("the BRODALF window did not open");
+        if (main == IntPtr.Zero) {
+            Fail("the BRODALF window did not open within 30 seconds" + (arg != null ? " (with " + arg + ")" : ""));
+            try { proc.Kill(); proc.WaitForExit(10000); } catch (Exception) { }
+            proc = null;
+            throw new AppGone("no window");
+        }
         Log("BRODALF is open" + (arg != null ? " with " + arg : ""));
         Thread.Sleep(800);
         Foreground(main);
     }
 
+    // Close BRODALF as a person would, answering what it asks; it must
+    // close within 30 seconds and end with exit code 0.
     static void Stop() {
-        if (proc == null || proc.HasExited) return;
-        Dismiss(TopDialog());
-        Post(main, WM_CLOSE, 0, IntPtr.Zero);
-        Stopwatch sw = Stopwatch.StartNew();
-        int n = 0;
-        while (!proc.HasExited && sw.ElapsedMilliseconds < 30000) {
-            IntPtr d = TopDialog();
-            if (d != IntPtr.Zero && n < 3) {
-                Shot(d, "closing-question-" + (++n));
-                Yes(d, false);
+        if (proc == null) return;
+        Alive("before it was asked to close");
+        closing = true;
+        try {
+            Dismiss(TopDialog());
+            Post(main, WM_CLOSE, 0, IntPtr.Zero);
+            Stopwatch sw = Stopwatch.StartNew();
+            int n = 0;
+            while (!proc.HasExited && sw.ElapsedMilliseconds < 30000) {
+                IntPtr d = TopDialog();
+                if (d != IntPtr.Zero && n < 3 && !proc.HasExited) {
+                    Shot(d, "closing-question-" + (++n));
+                    Yes(d, false);
+                }
+                Thread.Sleep(300);
             }
-            Thread.Sleep(300);
+            if (!proc.HasExited) {
+                Fail("BRODALF did not close within 30 seconds of being asked; ended it");
+                proc.Kill();
+                proc.WaitForExit(10000);
+            } else if (proc.ExitCode != 0) {
+                Fail(string.Format("BRODALF closed with exit code 0x{0:X8}", proc.ExitCode));
+            }
+            CheckAppLog();
+        } finally {
+            closing = false;
+            proc = null;
+            main = IntPtr.Zero;
         }
-        if (!proc.HasExited) { Log("BRODALF did not close; ending it"); proc.Kill(); }
-        proc.WaitForExit(10000);
-        proc = null;
-        main = IntPtr.Zero;
     }
 
     static bool Busy() {
         IntPtr stop = Control(Id("ID_BTN_STOP"), "Button");
-        return stop != IntPtr.Zero && N.IsWindowVisible(stop);
+        bool busy = stop != IntPtr.Zero && N.IsWindowVisible(stop);
+        if (busy) sawBusy = true;
+        return busy;
     }
 
     // Wait until no job runs and nothing asks anything, for a moment. A
     // question that comes up meanwhile is captured, then answered No or
-    // Cancel.
+    // Cancel. Still busy at the end of ms: the step fails.
     static void WaitIdle(string tag, int ms) {
-        Stopwatch sw = Stopwatch.StartNew(), calm = Stopwatch.StartNew();
+        Stopwatch sw = Stopwatch.StartNew(), calm = Stopwatch.StartNew(), ping = Stopwatch.StartNew();
         int n = 0;
         while (sw.ElapsedMilliseconds < ms) {
+            Alive(tag);
+            if (ping.ElapsedMilliseconds > 1000) { Responsive(tag); ping.Restart(); }
             IntPtr d = TopDialog();
             if (d != IntPtr.Zero) {
                 Thread.Sleep(600);
@@ -542,7 +682,9 @@ static class Shots {
             if (calm.ElapsedMilliseconds > 1500) return;
             Thread.Sleep(150);
         }
-        Log("still busy after " + ms + " ms (" + tag + ")");
+        string what = Windows("#32768").Count > 0 ? "a menu stayed open" : Busy() ? "a job was still running" : "a question kept coming back";
+        Fail("still busy after " + (ms / 1000) + " seconds (" + tag + "): " + what);
+        CloseMenus();
     }
 
     static void Command(string id) {
@@ -550,33 +692,69 @@ static class Shots {
         Post(main, WM_COMMAND, Id(id), IntPtr.Zero);
     }
 
+    // A step already said what went wrong: the rest of it is skipped.
+    class StepFailed : Exception { public StepFailed(string m) : base(m) { } }
+
+    // A button a person can press: there, shown and not greyed.
+    static IntPtr Button(string id) {
+        IntPtr b = Control(Id(id), null);
+        if (b == IntPtr.Zero) { Fail("there is no " + id + " button"); throw new StepFailed(id); }
+        if (!N.IsWindowVisible(b) || !N.IsWindowEnabled(b)) {
+            Fail("the " + id + " button (" + Text(b) + ") is " + (N.IsWindowVisible(b) ? "greyed" : "hidden"));
+            throw new StepFailed(id);
+        }
+        return b;
+    }
+
     static void Click(string id) {
         WaitIdle("before-" + Slug(id), 30000);
-        IntPtr b = Control(Id(id), null);
+        IntPtr b = Button(id);
         Post(main, WM_COMMAND, Id(id) | (0 /* BN_CLICKED */ << 16), b);
     }
 
     // A button pressed at once, even while a job runs (Stop).
     static void ClickNow(string id) {
-        IntPtr b = Control(Id(id), null);
+        IntPtr b = Button(id);
         Post(main, WM_COMMAND, Id(id) | (0 /* BN_CLICKED */ << 16), b);
+    }
+
+    // One step: what goes wrong in it fails it, and the run goes on with
+    // the next step. BRODALF ending ends the phase.
+    static void Step(string name, Action body) { Step(name, body, null); }
+
+    static void Step(string name, Action body, Action cleanup) {
+        try {
+            body();
+        } catch (AppGone) {
+            throw;
+        } catch (StepFailed) {
+            if (cleanup != null) cleanup();
+        } catch (Exception e) {
+            Fail(name + ": " + e.Message);
+            if (cleanup != null) cleanup();
+        }
+    }
+
+    // Wait for a menu of BRODALF's to open.
+    static bool WaitMenu(int ms) {
+        Stopwatch sw = Stopwatch.StartNew();
+        while (Windows("#32768").Count == 0 && sw.ElapsedMilliseconds < ms) { Alive("waiting for a menu"); Thread.Sleep(100); }
+        return Windows("#32768").Count > 0;
     }
 
     // The right-click menu of a control, opened from the keyboard (Shift+F10 sends the same message).
     static void ContextMenu(string name, string id, string cls) {
-        try {
+        Step(name, delegate {
             WaitIdle(name, 30000);
             Foreground(main);
             IntPtr c = Control(Id(id), cls);
-            if (c == IntPtr.Zero) { Log("no control for " + name); return; }
+            if (c == IntPtr.Zero) { Fail("no " + id + " for " + name); return; }
             N.PostMessage(main, 0x007B /* WM_CONTEXTMENU */, c, (IntPtr)(-1));
-            Stopwatch sw = Stopwatch.StartNew();
-            while (Windows("#32768").Count == 0 && sw.ElapsedMilliseconds < 5000) Thread.Sleep(100);
-            if (Windows("#32768").Count == 0) { Log("no right-click menu for " + name); return; }
+            if (!WaitMenu(5000)) { Fail("no right-click menu came up for " + name); return; }
             ShotWithMenus(name);
             CloseMenus();
             WaitIdle(name + "-after", 10000);
-        } catch (Exception e) { Log(name + " failed: " + e.Message); CloseMenus(); }
+        }, CloseMenus);
     }
 
     // Every tab, one screenshot each.
@@ -586,42 +764,64 @@ static class Shots {
         Tab(0);
     }
 
-    // Start BRODALF on a database (or none), capture what it says on the way in, close what it asks.
-    static void OpenAndCapture(string name, string arg, string lastDb) {
-        try {
-            Registry("0", lastDb);
-            Start(arg);
-            Stopwatch sw = Stopwatch.StartNew();
-            int n = 0;
-            while (sw.ElapsedMilliseconds < 25000 && n < 4) {
-                IntPtr d = WaitDialog(4000, IntPtr.Zero);
-                if (d == IntPtr.Zero) break;
-                Shot(d, name + (n == 0 ? "" : "-then-" + (n + 1)));
-                if (n == 0) ShotTogether(main, d, name + "-over-the-window");
-                n++;
-                Dismiss(d);
-                Thread.Sleep(800);
-            }
-            WaitIdle(name, 30000);
-            Shot(main, name + "-the-window-after");
-        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+    // Start BRODALF on a database (or none), capture what it says on the
+    // way in, close what it asks. It must say something (asked).
+    static void OpenAndCapture(string name, string arg, string lastDb, bool asks) {
+        Registry("0", lastDb);
+        Start(arg);
+        Stopwatch sw = Stopwatch.StartNew();
+        int n = 0;
+        while (sw.ElapsedMilliseconds < 25000 && n < 4) {
+            IntPtr d = WaitDialog(4000, IntPtr.Zero);
+            if (d == IntPtr.Zero) break;
+            Shot(d, name + (n == 0 ? "" : "-then-" + (n + 1)));
+            if (n == 0) ShotTogether(main, d, name + "-over-the-window");
+            n++;
+            Dismiss(d);
+            Thread.Sleep(800);
+        }
+        if (asks && n == 0) Fail("BRODALF said nothing when " + name.Replace('-', ' '));
+        WaitIdle(name, 30000);
+        Shot(main, name + "-the-window-after");
         Stop();
     }
 
     // A command that opens a dialog: capture it and what follows it (up to
     // three in a row), saying no to each.
     static void DialogStep(string name, string id, bool button) {
-        try {
+        Step(name, delegate {
             if (button) Click(id); else Command(id);
             IntPtr d = WaitDialog(8000, IntPtr.Zero);
-            if (d == IntPtr.Zero) { Log("no dialog came up for " + name); Shot(main, name + "-no-dialog"); return; }
+            if (d == IntPtr.Zero) {
+                Fail("no dialog came up for " + name + " (" + id + ")" + (Windows("#32768").Count > 0 ? ": a menu did" : ""));
+                Shot(main, name + "-no-dialog");
+                CloseMenus();
+                return;
+            }
             for (int i = 1; i <= 3 && d != IntPtr.Zero; i++) {
                 Shot(d, i == 1 ? name : name + "-then-" + i);
                 Dismiss(d);
                 d = WaitDialog(1500, IntPtr.Zero);
             }
             WaitIdle(name + "-after", 20000);
-        } catch (Exception e) { Log("step " + name + " failed: " + e.Message); }
+        });
+    }
+
+    // A command that opens a menu of its own (a list of drives to choose
+    // from): capture it, close it without choosing.
+    static void MenuStep(string name, string id, bool button) {
+        Step(name, delegate {
+            if (button) Click(id); else Command(id);
+            if (!WaitMenu(8000)) {
+                IntPtr d = TopDialog();
+                Fail("no menu came up for " + name + " (" + id + ")" + (d != IntPtr.Zero ? ": a dialog did" : ""));
+                if (d != IntPtr.Zero) { Shot(d, name + "-no-menu"); Dismiss(d); }
+                return;
+            }
+            ShotWithMenus(name);
+            CloseMenus();
+            WaitIdle(name + "-after", 20000);
+        }, CloseMenus);
     }
 
     static void Tab(int i) {
@@ -656,13 +856,13 @@ static class Shots {
     // Select backup root / folder / ... / file in the tree, by the start of each name.
     static bool TreeSelect(params string[] path) {
         IntPtr tree = Control(Id("ID_TREE"), "SysTreeView32");
-        if (tree == IntPtr.Zero) { Log("no tree"); return false; }
+        if (tree == IntPtr.Zero) { Fail("no folder tree"); return false; }
         using (Remote rm = new Remote(proc.Id)) {
             IntPtr item = IntPtr.Zero;
             for (int i = 0; i < path.Length; i++) {
                 if (item != IntPtr.Zero) { Send(tree, TVM_EXPAND, (IntPtr)2, item); Thread.Sleep(400); }
                 IntPtr next = TreeChild(rm, tree, item, path[i]);
-                if (next == IntPtr.Zero) { Log("not in the tree: " + string.Join("/", path, 0, i + 1)); return false; }
+                if (next == IntPtr.Zero) { Fail("not in the folder tree: " + string.Join("/", path, 0, i + 1)); return false; }
                 item = next;
             }
             Send(tree, TVM_SELECTITEM, (IntPtr)9, item);
@@ -676,7 +876,7 @@ static class Shots {
     // that file in the file list beside the tree (the tree holds folders only).
     static bool Select(params string[] path) {
         IntPtr tree = Control(Id("ID_TREE"), "SysTreeView32");
-        if (tree == IntPtr.Zero) { Log("no tree"); return false; }
+        if (tree == IntPtr.Zero) { Fail("no folder tree"); return false; }
         if (path.Length > 1) {
             using (Remote rm = new Remote(proc.Id)) {
                 IntPtr item = IntPtr.Zero;
@@ -712,7 +912,7 @@ static class Shots {
     // Select the first row whose first column starts with starts (null: the first row).
     static bool ListSelect(string listId, string starts) {
         IntPtr lv = Control(Id(listId), "SysListView32");
-        if (lv == IntPtr.Zero) { Log("no list " + listId); return false; }
+        if (lv == IntPtr.Zero) { Fail("no list " + listId); return false; }
         using (Remote rm = new Remote(proc.Id)) {
             int n = (int)Send(lv, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero);
             for (int row = 0; row < n; row++) {
@@ -726,13 +926,13 @@ static class Shots {
                 return true;
             }
         }
-        Log("no row starting " + starts + " in " + listId);
+        Fail("no row" + (starts != null ? " starting " + starts : "") + " in " + listId);
         return false;
     }
 
     static bool ComboSelect(string comboId, string contains) {
         IntPtr cb = Control(Id(comboId), "ComboBox");
-        if (cb == IntPtr.Zero) return false;
+        if (cb == IntPtr.Zero) { Fail("no " + comboId); return false; }
         int n = (int)Send(cb, CB_GETCOUNT, IntPtr.Zero, IntPtr.Zero);
         for (int i = 0; i < n; i++) {
             int len = (int)Send(cb, CB_GETLBTEXTLEN, (IntPtr)i, IntPtr.Zero);
@@ -745,7 +945,7 @@ static class Shots {
             Thread.Sleep(800);
             return true;
         }
-        Log("nothing with " + contains + " in " + comboId);
+        Fail("nothing with " + contains + " in " + comboId);
         return false;
     }
 
@@ -772,16 +972,18 @@ static class Shots {
 
     // Open each menu of the menu bar, and the menus inside them.
     static void MenuBar(string prefix, int only) {
-        try {
+        Step(prefix + "menus", delegate {
             WaitIdle(prefix + "menus", 30000);
             Foreground(main);
             IntPtr bar = N.GetMenu(main);
+            if (bar == IntPtr.Zero) { Fail("the window has no menu bar"); return; }
             int count = only > 0 ? only : N.GetMenuItemCount(bar);
+            if (only == 0 && count != 4) Fail("the menu bar has " + count + " menus, not File, View, Tools and Help");
             Key(VK_F10);
             Key(VK_DOWN);
             for (int m = 0; m < count; m++) {
                 if (m > 0) { Key(VK_RIGHT); }
-                if (Windows("#32768").Count == 0) { Log("menu " + m + " did not open"); break; }
+                if (!WaitMenu(2000)) { Fail("menu " + (m + 1) + " of the menu bar did not open"); break; }
                 string[] names = { "file", "view", "tools", "help" };
                 string name = prefix + "menu-" + (m < names.Length ? names[m] : m.ToString());
                 ShotWithMenus(name);
@@ -792,6 +994,7 @@ static class Shots {
                     Keys(VK_DOWN, downs - at);
                     at = downs;
                     Key(VK_RIGHT);
+                    if (Windows("#32768").Count < 2) Fail(name + ": the menu inside it at " + pos + " did not open");
                     ShotWithMenus(name + "-submenu-" + pos);
                     Key(VK_LEFT);
                 }
@@ -799,23 +1002,22 @@ static class Shots {
                 if (at > 0) Keys(VK_UP, at);
             }
             CloseMenus();
-        } catch (Exception e) { Log("menus failed: " + e.Message); CloseMenus(); }
+        }, CloseMenus);
     }
 
     // A button that opens a menu under itself.
     static void ButtonMenu(string name, string id, bool submenus) { ButtonMenu(name, id, submenus, null); }
 
-    // firstItem: also choose the menu's first item and capture the dialog it opens.
+    // firstItem: also choose the menu's first item and capture the dialog
+    // it opens. With nothing to list, the button says so in a message.
     static void ButtonMenu(string name, string id, bool submenus, string firstItem) {
-        try {
+        Step(name, delegate {
             WaitIdle(name, 30000);
             Foreground(main);
             Click(id);
-            Stopwatch sw = Stopwatch.StartNew();
-            while (Windows("#32768").Count == 0 && sw.ElapsedMilliseconds < 5000) Thread.Sleep(100);
-            if (Windows("#32768").Count == 0) {
+            if (!WaitMenu(5000)) {
                 IntPtr d = WaitDialog(1500, IntPtr.Zero);
-                if (d != IntPtr.Zero) { Shot(d, name + "-message"); Dismiss(d); } else Log("no menu for " + name);
+                if (d != IntPtr.Zero) { Shot(d, name + "-message"); Dismiss(d); } else Fail("no menu and no message came up for " + name);
                 return;
             }
             ShotWithMenus(name);
@@ -823,7 +1025,7 @@ static class Shots {
                 Key(VK_DOWN);
                 Key(VK_RETURN);
                 IntPtr d = WaitDialog(8000, IntPtr.Zero);
-                if (d != IntPtr.Zero) { Shot(d, firstItem); Dismiss(d); } else Log("no dialog from the first item of " + name);
+                if (d != IntPtr.Zero) { Shot(d, firstItem); Dismiss(d); } else Fail("no dialog came from the first item of " + name);
                 WaitIdle(name + "-after", 10000);
                 return;
             }
@@ -841,14 +1043,14 @@ static class Shots {
             }
             CloseMenus();
             WaitIdle(name + "-after", 10000);
-        } catch (Exception e) { Log(name + " failed: " + e.Message); CloseMenus(); }
+        }, CloseMenus);
     }
 
     // ---- Plugging a disk in: a virtual disk, attached and detached ---------------
 
     static void Diskpart(string script) {
         string path = Path.Combine(vhdDir, script);
-        if (!File.Exists(path)) { Log("no " + path); return; }
+        if (!File.Exists(path)) { Fail("no diskpart script " + path); return; }
         ProcessStartInfo si = new ProcessStartInfo("diskpart.exe", "/s \"" + path + "\"");
         si.UseShellExecute = false;
         si.RedirectStandardOutput = true;
@@ -857,6 +1059,7 @@ static class Shots {
             string o = p.StandardOutput.ReadToEnd();
             p.WaitForExit(60000);
             Log("diskpart " + script + ": exit " + p.ExitCode + " " + Clean(o.Trim()).Replace("  ", " "));
+            if (p.ExitCode != 0) Fail("diskpart " + script + " failed with exit code " + p.ExitCode);
         }
     }
 
@@ -869,39 +1072,50 @@ static class Shots {
         return false;
     }
 
+    static void Plug(string script, string root, bool present) {
+        Diskpart(script);
+        if (!WaitDrive(root, present, 20000)) Fail(root + (present ? " did not appear" : " did not go away") + " after " + script);
+    }
+
     // ---- The run --------------------------------------------------------------------------
 
     static void Run() {
         N.SetCursorPos(N.GetSystemMetrics(0) - 2, N.GetSystemMetrics(1) / 2);
         Log(string.Format("{0} {1}, screen {2}x{3}", lang, theme, N.GetSystemMetrics(0), N.GetSystemMetrics(1)));
+        string here = Path.GetDirectoryName(db);
 
         // 1. Started with no database named: the question it asks, then
         //    the window with none open.
-        Registry("0");
-        Start(null);
-        IntPtr d = WaitDialog(20000, IntPtr.Zero);
-        if (d != IntPtr.Zero) {
-            Shot(d, "start-which-database");
-            ShotTogether(main, d, "start-which-database-over-the-window");
-            ClickTask(d, IDCANCEL);
-            WaitGone(d, 3000);
-        } else Log("no start-up question");
-        Thread.Sleep(1000);
-        d = TopDialog();
-        if (d != IntPtr.Zero) { Shot(d, "start-after-cancel"); Dismiss(d); }
-        Shot(main, "no-database-open");
-        MenuBar("no-database-", 1);
-        Stop();
+        Phase("start-up", delegate {
+            Registry("0");
+            Start(null);
+            IntPtr d = WaitDialog(20000, IntPtr.Zero);
+            if (d != IntPtr.Zero) {
+                Shot(d, "start-which-database");
+                ShotTogether(main, d, "start-which-database-over-the-window");
+                ClickTask(d, IDCANCEL);
+                if (!WaitGone(d, 3000)) Fail("the start-up question did not close with Cancel");
+            } else Fail("no start-up question (which database to open)");
+            Thread.Sleep(1000);
+            d = TopDialog();
+            if (d != IntPtr.Zero) { Shot(d, "start-after-cancel"); Dismiss(d); }
+            Shot(main, "no-database-open");
+            MenuBar("no-database-", 1);
+        });
 
         // 1b. What goes wrong on the way in: the last database was moved
         //     away, a database file that is damaged.
-        string here = Path.GetDirectoryName(db);
-        OpenAndCapture("error-last-database-moved-away", null, Path.Combine(here, "Moved away.brodalf"));
-        OpenAndCapture("error-a-damaged-database-file", Path.Combine(here, "Damaged.brodalf"), db);
+        Phase("error-last-database-moved-away", delegate {
+            OpenAndCapture("error-last-database-moved-away", null, Path.Combine(here, "Moved away.brodalf"), true);
+        });
+        Phase("error-a-damaged-database-file", delegate {
+            OpenAndCapture("error-a-damaged-database-file", Path.Combine(here, "Damaged.brodalf"), db, true);
+        });
 
         // 1c. A database with nothing in it yet: every tab empty.
-        string empty = Path.Combine(here, "Empty.brodalf");
-        if (File.Exists(empty)) {
+        Phase("empty-database", delegate {
+            string empty = Path.Combine(here, "Empty.brodalf");
+            if (!File.Exists(empty)) { Fail("no empty database at " + empty); return; }
             Registry("0", empty);
             Start(empty);
             WaitIdle("empty-on-opening", 60000);
@@ -912,10 +1126,27 @@ static class Shots {
             ButtonMenu("empty-button-drives", "ID_BTN_DRIVES", false);
             DialogStep("empty-view-status-of-every-drive", "ID_M_STATUS_ALL", false);
             DialogStep("empty-view-files-short-of-copies", "ID_M_RISK", false);
-            Stop();
-        } else Log("no empty database at " + empty);
+        });
 
         // 2. Started with the sample database.
+        Phase("sample-database", SampleDatabase);
+
+        // 4. A backup root that is not where it was (moved, or its drive not plugged in).
+        string projects = Path.Combine(here, @"Data\Projects");
+        string moved = projects + " (moved)";
+        Phase("a-backup-root-is-missing", delegate {
+            if (Directory.Exists(projects)) Directory.Move(projects, moved);
+            OpenAndCapture("error-a-backup-root-is-missing", db, db, true);
+        });
+        try { if (Directory.Exists(moved)) Directory.Move(moved, projects); } catch (Exception e) { Fail("could not put back " + projects + ": " + e.Message); }
+
+        // 5. The database opened with none of its files here and no drive
+        //    plugged in (as on a new PC): everything is faded, and each file
+        //    says which drives hold it. Then the red drive is plugged in.
+        NoLocalData();
+    }
+
+    static void SampleDatabase() {
         Registry("0");
         Start(db);
         WaitIdle("on-opening", 90000);
@@ -932,11 +1163,11 @@ static class Shots {
             Shot(main, "tab-1-search-receipt");
             SetText(search, "");
             Thread.Sleep(1000);
-        }
+        } else Fail("no search box");
         if (TreeSelect("Documents", "Letters")) ContextMenu("tab-1-right-click-a-folder", "ID_TREE", "SysTreeView32");
         if (Select("Photos", "2023", "Holiday", "IMG_0001")) ContextMenu("tab-1-right-click-a-changed-file", "ID_FILES", "SysListView32");
         Tab(0);
-        string[] tabs = { "primary-database", "next-backup", "local-backups", "starred", "encryption", "restore" };
+        string[] tabs = tabNames;
         for (int i = 1; i < 6; i++) {
             Tab(i);
             Shot(main, "tab-" + (i + 1) + "-" + tabs[i]);
@@ -968,6 +1199,7 @@ static class Shots {
         DialogStep("view-status-of-every-drive", "ID_M_STATUS_ALL", false);
         DialogStep("view-files-short-of-copies", "ID_M_RISK", false);
         DialogStep("view-largest-files", "ID_M_LARGEST", false);
+        DialogStep("view-older-versions-using-the-most-space", "ID_M_VERSIONS", false);
         DialogStep("view-deleted-files", "ID_M_DELETED", false);
         DialogStep("view-damaged-files", "ID_M_DAMAGED", false);
         DialogStep("view-files-in-use", "ID_M_IN_USE", false);
@@ -978,8 +1210,9 @@ static class Shots {
         if (TreeSelect("Photos", "2024")) DialogStep("tools-encrypt-what-is-selected", "ID_M_ENCRYPT", false);
         if (TreeSelect("Documents", "Letters")) DialogStep("tools-restore-what-is-selected", "ID_M_RESTORE", false);
         DialogStep("file-open-a-database", "ID_M_OPEN_DB", false);
-        DialogStep("tools-check-a-drive", "ID_M_CHECK", false);
-        DialogStep("tools-all-disks", "ID_M_DRIVES", false);
+        // These two list the drives in a menu of their own.
+        MenuStep("tools-check-a-drive", "ID_M_CHECK", false);
+        MenuStep("tools-all-disks", "ID_M_DRIVES", false);
         DialogStep("tools-restore-deleted-files", "ID_M_RESTORE_DELETED", false);
         DialogStep("help-what-the-file-list-shows", "ID_M_LEGEND", false);
         DialogStep("help-about", "ID_M_ABOUT", false);
@@ -988,6 +1221,8 @@ static class Shots {
         Tab(0);
         DialogStep("tab-1-what-to-leave-out", "ID_DB_SKIP", true);
         DialogStep("tab-1-add-a-backup-root", "ID_DB_ADD", true);
+        DialogStep("tab-1-deleted-files", "ID_DB_DELETED", true);
+        DialogStep("tab-1-older-versions", "ID_DB_VERSIONS", true);
         DialogStep("tab-1-export", "ID_DB_EXPORT", true);
         Tab(1);
         ComboSelect("ID_NEXT_FOR", "Blue");
@@ -1008,8 +1243,10 @@ static class Shots {
             DialogStep("tab-4-change-its-size-limit", "ID_PLACE_LIMIT", true);
             DialogStep("tab-4-description-and-details", "ID_PLACE_EDIT", true);
             DialogStep("tab-4-mark-lost", "ID_PLACE_LOST", true);
-            DialogStep("tab-4-back-up-to-it-the-preview", "ID_PLACE_BACKUP", true);
+            // Backs up the starred files to it at once (nothing to ask).
+            JobStep("tab-4-back-up-to-it", delegate { Click("ID_PLACE_BACKUP"); });
         }
+        Tab(3);
         DialogStep("tab-4-add-an-extra-place", "ID_PLACE_ADD", true);
         Tab(4);
         DialogStep("tab-5-recovery-key", "ID_ENC_KEY", true);
@@ -1045,8 +1282,10 @@ static class Shots {
         ButtonMenu("red-plugged-in-button-check-drive", "ID_BTN_CHECK", false);
         Tab(2);
         if (ListSelect("ID_LOCAL_LIST", "Red")) {
-            DialogStep("tab-3-red-quick-check", "ID_LOCAL_VERIFY", true);
-            JobStep("check-the-red-drive", delegate { Click("ID_LOCAL_CHECK"); });
+            // A quick check starts at once (nothing to ask).
+            JobStep("tab-3-red-quick-check", delegate { Click("ID_LOCAL_VERIFY"); });
+            Tab(2);
+            if (ListSelect("ID_LOCAL_LIST", "Red")) JobStep("check-the-red-drive", delegate { Click("ID_LOCAL_CHECK"); });
             Tab(2);
             Shot(main, "tab-3-after-checking-the-red-drive");
         }
@@ -1066,33 +1305,31 @@ static class Shots {
 
         // A restore into a folder that already holds a different IMG_0001.jpg.
         Restore("restore-photos", @"C:\BrodalfRestore", "Photos");
+        RestoreResult(@"C:\BrodalfRestore");
         DialogStep("after-restore-files-left-alone", "ID_M_CONFLICTS", false);
         Restore("restore-photos-again", @"C:\BrodalfRestore", "Photos");
 
         // A bit-rot scan, to show a scan running.
         JobStep("bit-rot-scan", delegate { Command("ID_M_BITROT"); });
-        Stop();
+    }
 
-        // 4. A backup root that is not where it was (moved, or its drive not plugged in).
-        string projects = Path.Combine(Path.GetDirectoryName(db), @"Data\Projects");
-        string moved = projects + " (moved)";
+    // What the first restore of Photos put in dest: every photo, in the
+    // folders they were in, and the different IMG_0001.jpg left as it was.
+    static void RestoreResult(string dest) {
+        string[] want = { @"2023\Holiday\IMG_0002.jpg", @"2023\Holiday\IMG_0040.jpg", @"2024\Garden\IMG_1001.jpg", @"2024\Birthday\IMG_2005.jpg" };
+        foreach (string w in want)
+            if (!File.Exists(Path.Combine(dest, w))) Fail("the restore did not put back " + w + " in " + dest);
+        string kept = Path.Combine(dest, @"2023\Holiday\IMG_0001.jpg");
         try {
-            if (Directory.Exists(projects)) Directory.Move(projects, moved);
-            OpenAndCapture("error-a-backup-root-is-missing", db, db);
-        } catch (Exception e) { Log("missing-root step failed: " + e.Message); }
-        try { if (Directory.Exists(moved)) Directory.Move(moved, projects); } catch (Exception) { }
-
-        // 5. The database opened with none of its files here and no drive
-        //    plugged in (as on a new PC): everything is faded, and each file
-        //    says which drives hold it. Then the red drive is plugged in.
-        NoLocalData();
+            if (File.ReadAllText(kept).Trim() != "a different picture") Fail("the restore overwrote " + kept);
+        } catch (Exception e) { Fail("cannot read " + kept + " after the restore: " + e.Message); }
     }
 
     static void NoLocalData() {
         string here = Path.GetDirectoryName(db);
         string[] away = { "Data", @"Drives\Blue", @"Drives\Gray", @"Cloud\OneDrive" };
         List<string> moved = new List<string>();
-        try {
+        Phase("no-local-data", delegate {
             foreach (string a in away) {
                 string from = Path.Combine(here, a);
                 if (Directory.Exists(from)) { Directory.Move(from, from + " (away)"); moved.Add(from); }
@@ -1121,8 +1358,7 @@ static class Shots {
             DialogStep("no-local-data-help-what-the-file-list-shows", "ID_M_LEGEND", false);
 
             // The red drive plugged in: what it holds is no longer faded.
-            Diskpart("attach-red.txt");
-            if (!WaitDrive(@"R:\", true, 20000)) Log("the red drive's letter did not appear");
+            Plug("attach-red.txt", @"R:\", true);
             Thread.Sleep(3000);
             IntPtr q = WaitDialog(3000, IntPtr.Zero);
             if (q != IntPtr.Zero) { Shot(q, "no-local-data-red-plugged-in-question"); Dismiss(q); }
@@ -1131,21 +1367,19 @@ static class Shots {
             if (Select("Documents", "Letters")) Shot(main, "no-local-data-red-plugged-in-letters");
             if (Select("Documents", "Letters", "Lease agreement")) Shot(main, "no-local-data-red-plugged-in-a-file-selected");
             if (Select("Photos", "2023", "Holiday")) Shot(main, "no-local-data-red-plugged-in-holiday-photos");
-            Diskpart("detach-red.txt");
-            WaitDrive(@"R:\", false, 15000);
+            Plug("detach-red.txt", @"R:\", false);
             Thread.Sleep(1500);
-        } catch (Exception e) { Log("no-local-data step failed: " + e.Message); }
-        Stop();
+        });
         foreach (string from in moved) {
-            try { Directory.Move(from + " (away)", from); } catch (Exception e) { Log("could not put back " + from + ": " + e.Message); }
+            try { Directory.Move(from + " (away)", from); } catch (Exception e) { Fail("could not put back " + from + ": " + e.Message); }
         }
     }
 
     static void WrongPassphrase() {
-        try {
+        Step("wrong-passphrase", delegate {
             Click("ID_ENC_PASS");
             IntPtr d = WaitDialog(8000, IntPtr.Zero);
-            if (d == IntPtr.Zero) { Log("no passphrase dialog"); return; }
+            if (d == IntPtr.Zero) { Fail("no passphrase dialog came up (ID_ENC_PASS)"); return; }
             IntPtr cur = N.GetDlgItem(d, Id("IDC_PASS_CUR"));
             if (cur != IntPtr.Zero && N.IsWindowVisible(cur)) {
                 // One dialog asks for the current passphrase (wrong here) and the new one twice;
@@ -1156,53 +1390,78 @@ static class Shots {
                 Thread.Sleep(300);
                 Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
                 Thread.Sleep(4000);
+                if (!N.IsWindow(d) || !N.IsWindowVisible(d)) { Fail("the passphrase dialog closed on a wrong current passphrase"); return; }
                 Shot(d, "tab-5-wrong-passphrase");
                 Dismiss(d);
                 WaitIdle("after-wrong-passphrase", 20000);
                 return;
             }
-            if (!IsPassphrase(d)) { Dismiss(d); return; }
+            if (!IsPassphrase(d)) { Fail("the passphrase dialog has no passphrase box"); Dismiss(d); return; }
             SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), "not the passphrase");
             Thread.Sleep(300);
             Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
             WaitGone(d, 5000);
             IntPtr e = WaitDialog(6000, IntPtr.Zero);
+            if (e == IntPtr.Zero) Fail("nothing said the passphrase was wrong");
             for (int i = 1; i <= 3 && e != IntPtr.Zero; i++) {
                 Shot(e, "tab-5-wrong-passphrase" + (i > 1 ? "-" + i : ""));
                 Dismiss(e);
                 e = WaitDialog(1500, IntPtr.Zero);
             }
             WaitIdle("after-wrong-passphrase", 20000);
-        } catch (Exception e) { Log("wrong passphrase step failed: " + e.Message); }
+        });
+    }
+
+    // Answer what a job asks before it starts: the passphrase is entered,
+    // a yes or no question answered yes, anything else captured and closed.
+    static void AnswerJobQuestions(string name, IntPtr d) {
+        for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
+            if (IsPassphrase(d)) {
+                Shot(d, name + "-passphrase");
+                SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass);
+                Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+            } else {
+                Shot(d, name + "-question-" + i);
+                GoAhead(d);
+            }
+            if (!WaitGone(d, 5000)) Fail(name + ": a question did not close when answered");
+            d = NextDialogOrBusy(3000);
+        }
+    }
+
+    // Say go ahead to a question before a job: "Back up anyway" (620) on
+    // the warning about many changed files, else yes.
+    static void GoAhead(IntPtr d) {
+        if (IsTaskDialog(d)) {
+            ClickTask(d, 620);
+            if (WaitGone(d, 1500)) return;
+        }
+        Yes(d, false);
     }
 
     // Start a check, capture it running, press Stop, capture what it says.
     static void StoppedJob(string name) {
-        try {
+        Step(name, delegate {
             WaitIdle("before-" + name, 30000);
             Foreground(main);
             Click("ID_LOCAL_CHECK");
             IntPtr d = NextDialogOrBusy(5000);
-            for (int i = 1; i <= 3 && d != IntPtr.Zero; i++) {
-                if (IsPassphrase(d)) { SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass); Post(d, WM_COMMAND, IDOK, IntPtr.Zero); }
-                else { Shot(d, name + "-question-" + i); Yes(d, false); }
-                WaitGone(d, 5000);
-                d = NextDialogOrBusy(3000);
-            }
+            AnswerJobQuestions(name, d);
             if (!Busy()) { Log(name + ": over before Stop could be pressed"); Shot(main, name + "-over-too-soon"); return; }
             Thread.Sleep(150);
             Shot(main, name + "-running");
+            if (!Busy()) { Log(name + ": over before Stop could be pressed"); return; }
             ClickNow("ID_BTN_STOP");
             Thread.Sleep(400);
             Shot(main, name + "-stopping");
             WaitIdle(name, 60000);
             Shot(main, name + "-after");
-        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+        });
     }
 
     // Start a check of the selected drive (the red one), unplug it under the check.
     static void PulledOut(string name) {
-        try {
+        Step(name, delegate {
             WaitIdle("before-" + name, 30000);
             Foreground(main);
             Click("ID_LOCAL_CHECK");
@@ -1213,8 +1472,7 @@ static class Shots {
                 WaitGone(d, 5000);
                 d = NextDialogOrBusy(3000);
             }
-            Diskpart("detach-red.txt");
-            WaitDrive(@"R:\", false, 15000);
+            Plug("detach-red.txt", @"R:\", false);
             Thread.Sleep(1500);
             Shot(main, name);
             WaitIdle(name, 120000);
@@ -1228,14 +1486,14 @@ static class Shots {
             Shot(main, "tab-2-next-backup-for-red-unplugged");
             Tab(0);
             Shot(main, "tab-1-with-red-unplugged");
-        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+        });
     }
 
     static void ChangePassphrase() {
-        try {
+        Step("change-passphrase", delegate {
             Click("ID_ENC_PASS");
             IntPtr d = WaitDialog(8000, IntPtr.Zero);
-            if (d == IntPtr.Zero) { Log("no passphrase dialog"); return; }
+            if (d == IntPtr.Zero) { Fail("no passphrase dialog came up (ID_ENC_PASS)"); return; }
             Shot(d, "tab-5-change-passphrase-enter-the-current-one");
             IntPtr cur = N.GetDlgItem(d, Id("IDC_PASS_CUR"));
             if (cur != IntPtr.Zero && N.GetDlgItem(d, Id("IDC_PASS_EDIT2")) != IntPtr.Zero) {
@@ -1252,7 +1510,7 @@ static class Shots {
                     Post(show, 0x00F5, 0, IntPtr.Zero); // BM_CLICK
                     Thread.Sleep(400);
                     Shot(d, "tab-5-change-passphrase-shown");
-                }
+                } else Fail("the passphrase dialog has no Show box");
                 Dismiss(d);
                 WaitIdle("after-passphrase", 20000);
                 return;
@@ -1264,15 +1522,15 @@ static class Shots {
                 WaitGone(d, 5000);
                 IntPtr d2 = WaitDialog(8000, IntPtr.Zero);
                 if (d2 != IntPtr.Zero) { Shot(d2, "tab-5-change-passphrase-the-new-one"); Dismiss(d2); }
-            } else Dismiss(d);
+                else Fail("no dialog asked for the new passphrase");
+            } else { Fail("the passphrase dialog has no passphrase box"); Dismiss(d); }
             WaitIdle("after-passphrase", 20000);
-        } catch (Exception e) { Log("passphrase step failed: " + e.Message); }
+        });
     }
 
     static void PlugIn() {
-        try {
-            Diskpart("attach-red.txt");
-            if (!WaitDrive(@"R:\", true, 20000)) Log("the red drive's letter did not appear");
+        Step("plug-in-the-red-drive", delegate {
+            Plug("attach-red.txt", @"R:\", true);
             Thread.Sleep(3000);
             WaitIdle("red-drive-plugged-in", 60000);
             Shot(main, "red-drive-plugged-in");
@@ -1298,6 +1556,8 @@ static class Shots {
                 // If no question came, the backup started: let it finish.
                 WaitIdle("after-red-drive", 120000);
             }
+        });
+        Step("plug-in-a-new-disk", delegate {
             Tab(2);
             Diskpart("attach-new.txt");
             IntPtr q = WaitDialog(30000, IntPtr.Zero);
@@ -1307,19 +1567,21 @@ static class Shots {
                 WaitGone(q, 3000);
                 IntPtr label = WaitDialog(8000, IntPtr.Zero);
                 if (label != IntPtr.Zero) { Shot(label, "new-disk-set-it-up"); Dismiss(label); }
-            } else Log("no question when the new disk was plugged in");
+                else Fail("no dialog to name the new disk after Set it up");
+            } else Fail("no question when a new disk was plugged in");
             WaitIdle("after-new-disk", 30000);
-            Diskpart("detach-new.txt");
+            Plug("detach-new.txt", @"N:\", false);
             Thread.Sleep(2000);
             WaitIdle("new-disk-unplugged", 30000);
             Tab(0);
-        } catch (Exception e) { Log("plug-in step failed: " + e.Message); }
+        });
     }
 
     // After a question is answered: the next question, or none once the job runs.
     static IntPtr NextDialogOrBusy(int ms) {
         Stopwatch sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < ms) {
+            Alive("waiting for a job");
             IntPtr d = TopDialog();
             if (d != IntPtr.Zero) { Thread.Sleep(600); d = TopDialog(); if (d != IntPtr.Zero) return d; }
             if (Busy()) return IntPtr.Zero;
@@ -1332,31 +1594,31 @@ static class Shots {
         return N.GetDlgItem(d, Id("IDC_PASS_EDIT")) != IntPtr.Zero && N.GetDlgItem(d, Id("IDC_PASS_EDIT2")) == IntPtr.Zero;
     }
 
+    // A job ran: the Stop button showed, or the window wrote to its log
+    // (a job too quick to be seen running still says what it did).
+    static bool sawBusy;
+    static bool JobRan(long logAt) { return sawBusy || AppLogLength() > logAt; }
+
     // Start a job and let it run: a passphrase question is answered, a
     // yes/no question is answered yes (go ahead), anything else is
     // captured and cancelled. Captures the window while the job runs.
+    // No job at all fails the step.
     static void JobStep(string name, Action start) {
-        try {
+        Step(name, delegate {
             WaitIdle("before-" + name, 30000);
             Foreground(main);
+            long logAt = AppLogLength();
+            sawBusy = false;
             start();
             IntPtr d = WaitDialog(4000, IntPtr.Zero);
-            for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
-                if (IsPassphrase(d)) {
-                    Shot(d, name + "-passphrase");
-                    SetText(N.GetDlgItem(d, Id("IDC_PASS_EDIT")), pass);
-                    Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
-                } else {
-                    Shot(d, name + "-question-" + i);
-                    Yes(d, false);
-                }
-                WaitGone(d, 5000);
-                d = NextDialogOrBusy(3000);
-            }
+            if (Busy()) sawBusy = true;
+            AnswerJobQuestions(name, d);
+            if (Busy()) sawBusy = true;
             Running(name);
             WaitIdle(name + "-finished", 240000);
             Shot(main, name + "-finished");
-        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+            if (!JobRan(logAt)) Fail("no job ran for " + name);
+        });
     }
 
     static void Running(string name) {
@@ -1364,9 +1626,12 @@ static class Shots {
         int shots = 0;
         long[] at = { 150, 1200, 3500 };
         while (sw.ElapsedMilliseconds < 60000 && shots < at.Length) {
+            Alive(name + " running");
             if (TopDialog() != IntPtr.Zero) break;
-            if (!Busy() && sw.ElapsedMilliseconds > 1500) break;
-            if (sw.ElapsedMilliseconds >= at[shots] && Busy()) Shot(main, name + "-running-" + (++shots));
+            bool busy = Busy();
+            if (busy) sawBusy = true;
+            if (!busy && sw.ElapsedMilliseconds > 1500) break;
+            if (sw.ElapsedMilliseconds >= at[shots] && busy) Shot(main, name + "-running-" + (++shots));
             Thread.Sleep(50);
         }
         if (shots == 0) Log(name + ": over before it could be captured running");
@@ -1374,12 +1639,15 @@ static class Shots {
 
     // A restore: the folder picker is pointed at dest (it has no box to type in).
     static void Restore(string name, string dest, params string[] treePath) {
-        try {
+        Step(name, delegate {
             Tab(0);
             if (!TreeSelect(treePath)) return;
             Tab(5);
+            long logAt = AppLogLength();
+            sawBusy = false;
             Click("ID_REST_SEL");
             IntPtr d = WaitDialog(8000, IntPtr.Zero);
+            bool picked = false;
             for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
                 bool picker = false;
                 foreach (IntPtr c in Children(d)) if (ClassOf(c) == "SysTreeView32") picker = true;
@@ -1395,22 +1663,27 @@ static class Shots {
                     Thread.Sleep(800);
                     Shot(d, name + "-where-to");
                     Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
+                    picked = true;
                 } else {
                     Shot(d, name + "-question-" + i);
                     Yes(d, true);
                 }
-                WaitGone(d, 5000);
+                if (!WaitGone(d, 5000)) Fail(name + ": a dialog did not close when answered");
                 d = NextDialogOrBusy(3000);
             }
+            if (!picked) Fail(name + ": no folder picker came up to say where to restore to");
             Running(name);
             WaitIdle(name + "-finished", 240000);
             Shot(main, name + "-finished-restore-tab");
-        } catch (Exception e) { Log(name + " failed: " + e.Message); }
+            if (picked && !JobRan(logAt)) Fail("no restore ran for " + name);
+        });
     }
 
     static void BackupAll() {
-        try {
+        Step("back-up-to-every-drive", delegate {
             Tab(0);
+            long logAt = AppLogLength();
+            sawBusy = false;
             Command("ID_M_BACKUP_ALL");
             IntPtr d = WaitDialog(10000, IntPtr.Zero);
             for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
@@ -1426,24 +1699,28 @@ static class Shots {
                     Shot(d, "back-up-to-every-drive-question-" + i);
                     Yes(d, true);
                 }
-                WaitGone(d, 5000);
+                if (!WaitGone(d, 5000)) Fail("back up to every drive: a question did not close when answered");
                 d = NextDialogOrBusy(3000);
             }
             Stopwatch sw = Stopwatch.StartNew();
             int shots = 0;
             long[] at = { 800, 3000, 7000 };
             while (sw.ElapsedMilliseconds < 120000 && shots < at.Length) {
+                Alive("backup running");
                 if (TopDialog() != IntPtr.Zero) break;
-                if (!Busy() && sw.ElapsedMilliseconds > 2000) break;
-                if (sw.ElapsedMilliseconds >= at[shots] && Busy()) Shot(main, "backup-running-" + (++shots));
+                bool busy = Busy();
+                if (busy) sawBusy = true;
+                if (!busy && sw.ElapsedMilliseconds > 2000) break;
+                if (sw.ElapsedMilliseconds >= at[shots] && busy) Shot(main, "backup-running-" + (++shots));
                 Thread.Sleep(100);
             }
             WaitIdle("backup-finished", 240000);
             Shot(main, "backup-finished");
+            if (!JobRan(logAt)) Fail("no backup ran after Back up to every drive");
             Tab(1);
             Shot(main, "backup-finished-tab-2-next-backup");
             Tab(2);
             Shot(main, "backup-finished-tab-3-local-backups");
-        } catch (Exception e) { Log("backup step failed: " + e.Message); }
+        });
     }
 }

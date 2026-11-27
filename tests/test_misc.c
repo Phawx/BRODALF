@@ -7,6 +7,7 @@
 #include "brodalf.h"
 #include "internal.h"
 #include "test_tree.h"
+#include "test_spawn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -195,7 +196,6 @@ static void test_mass_change(void)
     }
 }
 
-#ifndef _WIN32
 /* Item 3: a folder that cannot be read to the end is reported, and what it
  * did not list is not marked deleted. */
 static void test_walk_error(void)
@@ -224,14 +224,62 @@ static void test_walk_error(void)
     CHECK(ss.errors == 0 && ss.files_deleted == 0);
     bd_catalog_close(u.cat);
 }
-#endif
 
-#ifndef _WIN32
 static int count_files(void *ctx, const char *rel, const bd_stat_t *st)
 {
     (*(int *)ctx)++;
     return st->is_dir ? BD_WALK_SKIP : 0;
 }
+
+#ifdef _WIN32
+/* The temp folder the catalogs see, as GetTempPath reads it. */
+static wchar_t saved_tmp[2][1100];
+static int had_tmp[2];
+
+static void use_temp_folder(const char *dir)
+{
+    const wchar_t *names[2] = {L"TMP", L"TEMP"};
+    wchar_t w[1100];
+    MultiByteToWideChar(CP_UTF8, 0, dir, -1, w, 1100);
+    for (wchar_t *q = w; *q; q++) if (*q == L'/') *q = L'\\';
+    for (int i = 0; i < 2; i++) {
+        had_tmp[i] = GetEnvironmentVariableW(names[i], saved_tmp[i], 1100) > 0;
+        SetEnvironmentVariableW(names[i], w);
+    }
+}
+
+static void restore_temp_folder(void)
+{
+    const wchar_t *names[2] = {L"TMP", L"TEMP"};
+    for (int i = 0; i < 2; i++) SetEnvironmentVariableW(names[i], had_tmp[i] ? saved_tmp[i] : NULL);
+}
+
+/* A second copy of this program holding marker open as a running BRODALF
+ * holds its own, until it is ended. NULL if it did not get that far. */
+static HANDLE hold_marker(const char *marker, const char *ready)
+{
+    char *args = bd_sprintf("--hold-marker \"%s\" \"%s\"", marker, ready);
+    HANDLE h = args ? spawn_self(args) : NULL;
+    free(args);
+    if (h && wait_ready(h, ready, 30000) != 0) {
+        fprintf(stderr, "  the copy holding %s did not start\n", marker);
+        end_child(h);
+        h = NULL;
+    }
+    return h;
+}
+
+/* That copy: holds the marker the way bd_catalog_create does, and waits to
+ * be ended. */
+static int hold_marker_child(const char *marker, const char *ready)
+{
+    void *h = NULL;
+    if (bd_work_owner_begin(marker, &h) != 0) return 2;
+    child_ready(ready, 0);
+    Sleep(120000);
+    return 3; /* never ended: the parent stopped waiting */
+}
+#endif
 
 /* Item 4: working copies left by a BRODALF that is gone are removed when a
  * catalog is opened; those of a running one, those without a marker (made
@@ -240,6 +288,7 @@ static void test_stale_work_files(void)
 {
     begin("stale");
     bd_mkdirs(at("tmp"));
+#ifndef _WIN32
     const char *was = getenv("TMPDIR");
     char *saved = was ? bd_strdup(was) : NULL;
     setenv("TMPDIR", at("tmp"), 1);
@@ -250,6 +299,7 @@ static void test_stale_work_files(void)
     char dead[32], live[32];
     snprintf(dead, sizeof(dead), "%ld\n", (long)child);
     snprintf(live, sizeof(live), "%ld\n", (long)getpid());
+#endif
 
     const char *gone = "tmp/brodalf-11111111-1111-4111-8111-111111111111.db";
     const char *running = "tmp/brodalf-22222222-2222-4222-8222-222222222222.db";
@@ -265,12 +315,30 @@ static void test_stale_work_files(void)
         snprintf(p, sizeof(p), "%s%s", unknown, parts[i]);
         write_file(at(p), "x");
     }
+#ifdef _WIN32
+    /* Windows tells whose a marker is by who holds it open: a running
+     * BRODALF holds its own for as long as it runs, and Windows closes it
+     * when that BRODALF ends, however it ends. Two copies of this program
+     * stand in: one ended the way a crash ends it, one still running. */
+    snprintf(p, sizeof(p), "%s.owner", gone);
+    HANDLE dead_one = hold_marker(at(p), at("dead.ready"));
+    CHECK(dead_one != NULL);
+    end_child(dead_one);
+    CHECK(exists(at(p))); /* left behind, as after a crash */
+    snprintf(p, sizeof(p), "%s.owner", running);
+    HANDLE live_one = hold_marker(at(p), at("live.ready"));
+    CHECK(live_one != NULL);
+    snprintf(p, sizeof(p), "%s.owner", lone);
+    write_file(at(p), "1\n");
+    use_temp_folder(at("tmp"));
+#else
     snprintf(p, sizeof(p), "%s.owner", gone);
     write_file(at(p), dead);
     snprintf(p, sizeof(p), "%s.owner", running);
     write_file(at(p), live);
     snprintf(p, sizeof(p), "%s.owner", lone);
     write_file(at(p), dead);
+#endif
     /* Not BRODALF's names, whatever is beside them. */
     const char *others[] = {"tmp/brodalf-11111111-1111-4111-8111-111111111111.dbx",
                             "tmp/brodalf-11111111-1111-4111-8111-111111111111.db.old",
@@ -308,11 +376,15 @@ static void test_stale_work_files(void)
     CHECK(open_n >= closed_n + 2);
     CHECK(closed_n == 5 + 4 + (int)(sizeof(others) / sizeof(others[0])) + 1);
 
+#ifdef _WIN32
+    restore_temp_folder();
+    end_child(live_one);
+#else
     if (saved) setenv("TMPDIR", saved, 1);
     else unsetenv("TMPDIR");
     free(saved);
-}
 #endif
+}
 
 static int64_t file_mtime(const char *path)
 {
@@ -805,8 +877,14 @@ static void test_csv_paths(void)
     bd_catalog_close(u.cat);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    if (argc == 4 && strcmp(argv[1], "--hold-marker") == 0) return hold_marker_child(argv[2], argv[3]);
+#else
+    (void)argc;
+    (void)argv;
+#endif
     char tmp[512], id[37];
     bd_temp_dir(tmp, sizeof(tmp));
     bd_uuid_v4(id);
@@ -824,10 +902,8 @@ int main(void)
     test_fat32();
     test_bitrot_kept();
     test_csv_paths();
-#ifndef _WIN32
     test_walk_error();
     test_stale_work_files();
-#endif
 
     remove_tree(top);
     CHECK(!exists(top));

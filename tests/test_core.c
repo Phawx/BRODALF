@@ -1027,6 +1027,18 @@ static void test_big_copy(void)
         signal(SIGXFSZ, prev);
     }
 #endif
+    /* The same through the test hook, on every system: plain, then sealed. */
+    bd_test_write_fail_at = 6 * 1024 * 1024;
+    out = bd_fopen(at("big/short2.bin"), "wb");
+    int rc2 = out ? bd_hash_copy(at("big/src.bin"), NULL, out, NULL, got, NULL) : 0;
+    if (out) fclose(out);
+    CHECK(rc2 == -2);
+    CHECK(bd_stat(at("big/short2.bin"), &st) == 0 && st.size == 6 * 1024 * 1024);
+    out = bd_fopen(at("big/short2.bdenc"), "wb");
+    rc2 = out ? bd_hash_copy(at("big/src.bin"), NULL, out, key, got, NULL) : 0;
+    if (out) fclose(out);
+    bd_test_write_fail_at = 0;
+    CHECK(rc2 == -2);
     free(data);
 }
 
@@ -1301,13 +1313,28 @@ static void test_cancel(void)
     free(data);
 }
 
-#ifndef _WIN32
 static void set_time(const char *path, int64_t ns)
 {
+#ifdef _WIN32
+    /* Set by Windows itself, not through BRODALF: 100 ns steps. */
+    wchar_t w[1024];
+    CHECK(MultiByteToWideChar(CP_UTF8, 0, path, -1, w, 1024) > 0);
+    HANDLE h = CreateFileW(w, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    if (h == INVALID_HANDLE_VALUE) return;
+    uint64_t t = (uint64_t)(ns / 100) + 116444736000000000ULL;
+    FILETIME ft;
+    ft.dwLowDateTime = (DWORD)(t & 0xffffffffu);
+    ft.dwHighDateTime = (DWORD)(t >> 32);
+    CHECK(SetFileTime(h, NULL, NULL, &ft));
+    CloseHandle(h);
+#else
     struct timespec ts[2];
     ts[0].tv_sec = ts[1].tv_sec = (time_t)(ns / 1000000000LL);
     ts[0].tv_nsec = ts[1].tv_nsec = (long)(ns % 1000000000LL);
     CHECK(utimensat(AT_FDCWD, path, ts, 0) == 0);
+#endif
 }
 
 static int64_t time_of(const char *path)
@@ -1319,7 +1346,12 @@ static int64_t time_of(const char *path)
 /* Copies on the drive and restored files keep the original modified time. */
 static void test_mtimes(void)
 {
+#ifdef _WIN32
+    /* Windows keeps times in steps of 100 ns. */
+    const int64_t t1 = 1000000000123456700LL, t2 = 1200000000987654300LL, t3 = 1300000000000000500LL;
+#else
     const int64_t t1 = 1000000000123456789LL, t2 = 1200000000987654321LL, t3 = 1300000000000000500LL;
+#endif
     write_file(at("mt/Src/a.txt"), "first a");
     set_time(at("mt/Src/a.txt"), t1);
     /* Big enough for the copy's writer thread. */
@@ -1390,7 +1422,6 @@ static void test_mtimes(void)
     free(old_a);
     bd_catalog_close(cat);
 }
-#endif
 
 static void rename_log(void *ctx, const char *msg)
 {
@@ -3528,9 +3559,7 @@ int main(void)
     test_case_rename();
     test_compression();
     test_reserved_source_names();
-#ifndef _WIN32
     test_mtimes();
-#endif
     test_recover_and_relocate();
     test_lost_drive();
     test_copies_on();

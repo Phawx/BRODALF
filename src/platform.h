@@ -147,11 +147,10 @@ void bd_catalog_lock_release(void *handle, const char *lock_path);
 typedef int (*bd_walk_cb)(void *ctx, const char *rel_path, const bd_stat_t *st);
 typedef void (*bd_walk_err_cb)(void *ctx, const char *path, const char *message);
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx);
-#ifndef _WIN32
 /* Tests only: reading the folder with this path relative to the root ("" the
- * root itself) fails with EIO after its first entry. */
+ * root itself) fails after its first entry (EIO; on Windows
+ * ERROR_IO_DEVICE). */
 extern const char *bd_test_walk_fail;
-#endif
 
 /* A copy of s with letter case folded the way the file system compares
  * names: Windows' own case mapping there; elsewhere (names are case

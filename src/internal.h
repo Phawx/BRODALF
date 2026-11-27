@@ -95,6 +95,9 @@ void bd_open_end(bd_opener *o);
 typedef struct { FILE *file; bd_sealer *sealer; } bd_sink;
 typedef struct { FILE *file; bd_opener *opener; } bd_source;
 int bd_sink_write(bd_sink *k, const void *data, size_t n);
+/* Tests only: a sink (sealed or not) takes no bytes past this offset in its
+ * file, as on a full or failing disk; 0: no limit. */
+extern int64_t bd_test_write_fail_at;
 long bd_source_read(bd_source *k, void *buf, size_t cap);
 
 /* Tests only: pretend every drive has this much free space (-1: ask it). */

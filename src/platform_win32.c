@@ -629,6 +629,17 @@ static int stack_push(str_stack *s, const char *v)
     return 0;
 }
 
+/* Tests only (platform.h): the folder at bd_test_walk_fail stops being read
+ * after its first entry, as on a failing disk. */
+const char *bd_test_walk_fail = NULL;
+
+static int walk_test_fails(const char *rel, DWORD *werr)
+{
+    if (!bd_test_walk_fail || strcmp(rel, bd_test_walk_fail) != 0) return 0;
+    *werr = ERROR_IO_DEVICE;
+    return 1;
+}
+
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
 {
     char *base = strdup(root);
@@ -683,7 +694,7 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
             else if (st.is_dir && stack_push(&stack, child_rel) != 0) { rc = -1; stop = 1; }
             free(child_rel);
             free(name);
-        } while (!stop && (FindNextFileW(h, &fd) || ((werr = GetLastError()), 0)));
+        } while (!stop && !walk_test_fails(rel, &werr) && (FindNextFileW(h, &fd) || ((werr = GetLastError()), 0)));
         FindClose(h);
         if (!stop && werr != ERROR_NO_MORE_FILES && err_cb) {
             char msg[80];

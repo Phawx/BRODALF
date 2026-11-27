@@ -76,12 +76,27 @@ struct bd_sealer {
     int err;
 };
 
+/* Tests only (internal.h): a file written through a sink or sealer takes
+ * no bytes past this offset, as on a full or failing disk; 0: no limit. */
+int64_t bd_test_write_fail_at = 0;
+
+/* fwrite, but with bd_test_write_fail_at set only what fits goes in. */
+static size_t out_write(const void *data, size_t n, FILE *f)
+{
+    if (bd_test_write_fail_at > 0) {
+        long at = ftell(f);
+        if (at >= 0 && (int64_t)at + (int64_t)n > bd_test_write_fail_at)
+            return fwrite(data, 1, at < bd_test_write_fail_at ? (size_t)(bd_test_write_fail_at - at) : 0, f);
+    }
+    return fwrite(data, 1, n, f);
+}
+
 static void seal_emit(bd_sealer *s, int last)
 {
     uint8_t mac[SEAL_MAC];
     s->ad[SEAL_HEADER] = (uint8_t)last;
     crypto_aead_write(&s->ctx, s->cipher, mac, s->ad, sizeof(s->ad), s->plain, s->fill);
-    if (fwrite(mac, 1, SEAL_MAC, s->out) != SEAL_MAC || fwrite(s->cipher, 1, s->fill, s->out) != s->fill) s->err = -2;
+    if (out_write(mac, SEAL_MAC, s->out) != SEAL_MAC || out_write(s->cipher, s->fill, s->out) != s->fill) s->err = -2;
     s->fill = 0;
 }
 
@@ -104,7 +119,7 @@ bd_sealer *bd_seal_begin(FILE *out, const uint8_t key[32])
         return NULL;
     }
     crypto_aead_init_x(&s->ctx, key, s->ad + 16);
-    if (fwrite(s->ad, 1, SEAL_HEADER, out) != SEAL_HEADER) s->err = -2;
+    if (out_write(s->ad, SEAL_HEADER, out) != SEAL_HEADER) s->err = -2;
     return s;
 }
 
@@ -206,7 +221,7 @@ void bd_open_end(bd_opener *o)
 int bd_sink_write(bd_sink *k, const void *data, size_t n)
 {
     if (k->sealer) return bd_seal_write(k->sealer, data, n);
-    return fwrite(data, 1, n, k->file) == n ? 0 : -2;
+    return out_write(data, n, k->file) == n ? 0 : -2;
 }
 
 long bd_source_read(bd_source *k, void *buf, size_t cap)

@@ -481,7 +481,9 @@ typedef struct {
 } newest_copy;
 
 /* catalog-r<digits>.brodalf gives its revision, catalog-backup.brodalf 0;
- * -1 for anything else. */
+ * -1 for anything else. catalog-r<digits>-<hex>.brodalf is a second copy
+ * of that revision, from another copy of the database that was used apart
+ * from this one (BRODALF 0.14.0 and older pass such names by). */
 static int64_t copy_revision(const char *name)
 {
     static const char pre[] = "catalog-r", post[] = ".brodalf", old[] = "catalog-backup.brodalf";
@@ -494,10 +496,18 @@ static int64_t copy_revision(const char *name)
     for (k = 0; k < a; k++) if ((name[k] | 0x20) != pre[k]) return -1;
     for (k = 0; k < b; k++) if ((name[n - b + k] | 0x20) != post[k]) return -1;
     int64_t r = 0;
-    for (k = a; k < n - b; k++) {
+    size_t end = n - b, dash = end;
+    for (k = a; k < end; k++) {
+        if (name[k] == '-' && k > a && dash == end) { dash = k; continue; }
+        if (dash < end) {
+            int c = name[k] | 0x20;
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) || k - dash > 16) return -1;
+            continue;
+        }
         if (name[k] < '0' || name[k] > '9' || r > INT64_MAX / 10 - 10) return -1;
         r = r * 10 + (name[k] - '0');
     }
+    if (dash == end - 1) return -1; /* nothing after the dash */
     return r;
 }
 
@@ -509,7 +519,8 @@ static int newest_cb(void *ctx, const char *rel, const bd_stat_t *st)
     if (st->is_dir) return BD_WALK_SKIP;
     if (!st->is_file || strchr(rel, '/')) return 0;
     int64_t r = copy_revision(rel);
-    if (r < 0 || r < c->revision) return 0;
+    /* Two copies of one revision: the one written last. */
+    if (r < 0 || r < c->revision || (r == c->revision && st->mtime_ns < c->mtime_ns)) return 0;
     char *p = bd_path_join(c->folder, rel);
     if (!p) return 0;
     free(c->best);

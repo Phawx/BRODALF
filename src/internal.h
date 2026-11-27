@@ -44,12 +44,20 @@ struct bd_catalog {
      * save that worked (or at open, when opening changed nothing). */
     int64_t changes, saved_changes;
     int open_upgraded; /* opening changed the database (schema upgrade, fix-ups) */
+    /* changes right after bd_media_record_catalog_copies wrote to a saved
+     * database (0: not so): while nothing else changed, the database copies
+     * on the drives are still of the database as it is. */
+    int64_t copies_noted_at;
 };
 
 /* Record an error message on the catalog and return status. */
 bd_status bd_fail(bd_catalog *cat, bd_status status, const char *fmt, ...);
 bd_status bd_fail_db(bd_catalog *cat, const char *what);
 void bd_logf(bd_log_fn log, void *ctx, const char *fmt, ...);
+/* Says how many copies on a drive have a full path over BD_LONG_PATH
+ * characters (bd_media_long_paths), if any; label names the drive when a
+ * backup writes to more than one. */
+void bd_log_long_paths(bd_log_fn log, void *log_ctx, int64_t n, const char *label);
 
 char *bd_strdup(const char *s);
 char *bd_sprintf(const char *fmt, ...);
@@ -102,6 +110,9 @@ long bd_source_read(bd_source *k, void *buf, size_t cap);
 
 /* Tests only: pretend every drive has this much free space (-1: ask it). */
 extern int64_t bd_test_free_bytes;
+/* Tests only: every drive's allocation unit is this many bytes (0: ask
+ * the file system). */
+extern int64_t bd_test_cluster_bytes;
 /* Tests only: a backup saves the catalog between batches this often (ms;
  * 0: every 5 minutes). */
 extern int64_t bd_test_save_every_ms;
@@ -296,6 +307,23 @@ char *bd_substitute_for(bd_catalog *cat, const char *path);
 /* Save a copy of the catalog to dest, encrypted or not. */
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);
 
+/* Which save the open database is, and when it was made (catalog.c): set
+ * by every save, so two copies of one database used separately differ at
+ * the same revision. 0 / "" for a database last saved by an older BRODALF. */
+int bd_catalog_save_id(bd_catalog *cat, char *out, size_t cap);
+int64_t bd_catalog_saved_ms(bd_catalog *cat);
+
+/* Keep in media_catalog what became of the copies of the database put on
+ * the drives (bd_catalog_copy_to_media) since the last call (media.c). A
+ * change to the database: called once after copying to several drives,
+ * and by every save. */
+void bd_media_record_catalog_copies(bd_catalog *cat);
+
+/* A meta value (save_id, saved_ms, revision) of the catalog copy at path,
+ * read with the open database's key. BD_ERR_NOT_FOUND when the copy has
+ * no such value. */
+bd_status bd_catalog_copy_meta(bd_catalog *cat, const char *path, const char *key, char *out, size_t cap);
+
 /* Encrypted copies on a drive carry this suffix. */
 #define BD_SEALED_SUFFIX ".bdenc"
 
@@ -309,8 +337,10 @@ char *bd_hide_rel(const uint8_t names_key[32], const char *plain_rel);
 int bd_media_hides_names(bd_catalog *cat, int64_t media_id, uint8_t out[32]);
 /* newest.c: newest-copies-r<revision>.txt beside a drive's database copy,
  * naming each file whose newest copy there is not in its own place. Plain
- * drives only; nothing on the drive is overwritten. */
-bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id);
+ * drives only; nothing on the drive is overwritten. catalog_name is the
+ * name of that copy (catalog-r<revision>[-<tag>].brodalf), or NULL for the
+ * plain one; the list is named the same way. */
+bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id, const char *catalog_name);
 /* 1 for such a list's name (or its temp name). */
 int bd_newest_list_name(const char *name);
 

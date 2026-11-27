@@ -184,6 +184,9 @@ void bd_sleep_ms(int ms);
 int bd_temp_dir(char *out, size_t out_len);
 
 int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes);
+/* The allocation unit of the file system holding path: the least room a
+ * file takes there (a cluster). 0 if it cannot be told. */
+int64_t bd_fs_cluster_bytes(const char *path);
 
 /* Windows' own file compression (NTFS). bd_fs_can_compress: 1 if the
  * volume holding path can compress files, 0 if not (exFAT, FAT32, any

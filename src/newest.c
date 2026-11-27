@@ -246,7 +246,7 @@ static bd_status write_list(bd_catalog *cat, int64_t media_id, FILE *f)
     return s;
 }
 
-static bd_status write_file(bd_catalog *cat, int64_t media_id, const char *label, const char *path)
+static bd_status write_file(bd_catalog *cat, int64_t media_id, const char *label, const char *catalog_name, const char *path)
 {
     FILE *f = bd_fopen(path, "wb");
     if (!f) return bd_fail(cat, BD_ERR_IO, "cannot write %s", path);
@@ -257,6 +257,8 @@ static bd_status write_file(bd_catalog *cat, int64_t media_id, const char *label
     put_path(f, cat->uuid);
     fprintf(f, ", revision %lld, written ", (long long)bd_catalog_revision(cat));
     put_time(f, bd_now_ms());
+    fputs(".\r\nIt goes with the copy of the database beside it named ", f);
+    put_path(f, catalog_name);
     fputs(".\r\n\r\n"
           "To get your files back without BRODALF, copy each backup root's folder off this drive as it is.\r\n"
           "Those folders hold the first copy made of each file. Every file named below has its newest copy\r\n"
@@ -280,7 +282,7 @@ static bd_status write_file(bd_catalog *cat, int64_t media_id, const char *label
     return s;
 }
 
-bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id)
+bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id, const char *catalog_name)
 {
     sqlite3_stmt *q;
     int skip = 1;
@@ -298,8 +300,17 @@ bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id)
     bd_store *store = bd_store_open(cat, media_id);
     if (!store) { free(label); return BD_ERR_NOT_FOUND; }
     bd_status s = BD_OK;
-    char rel[96], tmp[128];
-    snprintf(rel, sizeof(rel), LIST_PREFIX "%08lld" LIST_SUFFIX, (long long)bd_catalog_revision(cat));
+    /* Named as its copy of the database is, catalog-r<revision>[-<tag>]
+     * .brodalf: a copy put beside another of the same revision (media.c)
+     * gets a list of its own beside the other's. */
+    char rel[96], tmp[128], plain[64];
+    snprintf(plain, sizeof(plain), "catalog-r%08lld.brodalf", (long long)bd_catalog_revision(cat));
+    const char *cn = catalog_name ? catalog_name : plain;
+    size_t cl = strlen(cn), pl = strlen("catalog-r"), sl = strlen(".brodalf");
+    if (cl > pl + sl && strncmp(cn, "catalog-r", pl) == 0 && strcmp(cn + cl - sl, ".brodalf") == 0 && cl - pl - sl < 40)
+        snprintf(rel, sizeof(rel), LIST_PREFIX "%.*s" LIST_SUFFIX, (int)(cl - pl - sl), cn + pl);
+    else
+        snprintf(rel, sizeof(rel), LIST_PREFIX "%08lld" LIST_SUFFIX, (long long)bd_catalog_revision(cat));
     snprintf(tmp, sizeof(tmp), "%s" BD_TMP_MARKER, rel);
     bd_remote_stat st;
     int there = store->ops->stat(store, rel, &st);
@@ -309,7 +320,7 @@ bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id)
     char *staged = there == 1 ? store->ops->staging_path(store, tmp) : NULL;
     if (there == 1 && !staged) s = bd_fail(cat, BD_ERR_IO, "cannot write the list of newest copies: %s", store->err);
     if (staged) {
-        s = write_file(cat, media_id, label, staged);
+        s = write_file(cat, media_id, label, cn, staged);
         if (s == BD_OK && store->ops->upload(store, staged, tmp, &st) != 0)
             s = bd_fail(cat, BD_ERR_IO, "cannot write the list of newest copies: %s", store->err);
         /* Not replacing: a list that turned up meanwhile stays. */

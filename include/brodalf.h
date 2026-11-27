@@ -578,9 +578,18 @@ typedef struct {
      * .brodalf-tmp, from a copy that stopped, as at a power cut), older
      * than an hour: bd_media_remove_leftovers removes them. */
     int64_t leftovers, leftover_bytes;
+    /* bd_media_check only: good copies on the drive whose full path there
+     * is over BD_LONG_PATH characters (bd_media_long_paths). */
+    int64_t long_paths;
 } bd_check_stats;
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx);
+/* A drive not found where it was last, such as a folder on a NAS whose
+ * drive letter changed: the same folder on the other drive letters, and
+ * under this user's home folder when it was under another's. The first
+ * that holds the drive's ID file (connect it with bd_media_connect), or
+ * NULL; says where in log. Changes nothing. */
+char *bd_media_find_elsewhere(bd_catalog *cat, int64_t media_id, bd_log_fn log, void *log_ctx);
 void bd_media_disconnect(bd_catalog *cat, int64_t media_id);
 
 /* Where a drive is kept, or what is written on it ("Box A", "top shelf").
@@ -588,8 +597,14 @@ void bd_media_disconnect(bd_catalog *cat, int64_t media_id);
 bd_status bd_media_set_location(bd_catalog *cat, int64_t media_id, const char *location);
 
 /* Rename a drive. The new name is also written to its BRODALF.media file
- * the next time the drive is plugged in. */
+ * the next time the drive is plugged in. Two drives or places cannot share
+ * a name (whatever the case, and the spaces around it): bd_media_init and
+ * bd_media_rename give BD_ERR_EXISTS for one already taken. Drives that
+ * shared a name before this was checked keep it. */
 bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
+/* The drive or place other than except_id already called label (compared
+ * as bd_media_rename does), or 0. */
+int64_t bd_media_named(bd_catalog *cat, const char *label, int64_t except_id);
 
 /* Check every copy on a connected drive: that it is there, with the right
  * size, and that its checksum is right (every copy is read back). A copy
@@ -600,6 +615,14 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
  * BD_ERR_DRIVE_GONE, keeps the copies it found good, and marks nothing
  * missing or damaged. */
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+/* Good copies on the drive whose full path at root (NULL: where it is
+ * plugged in, or was last), BRODALF\<database id>\ included, has more
+ * than BD_LONG_PATH characters as Windows counts them. BRODALF writes and
+ * restores them, but File Explorer and programs on a PC without long paths
+ * turned on may not open or copy them by hand, as on another PC. Counted
+ * on every system, as the drive may be read on Windows. -1 on error. */
+#define BD_LONG_PATH 259
+int64_t bd_media_long_paths(bd_catalog *cat, int64_t media_id, const char *root);
 /* Remove the half-written files bd_media_check counted in leftovers: only
  * BRODALF's own .brodalf-tmp files in its folder on the drive, never a
  * copy. *removed is how many went. */
@@ -679,6 +702,16 @@ typedef struct {
      * passphrase was not entered: they wait for it. Everything else was
      * backed up. */
     int64_t files_need_passphrase;
+    /* The copy of the database put on the drive at the end of the backup,
+     * also when it was stopped or another drive went: its revision (0 when
+     * none was). catalog_copy_failed is 1 when it could not be written:
+     * then no copy of the database on the drive knows what this backup
+     * copied, a problem to show as a failed file is. */
+    int64_t catalog_revision;
+    int catalog_copy_failed;
+    /* Good copies on the drive, of this backup and earlier ones, whose full
+     * path there is over BD_LONG_PATH characters (bd_media_long_paths). */
+    int64_t long_paths;
 } bd_backup_stats;
 
 /* The size of the biggest backup drive that counts (not lost or broken,
@@ -852,21 +885,89 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
  * every backup and when a drive is set up. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
 
+/* The newest copy of the database on a connected drive, next to the open
+ * database. Read from the names and file times of the copies there; the
+ * copies themselves are not opened. When two copies of one database were
+ * used separately and both reached the same revision, the second goes
+ * beside the first as catalog-r<revision>-<8 letters and digits>.brodalf:
+ * nothing is overwritten, nothing is skipped. */
+typedef struct {
+    int64_t revision;     /* the newest copy's revision; -1 when the drive has none */
+    int64_t written_ms;   /* when that copy was written to the drive */
+    char *path;           /* that copy (free it); NULL when none */
+    int newer;            /* 1: a later revision than the open database: it may hold changes the open one lacks */
+    int separate;         /* 1: the drive holds two different copies of that revision: two copies of this
+                             database were changed separately */
+    int64_t open_revision;  /* the open database's revision, and when it was saved (0 if not known) */
+    int64_t open_saved_ms;
+} bd_drive_catalog;
+bd_status bd_media_catalog_compare(bd_catalog *cat, int64_t media_id, bd_drive_catalog *out);
+/* 1 if, this session, a copy of the database went beside another copy of
+ * the same revision on that drive (see bd_drive_catalog.separate);
+ * *revision is that revision. */
+int bd_media_copy_clash(bd_catalog *cat, int64_t media_id, int64_t *revision);
+/* Whether the newest copy of the database known to be on the drive opens
+ * with the passphrase (recovery 0) or the recovery key (1) the open
+ * database has now: 1 yes, 0 no: it was written before the last change and
+ * opens with the one the database had then, -1 no copy is known. A drive
+ * gets a copy with the new one at its next backup, or from
+ * bd_catalog_copy_to_media. */
+int bd_media_copy_has_key(bd_catalog *cat, int64_t media_id, int recovery);
+
+/* Whether the drive's ID turned up where it should not, as when a drive is
+ * cloned to another disk: 1 on two disks at once (*root where it is now,
+ * *other_root the other; free them), 2 on a disk with another serial
+ * number than last time, 0 neither. Until bd_media_check reads every copy
+ * on it, its copies do not count (bd_media_info.uncounted 3). */
+int bd_media_suspect(bd_catalog *cat, int64_t media_id, char **root, char **other_root);
+
 /* A drive that is lost or broken (why: "lost" or "broken"). Its copies no
  * longer count toward the copies you want, so the progress toward N full
- * backups drops and the files it held are backed up again to other drives.
+ * backups drops and the current versions of the files it held are backed
+ * up again to other drives; its older versions and deleted files are not
+ * (bd_media_lost_impact).
  * Nothing is backed up to it. Its records stay, so it can be found again. */
 bd_status bd_media_mark_lost(bd_catalog *cat, int64_t media_id, const char *why);
 /* It turned up again (or was marked by mistake): its copies count again. */
 bd_status bd_media_found(bd_catalog *cat, int64_t media_id);
 
+/* What a drive marked lost or broken takes from the older versions and
+ * deleted files. A backup copies only the current versions of files still
+ * in their folders, so these are never backed up again: answered the same
+ * before and after the drive is marked. Of those with a good copy on the
+ * drive: how many, how many have fewer good copies elsewhere than the
+ * copies you want, and how many have none elsewhere. fn gets each other
+ * drive whose copies count and that holds some of them, with how many
+ * (most first); return non-zero to stop. */
+typedef struct {
+    int64_t old_versions, deleted;
+    int64_t old_versions_short, deleted_short;
+    int64_t old_versions_none, deleted_none;
+    int copies_wanted;
+} bd_lost_impact;
+typedef int (*bd_impact_drive_fn)(void *ctx, int64_t media_id, const char *label, int64_t items);
+bd_status bd_media_lost_impact(bd_catalog *cat, int64_t media_id, bd_lost_impact *out, bd_impact_drive_fn fn, void *ctx);
+
 /* A disk at root that is not set up for this catalog, but whose model,
  * serial number and size match a known drive that is not plugged in now
  * and not marked lost or broken: most likely that drive, wiped or
- * reformatted. *media_id is that drive. BD_ERR_NOT_FOUND if none matches
- * or the disk says nothing about itself, BD_ERR_EXISTS if it is set up for
- * this catalog. Nothing is changed. */
+ * reformatted. *media_id is that drive. BD_ERR_NOT_FOUND if none matches,
+ * the disk says nothing about itself or its serial number is known to be
+ * shared by other disks, BD_ERR_EXISTS if it is set up for this catalog.
+ * Nothing is changed. */
 bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_id);
+/* Before a disk at root is set up as a new drive called label: the known
+ * drives it may be, wiped or reformatted, most likely first (up to max in
+ * ids; returns how many). First the one bd_media_match_disk gives, then,
+ * as a disk's hardware often says too little (many USB adapters and card
+ * readers report no serial number), drives not plugged in and not seen for
+ * BD_AWAY_DAYS days, not marked lost or broken, with the same name or
+ * about the same size. Left out: a drive whose serial number tells it
+ * apart from this disk, and one whose last place still holds its ID file
+ * (it is there, only not plugged in as far as this session knows).
+ * Changes nothing: bd_media_erased is the yes. */
+#define BD_AWAY_DAYS 30
+int bd_media_maybe_erased(bd_catalog *cat, const char *root, const char *label, int64_t *ids, int max);
 /* The user said the disk at root is that drive, erased. Every copy
  * recorded on it is marked missing, so the files are backed up again and
  * those copies stop counting; its ID file is written back on the disk (a
@@ -1199,9 +1300,10 @@ typedef struct {
     /* Its copies do not count toward the copies you want: 1 it is on the
      * same physical disk as a backup root (a partition of the PC's own
      * disk), so one disk failure would lose both; 2 its health data says
-     * the disk is failing. 0 they count. As last read: a drive's disk when
-     * it was last plugged in, a root's disk at the first scan since the
-     * catalog was opened. */
+     * the disk is failing; 3 its ID turned up on another disk too, as when
+     * it is cloned (bd_media_suspect), until a check of every copy on it.
+     * 0 they count. As last read: a drive's disk when it was last plugged
+     * in, a root's disk at the first scan since the catalog was opened. */
     int uncounted;
     /* Another drive on the same physical disk (two partitions of one disk):
      * its label, "" if none. Copies on both count as one. */
@@ -1371,6 +1473,13 @@ typedef struct {
     int64_t last_check_ms;      /* when the last check of its copies finished; 0: never */
     char last_check_kind[16];   /* "check" or "read back" */
     char last_check_status[16];
+    /* The newest copy of the database put on it: its revision and when
+     * (0: none known; a drive plugged in now is looked at). When the last
+     * try to put one there failed: when, and the revision it was to be. */
+    int64_t catalog_revision;
+    int64_t catalog_written_ms;
+    int64_t catalog_failed_ms;
+    int64_t catalog_failed_revision;
 } bd_media_status;
 
 bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status *out);

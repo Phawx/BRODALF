@@ -2255,9 +2255,18 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
     {"backup root %p waits for its disk to be plugged in; skipped (nothing marked deleted)",
      N_(L"Backup root %ls waits for its disk to be plugged in, so it was skipped. Nothing in it was marked deleted.")},
     {"backup root %p is there, but %n of the %n files the catalog knows in it are not: left as it was (nothing marked deleted). "
-     "A new PC, or a reinstalled Windows?",
+     "Another folder with the same name?",
      N_(L"Backup root %ls is there, but %ls of the %ls files the database knows in it are not, so it was left as it was. Nothing was "
-        L"marked deleted. A new PC, or a reinstalled Windows?")},
+        L"marked deleted. Is it another folder with the same name?")},
+    {"backup root %p is now at %p: found it there by its files (%n of %n checked)",
+     N_(L"Backup root %ls is now at %ls: BRODALF found its files there (%ls of the %ls it checked).")},
+    {"backup root %p is not where it was, and %n folders hold its files, so none was picked: say where it is now. One is %p "
+     "(%n of %n checked)",
+     N_(L"Backup root %ls is not where it was, and %ls folders hold its files, so BRODALF picked none: say where it is now. One "
+        L"is %ls (%ls of the %ls files it checked are there).")},
+    {"the files of backup root %p are in %p (%n of %n checked): if that is where it is now, point the root there",
+     N_(L"The files of backup root %ls are in %ls (%ls of the %ls BRODALF checked). If that is where it is now, point the backup "
+        L"root there.")},
     {"source file missing, scan again: %p", N_(L"Gone from its folder while backing up; scan again: %ls")},
     {"an older copy is gone from the drive: %p", N_(L"An older copy is gone from the drive: %ls")},
     {"the copy is there again as it was, so it counts again: %p", N_(L"The copy is there again as it was, so it counts again: %ls")},
@@ -2900,9 +2909,13 @@ static DWORD WINAPI worker(LPVOID arg)
         if (not_found > 0)
             say(j, TN(not_found, L" %lld backup root could not be found.", L" %lld backup roots could not be found."), (long long)not_found);
         if (st.roots_emptied)
-            say(j, TN(st.roots_emptied, L" %lld backup root is almost empty, so nothing in it was marked deleted.",
-                      L" %lld backup roots are almost empty, so nothing in them was marked deleted."),
+            say(j, TN(st.roots_emptied, L" %lld backup root's folder does not hold its files, so nothing in it was marked deleted.",
+                      L" %lld backup roots' folders do not hold their files, so nothing in them was marked deleted."),
                 (long long)st.roots_emptied);
+        if (st.roots_found)
+            say(j, TN(st.roots_found, L" %lld backup root was not where it was and was found by its files.",
+                      L" %lld backup roots were not where they were and were found by their files."),
+                (long long)st.roots_found);
         if (st.roots_waiting)
             say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk to be plugged in.",
                       L" %lld backup roots wait for their disks to be plugged in."),
@@ -6098,14 +6111,14 @@ static void update_drives_label(void)
             warn_item *w = warn_add(TONE_BAD, GLYPH_CROSS, key);
             if (!w) break;
             if (g_figs->missing_gone[i] > 0) {
-                swprintf(w->title, 200, T(L"%ls is almost empty"), g_figs->missing_name[i]);
+                swprintf(w->title, 200, T(L"%ls does not hold its files"), g_figs->missing_name[i]);
                 swprintf(w->text, 900, TN(g_figs->missing_gone[i],
-                                          L"Its folder is there, but %lld file BRODALF knows in it is not. A new PC, or a reinstalled "
-                                          L"Windows, makes empty folders under the same names. Nothing is marked deleted. Restore it from "
-                                          L"your backup drives.",
-                                          L"Its folder is there, but %lld files BRODALF knows in it are not. A new PC, or a reinstalled "
-                                          L"Windows, makes empty folders under the same names. Nothing is marked deleted. Restore it from "
-                                          L"your backup drives."),
+                                          L"Its folder is there, but %lld file BRODALF knows in it is not, so it may be another folder "
+                                          L"with the same name. Nothing is marked deleted. Restore it from your backup drives, or say "
+                                          L"where it is now.",
+                                          L"Its folder is there, but %lld files BRODALF knows in it are not, so it may be another folder "
+                                          L"with the same name. Nothing is marked deleted. Restore them from your backup drives, or say "
+                                          L"where they are now."),
                          (long long)g_figs->missing_gone[i]);
                 warn_button(w, 0, WA_RESTORE_ROOT, g_figs->missing_id[i], L"%ls", T(L"Restore it..."));
                 warn_button(w, 1, WA_RELOCATE, g_figs->missing_id[i], L"%ls", T(L"Other choices..."));
@@ -9290,16 +9303,18 @@ static int folder_is_empty(const wchar_t *dir)
     return empty;
 }
 
-/* X:\Users\<name on the old PC>\rest is often %USERPROFILE%\rest here. */
-static int guess_new_place(const wchar_t *old, wchar_t *out, size_t cap)
+/* The folder that holds a backup root's files now, found by them
+ * (bd_source_find): out gets it, found and checked how many of the files
+ * looked at are in it. 0 if no folder holds them. */
+static int guess_new_place(int64_t source_id, wchar_t *out, size_t cap, int64_t *found, int64_t *checked)
 {
-    if (wcslen(old) < 10 || old[1] != L':' || _wcsnicmp(old + 2, L"\\Users\\", 7) != 0) return 0;
-    const wchar_t *rest = wcschr(old + 9, L'\\');
-    wchar_t profile[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
-    if (!n || n >= MAX_PATH) return 0;
-    if (swprintf(out, cap, L"%ls%ls", profile, rest ? rest : L"") < 0) return 0;
-    return _wcsicmp(out, old) != 0 && is_folder(out);
+    char *p = bd_source_find(g_cat, source_id, found, checked, NULL);
+    wchar_t *w = p ? widen(p) : NULL;
+    free(p);
+    int ok = w && wcslen(w) < cap;
+    if (ok) wcscpy(out, w);
+    free(w);
+    return ok;
 }
 
 typedef struct { int64_t id; wchar_t *name, *path; int active, missing, waiting; int64_t gone, total; } source_place;
@@ -9355,22 +9370,25 @@ static int disk_unplugged(const wchar_t *path, wchar_t *disk, size_t cap)
  * waits for its disk. Nothing is scanned here; the caller saves and scans. */
 static int relocate_source(const source_place *sp)
 {
-    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 96], head[512], body[MAX_PATH * 4 + 512], disk[8];
-    int have_guess = guess_new_place(sp->path, guess, MAX_PATH * 4);
+    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 512], disk[8];
+    int64_t guess_found = 0, guess_checked = 0;
+    int have_guess = guess_new_place(sp->id, guess, MAX_PATH * 4, &guess_found, &guess_checked);
     int here = is_folder(sp->path);
     int emptied = here && sp->missing && sp->gone > 0;
     int unplugged = !here && disk_unplugged(sp->path, disk, COUNT_OF(disk));
-    if (emptied) swprintf(head, 512, T(L"\"%ls\" is almost empty"), sp->name);
+    if (emptied) swprintf(head, 512, T(L"\"%ls\" does not hold its files"), sp->name);
     else if (unplugged) swprintf(head, 512, T(L"Plug in the disk with \"%ls\""), sp->name);
-    else if (here) swprintf(head, 512, T(L"Where is \"%ls\" on this PC?"), sp->name);
+    else if (here) swprintf(head, 512, T(L"Where is \"%ls\" now?"), sp->name);
     else swprintf(head, 512, T(L"\"%ls\" cannot be found"), sp->name);
     if (emptied)
-        swprintf(body, MAX_PATH * 4 + 512, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not. A new PC, "
-                                                       L"or a reinstalled Windows, makes empty folders under the same names. Nothing "
-                                                       L"is marked deleted. To get the files back, restore them from your backup drives.",
-                                              L"%ls is there, but %lld of the %lld files BRODALF knows in it are not. A new PC, "
-                                              L"or a reinstalled Windows, makes empty folders under the same names. Nothing "
-                                              L"is marked deleted. To get the files back, restore them from your backup drives."),
+        swprintf(body, MAX_PATH * 4 + 512, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not, so it "
+                                                       L"may be another folder with the same name. Nothing is marked deleted. If the "
+                                                       L"files are somewhere else, choose where. To get them back, restore them from "
+                                                       L"your backup drives.",
+                                              L"%ls is there, but %lld of the %lld files BRODALF knows in it are not, so it "
+                                              L"may be another folder with the same name. Nothing is marked deleted. If the "
+                                              L"files are somewhere else, choose where. To get them back, restore them from "
+                                              L"your backup drives."),
                  sp->path, (long long)sp->gone, (long long)(sp->total > sp->gone ? sp->total : sp->gone));
     else if (unplugged)
         swprintf(body, MAX_PATH * 4 + 512, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
@@ -9391,7 +9409,9 @@ static int relocate_source(const source_place *sp)
                                      L"is back, the next scan backs it up as usual.");
         }
         if (have_guess) {
-            swprintf(guess_btn, MAX_PATH * 4 + 96, T(L"Use %ls\nThe same folder in your user folder on this PC"), guess);
+            swprintf(guess_btn, MAX_PATH * 4 + 256, TN(guess_checked, L"Use %ls\nBRODALF found %lld of the %lld file it checked there",
+                                                       L"Use %ls\nBRODALF found %lld of the %lld files it checked there"),
+                     guess, (long long)guess_found, (long long)guess_checked);
             b[n].nButtonID = PLACE_GUESS;
             b[n++].pszButtonText = guess_btn;
         }

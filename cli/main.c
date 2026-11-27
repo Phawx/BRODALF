@@ -31,7 +31,7 @@ static void usage(void)
          "  roots    <catalog>                         list the backup roots\n"
          "  root-stop   <catalog> <root>               stop backing up a root (its copies stay and still restore)\n"
          "  root-resume <catalog> <root>               back a stopped root up again\n"
-         "  root-move   <catalog> <root> <folder>      the root is somewhere else now (a new PC, another drive letter)\n"
+         "  root-move   <catalog> <root> <folder>      the root is somewhere else now (another user name, drive letter)\n"
          "  scan     <catalog> [--bitrot] [--accept ROOT/PATH]... [--shadow-copy] [--gone ROOT]...\n"
          "                                             record files, sizes and checksums; --bitrot also reads\n"
          "                                             unchanged files to find ones damaged on this PC. Those\n"
@@ -39,10 +39,13 @@ static void usage(void)
          "                                             right again, or --accept records one as changed on purpose.\n"
          "                                             --shadow-copy (Windows, as administrator): files in use\n"
          "                                             by another program are read from a shadow copy of\n"
-         "                                             their drive instead of being skipped. A root that is there\n"
-         "                                             but almost empty (a new PC) is left as it was: restore it,\n"
-         "                                             or if its files really were deleted, --gone ROOT marks them\n"
-         "                                             deleted\n"
+         "                                             their drive instead of being skipped. A root that is not\n"
+         "                                             where it was is looked for by its files (under your home\n"
+         "                                             folder, on other drive letters) and scanned where one\n"
+         "                                             folder holds them. A root whose folder is there but holds\n"
+         "                                             other files, or none, is left as it was: say where it is,\n"
+         "                                             restore it, or if its files really were deleted, --gone\n"
+         "                                             ROOT marks them deleted\n"
          "  deleted  <catalog> [--new] [--root NAME]   files deleted from their folders, and the drives holding them\n"
          "  deleted-ack    <catalog> <root> <path> | --all\n"
          "                                             mark deleted files as seen; they stay in the catalog\n"
@@ -120,7 +123,7 @@ static void usage(void)
          "                                             which drives a restore needs, in order\n"
          "  export   <catalog> <file.csv>              every file and the drives holding it, for a spreadsheet\n"
          "\n"
-         "A new PC, passphrases and settings\n"
+         "A lost database, passphrases and settings\n"
          "  recover  <drive>... <new catalog> [--id ID]\n"
          "                                             start again from the newest catalog copy on the drives\n"
          "                                             (or give one catalog copy file instead of drives)\n"
@@ -611,9 +614,12 @@ static int drive_gone(bd_catalog *cat)
 
 /* ---- Printing ------------------------------------------------------------ */
 
+/* ctx: the catalog, to say where a missing root's files are. */
 static int print_source(void *ctx, const bd_source_info *s)
 {
-    (void)ctx;
+    bd_catalog *cat = ctx;
+    int64_t found = 0, checked = 0;
+    char *there = cat && s->active && s->missing ? bd_source_find(cat, s->source_id, &found, &checked, NULL) : NULL;
     if (g_json) {
         J_OBJ(NULL);
         j_int("id", s->source_id);
@@ -623,15 +629,22 @@ static int print_source(void *ctx, const bd_source_info *s)
         j_int("bytes", s->bytes_total);
         j_bool("backed_up", s->active);
         j_bool("missing", s->missing);
+        if (there) j_str("files_found_in", there);
         j_int("last_scan_ms", s->last_scan_ms);
         J_END();
+        free(there);
         return 0;
     }
     char size[32], when[32] = "never";
     human_bytes(s->bytes_total, size, sizeof(size));
     if (s->last_scan_ms) format_day(s->last_scan_ms, when, sizeof(when));
     printf("%-20s %8lld files %-10s scanned %-16s %s%s%s\n", s->name, (long long)s->files_total, size, when, s->path,
-           s->active ? "" : "  [stopped: not backed up]", s->missing ? "  [not found at the last scan]" : "");
+           s->active ? "" : "  [stopped: not backed up]",
+           !s->missing ? "" : s->files_gone > 0 ? "  [its folder holds other files]" : "  [not found at the last scan]");
+    if (there)
+        printf("%-20s its files are in %s (%lld of %lld checked): root-move points it there\n", "", there, (long long)found,
+               (long long)checked);
+    free(there);
     return 0;
 }
 
@@ -1387,7 +1400,8 @@ static int missing_root_cb(void *ctx, const bd_source_info *s)
 {
     if (!s->missing) return 0;
     (*(int *)ctx)++;
-    fprintf(msg_out(), "  %s was at %s, which is not on this PC\n", s->name, s->path);
+    fprintf(msg_out(), s->files_gone > 0 ? "  %s: the folder at %s holds other files\n" : "  %s was at %s, which is not there now\n",
+            s->name, s->path);
     return 0;
 }
 
@@ -1471,6 +1485,7 @@ static int cmd_recover(int argc, char **argv)
         j_str("catalog", dest);
         j_str("from", f.path);
         j_int("roots_missing", st.roots_missing);
+        j_int("roots_found", st.roots_found);
         j_int("unsafe_paths", unsafe);
         J_END();
     } else {
@@ -1728,7 +1743,7 @@ static int run(int argc, char **argv)
         save = 1;
     } else if (strcmp(cmd, "roots") == 0 || strcmp(cmd, "sources") == 0) {
         if (g_json) J_ARR(NULL);
-        bd_list_sources(cat, print_source, NULL);
+        bd_list_sources(cat, print_source, cat);
         if (g_json) J_END_ARR();
     } else if (strcmp(cmd, "root-stop") == 0 || strcmp(cmd, "root-resume") == 0) {
         if (npos < 1) { usage(); bd_catalog_close(cat); return 1; }
@@ -1787,6 +1802,7 @@ static int run(int argc, char **argv)
             j_int("files_damaged", st.files_damaged);
             j_int("roots_missing", st.roots_missing);
             j_int("roots_emptied", st.roots_emptied);
+            j_int("roots_found", st.roots_found);
             j_int("roots_waiting", st.roots_waiting);
             j_int("roots_stopped", st.roots_stopped);
             j_int("files_cloud_changed", st.files_cloud_changed);
@@ -1807,9 +1823,13 @@ static int run(int argc, char **argv)
                 printf("%lld backup roots were not found and were left as they were: plug in their drive, or say where\n"
                        "they are now with root-move (roots shows which)\n",
                        (long long)(st.roots_missing - st.roots_emptied - st.roots_waiting));
+            if (st.roots_found)
+                printf("%lld backup roots were not where they were and were found by their files (the log says where)\n",
+                       (long long)st.roots_found);
             if (st.roots_emptied)
-                printf("%lld backup roots are there but almost empty (a new PC, or a reinstalled Windows?) and were left as\n"
-                       "they were: restore them, or if their files really were deleted, scan again with --gone ROOT\n",
+                printf("%lld backup roots have a folder that does not hold their files (another folder with the same name?)\n"
+                       "and were left as they were: say where they are with root-move, restore them, or if their files\n"
+                       "really were deleted, scan again with --gone ROOT\n",
                        (long long)st.roots_emptied);
             if (st.roots_waiting)
                 printf("%lld backup roots wait for their disk to be plugged in\n", (long long)st.roots_waiting);

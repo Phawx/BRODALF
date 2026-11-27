@@ -1110,14 +1110,17 @@ int64_t bd_media_long_paths(bd_catalog *cat, int64_t media_id, const char *root)
 void bd_log_long_paths(bd_log_fn log, void *log_ctx, int64_t n, const char *label)
 {
     if (n <= 0) return;
-    if (label)
-        bd_logf(log, log_ctx, "%lld copies on \"%s\" have a full path there of more than 259 characters: File Explorer and some "
-                              "other programs may not open or copy them by hand, but BRODALF restores them as usual",
-                (long long)n, label);
+    char on[300];
+    if (label) snprintf(on, sizeof(on), "\"%s\"", label);
+    else snprintf(on, sizeof(on), "the drive");
+    if (n == 1)
+        bd_logf(log, log_ctx, "1 copy on %s has a full path there of more than 259 characters: File Explorer and some "
+                              "other programs may not open or copy it by hand, but BRODALF restores it as usual",
+                on);
     else
-        bd_logf(log, log_ctx, "%lld copies on the drive have a full path there of more than 259 characters: File Explorer and some "
+        bd_logf(log, log_ctx, "%lld copies on %s have a full path there of more than 259 characters: File Explorer and some "
                               "other programs may not open or copy them by hand, but BRODALF restores them as usual",
-                (long long)n);
+                (long long)n, on);
 }
 
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx)

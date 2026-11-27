@@ -2227,7 +2227,7 @@ static SRWLOCK g_report_lock = SRWLOCK_INIT;
  * language shown when it is known. A pattern that comes before another it
  * could be mistaken for (a longer line ending the same way) is the more
  * particular. A line not here keeps its words, with a capital letter. */
-enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS };
+enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS, CL_LONG_PATHS, CL_LONG_PATHS_ON };
 static const struct { const char *pat; const wchar_t *say; int plural; } g_core_lines[] = {
     {"scanning %p", N_(L"Scanning %ls")},
     {"contents changed but size and time did not (damage?): %p", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
@@ -2303,6 +2303,10 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
     {"catalog saved; %n files copied so far", NULL, CL_SAVED_SO_FAR},
     {"the catalog could not be saved during the backup (it is saved at the end): %s",
      N_(L"The database could not be saved during the backup (it is saved at the end): %ls")},
+    {"the catalog could not be copied to \"%s\", so no copy of it there knows what this backup copied: %s",
+     N_(L"The database could not be copied to %ls, so no copy of it there knows what this backup copied: %ls")},
+    {"the catalog could not be copied to the drive, so no copy of it there knows what this backup copied: %s",
+     N_(L"The database could not be copied to the drive, so no copy of it there knows what this backup copied: %ls")},
     {"the catalog could not be copied to the drive: %s", N_(L"The database could not be copied to the drive: %ls")},
     {"the catalog could not be copied to \"%s\": %s", N_(L"The database could not be copied to %ls: %ls")},
     {"the copy on \"%s\" is recorded at a path that could lead outside its folder, so it is not read: %p",
@@ -2351,6 +2355,37 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
     {"the drive stopped answering or was unplugged: the backup stops", N_(L"The drive stopped answering or was unplugged, so the backup stops.")},
     {"the drive stopped answering or was unplugged: nothing on it was marked missing or damaged",
      N_(L"The drive stopped answering or was unplugged. Nothing on it was marked missing or damaged.")},
+    {"\"%s\" stopped answering or was unplugged: nothing more is copied to it",
+     N_(L"%ls stopped answering or was unplugged, so nothing more is copied to it.")},
+    {"\"%s\" already had a different copy of this database at revision %n: two copies of this database were used separately. "
+     "Both stay on the drive, this one beside it under a name of its own",
+     N_(L"%ls already had a different copy of this database at revision %ls: two copies of this database were used separately. "
+        L"Both stay on the drive, this one beside it under a name of its own.")},
+    {"\"%s\" may be a copy of the drive made by cloning it: its copies do not count until a check of every copy on it",
+     N_(L"%ls may be a copy of the drive made by cloning it, so its copies do not count until every copy on it is checked.")},
+    {"\"%s\" is plugged in at %p and at %p at once: one of the two disks is most likely a copy of the other. Its copies do not "
+     "count until a check of every copy on it, with the other one unplugged",
+     N_(L"%ls is plugged in at %ls and at %ls at once: one of the two disks is most likely a copy of the other. Its copies do not "
+        L"count until every copy on it is checked, with the other one unplugged.")},
+    {"its copies count again once every copy on it is checked: enter the passphrase and check it again",
+     N_(L"Its copies count again once every copy on it is checked: enter the passphrase and check it again.")},
+    {"the drive is still plugged in at %p too: unplug the one you do not keep as this drive, then check this one again",
+     N_(L"The drive is still plugged in at %ls too: unplug the one you do not keep as this drive, then check this one again.")},
+    {"every copy on the drive was checked, so what it holds is known: its copies count again",
+     N_(L"Every copy on the drive was checked, so what it holds is known: its copies count again.")},
+    {"%n copy on \"%s\" has a full path there of more than 259 characters: File Explorer and some other programs may not open or "
+     "copy it by hand, but BRODALF restores it as usual",
+     NULL, CL_LONG_PATHS_ON},
+    {"%n copies on \"%s\" have a full path there of more than 259 characters: File Explorer and some other programs may not open or "
+     "copy them by hand, but BRODALF restores them as usual",
+     NULL, CL_LONG_PATHS_ON},
+    {"%n copy on the drive has a full path there of more than 259 characters: File Explorer and some other programs may not open or "
+     "copy it by hand, but BRODALF restores it as usual",
+     NULL, CL_LONG_PATHS},
+    {"%n copies on the drive have a full path there of more than 259 characters: File Explorer and some other programs may not open or "
+     "copy them by hand, but BRODALF restores them as usual",
+     NULL, CL_LONG_PATHS},
+    {"\"%s\" is not at %p, where it was last, but at %p", N_(L"%ls is not at %ls, where it was last, but at %ls.")},
 };
 
 /* What went wrong on a drive (the %e of a line). */
@@ -2377,6 +2412,16 @@ static const wchar_t *core_plural(int which, long long n)
     case CL_UNCOMPRESSED:
         return TN(n, L"Uncompressed: %ls file, %ls changed, %ls could not be.", L"Uncompressed: %ls files, %ls changed, %ls could not be.");
     case CL_MORE_PATHS: return TN(n, L"And %ls more path like those.", L"And %ls more paths like those.");
+    case CL_LONG_PATHS:
+        return TN(n, L"%ls copy on the drive has a full path there of more than 259 characters. File Explorer and some other programs "
+                     L"may not open or copy it by hand, but BRODALF restores it as usual.",
+                  L"%ls copies on the drive have a full path there of more than 259 characters. File Explorer and some other programs "
+                  L"may not open or copy them by hand, but BRODALF restores them as usual.");
+    case CL_LONG_PATHS_ON:
+        return TN(n, L"%ls copy on %ls has a full path there of more than 259 characters. File Explorer and some other programs "
+                     L"may not open or copy it by hand, but BRODALF restores it as usual.",
+                  L"%ls copies on %ls have a full path there of more than 259 characters. File Explorer and some other programs "
+                  L"may not open or copy them by hand, but BRODALF restores them as usual.");
     }
     return L"%ls";
 }

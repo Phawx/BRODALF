@@ -833,10 +833,10 @@ static void bad_names_report(bad_names *b, const char *pattern, bd_walk_err_cb e
                 snprintf(msg, len, "the name \"%s\" in this folder is not valid Unicode, so it cannot be read",
                          b->shown[0] ? b->shown[0] : "?");
             else {
-                size_t o = (size_t)snprintf(msg, len, "%d names in this folder are not valid Unicode, so they cannot be read:", b->n);
+                size_t o = (size_t)snprintf(msg, len, "these names in this folder are not valid Unicode, so they cannot be read:");
                 for (int i = 0; i < 3 && i < b->n && o < len; i++)
                     o += (size_t)snprintf(msg + o, len - o, "%s \"%s\"", i ? "," : "", b->shown[i] ? b->shown[i] : "?");
-                if (b->n > 3 && o < len) snprintf(msg + o, len - o, " and more");
+                if (o < len) snprintf(msg + o, len - o, " (%d in all)", b->n);
             }
             /* Reported against the folder, so the scan treats it as not
              * read in full and marks nothing in it deleted. */

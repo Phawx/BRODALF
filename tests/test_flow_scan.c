@@ -529,6 +529,49 @@ static void test_default_skips_profile_churn(void)
     }
 }
 
+/* C16: in the skip lists, ? is one character, not one byte, and letters
+ * beyond ASCII ignore case where the file system's names do (Windows). */
+static void test_skip_patterns_unicode(void)
+{
+    CHECK(bd_skip_match("f?.txt", "f\xc3\xa9.txt", 0));             /* fé.txt */
+    CHECK(bd_skip_match("a?b", "a\xe6\x97\xa5" "b", 0));             /* a日b */
+    CHECK(!bd_skip_match("a?b", "a\xe6\x97\xa5\xe6\x97\xa5" "b", 0)); /* two characters */
+    CHECK(bd_skip_match("*\xc3\xa9.log", "x\xc3\xa9\xc3\xa9.log", 0));
+    CHECK(bd_skip_match("Photos/?\?/", "Photos/\xc3\xa9t/a.jpg", 0));
+    CHECK(bd_skip_match("REPORT.TXT", "report.txt", 0));
+#ifdef _WIN32
+    CHECK(bd_skip_match("\xc3\x84rger/", "\xc3\xa4rger/brief.txt", 0));          /* Ärger/ and ärger */
+    CHECK(bd_skip_match("*.\xc3\x89T\xc3\x89", "notes.\xc3\xa9t\xc3\xa9", 0)); /* *.ÉTÉ and .été */
+#endif
+}
+
+#ifdef _WIN32
+/* C16: a name that is not valid Unicode is named in the report. */
+static void test_bad_name_named(void)
+{
+    bd_mkdirs(at("bad/Src"));
+    write_file(at("bad/Src/good.txt"), "good");
+    wchar_t w[2048];
+    MultiByteToWideChar(CP_UTF8, 0, at("bad/Src/"), -1, w, 2000);
+    wcscat(w, L"odd\xD800name.txt");
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    if (h == INVALID_HANDLE_VALUE) return;
+    CloseHandle(h);
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("bad/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("bad/Src"), &src), cat);
+    bd_scan_stats ss;
+    log_count lc = {"odd\\uD800name.txt", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(lc.n == 1);
+    CHECK(ss.files_new == 1 && ss.errors >= 1);
+    DeleteFileW(w);
+    bd_catalog_close(cat);
+}
+#endif
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -545,6 +588,10 @@ int main(void)
     test_every_place_listed();
     test_stopped_scan_kept();
     test_default_skips_profile_churn();
+    test_skip_patterns_unicode();
+#ifdef _WIN32
+    test_bad_name_named();
+#endif
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

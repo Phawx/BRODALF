@@ -540,6 +540,14 @@ static void skip_free(skip_list *l)
     l->n = 0;
 }
 
+/* 1 if s has a byte beyond ASCII. */
+static int has_high(const char *s)
+{
+    for (; *s; s++)
+        if ((unsigned char)*s >= 0x80) return 1;
+    return 0;
+}
+
 static void skip_parse(const char *text, skip_list *l)
 {
     l->rules = NULL;
@@ -564,6 +572,12 @@ static void skip_parse(const char *text, skip_list *l)
         while (r.pat[0] == '/') memmove(r.pat, r.pat + 1, strlen(r.pat));
         r.whole_path = anchored || strchr(r.pat, '/') != NULL;
         if (!r.pat[0]) { free(r.pat); continue; }
+        /* Letters beyond ASCII ignore case as the file system's names do
+         * (bd_fold_case): the pattern is folded here, a name when matched. */
+        if (has_high(r.pat)) {
+            char *f = bd_fold_case(r.pat);
+            if (f) { free(r.pat); r.pat = f; }
+        }
         skip_rule *nr = realloc(l->rules, sizeof(skip_rule) * (size_t)(l->n + 1));
         if (!nr) { free(r.pat); continue; }
         l->rules = nr;
@@ -576,28 +590,47 @@ static int lower_c(int c)
     return c >= 'A' && c <= 'Z' ? c + 32 : c;
 }
 
-/* * and ? wildcards, ignoring ASCII case. */
+/* The character after the one s starts (UTF-8). */
+static const char *next_char(const char *s)
+{
+    s++;
+    while ((*s & 0xC0) == 0x80) s++;
+    return s;
+}
+
+/* * and ? wildcards, ignoring ASCII case (and other case where both were
+ * folded); ? is one character, not one byte. */
 static int glob_match(const char *p, const char *s)
 {
     const char *star = NULL, *mark = NULL;
     while (*s) {
         if (*p == '*') { star = p++; mark = s; continue; }
-        if (*p && (*p == '?' || lower_c((unsigned char)*p) == lower_c((unsigned char)*s))) { p++; s++; continue; }
-        if (star) { p = star + 1; s = ++mark; continue; }
+        if (*p == '?') { p++; s = next_char(s); continue; }
+        if (*p && lower_c((unsigned char)*p) == lower_c((unsigned char)*s)) { p++; s++; continue; }
+        if (star) { p = star + 1; s = mark = next_char(mark); continue; }
         return 0;
     }
     while (*p == '*') p++;
     return *p == '\0';
 }
 
-static int skip_one(const skip_list *l, const char *rel, int is_dir)
+/* rel as patterns are matched against it: folded when it has letters
+ * beyond ASCII (*fold gets the copy to free), else rel itself. */
+static const char *skip_key(const char *rel, char **fold)
 {
-    const char *name = strrchr(rel, '/');
-    name = name ? name + 1 : rel;
+    *fold = has_high(rel) ? bd_fold_case(rel) : NULL;
+    return *fold ? *fold : rel;
+}
+
+/* key: from skip_key. */
+static int skip_one_key(const skip_list *l, const char *key, int is_dir)
+{
+    const char *name = strrchr(key, '/');
+    name = name ? name + 1 : key;
     for (int i = 0; i < l->n; i++) {
         const skip_rule *r = &l->rules[i];
         if (r->dir_only && !is_dir) continue;
-        if (glob_match(r->pat, r->whole_path ? rel : name)) return 1;
+        if (glob_match(r->pat, r->whole_path ? key : name)) return 1;
     }
     return 0;
 }
@@ -606,12 +639,15 @@ static int skip_one(const skip_list *l, const char *rel, int is_dir)
 static int skip_any(const skip_list *l, const char *rel, int is_dir)
 {
     if (!l->n) return 0;
-    if (skip_one(l, rel, is_dir)) return 1;
-    char *dir = bd_strdup(rel);
+    char *fold;
+    const char *key = skip_key(rel, &fold);
+    if (skip_one_key(l, key, is_dir)) { free(fold); return 1; }
+    char *dir = bd_strdup(key);
+    free(fold);
     int hit = 0;
     for (char *slash = dir ? strrchr(dir, '/') : NULL; slash && !hit; slash = strrchr(dir, '/')) {
         *slash = '\0';
-        hit = skip_one(l, dir, 1);
+        hit = skip_one_key(l, dir, 1);
     }
     free(dir);
     return hit;
@@ -1189,7 +1225,11 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     }
     if (!st->is_dir && !st->is_file) return 0;
     /* Parent folders on the skip lists were never entered. */
-    if (skip_one(c->skip, rel, st->is_dir) || skip_one(c->own_skip, rel, st->is_dir)) {
+    char *fold = NULL;
+    const char *skey = c->skip->n || c->own_skip->n ? skip_key(rel, &fold) : rel;
+    int skipped = skip_one_key(c->skip, skey, st->is_dir) || skip_one_key(c->own_skip, skey, st->is_dir);
+    free(fold);
+    if (skipped) {
         c->stats->skipped++;
         return st->is_dir ? BD_WALK_SKIP : 0;
     }

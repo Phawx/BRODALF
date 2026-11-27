@@ -1979,14 +1979,31 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
      * and older), which then gets its full path. */
     for (size_t i = 0; i < len; i++) {
         bd_stat_t rst;
-        if (!list[i].path || (bd_path_is_full(list[i].path) && bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
-        int64_t found = 0, checked = 0;
+        int full = list[i].path && bd_path_is_full(list[i].path);
+        if (!list[i].path || (full && bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
+        /* A root that waits for its disk is on that disk: a copy of it
+         * somewhere else is not it. */
+        char wkey[48], wval[8];
+        snprintf(wkey, sizeof(wkey), "wait_disk.%lld", (long long)list[i].id);
+        if (full && bd_setting_get(cat, wkey, wval, sizeof(wval))) continue;
+        int64_t found = 0, checked = 0, sure_found = 0, sure_checked = 0;
         int places = 0;
         char *p = bd_source_find(cat, list[i].id, &found, &checked, &places);
-        if (p && places == 1 && bd_source_relocate(cat, list[i].id, p) == BD_OK) {
-            bd_logf(log, log_ctx, "backup root %s is now at %s: found it there by its files (%lld of %lld checked)",
-                    list[i].path, p, (long long)found, (long long)checked);
+        /* Pointed there without asking only when nearly every file is
+         * there and a few hold their contents; otherwise the user is asked
+         * (the root stays missing, and the window offers the folders). */
+        int sure = p && places == 1 && bd_source_place_sure(cat, list[i].id, p, &sure_found, &sure_checked);
+        if (sure && bd_source_relocate(cat, list[i].id, p) == BD_OK) {
+            bd_logf(log, log_ctx, "backup root %s is now at %s: found it there by its files (%lld of %lld checked, and the "
+                                  "contents of the smallest ones)",
+                    list[i].path, p, (long long)sure_found, (long long)sure_checked);
             stats->roots_found++;
+            /* Where it was, to say so if that folder comes back. */
+            if (full) {
+                char key[48];
+                snprintf(key, sizeof(key), "moved_from.%lld", (long long)list[i].id);
+                bd_setting_set(cat, key, list[i].path);
+            }
             free(list[i].path);
             list[i].path = p;
             continue;
@@ -1995,7 +2012,24 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
             bd_logf(log, log_ctx, "backup root %s is not where it was, and %lld folders hold its files, so none was picked: "
                                   "say where it is now. One is %s (%lld of %lld checked)",
                     list[i].path, (long long)places, p, (long long)found, (long long)checked);
+        else if (p)
+            bd_logf(log, log_ctx, "backup root %s is not where it was. %s holds %lld of the %lld of its files checked, which is "
+                                  "not enough to point the root there without asking: say where it is now",
+                    list[i].path, p, (long long)found, (long long)checked);
         free(p);
+    }
+    /* A root pointed somewhere else by its files whose old folder is back,
+     * holding them: say so, as only one of the two is backed up. */
+    for (size_t i = 0; i < len; i++) {
+        int back = 0;
+        char *old = bd_source_old_place(cat, list[i].id, &back);
+        if (old && back) {
+            stats->roots_back++;
+            bd_logf(log, log_ctx, "the folder backup root %s was in before, %s, is there again and holds its files: only %s "
+                                  "is backed up. If %s is the real one, point the root back there",
+                    list[i].path, old, list[i].path, old);
+        }
+        free(old);
     }
     note_root_disks(cat, list, len);
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);

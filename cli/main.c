@@ -1846,6 +1846,7 @@ static int run(int argc, char **argv)
             j_int("roots_missing", st.roots_missing);
             j_int("roots_emptied", st.roots_emptied);
             j_int("roots_found", st.roots_found);
+            j_int("roots_back", st.roots_back);
             j_int("roots_waiting", st.roots_waiting);
             j_int("roots_stopped", st.roots_stopped);
             j_int("files_cloud_changed", st.files_cloud_changed);
@@ -1869,6 +1870,11 @@ static int run(int argc, char **argv)
             if (st.roots_found)
                 printf("%lld backup roots were not where they were and were found by their files (the log says where)\n",
                        (long long)st.roots_found);
+            if (st.roots_back)
+                printf("%lld backup roots found that way before have their old folder back, holding their files: only one\n"
+                       "is backed up. With root-move, point each root at the one that is real, the old folder or where it\n"
+                       "is now (the log says which)\n",
+                       (long long)st.roots_back);
             if (st.roots_emptied)
                 printf("%lld backup roots have a folder that does not hold their files (another folder with the same name?)\n"
                        "and were left as they were: say where they are with root-move, restore them, or if their files\n"

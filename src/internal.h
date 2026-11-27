@@ -359,6 +359,11 @@ bd_status bd_root_check(bd_catalog *cat, const char *path, int64_t except_id, in
  * the list malloc'd; NULL when out of memory. */
 char **bd_root_candidates(const char *path, const char *home, unsigned drives, int win);
 
+/* 1 if folder surely holds the backup root's files, as bd_source_find
+ * says a root is pointed at one without asking (recover.c); found and
+ * checked get how many of the files checked are there. Reads a few files. */
+int bd_source_place_sure(bd_catalog *cat, int64_t source_id, const char *folder, int64_t *found, int64_t *checked);
+
 /* Remove a catalog setting (scan.c). 0 on success, also when it was not set. */
 int bd_setting_del(bd_catalog *cat, const char *key);
 /* Tests: scan as on a drive whose files have no change time (FAT), so a

@@ -1092,6 +1092,12 @@ static LRESULT CALLBACK dark_lv_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UIN
             if ((GetWindowLongW(h, GWL_STYLE) & LVS_NOCOLUMNHEADER) && cols > 1) {
                 for (int i = ListView_GetTopIndex(h); i <= last; i++) {
                     if (ListView_GetItemState(h, i, LVIS_SELECTED) & LVIS_SELECTED) continue;
+                    /* A heading (words in the first column only, such as a
+                     * long file name) runs across the columns: left whole. */
+                    wchar_t a[2] = L"", v[2] = L"";
+                    ListView_GetItemText(h, i, 0, a, COUNT_OF(a));
+                    ListView_GetItemText(h, i, 1, v, COUNT_OF(v));
+                    if (a[0] && !v[0]) continue;
                     for (int c = 1; c < cols; c++) {
                         RECT sr;
                         if (!ListView_GetSubItemRect(h, i, c, LVIR_BOUNDS, &sr)) continue;
@@ -4134,6 +4140,9 @@ static void rebuild_tree(void)
     free(expanded.k);
     g_tree_building--;
     SendMessageW(g_tree, WM_SETREDRAW, TRUE, 0);
+    /* The selected folder in view (selected while the tree was not
+     * drawing, it could be left scrolled out of sight). */
+    if (TreeView_GetSelection(g_tree)) TreeView_EnsureVisible(g_tree, TreeView_GetSelection(g_tree));
     InvalidateRect(g_tree, NULL, TRUE);
     fill_files(item_ref(TreeView_GetSelection(g_tree)), file_sel);
     if (!g_busy) show_detail();
@@ -5291,9 +5300,8 @@ static LRESULT CALLBACK detail_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT
         return res;
     }
     if (msg == WM_PAINT && g_dark && !g_hc) {
-        /* The dark theme draws its line between the columns over the rows;
-         * a heading (a long file name) runs across both, so it is drawn
-         * again over the line. */
+        /* A heading (a long file name) runs across both columns: drawn
+         * again over any line the dark theme draws between them. */
         LRESULT res = DefSubclassProc(h, msg, wp, lp);
         HDC dc = GetDC(h);
         int top = ListView_GetTopIndex(h), last = top + ListView_GetCountPerPage(h) + 1, n = ListView_GetItemCount(h);

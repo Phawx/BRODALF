@@ -109,17 +109,22 @@ static void usage(void)
          "\n"
          "Finding and restoring files\n"
          "  tree     <catalog> [--drive ROOT]...       the folder tree and what is available\n"
-         "  search   <catalog> <words>...              find files and folders by name, and the drives holding them\n"
+         "  search   <catalog> <words>... [--drive ROOT]...\n"
+         "                                             find files and folders by name, and the drives holding them;\n"
+         "                                             * and ? in a word are wildcards (*.pdf)\n"
          "  versions <catalog> <root> <path> [--drive ROOT]...\n"
          "                                             every version of a file and its copies\n"
-         "  restore  <catalog> <dest> [--root NAME] [--path REL] [--deleted] --drive ROOT...\n"
+         "  restore  <catalog> <dest> [--root NAME] [--path REL] [--deleted] [--keep-both] --drive ROOT...\n"
          "                                             restore files as they are now (or, with --deleted, the\n"
          "                                             deleted ones as last seen); a file whose newest contents\n"
          "                                             were never backed up comes back as the newest version\n"
-         "                                             that was; nothing is overwritten\n"
-         "  restore-version <catalog> <root> <path> <version> <dest folder> --drive ROOT...\n"
+         "                                             that was; nothing is overwritten (--keep-both: a file in\n"
+         "                                             the way gets the restored one beside it, as\n"
+         "                                             \"name (restored <day>).ext\"); the passphrase is asked\n"
+         "                                             after the plain files are back, if files need it\n"
+         "  restore-version <catalog> <root> <path> <version> <dest folder> [--keep-both] --drive ROOT...\n"
          "                                             restore one version of one file\n"
-         "  restore-plan <catalog> [--root NAME] [--path REL] [--dest DIR] [--deleted] [--drive ROOT]...\n"
+         "  restore-plan <catalog> [--root NAME] [--path REL] [--dest DIR] [--deleted] [--keep-both] [--drive ROOT]...\n"
          "                                             which drives a restore needs, in order\n"
          "  export   <catalog> <file.csv>              every file and the drives holding it, for a spreadsheet\n"
          "\n"
@@ -1387,6 +1392,8 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
         j_int("files_failed", rs->files_failed);
         j_int("files_conflict", rs->files_conflict);
         j_int("files_older_version", rs->files_older_version);
+        j_int("files_beside", rs->files_beside);
+        j_int("files_cannot_write", rs->files_cannot_write);
         J_ARR("conflicts");
         bd_list_restore_conflicts(cat, print_conflict, &conflicts);
         J_END_ARR();
@@ -1400,13 +1407,21 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
     if (rs->files_older_version)
         printf("%lld files came back as an older version: their newest contents were never backed up"
                " (each is named above)\n", (long long)rs->files_older_version);
+    if (rs->files_beside)
+        printf("%lld files were restored beside another file already where they go, as \"name (restored <day>)\""
+               " (each is named above)\n", (long long)rs->files_beside);
+    if (rs->files_cannot_write)
+        printf("%lld files could not be written where they go (each is named above, with why); no other drive"
+               " would help\n", (long long)rs->files_cannot_write);
     if (rs->files_need_passphrase)
-        printf("%lld files are on encrypted drives and need the passphrase\n", (long long)rs->files_need_passphrase);
+        printf("%lld files are only on encrypted copies: run the same restore again with the passphrase (from a"
+               " terminal, or with BRODALF_PASSPHRASE set) to restore them too\n", (long long)rs->files_need_passphrase);
     if (rs->files_offline) puts("run the same restore again with the other drives (restore-plan says which); what is there is kept");
     if (rs->files_conflict) {
         printf("%lld files were left alone because another file is already where they would go:\n", (long long)rs->files_conflict);
         bd_list_restore_conflicts(cat, print_conflict, &conflicts);
-        puts("nothing was overwritten; move those aside and run the restore again to get the backed-up ones");
+        puts("nothing was overwritten; move those aside and run the restore again to get the backed-up ones, or run it"
+             " with --keep-both to restore each beside the one there");
     }
 }
 
@@ -1985,6 +2000,7 @@ static int run(int argc, char **argv)
         if (g_json) J_END();
     } else if (strcmp(cmd, "search") == 0) {
         if (npos < 1) { usage(); bd_catalog_close(cat); return 1; }
+        if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
         char text[1024] = "";
         for (int i = 0; i < npos; i++)
             snprintf(text + strlen(text), sizeof(text) - strlen(text), "%s%s", i ? " " : "", pos[i]);
@@ -1994,6 +2010,7 @@ static int run(int argc, char **argv)
         if (g_json) J_END_ARR();
         if (s != BD_OK) return die(cat, "search failed");
         if (!found && !g_json) puts("nothing matches");
+        save = 1;
     } else if (strcmp(cmd, "target") == 0) {
         bd_target t;
         bd_target_get(cat, &t);
@@ -2471,33 +2488,91 @@ static int run(int argc, char **argv)
         int one = strcmp(cmd, "restore-version") == 0;
         if (npos < (one ? 4 : 1)) { usage(); bd_catalog_close(cat); return 1; }
         if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }
-        if (ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
-        bd_restore_stats rs;
-        bd_status s;
+        /* The passphrase is asked only when files need it, after the
+         * plain ones are back; BRODALF_PASSPHRASE unlocks from the start. */
+        if (getenv("BRODALF_PASSPHRASE") && ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
+        bd_restore_opts ro;
+        memset(&ro, 0, sizeof(ro));
+        ro.deleted_only = has_flag(argc, argv, "--deleted");
+        ro.keep_both = has_flag(argc, argv, "--keep-both");
+        const char *dest = one ? pos[3] : pos[0];
+        int64_t source_id = 0, version_id = 0;
         if (one) {
-            int64_t source_id = source_id_by_name(cat, pos[0]), node_id = 0;
+            int64_t node_id = 0;
+            source_id = source_id_by_name(cat, pos[0]);
             if (!source_id) { bd_catalog_close(cat); return 1; }
             if (bd_find_node(cat, source_id, pos[1], &node_id) != BD_OK) return die(cat, "cannot find the file");
             find_version_ctx fv = {atoi(pos[2][0] == 'v' ? pos[2] + 1 : pos[2]), 0};
             bd_list_copies(cat, node_id, find_version_cb, &fv);
             if (!fv.version_id) return refuse(cat, "the file has no such version (versions lists them)");
-            s = bd_restore_version(cat, fv.version_id, pos[3], &rs, log_line, NULL);
+            version_id = fv.version_id;
         } else {
-            int64_t source_id = root_opt(cat, argc, argv);
+            source_id = root_opt(cat, argc, argv);
             if (source_id < 0) { bd_catalog_close(cat); return 1; }
-            bd_restore_opts ro = {has_flag(argc, argv, "--deleted")};
-            int64_t need = 0, freeb = -1;
-            if (bd_restore_room(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, 0, &need, &freeb) == BD_OK && freeb >= 0 &&
-                need > freeb) {
-                char a[32], b[32];
-                human_bytes(need, a, sizeof(a));
-                human_bytes(freeb, b, sizeof(b));
-                fprintf(stderr, "warning: this restore needs %s, but only %s is free there: it stops with errors once the disk is full\n", a, b);
+        }
+        /* Into a backup root, what comes back is backed up again as new
+         * files; among a drive's copies it does not belong at all. */
+        char *what = NULL;
+        int odd = bd_restore_dest_check(cat, source_id, dest, &what);
+        if (odd == 1)
+            fprintf(stderr, "warning: %s is in the backup root %s: what is restored there is backed up again as new files\n",
+                    dest, what ? what : "");
+        if (odd == 2) {
+            fprintf(stderr, "brodalf: %s is in a backup drive's BRODALF folder, among the copies: restore somewhere else,"
+                            " or add --yes to restore there anyway\n", dest);
+            if (!has_flag(argc, argv, "--yes")) { free(what); bd_catalog_close(cat); return 1; }
+        }
+        free(what);
+        int64_t need = 0, freeb = -1;
+        if (bd_restore_room(cat, one ? 0 : source_id, opt(argc, argv, "--path"), dest, &ro, version_id, &need, &freeb) == BD_OK &&
+            freeb >= 0 && need > freeb) {
+            char a[32], b[32];
+            human_bytes(need, a, sizeof(a));
+            human_bytes(freeb, b, sizeof(b));
+            fprintf(stderr, "warning: this restore needs %s, but only %s is free there: it stops once the disk is full,"
+                            " and keeps what it restored\n", a, b);
+        }
+        bd_restore_stats rs, more;
+        bd_status s = one ? bd_restore_version_ex(cat, version_id, dest, &ro, &rs, log_line, NULL)
+                          : bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), dest, &ro, &rs, log_line, NULL);
+        /* The plain files are back; the rest waits for the passphrase. */
+        if (s == BD_OK && rs.files_need_passphrase && !bd_catalog_is_unlocked(cat)) {
+            if (isatty(fileno(stdin))) {
+                char pass[512];
+                fprintf(stderr, "%lld %s only on encrypted copies.\n", (long long)rs.files_need_passphrase,
+                        rs.files_need_passphrase == 1 ? "file is" : "files are");
+                int got = read_secret("Passphrase to restore them (Enter to leave them out): ", pass, sizeof(pass)) == 0 && pass[0];
+                bd_status u = got ? bd_catalog_unlock(cat, pass) : BD_ERR_PASSPHRASE;
+                memset(pass, 0, sizeof(pass));
+                if (got && u != BD_OK) fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+                if (u == BD_OK) {
+                    s = one ? bd_restore_version_ex(cat, version_id, dest, &ro, &more, log_line, NULL)
+                            : bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), dest, &ro, &more, log_line, NULL);
+                    /* One report for both: what the first run restored the
+                     * second found already there. */
+                    more.files_already_there -= rs.files_restored;
+                    if (more.files_already_there < 0) more.files_already_there = 0;
+                    more.files_restored += rs.files_restored;
+                    more.bytes_restored += rs.bytes_restored;
+                    more.files_beside += rs.files_beside;
+                    more.files_older_version += rs.files_older_version;
+                    rs = more;
+                }
             }
-            s = bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, &rs, log_line, NULL);
         }
         if (s == BD_ERR_CANCELLED) return stopped(cat, "restore (run the same restore again to carry on)");
         if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
+        if (s == BD_ERR_IO) {
+            /* Where it goes is full or cannot be written: not a fault in
+             * BRODALF, so no error report. */
+            print_restore_stats(cat, &rs);
+            clear_progress();
+            fprintf(stderr, "brodalf: %s\n", bd_catalog_error(cat));
+            if (bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
+            g_cat = NULL;
+            bd_catalog_close(cat);
+            return 1;
+        }
         if (s != BD_OK) return die(cat, "restore failed");
         print_restore_stats(cat, &rs);
         if (rs.files_failed || rs.files_no_copy || rs.files_offline || rs.files_need_passphrase || rs.files_conflict)
@@ -2509,11 +2584,17 @@ static int run(int argc, char **argv)
         if (source_id < 0) { bd_catalog_close(cat); return 1; }
         int64_t total = 0, none = 0;
         int steps = 0;
-        bd_restore_opts ro = {has_flag(argc, argv, "--deleted")};
+        bd_restore_opts ro;
+        memset(&ro, 0, sizeof(ro));
+        ro.deleted_only = has_flag(argc, argv, "--deleted");
+        ro.keep_both = has_flag(argc, argv, "--keep-both");
         if (g_json) { J_OBJ(NULL); J_ARR("drives"); }
         else puts("plug these in, in this order:");
-        bd_status s = bd_restore_plan_ex(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro,
-                                         print_plan_step, &steps, &total, &none);
+        bd_restore_counts counts;
+        bd_status s = bd_restore_plan_counts(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro,
+                                             print_plan_step, &steps, &counts);
+        total = counts.files;
+        none = counts.files_no_copy;
         int64_t need = 0, freeb = -1;
         if (s == BD_OK && opt(argc, argv, "--dest"))
             s = bd_restore_room(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro, 0, &need, &freeb);
@@ -2521,13 +2602,28 @@ static int run(int argc, char **argv)
             J_END_ARR();
             j_int("files", total);
             j_int("files_no_copy", none);
-            if (opt(argc, argv, "--dest")) { j_int("bytes_needed", need); j_int("bytes_free", freeb); }
+            if (opt(argc, argv, "--dest")) {
+                j_int("files_to_compare", counts.files_to_compare);
+                j_int("files_in_the_way", counts.files_in_the_way);
+                j_int("files_already_there", counts.files_checked);
+                j_int("bytes_needed", need);
+                j_int("bytes_free", freeb);
+            }
             J_END();
         }
         if (s != BD_OK) return die(cat, "cannot plan the restore");
         if (!g_json) {
             if (!steps) puts("  (nothing to plug in)");
             printf("%lld files to restore, %lld with no copy anywhere\n", (long long)total, (long long)none);
+            if (counts.files_to_compare)
+                printf("%lld of them already have a file of the same size where they go: the restore compares each,"
+                       " and leaves it be when it is the same\n", (long long)counts.files_to_compare);
+            if (counts.files_in_the_way)
+                printf("%lld of them have another file (or a folder) where they go: %s\n", (long long)counts.files_in_the_way,
+                       ro.keep_both ? "each is restored beside it" : "left alone and listed, or use --keep-both");
+            if (counts.files_checked)
+                printf("%lld files are already there: this restore compared them before, and they have not changed since\n",
+                       (long long)counts.files_checked);
             if (freeb >= 0 && need > freeb) {
                 char a[32], b[32];
                 human_bytes(need, a, sizeof(a));

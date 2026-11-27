@@ -1,5 +1,6 @@
-/* The recovery sheet and the list of newest copies beside each database copy
- * (flow review of 0.14.0, D1): restoring by hand from a plain drive. */
+/* Flow review of 0.14.0, the coordinator's part: the recovery sheet and the
+ * list of newest copies beside each database copy (D1: restoring by hand
+ * from a plain drive), and which drive helps the files at risk (C8). */
 #include "brodalf.h"
 #include "internal.h"
 
@@ -293,23 +294,121 @@ static void test_sheet_text(void)
     bd_catalog_close(cat);
 }
 
+/* ---- C8: which drive helps the files at risk ----------------------------- */
+
+static int fake_hw(const char *root, bd_drive_hw *hw)
+{
+    memset(hw, 0, sizeof(*hw));
+    hw->disk_bytes = -1;
+    static const struct { const char *mark, *model, *serial, *health; int64_t bytes; } disks[] = {
+        {"disk-SAME", "WD Elements", "WX51A2345", "good", 2000398934016},
+        {"disk-OTHER", "Seagate Expansion", "NAB1C2D3", "good", 4000787030016},
+        {"disk-ROOT", "Samsung SSD 980", "S64DNX0R123", "good", 1000204886016},
+        {"disk-FAIL", "Toshiba Canvio", "Z8T4P1QXA", "failing", 1000204886016},
+    };
+    for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
+        if (!strstr(root, disks[i].mark)) continue;
+        snprintf(hw->model, sizeof(hw->model), "%s", disks[i].model);
+        snprintf(hw->serial, sizeof(hw->serial), "%s", disks[i].serial);
+        snprintf(hw->health, sizeof(hw->health), "%s", disks[i].health);
+        hw->disk_bytes = disks[i].bytes;
+        return 0;
+    }
+    return -1;
+}
+
+typedef struct { int n; int64_t ids[16]; } help_list;
+
+static int help_cb(void *ctx, const bd_risk_help *h)
+{
+    help_list *l = ctx;
+    if (l->n < 16) l->ids[l->n++] = h->media_id;
+    return 0;
+}
+
+static int helps(const help_list *l, int64_t id)
+{
+    for (int i = 0; i < l->n; i++) if (l->ids[i] == id) return 1;
+    return 0;
+}
+
+static void test_risk_help(void)
+{
+    for (int i = 0; i < 3; i++) {
+        char rel[64], text[64];
+        snprintf(rel, sizeof(rel), "help/disk-ROOT/Docs/f%d.txt", i);
+        snprintf(text, sizeof(text), "doc %d", i);
+        write_file(at(rel), text);
+    }
+    bd_mkdirs(at("help/disk-SAME-p1"));
+    bd_mkdirs(at("help/disk-SAME-p2"));
+    bd_mkdirs(at("help/disk-OTHER"));
+    bd_mkdirs(at("help/disk-ROOT-backup"));
+    bd_mkdirs(at("help/disk-FAIL"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("help/db.brodalf"), &cat), NULL);
+    bd_target t;
+    memset(&t, 0, sizeof(t));
+    t.copies = 2;
+    t.places = 1;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    int64_t src, p1, p2, other, own, fail;
+    REQUIRE_OK(bd_source_add(cat, at("help/disk-ROOT/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("help/disk-SAME-p1"), "Blue 1", 0, &p1), cat);
+    REQUIRE_OK(bd_media_init(cat, at("help/disk-SAME-p2"), "Blue 2", 0, &p2), cat);
+    REQUIRE_OK(bd_media_init(cat, at("help/disk-ROOT-backup"), "Spare partition", 0, &own), cat);
+    REQUIRE_OK(bd_media_init(cat, at("help/disk-FAIL"), "Old", 0, &fail), cat);
+    REQUIRE_OK(bd_media_init(cat, at("help/disk-OTHER"), "Red", 0, &other), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, p1, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+
+    /* Only Red would add a copy that counts: Blue 2 is the same disk as
+     * Blue 1, the spare partition is the files' own disk, and Old is
+     * failing. 0.14.0 suggested all four. */
+    help_list l;
+    memset(&l, 0, sizeof(l));
+    REQUIRE_OK(bd_list_risk_help(cat, help_cb, &l), cat);
+    CHECK(helps(&l, other));
+    CHECK(!helps(&l, p2));
+    CHECK(!helps(&l, own));
+    CHECK(!helps(&l, fail));
+    CHECK(!helps(&l, p1));
+    bd_risk_help best;
+    REQUIRE_OK(bd_suggest_drive(cat, &best), cat);
+    CHECK(best.media_id == other);
+
+    /* Once Red has them, nothing is short and no drive is suggested. */
+    REQUIRE_OK(bd_backup(cat, other, 0, &bs, quiet, NULL), cat);
+    memset(&l, 0, sizeof(l));
+    REQUIRE_OK(bd_list_risk_help(cat, help_cb, &l), cat);
+    CHECK(l.n == 0);
+    CHECK(bd_suggest_drive(cat, &best) == BD_ERR_NOT_FOUND);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
     bd_temp_dir(tmp, sizeof(tmp));
     bd_uuid_v4(id);
-    snprintf(base, sizeof(base), "%s/brodalf-flow-sheet-%.8s", tmp, id);
+    snprintf(base, sizeof(base), "%s/brodalf-flow-main-%.8s", tmp, id);
     for (char *p = base; *p; p++) if (*p == '\\') *p = '/';
     bd_mkdirs(base);
     printf("working in %s\n", base);
 
+    bd_test_hw_read = fake_hw;
+
     test_newest_list();
     test_sheet_text();
+    test_risk_help();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    printf("all recovery sheet checks passed\n");
+    printf("all flow review checks passed\n");
     return 0;
 }

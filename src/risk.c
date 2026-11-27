@@ -273,9 +273,11 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
     bd_target t;
     bd_target_get(cat, &t);
     sqlite3_stmt *q;
-    /* A medium helps a file when it holds no good copy of the current
-     * version yet, and the file either needs more copies or is missing
-     * the medium's place. */
+    /* A medium helps a file when its copy there would count: the medium
+     * itself counts (not lost or broken, not on a backup root's disk, not
+     * failing: temp.uncounted), and neither it nor another drive on its
+     * physical disk holds a good copy of the current version yet; and the
+     * file either needs more copies or is missing the medium's place. */
     if (sqlite3_prepare_v2(cat->db,
                            FILES_CTE "SELECT m.id, m.label, m.kind, COALESCE(m.location,''),"
                                      " EXISTS(SELECT 1 FROM temp.connected k WHERE k.media_id=m.id),"
@@ -283,8 +285,10 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
                                      " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
                                      " FROM media m JOIN r"
                                      " WHERE m.kind='drive' AND m.retired_ms IS NULL AND m.secondary=0 AND r.oo=0"
-                                     " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=r.v"
-                                     "   AND c.media_id=m.id AND c.state='ok')"
+                                     " AND NOT EXISTS(SELECT 1 FROM temp.uncounted uc WHERE uc.media_id=m.id)"
+                                     " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=r.v AND c.state='ok'"
+                                     "   AND (c.media_id=m.id OR (" BD_SQL_COUNTS("c") " AND " BD_SQL_DISK("c.media_id") "="
+                                     BD_SQL_DISK("m.id") ")))"
                                      " AND (r.cp<?1 OR NOT EXISTS(SELECT 1 FROM copies c JOIN media m2 ON m2.id=c.media_id"
                                      "   WHERE c.version_id=r.v AND c.state='ok' AND " BD_SQL_COUNTS("c")
                                      "   AND " PLACE("m2") "=" PLACE("m") "))"

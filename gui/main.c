@@ -4998,6 +4998,8 @@ static const wchar_t *replace_advice(const drive_snap *d)
     return NULL;
 }
 
+static const wchar_t *count_note(const drive_snap *d, wchar_t *buf, size_t n);
+
 /* "WD Elements 25A3, 4.0 TB, USB" and the rest of what the disk said. */
 static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent)
 {

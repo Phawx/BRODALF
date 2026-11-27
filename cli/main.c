@@ -1714,8 +1714,39 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
 
 /* ---- Recovering a lost catalog -------------------------------------------- */
 
-/* The newest copy across every drive given; more than one catalog needs --id. */
-typedef struct { int n, catalogs; const char *want; char id[64]; char path[4096]; int64_t revision, saved_ms; } copies_found;
+/* Every copy of the catalog on the drives given, to try newest first; more
+ * than one catalog needs --id. */
+typedef struct { char path[4096]; int64_t revision, saved_ms; } copy_try;
+typedef struct {
+    int n, catalogs;
+    const char *want;
+    char id[64];
+    copy_try *tries;
+    int ntries, cap;
+} copies_found;
+
+static void add_try(copies_found *f, const bd_catalog_copy_info *c)
+{
+    for (int i = 0; i < f->ntries; i++)
+        if (strcmp(f->tries[i].path, c->path) == 0) return;
+    if (f->ntries == f->cap) {
+        int cap = f->cap ? f->cap * 2 : 16;
+        copy_try *more = realloc(f->tries, (size_t)cap * sizeof(copy_try));
+        if (!more) return;
+        f->tries = more;
+        f->cap = cap;
+    }
+    copy_try *t = &f->tries[f->ntries++];
+    snprintf(t->path, sizeof(t->path), "%s", c->path);
+    t->revision = c->revision;
+    t->saved_ms = c->saved_ms;
+}
+
+static int revision_cb(void *ctx, const bd_catalog_copy_info *c)
+{
+    add_try(ctx, c);
+    return 0;
+}
 
 static int copies_cb(void *ctx, const bd_catalog_copy_info *c)
 {
@@ -1724,6 +1755,7 @@ static int copies_cb(void *ctx, const bd_catalog_copy_info *c)
     if (f->n && strcmp(f->id, c->catalog_id) != 0) f->catalogs = 2;
     else if (!f->catalogs) f->catalogs = 1;
     f->n++;
+    snprintf(f->id, sizeof(f->id), "%s", c->catalog_id);
     if (g_json) {
         J_OBJ(NULL);
         j_str("catalog_id", c->catalog_id);
@@ -1736,11 +1768,25 @@ static int copies_cb(void *ctx, const bd_catalog_copy_info *c)
         format_day(c->saved_ms, when, sizeof(when));
         fprintf(msg_out(), "  catalog %s: revision %lld, saved %s (%s)\n", c->catalog_id, (long long)c->revision, when, c->path);
     }
-    if (f->n > 1 && (c->revision < f->revision || (c->revision == f->revision && c->saved_ms <= f->saved_ms))) return 0;
-    snprintf(f->id, sizeof(f->id), "%s", c->catalog_id);
-    snprintf(f->path, sizeof(f->path), "%s", c->path);
-    f->revision = c->revision;
-    f->saved_ms = c->saved_ms;
+    /* Its older copies too, to fall back on. */
+    add_try(f, c);
+    char folder[4096];
+    snprintf(folder, sizeof(folder), "%s", c->path);
+    char *cut = strrchr(folder, '/');
+    char *back = strrchr(folder, '\\');
+    if (back && (!cut || back > cut)) cut = back;
+    if (cut) {
+        *cut = '\0';
+        bd_find_catalog_revisions(folder, revision_cb, f);
+    }
+    return 0;
+}
+
+static int newest_first(const void *a, const void *b)
+{
+    const copy_try *x = a, *y = b;
+    if (x->revision != y->revision) return x->revision > y->revision ? -1 : 1;
+    if (x->saved_ms != y->saved_ms) return x->saved_ms > y->saved_ms ? -1 : 1;
     return 0;
 }
 
@@ -1764,6 +1810,7 @@ static int cmd_recover(int argc, char **argv)
     if (npos < 1)
         return refuse(NULL, "recover needs the drive (or the catalog copy) and where to keep the new catalog");
     const char *dest = pos[npos - 1];
+    if (path_exists(dest)) return refuse(NULL, "there is already a file there: give a new name for the recovered catalog");
     copies_found f;
     memset(&f, 0, sizeof(f));
     f.want = opt(argc, argv, "--id");
@@ -1777,7 +1824,8 @@ static int cmd_recover(int argc, char **argv)
     if (g_json) J_OBJ(NULL);
     if (is_file) {
         if (npos > 1) { if (g_json) J_END(); return refuse(NULL, "give one catalog copy, or the drives to look on"); }
-        snprintf(f.path, sizeof(f.path), "%s", from);
+        bd_catalog_copy_info one = {"", from, 0, 0};
+        add_try(&f, &one);
         f.n = 1;
     } else {
         if (g_json) J_ARR("found");
@@ -1789,34 +1837,80 @@ static int cmd_recover(int argc, char **argv)
         if (g_json) J_END_ARR();
         if (f.n == 0) {
             if (g_json) J_END();
+            free(f.tries);
             return refuse(NULL, "no catalog copy was found there: a backup drive keeps them as "
                                 "BRODALF/<catalog id>/catalog-r<revision>.brodalf");
         }
         if (f.catalogs > 1) {
             if (g_json) J_END();
+            free(f.tries);
             return refuse(NULL, "these drives hold copies of more than one catalog: say which with --id ID");
         }
-        if (!g_json && f.n > 1) fprintf(msg_out(), "using the newest, revision %lld\n", (long long)f.revision);
     }
-    bd_status s = bd_catalog_recover(f.path, dest);
-    if (s != BD_OK) {
+    if (!f.ntries) {
         if (g_json) J_END();
-        return die(NULL, "cannot recover the catalog");
+        return die(NULL, "cannot list the catalog copies");
     }
-    bd_applog("recovered the catalog from %s to %s", f.path, dest);
+    /* Newest first, across every drive; when one does not open, the half-made
+     * catalog is removed and the next older one is tried. */
+    qsort(f.tries, (size_t)f.ntries, sizeof(copy_try), newest_first);
     bd_catalog *cat = NULL;
-    if (bd_catalog_file_needs_passphrase(dest)) {
-        char pass[512];
-        if (get_passphrase(pass, sizeof(pass)) != 0) { if (g_json) J_END(); return 1; }
-        s = bd_catalog_open_with(dest, pass, &cat);
-        memset(pass, 0, sizeof(pass));
-    } else {
-        s = bd_catalog_open(dest, &cat);
+    char secret[512] = "";
+    int have_secret = 0, wrong = 0;
+    const copy_try *used = NULL;
+    bd_status s = BD_OK;
+    for (int i = 0; i < f.ntries && !cat; i++) {
+        const copy_try *t = &f.tries[i];
+        if (i > 0 && !g_json)
+            fprintf(msg_out(), "trying an older copy: revision %lld (%s)\n", (long long)t->revision, t->path);
+        s = bd_catalog_recover(t->path, dest);
+        if (s == BD_OK && bd_catalog_file_needs_passphrase(dest)) {
+            if (!have_secret) {
+                if (g_recovery && !bd_catalog_file_has_recovery_key(dest)) {
+                    remove_made(dest);
+                    if (g_json) J_END();
+                    free(f.tries);
+                    return refuse(NULL, "this catalog has no recovery key; recover it with the passphrase");
+                }
+                if ((g_recovery ? get_recovery_key(secret, sizeof(secret)) : get_passphrase(secret, sizeof(secret))) != 0) {
+                    remove_made(dest);
+                    if (g_json) J_END();
+                    free(f.tries);
+                    return 1;
+                }
+                have_secret = 1;
+            }
+            s = g_recovery ? bd_catalog_open_with_recovery(dest, secret, &cat) : bd_catalog_open_with(dest, secret, &cat);
+        } else if (s == BD_OK) {
+            s = bd_catalog_open(dest, &cat);
+        }
+        if (s == BD_OK) { used = t; break; }
+        cat = NULL;
+        fprintf(stderr, "brodalf: revision %lld (%s) does not open: %s\n", (long long)t->revision, t->path, bd_open_error());
+        remove_made(dest);
+        /* The same secret again and again: it is wrong, not the copies. */
+        if (s == BD_ERR_PASSPHRASE && ++wrong >= 3) break;
     }
-    if (s != BD_OK) {
+    memset(secret, 0, sizeof(secret));
+    if (!cat) {
         if (g_json) J_END();
-        return die(NULL, "the recovered catalog does not open");
+        free(f.tries);
+        if (s == BD_ERR_PASSPHRASE)
+            return refuse(NULL, g_recovery ? "the recovery key does not open the catalog copies"
+                                           : "the passphrase does not open the catalog copies (a copy has the passphrase it had"
+                                             " when it was made; --recovery-key unlocks with the recovery key instead)");
+        return refuse(NULL, "none of the catalog copies opens: they may all be damaged. Nothing was made");
     }
+    if (g_recovery && bd_catalog_has_passphrase(cat)) said_recovery_key();
+    char from_path[4096];
+    snprintf(from_path, sizeof(from_path), "%s", used->path);
+    int64_t from_rev = used->revision;
+    int fell_back = used != &f.tries[0];
+    free(f.tries);
+    bd_applog("recovered the catalog from %s to %s", from_path, dest);
+    if (fell_back && !g_json)
+        fprintf(msg_out(), "the newer copies did not open, so this is revision %lld: files backed up after it was made are\n"
+                           "not in it, and the next backup copies them again\n", (long long)from_rev);
     /* A catalog from a drive may hold anything: say which of its paths a
      * restore will not write. */
     int64_t unsafe = 0;
@@ -1834,13 +1928,15 @@ static int cmd_recover(int argc, char **argv)
     bd_scan(cat, &st, log_line, NULL);
     if (g_json) {
         j_str("catalog", dest);
-        j_str("from", f.path);
+        j_str("from", from_path);
+        j_int("revision", from_rev);
+        j_bool("older_copy", fell_back);
         j_int("roots_missing", st.roots_missing);
         j_int("roots_found", st.roots_found);
         j_int("unsafe_paths", unsafe);
         J_END();
     } else {
-        printf("recovered the catalog to %s from %s\n", dest, f.path);
+        printf("recovered the catalog to %s from %s\n", dest, from_path);
     }
     int missing = 0;
     bd_list_sources(cat, missing_root_cb, &missing);

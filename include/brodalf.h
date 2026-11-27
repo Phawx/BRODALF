@@ -629,6 +629,10 @@ typedef struct {
     int64_t held_changed;
     int64_t held_deleted;      /* of held_changed, those gone from their folder (the rest changed contents) */
     int mass_change;           /* held_changed is a quarter or more of files_held (at least 50 files) */
+    /* The drive holds fewer than 50 files (a new one, say), so files_held
+     * and the rest are worked out over every drive: files with a good copy
+     * on any drive. bd_list_changed_on_media with media_id 0 lists them. */
+    int held_everywhere;
     /* Of files_to_copy, those too big for the drive's file system (FAT32:
      * 4 GiB or more): they will not fit and are in bytes_short. The file
      * system is read now when the drive is plugged in, else as last seen.
@@ -682,7 +686,7 @@ typedef struct {
     int64_t version_id_on_drive; /* the version the drive holds, to restore it (bd_restore_version) */
 } bd_changed_info;
 typedef int (*bd_changed_fn)(void *ctx, const bd_changed_info *info);
-bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed_fn fn, void *ctx);
+bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed_fn fn, void *ctx); /* media_id 0: every drive */
 
 /* Save the catalog and put a copy of it on the drive as
  * BRODALF/<catalog-uuid>/catalog-r<revision>.brodalf, unless that revision

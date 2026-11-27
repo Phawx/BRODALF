@@ -976,6 +976,7 @@ static void print_preview(const bd_backup_preview_info *p)
         j_int("files_held", p->files_held);
         j_int("held_changed", p->held_changed);
         j_bool("mass_change", p->mass_change);
+        j_bool("held_everywhere", p->held_everywhere);
         j_int("files_too_big", p->files_too_big);
         j_int("bytes_too_big", p->bytes_too_big);
         if (p->too_big_why) j_str("too_big_why", p->too_big_why);
@@ -1009,7 +1010,13 @@ static void print_preview(const bd_backup_preview_info *p)
         printf("of those, %lld file%s (%s) will not fit because %s\n", (long long)p->files_too_big,
                p->files_too_big == 1 ? "" : "s", size, p->too_big_why);
     }
-    if (p->mass_change)
+    if (p->mass_change && p->held_everywhere)
+        printf("WARNING: %lld of the %lld files your drives hold have different contents now or are gone\n"
+               "from their folder, and this drive holds too few of them to tell. That is what ransomware\n"
+               "encrypting your files looks like. If you did not expect it, look at the list first\n"
+               "and restore from your other drives instead of backing up.\n",
+               (long long)p->held_changed, (long long)p->files_held);
+    else if (p->mass_change)
         printf("WARNING: %lld of the %lld files this drive holds have different contents now or are gone\n"
                "from their folder. That is what ransomware encrypting your files looks like. If you did not\n"
                "expect it, look at the list first\n"

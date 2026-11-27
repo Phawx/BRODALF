@@ -5965,7 +5965,12 @@ static void update_drives_label(void)
                     swprintf(key, 80, L"mass:%lld", (long long)d->id);
                     if ((w = warn_add(TONE_BAD, GLYPH_BANG, key)) != NULL) {
                         swprintf(w->title, 200, L"%ls", T(L"Many files changed at once"));
-                        if (del > 0)
+                        if (pv->held_everywhere)
+                            swprintf(w->text, 900,
+                                     TN(chg + del, L"%lld file changed or was deleted since its copies were made, and %ls holds few of your files yet. That can mean ransomware: look at it before you back up to it.",
+                                        L"%lld files changed or were deleted since their copies were made, and %ls holds few of your files yet. That can mean ransomware: look at them before you back up to it."),
+                                     chg + del, name);
+                        else if (del > 0)
                             swprintf(w->text, 900,
                                      TN(del, L"%lld changed and %lld was deleted since the last backup to %ls. That can mean ransomware: look at them before you back up.",
                                         L"%lld changed and %lld were deleted since the last backup to %ls. That can mean ransomware: look at them before you back up."),
@@ -6536,6 +6541,7 @@ enum { TABLE_DRIVES, TABLE_LARGEST, TABLE_DAMAGED, TABLE_CONFLICTS, TABLE_CHANGE
 static wchar_t **g_report;
 static int g_n_report;
 static int64_t g_table_media; /* changed: the drive */
+static int g_table_everywhere; /* changed: the drive holds too few files to tell, so the list is over every drive */
 static void drive_name(const char *label, const char *location, wchar_t *out, size_t cap);
 static int g_table_mode;
 static int64_t g_table_ids[256];
@@ -6845,11 +6851,12 @@ static void table_changed(HWND lv)
     changed_rows t;
     memset(&t, 0, sizeof(t));
     t.lv = lv;
-    bd_list_changed_on_media(g_cat, g_table_media, table_changed_cb, &t);
+    bd_list_changed_on_media(g_cat, g_table_everywhere ? 0 : g_table_media, table_changed_cb, &t);
     g_table_n = t.rows;
     lv_fit_all(lv, 0);
     wchar_t name[600], text[2000], size[64];
-    media_name(g_table_media, name, 600);
+    if (g_table_everywhere) swprintf(name, 600, L"%ls", T(L"your drives"));
+    else media_name(g_table_media, name, 600);
     format_bytes(t.bytes, size, 64);
     swprintf(g_table_empty, 400, T(L"Nothing changed since the copies on %ls were made."), name);
     int64_t changed = t.total - t.deleted;
@@ -7050,6 +7057,11 @@ static int show_changed_as(int64_t media_id, const wchar_t *button)
 static int show_changed(int64_t media_id)
 {
     wchar_t b[200] = L"";
+    /* A new drive holds too few files to compare: the changes since their
+     * copies on any drive were made, as the warning counted them. */
+    bd_backup_preview_info pv;
+    memset(&pv, 0, sizeof(pv));
+    g_table_everywhere = bd_backup_preview(g_cat, media_id, 0, &pv) == BD_OK && pv.held_everywhere;
     drive_list dl = load_drives();
     const drive_snap *d = find_drive(&dl, media_id);
     if (d && d->connected && !d->lost_ms) { /* not plugged in: nothing to back up to now */
@@ -7058,7 +7070,9 @@ static int show_changed(int64_t media_id)
         free(w);
     }
     free(dl.items);
-    return show_changed_as(media_id, b);
+    int r = show_changed_as(media_id, b);
+    g_table_everywhere = 0;
+    return r;
 }
 
 /* Back up to a drive after the user said its changed files are theirs:
@@ -7918,7 +7932,16 @@ static void start_backup(job *b, int offer_scan)
         wchar_t title[700];
         if (pv.mass_change) {
             swprintf(title, 700, T(L"Many files changed at once. Back up to %ls?"), name);
-            if (pv.held_deleted > 0)
+            if (pv.held_everywhere && pv.held_deleted > 0)
+                wadd(&t, TN(pv.held_deleted, L"Of the %lld files whose copies on your drives were up to date, %lld have changed since and %lld "
+                                             L"was deleted.",
+                            L"Of the %lld files whose copies on your drives were up to date, %lld have changed since and %lld "
+                            L"were deleted."),
+                     (long long)pv.files_held, (long long)(pv.held_changed - pv.held_deleted), (long long)pv.held_deleted);
+            else if (pv.held_everywhere)
+                wadd(&t, T(L"%lld of the %lld files whose copies on your drives were up to date have changed since."),
+                     (long long)pv.held_changed, (long long)pv.files_held);
+            else if (pv.held_deleted > 0)
                 wadd(&t, TN(pv.held_deleted, L"Of the %lld files whose copies on this drive were up to date, %lld have changed since and %lld "
                                              L"was deleted.",
                             L"Of the %lld files whose copies on this drive were up to date, %lld have changed since and %lld "
@@ -7927,9 +7950,14 @@ static void start_backup(job *b, int offer_scan)
             else
                 wadd(&t, T(L"%lld of the %lld files whose copies on this drive were up to date have changed since."),
                      (long long)pv.held_changed, (long long)pv.files_held);
-            wadd(&t, L" %ls", T(L"That many at once can mean ransomware encrypted your files.\n\nBacking up overwrites nothing: the copies "
-                               L"already on the drive stay as they are and the changed files go alongside them. If you did not change "
-                               L"these files, look at them first, and restore from this drive instead."));
+            if (pv.held_everywhere)
+                wadd(&t, L" %ls", T(L"That many at once can mean ransomware encrypted your files.\n\nThis drive holds few or none of your files "
+                                   L"yet, so backing up now would put the changed files on it and count them toward your copies. If you did "
+                                   L"not change these files, look at them first, and restore from your other drives instead."));
+            else
+                wadd(&t, L" %ls", T(L"That many at once can mean ransomware encrypted your files.\n\nBacking up overwrites nothing: the copies "
+                                   L"already on the drive stay as they are and the changed files go alongside them. If you did not change "
+                                   L"these files, look at them first, and restore from this drive instead."));
             btn[0].nButtonID = 622;
             btn[0].pszButtonText = T(L"Show the changed files");
             btn[1].nButtonID = 620;
@@ -12218,7 +12246,12 @@ static void fill_next(void)
                 wadd(&t, T(L"\r\nIt copies what the scans found; the oldest scan of your backup roots was %ls."), when);
             } else
                 wadd(&t, T(L"\r\nYour backup roots have not been scanned yet, so there is nothing to copy. Press Scan now."));
-            if (pv.mass_change && pv.held_deleted > 0)
+            if (pv.mass_change && pv.held_everywhere)
+                wadd(&t, T(L"\r\nWarning: %lld of the %lld files whose copies on your drives were up to date have changed or were deleted at "
+                         L"once, and this drive holds too few of them to tell them apart. That can mean ransomware. Look at Changed since "
+                         L"its last backup... before backing up."),
+                     (long long)pv.held_changed, (long long)pv.files_held);
+            else if (pv.mass_change && pv.held_deleted > 0)
                 wadd(&t, TN(pv.held_deleted, L"\r\nWarning: of the %lld files whose copies on this drive were up to date, %lld have changed "
                                              L"and %lld was deleted at once. That can mean ransomware. Look at Changed since its last backup... before backing up.",
                             L"\r\nWarning: of the %lld files whose copies on this drive were up to date, %lld have changed "

@@ -1330,7 +1330,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
  * count. */
 #define HELD_CTE                                                                                        \
     "WITH h AS (SELECT v.node_id AS nid, MAX(v.version_no) AS vno FROM copies c"                        \
-    " JOIN versions v ON v.id=c.version_id WHERE c.media_id=?1 AND c.state='ok' GROUP BY v.node_id)"
+    " JOIN versions v ON v.id=c.version_id WHERE (?1=0 OR c.media_id=?1) AND c.state='ok' GROUP BY v.node_id)"
 
 bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out)
 {
@@ -1385,18 +1385,26 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     /* How much of the drive held, and how much of that changed since. A
      * large share at once is what ransomware encrypting the folders looks
      * like: the user should see the list before backing that up. */
+    /* A new or nearly empty drive holds too few to tell: then the same is
+     * worked out over every drive, so a first backup to a new drive does
+     * not copy encrypted files without a word. */
     if (sqlite3_prepare_v2(cat->db,
                            HELD_CTE " SELECT COUNT(*), COALESCE(SUM(n.deleted<>0 OR hv.id IS NOT n.current_version_id),0), COALESCE(SUM(n.deleted<>0),0)"
                            " FROM h JOIN nodes n ON n.id=h.nid JOIN versions hv ON hv.node_id=h.nid AND hv.version_no=h.vno"
                            " WHERE n.is_dir=0 AND (n.deleted=0 OR n.deleted_ack=0) AND (?2=0 OR n.source_id=?2)"
                            " AND " BD_SQL_ACTIVE("n"),
                            -1, &q, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(q, 1, media_id);
-        sqlite3_bind_int64(q, 2, source_id);
-        if (sqlite3_step(q) == SQLITE_ROW) {
-            out->files_held = sqlite3_column_int64(q, 0);
-            out->held_changed = sqlite3_column_int64(q, 1);
-            out->held_deleted = sqlite3_column_int64(q, 2);
+        for (int everywhere = 0; everywhere < 2; everywhere++) {
+            sqlite3_reset(q);
+            sqlite3_bind_int64(q, 1, everywhere ? 0 : media_id);
+            sqlite3_bind_int64(q, 2, source_id);
+            if (sqlite3_step(q) == SQLITE_ROW && (!everywhere || sqlite3_column_int64(q, 0) >= MASS_CHANGE_MIN_FILES)) {
+                out->files_held = sqlite3_column_int64(q, 0);
+                out->held_changed = sqlite3_column_int64(q, 1);
+                out->held_deleted = sqlite3_column_int64(q, 2);
+                out->held_everywhere = everywhere;
+            }
+            if (out->files_held >= MASS_CHANGE_MIN_FILES || !media_id) break;
         }
         sqlite3_finalize(q);
     }

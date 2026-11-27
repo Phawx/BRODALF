@@ -466,6 +466,49 @@ static void test_wiped_drive(void)
     bd_catalog_close(cat);
 }
 
+/* ---- Data at risk 6: a mass change reaching a new drive --------------------- */
+
+static int changed_cb(void *ctx, const bd_changed_info *c)
+{
+    (void)c;
+    (*(int *)ctx)++;
+    return 0;
+}
+
+static void test_mass_change_new_drive(void)
+{
+    make_files("mass-src/Docs", 60, "mass");
+    bd_mkdirs(at("mass/A"));
+    bd_mkdirs(at("mass/B"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("mass/db.brodalf"), &cat), NULL);
+    int64_t src, a, b;
+    REQUIRE_OK(bd_source_add(cat, at("mass-src/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("mass/A"), "A", 0, &a), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    /* Half the files are encrypted in place. */
+    for (int i = 0; i < 30; i++) {
+        char rel[256];
+        snprintf(rel, sizeof(rel), "mass-src/Docs/f%03d.txt", i);
+        write_file(at(rel), "ENCRYPTED BY SOMEONE ELSE, MUCH LONGER THAN BEFORE");
+    }
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("mass/B"), "B", 0, &b), cat);
+    bd_backup_preview_info pv;
+    REQUIRE_OK(bd_backup_preview(cat, b, 0, &pv), cat);
+    CHECK(pv.mass_change == 1); /* 0.11.0: 0, a new drive holds nothing to compare */
+    CHECK(pv.held_everywhere == 1 && pv.files_held == 60 && pv.held_changed == 30);
+    int n = 0;
+    REQUIRE_OK(bd_list_changed_on_media(cat, 0, changed_cb, &n), cat);
+    CHECK(n == 30);
+    REQUIRE_OK(bd_backup_preview(cat, a, 0, &pv), cat);
+    CHECK(pv.mass_change == 1 && pv.held_everywhere == 0);
+    bd_catalog_close(cat);
+}
+
 /* ---- Recovery 2: the newest catalog copy on a drive is damaged -------------- */
 
 static void spoil(const char *path)
@@ -720,6 +763,7 @@ int main(void)
     test_changes_during_copy();
     test_one_disk();
     test_wiped_drive();
+    test_mass_change_new_drive();
     test_damaged_catalog_copy();
 
     if (failures) {

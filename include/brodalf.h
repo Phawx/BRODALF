@@ -612,6 +612,14 @@ typedef struct {
      * out. */
     int64_t files_bigger_than_drives;
     int64_t bytes_bigger_than_drives;
+    /* Backup roots left out of this backup (bd_list_roots_left_out): their
+     * folder could not be found, or the last scan held them back. The same
+     * number for every drive of a bd_backup_many. */
+    int64_t roots_left_out;
+    /* Files in folders set to be encrypted that were not copied because the
+     * passphrase was not entered: they wait for it. Everything else was
+     * backed up. */
+    int64_t files_need_passphrase;
 } bd_backup_stats;
 
 /* The size of the biggest backup drive that counts (not lost or broken,
@@ -694,9 +702,46 @@ typedef struct {
     int64_t files_too_big;
     int64_t bytes_too_big;
     const char *too_big_why;
+    /* Backup roots this backup leaves out (bd_list_roots_left_out); their
+     * files are not in files_to_copy, and last_scan_ms leaves them out. */
+    int64_t roots_left_out;
+    /* Of files_to_copy, those that need the passphrase and it is not
+     * entered: every file for an encrypted drive, else those in folders set
+     * to be encrypted. A backup to a plain drive copies the others and
+     * leaves these waiting (files_need_passphrase); one to an encrypted
+     * drive asks for the passphrase first. */
+    int64_t files_need_passphrase;
 } bd_backup_preview_info;
 
 bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id, bd_backup_preview_info *out);
+
+/* Backup roots a backup leaves out, and why. A backup copies only what a
+ * scan found in a root's own folder: a root whose folder cannot be found
+ * now, or that the last scan held back because most of the files it knows
+ * there were not (another folder with the same name, say), is left out of
+ * the backup, its preview and the Next backup list until a scan finds it
+ * again. Nothing of it is marked deleted and nothing is read from the
+ * folder at its path. A hold is remembered in the catalog (it outlasts the
+ * session); a folder not found is looked for again each time. */
+typedef enum {
+    BD_ROOT_NOT_FOUND = 1, /* its folder cannot be found */
+    BD_ROOT_WAITING,       /* set to wait for its disk (bd_source_wait_for_disk), which is not plugged in */
+    BD_ROOT_HELD,          /* the last scan found most of its files gone from the folder there: left as it was */
+    BD_ROOT_NOT_SCANNED    /* it could not be found at the last scan and is there now: scan it first */
+} bd_root_out_why;
+typedef struct {
+    int64_t source_id;
+    const char *name;
+    const char *path;
+    bd_root_out_why why;
+    int64_t files_gone; /* BD_ROOT_HELD: how many of its files the scan did not find there */
+} bd_root_left_out;
+typedef int (*bd_root_left_out_fn)(void *ctx, const bd_root_left_out *root);
+/* source_id 0: every root still backed up. fn may be NULL; *count (may be
+ * NULL) gets how many are left out. fn returning non-zero stops the list. */
+bd_status bd_list_roots_left_out(bd_catalog *cat, int64_t source_id, bd_root_left_out_fn fn, void *ctx, int64_t *count);
+/* Why, in a few English words ("its folder cannot be found"). */
+const char *bd_root_out_text(bd_root_out_why why);
 
 /* The files a backup would copy, one by one, for the Next backup tab.
  * media_id > 0: what the next backup to that drive copies. media_id 0:

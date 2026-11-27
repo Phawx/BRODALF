@@ -804,19 +804,140 @@ static void sync_group(bd_catalog *cat, bd_store *store, pending_copy *group, si
     free(last_dir);
 }
 
+/* ---- Backup roots a backup leaves out ------------------------------------ */
+
+/* A backup copies only what a scan found in a root's own folder. Roots the
+ * last scan held back (most of the files it knows there were not: another
+ * folder with the same name), or whose folder cannot be found now, are left
+ * out: reading the folder at their path would record its other files as
+ * new versions of the root's. The roots a backup leaves out go in
+ * temp.bk_out, those a preview or the Next backup list leaves out in
+ * temp.pv_out (so a preview while a backup runs changes nothing for it).
+ * temp.bk_order holds what a backup copies, in the order it copies it. */
+static int backup_temp_tables(bd_catalog *cat)
+{
+    return bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS bk_out(source_id INTEGER PRIMARY KEY);"
+                        "CREATE TEMP TABLE IF NOT EXISTS pv_out(source_id INTEGER PRIMARY KEY);"
+                        "CREATE TEMP TABLE IF NOT EXISTS bk_order(seq INTEGER PRIMARY KEY, node_id INTEGER NOT NULL UNIQUE);");
+}
+
+void bd_root_held_note(bd_catalog *cat, int64_t source_id, int64_t files_gone)
+{
+    char key[48], now[24], want[24];
+    snprintf(key, sizeof(key), "held_root.%lld", (long long)source_id);
+    int had = bd_setting_get(cat, key, now, sizeof(now));
+    if (files_gone > 0) {
+        snprintf(want, sizeof(want), "%lld", (long long)files_gone);
+        if (!had || strcmp(now, want) != 0) bd_setting_set(cat, key, want);
+        return;
+    }
+    if (!had) return; /* nothing to change: the catalog is not touched */
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM settings WHERE key=?", -1, &q, NULL) != SQLITE_OK) return;
+    sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+}
+
+const char *bd_root_out_text(bd_root_out_why why)
+{
+    switch (why) {
+    case BD_ROOT_NOT_FOUND: return "its folder cannot be found";
+    case BD_ROOT_WAITING: return "it waits for its disk to be plugged in";
+    case BD_ROOT_HELD: return "the last scan did not find most of its files in the folder there";
+    case BD_ROOT_NOT_SCANNED: return "it was not found at the last scan; scan it first";
+    }
+    return "";
+}
+
+/* The roots left out, into temp table `table` when given (emptied first),
+ * each to fn and, with log, one line each saying why. Returns how many, or
+ * -1 when the catalog cannot be read. */
+static int64_t roots_left_out(bd_catalog *cat, int64_t source_id, const char *table, bd_root_left_out_fn fn, void *ctx,
+                              bd_log_fn log, void *log_ctx)
+{
+    sqlite3_stmt *q, *ins = NULL;
+    if (table) {
+        char *sql = bd_sprintf("DELETE FROM temp.%s", table);
+        int bad = !sql || backup_temp_tables(cat) != 0 || bd_exec(cat, sql) != 0;
+        free(sql);
+        sql = bad ? NULL : bd_sprintf("INSERT OR IGNORE INTO temp.%s(source_id) VALUES(?)", table);
+        if (!sql || sqlite3_prepare_v2(cat->db, sql, -1, &ins, NULL) != SQLITE_OK) bad = 1;
+        free(sql);
+        if (bad) { sqlite3_finalize(ins); return -1; }
+    }
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT s.id, s.name, s.path, ms.source_id IS NOT NULL, COALESCE(ms.files_gone,0),"
+                           " EXISTS(SELECT 1 FROM settings w WHERE w.key='wait_disk.'||s.id),"
+                           " COALESCE((SELECT CAST(h.value AS INTEGER) FROM settings h WHERE h.key='held_root.'||s.id),0)"
+                           " FROM sources s LEFT JOIN temp.missing_sources ms ON ms.source_id=s.id"
+                           " WHERE s.active<>0 AND (?1=0 OR s.id=?1) ORDER BY s.name COLLATE NOCASE, s.id",
+                           -1, &q, NULL) != SQLITE_OK) {
+        sqlite3_finalize(ins);
+        return -1;
+    }
+    sqlite3_bind_int64(q, 1, source_id);
+    int64_t count = 0;
+    int stop = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_root_left_out r;
+        memset(&r, 0, sizeof(r));
+        r.source_id = sqlite3_column_int64(q, 0);
+        r.name = (const char *)sqlite3_column_text(q, 1);
+        r.path = (const char *)sqlite3_column_text(q, 2);
+        int in_session = sqlite3_column_int(q, 3), waits = sqlite3_column_int(q, 5);
+        int64_t gone_now = sqlite3_column_int64(q, 4), gone_kept = sqlite3_column_int64(q, 6);
+        bd_stat_t st;
+        int there = r.path && bd_stat(r.path, &st) == 0 && st.is_dir;
+        if (in_session && gone_now > 0) { r.why = BD_ROOT_HELD; r.files_gone = gone_now; }
+        else if (in_session) r.why = there ? BD_ROOT_NOT_SCANNED : waits ? BD_ROOT_WAITING : BD_ROOT_NOT_FOUND;
+        else if (gone_kept > 0) { r.why = BD_ROOT_HELD; r.files_gone = gone_kept; }
+        else if (!there) r.why = waits ? BD_ROOT_WAITING : BD_ROOT_NOT_FOUND;
+        else continue;
+        count++;
+        if (ins) {
+            sqlite3_reset(ins);
+            sqlite3_bind_int64(ins, 1, r.source_id);
+            sqlite3_step(ins);
+        }
+        if (log) {
+            if (r.why == BD_ROOT_HELD)
+                bd_logf(log, log_ctx, "backup root %s is left out of this backup: the last scan did not find %lld of its files "
+                                      "in the folder there. Say where it is now, or scan again",
+                        r.path ? r.path : "", (long long)r.files_gone);
+            else
+                bd_logf(log, log_ctx, "backup root %s is left out of this backup: %s", r.path ? r.path : "", bd_root_out_text(r.why));
+        }
+        if (fn && !stop && fn(ctx, &r) != 0) stop = 1;
+        if (stop && !ins) break;
+    }
+    sqlite3_finalize(q);
+    sqlite3_finalize(ins);
+    return count;
+}
+
+bd_status bd_list_roots_left_out(bd_catalog *cat, int64_t source_id, bd_root_left_out_fn fn, void *ctx, int64_t *count)
+{
+    int64_t n = roots_left_out(cat, source_id, NULL, fn, ctx, NULL, NULL);
+    if (count) *count = n > 0 ? n : 0;
+    return n < 0 ? bd_fail_db(cat, "list the backup roots left out") : BD_OK;
+}
+
 /* The files a backup to one drive copies (nodes n, their current versions
  * v): no good copy on this drive (?1), and for an extra place only starred
  * files. ?2 backup root (0: all), ?3 after this node id. Roots no longer
- * backed up are left out. */
+ * backed up, and roots left out (temp.pv_out), are left out. */
 #define TODO_WHERE                                                                                      \
     " n.is_dir=0 AND n.deleted=0 AND (?2=0 OR n.source_id=?2) AND n.id>?3 AND " BD_SQL_ACTIVE("n")      \
+    " AND NOT EXISTS(SELECT 1 FROM temp.pv_out lo WHERE lo.source_id=n.source_id)"                       \
     " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=?1 AND c.state='ok')" \
     " AND (NOT EXISTS(SELECT 1 FROM media sm WHERE sm.id=?1 AND sm.secondary<>0) OR " BD_SQL_MARKED("stars", "n") ")"
 
 /* The same for the drives in temp.bk_dests: what at least one of them
- * needs. ?1 backup root, ?2 after this node id. */
-#define TODO_MANY_WHERE                                                                                 \
-    " n.is_dir=0 AND n.deleted=0 AND (?1=0 OR n.source_id=?1) AND n.id>?2 AND " BD_SQL_ACTIVE("n")      \
+ * needs, the roots in temp.bk_out left out. ?1 backup root. */
+#define TODO_MANY_COND                                                                                  \
+    " n.is_dir=0 AND n.deleted=0 AND (?1=0 OR n.source_id=?1) AND " BD_SQL_ACTIVE("n")                  \
+    " AND NOT EXISTS(SELECT 1 FROM temp.bk_out lo WHERE lo.source_id=n.source_id)"                       \
     " AND EXISTS(SELECT 1 FROM temp.bk_dests d WHERE (d.secondary=0 OR " BD_SQL_MARKED("stars", "n") ")" \
     "  AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=d.media_id AND c.state='ok'))"
 
@@ -971,22 +1092,46 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
     }
     sqlite3_finalize(ins);
 
-    /* Folders set to be encrypted need the key even on a plain drive. */
+    /* Roots the last scan held back or that cannot be found are left out,
+     * one line each. */
+    int64_t left_out = roots_left_out(cat, source_id, "bk_out", NULL, NULL, log, log_ctx);
+    if (left_out < 0) {
+        free(dests);
+        return bd_fail_db(cat, "list the backup roots left out");
+    }
+    for (int i = 0; i < n; i++) stats[i].roots_left_out = left_out;
+
+    /* Folders set to be encrypted need the key even on a plain drive.
+     * Without it, their files wait for it and everything else is backed
+     * up. */
     if (!cat->have_key) {
         sqlite3_stmt *q;
-        int sealed_todo = 0;
         if (sqlite3_prepare_v2(cat->db,
-                               "SELECT 1 FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE" TODO_MANY_WHERE
-                               " AND " BD_SQL_MARKED("encrypt_paths", "n") " LIMIT 1",
+                               "SELECT d.media_id, COUNT(*) FROM temp.bk_dests d, nodes n JOIN versions v ON v.id=n.current_version_id"
+                               " WHERE n.is_dir=0 AND n.deleted=0 AND (?1=0 OR n.source_id=?1) AND " BD_SQL_ACTIVE("n")
+                               " AND NOT EXISTS(SELECT 1 FROM temp.bk_out lo WHERE lo.source_id=n.source_id)"
+                               " AND (d.secondary=0 OR " BD_SQL_MARKED("stars", "n") ")"
+                               " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=v.id AND c.media_id=d.media_id AND c.state='ok')"
+                               " AND " BD_SQL_MARKED("encrypt_paths", "n") " GROUP BY d.media_id",
                                -1, &q, NULL) == SQLITE_OK) {
             sqlite3_bind_int64(q, 1, source_id);
-            sqlite3_bind_int64(q, 2, 0);
-            sealed_todo = sqlite3_step(q) == SQLITE_ROW;
+            while (sqlite3_step(q) == SQLITE_ROW)
+                for (int i = 0; i < n; i++)
+                    if (dests[i].media_id == sqlite3_column_int64(q, 0)) stats[i].files_need_passphrase = sqlite3_column_int64(q, 1);
             sqlite3_finalize(q);
         }
-        if (sealed_todo) {
-            free(dests);
-            return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase: some files to back up are in folders set to be encrypted");
+        if (sqlite3_prepare_v2(cat->db,
+                               "SELECT COUNT(*) FROM nodes n JOIN versions v ON v.id=n.current_version_id WHERE" TODO_MANY_COND
+                               " AND " BD_SQL_MARKED("encrypt_paths", "n"),
+                               -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, source_id);
+            int64_t waiting = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : 0;
+            sqlite3_finalize(q);
+            if (waiting == 1)
+                bd_logf(log, log_ctx, "1 file in a folder set to be encrypted is not backed up: it waits for the passphrase");
+            else if (waiting)
+                bd_logf(log, log_ctx, "%lld files in folders set to be encrypted are not backed up: they wait for the passphrase",
+                        (long long)waiting);
         }
     }
 
@@ -1027,30 +1172,60 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
     if (n > 1) bd_logf(log, log_ctx, "backing up to %d drives at once: each file is read once and written to all of them", n);
 
     for (int i = 0; i < n; i++) dests[i].job = bd_job_start(cat, "backup", dests[i].media_id);
-    sqlite3_stmt *q, *have = NULL;
-    if (sqlite3_prepare_v2(cat->db,
-                           "SELECT n.id, n.rel_path, n.size, n.mtime_ns, s.path, s.name, v.id, v.hash, v.version_no, v.size,"
-                           " " BD_SQL_MARKED("stars", "n") ", " BD_SQL_MARKED("encrypt_paths", "n")
-                           " FROM nodes n JOIN sources s ON s.id=n.source_id JOIN versions v ON v.id=n.current_version_id"
-                           " WHERE" TODO_MANY_WHERE " ORDER BY n.id LIMIT 256",
-                           -1, &q, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(cat->db, "SELECT 1 FROM copies WHERE version_id=? AND media_id=? AND state='ok'", -1, &have, NULL) != SQLITE_OK) {
-        for (int i = 0; i < n; i++) { bd_job_finish(cat, dests[i].job, "failed", 0, 0, 0); dest_close(&dests[i]); }
-        sqlite3_finalize(have);
-        free(dests);
-        return bd_fail_db(cat, "list files to back up");
+    /* What to copy, in the order it is copied: starred files first, so on a
+     * drive too small for everything the files marked as mattering most get
+     * there; then files with no copy that counts anywhere yet, so a drive
+     * that takes over where a full one stopped gets what the other lacks;
+     * then smaller files before bigger ones, so the most files fit and one
+     * big file does not hold up the rest. The order is fixed here,
+     * so a file read again because it changed since the scan (a new
+     * version) keeps its place. Without the passphrase, files in folders set
+     * to be encrypted are left out (above). The loop below goes through it
+     * by node id: each batch starts after the last node it got. */
+    const char *plain_only = cat->have_key ? "" : " AND NOT " BD_SQL_MARKED("encrypt_paths", "n");
+    char *order_sql = bd_sprintf("INSERT INTO temp.bk_order(node_id) SELECT n.id FROM nodes n"
+                                 " JOIN versions v ON v.id=n.current_version_id WHERE" TODO_MANY_COND "%s"
+                                 " ORDER BY " BD_SQL_MARKED("stars", "n") " DESC,"
+                                 " EXISTS(SELECT 1 FROM copies oc WHERE oc.version_id=v.id AND oc.state='ok' AND " BD_SQL_COUNTS("oc") "),"
+                                 " v.size, n.id",
+                                 plain_only);
+    char *item_sql = bd_sprintf("SELECT n.id, n.rel_path, n.size, n.mtime_ns, s.path, s.name, v.id, v.hash, v.version_no, v.size,"
+                                " " BD_SQL_MARKED("stars", "n") ", " BD_SQL_MARKED("encrypt_paths", "n")
+                                " FROM temp.bk_order o JOIN nodes n ON n.id=o.node_id JOIN sources s ON s.id=n.source_id"
+                                " JOIN versions v ON v.id=n.current_version_id"
+                                " WHERE o.seq>COALESCE((SELECT x.seq FROM temp.bk_order x WHERE x.node_id=?2),0) AND" TODO_MANY_COND
+                                "%s ORDER BY o.seq LIMIT 256",
+                                plain_only);
+    sqlite3_stmt *q = NULL, *have = NULL, *fill = NULL;
+    int ordered = order_sql && item_sql && bd_exec(cat, "DELETE FROM temp.bk_order") == 0 &&
+                  sqlite3_prepare_v2(cat->db, order_sql, -1, &fill, NULL) == SQLITE_OK;
+    if (ordered) {
+        sqlite3_bind_int64(fill, 1, source_id);
+        ordered = sqlite3_step(fill) == SQLITE_DONE;
     }
+    sqlite3_finalize(fill);
+    free(order_sql);
+    if (!ordered || sqlite3_prepare_v2(cat->db, item_sql, -1, &q, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(cat->db, "SELECT 1 FROM copies WHERE version_id=? AND media_id=? AND state='ok'", -1, &have, NULL) != SQLITE_OK) {
+        free(item_sql);
+        bd_status r = bd_fail_db(cat, "list files to back up");
+        for (int i = 0; i < n; i++) { bd_job_finish(cat, dests[i].job, "failed", 0, 0, 0); dest_close(&dests[i]); }
+        sqlite3_finalize(q);
+        sqlite3_finalize(have);
+        bd_exec(cat, "DELETE FROM temp.bk_order");
+        free(dests);
+        return r;
+    }
+    free(item_sql);
 
     /* Totals for the progress bar: each file is read once, whatever the
      * number of drives. */
     sqlite3_stmt *t;
     int64_t todo_files = 0, todo_bytes = 0;
     if (sqlite3_prepare_v2(cat->db,
-                           "SELECT COUNT(*), COALESCE(SUM(v.size),0) FROM nodes n JOIN versions v ON v.id=n.current_version_id"
-                           " WHERE" TODO_MANY_WHERE,
+                           "SELECT COUNT(*), COALESCE(SUM(v.size),0) FROM temp.bk_order o JOIN nodes n ON n.id=o.node_id"
+                           " JOIN versions v ON v.id=n.current_version_id",
                            -1, &t, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(t, 1, source_id);
-        sqlite3_bind_int64(t, 2, 0);
         if (sqlite3_step(t) == SQLITE_ROW) {
             todo_files = sqlite3_column_int64(t, 0);
             todo_bytes = sqlite3_column_int64(t, 1);
@@ -1296,7 +1471,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
         bd_job_finish(cat, dests[k].job,
                       dests[k].gone ? "failed" : cancelled || gone ? "stopped" : stats[k].files_failed ? "partial" : "done",
                       stats[k].files_copied, stats[k].files_failed, stats[k].bytes_copied);
-    bd_exec(cat, "DELETE FROM temp.bk_dests");
+    bd_exec(cat, "DELETE FROM temp.bk_dests; DELETE FROM temp.bk_order");
     if (gone) {
         const char *label = "";
         for (int k = 0; k < n; k++)
@@ -1344,6 +1519,9 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     memset(out, 0, sizeof(*out));
     out->free_bytes = -1;
     sqlite3_stmt *q;
+    int64_t left_out = roots_left_out(cat, source_id, "pv_out", NULL, NULL, NULL, NULL);
+    if (left_out < 0) return bd_fail_db(cat, "list the backup roots left out");
+    out->roots_left_out = left_out;
     char *root = bd_connected_root(cat, media_id);
     int64_t max_file = bd_drive_file_limit(cat, media_id, root);
     int drive_sealed = bd_media_encrypted(cat, media_id);
@@ -1388,6 +1566,7 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     }
     sqlite3_finalize(q);
     if (out->files_too_big) out->too_big_why = BD_WHY_FAT32;
+    if (!cat->have_key) out->files_need_passphrase = drive_sealed ? out->files_to_copy : sealed_files;
 
     /* How much of the drive held, and how much of that changed since. A
      * large share at once is what ransomware encrypting the folders looks
@@ -1417,7 +1596,8 @@ bd_status bd_backup_preview(bd_catalog *cat, int64_t media_id, int64_t source_id
     }
     out->mass_change = out->files_held >= MASS_CHANGE_MIN_FILES && out->held_changed * 4 >= out->files_held;
 
-    if (sqlite3_prepare_v2(cat->db, "SELECT MIN(COALESCE(last_scan_ms,0)) FROM sources WHERE (?1=0 OR id=?1) AND active<>0", -1, &q, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(cat->db, "SELECT MIN(COALESCE(last_scan_ms,0)) FROM sources WHERE (?1=0 OR id=?1) AND active<>0"
+                                " AND id NOT IN (SELECT source_id FROM temp.pv_out)", -1, &q, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(q, 1, source_id);
         if (sqlite3_step(q) == SQLITE_ROW) out->last_scan_ms = sqlite3_column_int64(q, 0);
         sqlite3_finalize(q);
@@ -1514,6 +1694,8 @@ bd_status bd_list_pending(bd_catalog *cat, int64_t media_id, int limit, bd_pendi
     int64_t max_file = -1;
     int drive_sealed = 0;
     if (media_id > 0) {
+        /* What a backup to it copies leaves out the roots a backup leaves out. */
+        if (roots_left_out(cat, 0, "pv_out", NULL, NULL, NULL, NULL) < 0) return bd_fail_db(cat, "list the backup roots left out");
         char *root = bd_connected_root(cat, media_id);
         max_file = bd_drive_file_limit(cat, media_id, root);
         free(root);

@@ -155,9 +155,16 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_flow_main PRIVATE brodalf_core)
     target_include_directories(test_flow_main PRIVATE src)
     add_test(NAME flow_main COMMAND test_flow_main)
+    add_executable(test_flow_cli tests/test_flow_cli.c)
+    target_link_libraries(test_flow_cli PRIVATE brodalf_core)
+    target_include_directories(test_flow_cli PRIVATE src)
+    add_test(NAME flow_cli COMMAND test_flow_cli)
     add_test(NAME cli_exit_codes
              COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:brodalf-cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli-exit-codes
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_exit_codes.cmake)
+    add_test(NAME cli_flow
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:brodalf-cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli-flow
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_flow.cmake)
     add_executable(bench_many tests/bench_many.c)
     target_link_libraries(bench_many PRIVATE brodalf_core)
     target_include_directories(bench_many PRIVATE src)
@@ -171,7 +178,7 @@ if(BRODALF_BUILD_TESTS)
     add_test(NAME test_tmp_remove COMMAND ${CMAKE_COMMAND} -E remove_directory ${BRODALF_TEST_TMP})
     set_tests_properties(test_tmp_make PROPERTIES FIXTURES_SETUP brodalf_test_tmp)
     set_tests_properties(test_tmp_remove PROPERTIES FIXTURES_CLEANUP brodalf_test_tmp)
-    set_tests_properties(core crypto blake3 misc memory gaps flow_main many_files PROPERTIES
+    set_tests_properties(core crypto blake3 misc memory gaps flow_main flow_cli many_files PROPERTIES
                          FIXTURES_REQUIRED brodalf_test_tmp
                          ENVIRONMENT "TMPDIR=${BRODALF_TEST_TMP};TMP=${BRODALF_TEST_TMP};TEMP=${BRODALF_TEST_TMP}")
 endif()

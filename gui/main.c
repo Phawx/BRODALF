@@ -234,7 +234,8 @@ enum {
     ID_MENU_DRIVE_BASE = 1000, /* + media id, for the drive popup menus */
     ID_DRIVE_ACT_BASE = 20000, /* + media id * 8 + action, for the Local backups menu */
     ID_MENU_OTHER = 900,
-    ID_MENU_EVERY = 901 /* Back up...: every plugged-in drive */
+    ID_MENU_EVERY = 901, /* Back up...: every plugged-in drive */
+    ID_MENU_SCAN_FIRST = 902 /* Back up...: scan first (the last scan is old), then back up */
 };
 
 enum {
@@ -2227,7 +2228,7 @@ static SRWLOCK g_report_lock = SRWLOCK_INIT;
  * language shown when it is known. A pattern that comes before another it
  * could be mistaken for (a longer line ending the same way) is the more
  * particular. A line not here keeps its words, with a capital letter. */
-enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS };
+enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS, CL_WAIT_PASSPHRASE };
 static const struct { const char *pat; const wchar_t *say; int plural; } g_core_lines[] = {
     {"scanning %p", N_(L"Scanning %ls")},
     {"contents changed but size and time did not (damage?): %p", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
@@ -2351,6 +2352,18 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
     {"the drive stopped answering or was unplugged: the backup stops", N_(L"The drive stopped answering or was unplugged, so the backup stops.")},
     {"the drive stopped answering or was unplugged: nothing on it was marked missing or damaged",
      N_(L"The drive stopped answering or was unplugged. Nothing on it was marked missing or damaged.")},
+    {"backup root %p is left out of this backup: the last scan did not find %n of its files in the folder there. Say where it is now, "
+     "or scan again",
+     N_(L"Backup root %ls is left out of this backup: the last scan did not find %ls of its files in its folder. Say where it is now, or "
+        L"scan again.")},
+    {"backup root %p is left out of this backup: its folder cannot be found",
+     N_(L"Backup root %ls is left out of this backup: its folder cannot be found.")},
+    {"backup root %p is left out of this backup: it waits for its disk to be plugged in",
+     N_(L"Backup root %ls is left out of this backup: it waits for its disk to be plugged in.")},
+    {"backup root %p is left out of this backup: it was not found at the last scan; scan it first",
+     N_(L"Backup root %ls is left out of this backup: the last scan did not find it, so scan it first.")},
+    {"%n file in a folder set to be encrypted is not backed up: it waits for the passphrase", NULL, CL_WAIT_PASSPHRASE},
+    {"%n files in folders set to be encrypted are not backed up: they wait for the passphrase", NULL, CL_WAIT_PASSPHRASE},
 };
 
 /* What went wrong on a drive (the %e of a line). */
@@ -2377,6 +2390,9 @@ static const wchar_t *core_plural(int which, long long n)
     case CL_UNCOMPRESSED:
         return TN(n, L"Uncompressed: %ls file, %ls changed, %ls could not be.", L"Uncompressed: %ls files, %ls changed, %ls could not be.");
     case CL_MORE_PATHS: return TN(n, L"And %ls more path like those.", L"And %ls more paths like those.");
+    case CL_WAIT_PASSPHRASE:
+        return TN(n, L"%ls file in a folder you chose to encrypt is not backed up: it waits for the passphrase.",
+                  L"%ls files in folders you chose to encrypt are not backed up: they wait for the passphrase.");
     }
     return L"%ls";
 }
@@ -2821,9 +2837,11 @@ static bd_status run_backup_many(job *j)
         if (s == BD_OK) s = first_err;
     }
     g_job_dest[0] = 0;
-    int64_t copied = 0, bytes = 0, failed = 0, no_room = 0, no_room_bytes = 0, alongside = 0;
+    int64_t copied = 0, bytes = 0, failed = 0, no_room = 0, no_room_bytes = 0, alongside = 0, need_key = 0, roots_out = 0;
     wchar_t name[600], size[64];
     for (int i = 0; i < done; i++) {
+        if (bs[i].files_need_passphrase > need_key) need_key = bs[i].files_need_passphrase;
+        if (bs[i].roots_left_out > roots_out) roots_out = bs[i].roots_left_out;
         j->many_copied[i] = bs[i].files_copied;
         copied += bs[i].files_copied;
         bytes += bs[i].bytes_copied;
@@ -2863,6 +2881,13 @@ static bd_status run_backup_many(job *j)
         say(j, TN(j->bigger, L" %lld file is bigger than every backup drive you have, so no drive can take it.",
                   L" %lld files are bigger than every backup drive you have, so no drive can take them."),
             (long long)j->bigger);
+    if (need_key)
+        say(j, TN(need_key, L" %lld file in a folder you chose to encrypt waits for the passphrase.",
+                  L" %lld files in folders you chose to encrypt wait for the passphrase."),
+            (long long)need_key);
+    if (roots_out)
+        say(j, TN(roots_out, L" %lld backup root was left out; the log says why.", L" %lld backup roots were left out; the log says why."),
+            (long long)roots_out);
     return s;
 }
 
@@ -2981,6 +3006,13 @@ static DWORD WINAPI worker(LPVOID arg)
             if (bs.files_rehashed) say(j, T(L" %lld changed since the scan and were read again first."), (long long)bs.files_rehashed);
             if (bs.files_in_use) say(j, T(L" %lld in use by another program."), (long long)bs.files_in_use);
             if (bs.files_online_only) say(j, T(L" %lld online-only cloud files not copied."), (long long)bs.files_online_only);
+            if (bs.files_need_passphrase)
+                say(j, TN(bs.files_need_passphrase, L" %lld file in a folder you chose to encrypt waits for the passphrase.",
+                          L" %lld files in folders you chose to encrypt wait for the passphrase."),
+                    (long long)bs.files_need_passphrase);
+            if (bs.roots_left_out)
+                say(j, TN(bs.roots_left_out, L" %lld backup root was left out; the log says why.", L" %lld backup roots were left out; the log says why."),
+                    (long long)bs.roots_left_out);
             int64_t full = bs.files_no_room - bs.files_too_big - bs.files_bigger_than_drives;
             int64_t full_bytes = bs.bytes_no_room - bs.bytes_too_big - bs.bytes_bigger_than_drives;
             if (full > 0) {
@@ -8047,6 +8079,10 @@ static void media_name(int64_t id, wchar_t *out, size_t cap)
     drive_name(o.found ? o.label : "the drive", o.found ? o.location : "", out, cap);
 }
 
+/* The passphrase was asked for already (Back up to every plugged-in drive):
+ * start_backup does not ask again. */
+static int g_key_asked;
+
 /* Back up to a drive. It starts straight away: what it will copy is shown
  * all the time beside the Back up button. Only two things ask first: many
  * files changed at once (what ransomware looks like), and nothing scanned
@@ -8083,10 +8119,25 @@ static void start_backup(job *b, int offer_scan)
         job_free(b);
         return;
     }
+    int asked_key = g_key_asked;
     for (;;) {
         bd_backup_preview_info pv;
         memset(&pv, 0, sizeof(pv));
         if (bd_backup_preview(g_cat, b->media_id, 0, &pv) != BD_OK) { enqueue(b); return; }
+        /* Files in folders set to be encrypted need the passphrase, even
+         * on a plain drive. Asked once: without it, everything else is
+         * backed up and they wait for it. */
+        if (!asked_key && pv.files_need_passphrase > 0 && !(o.found && o.info.encrypted)) {
+            wchar_t why[700];
+            asked_key = 1;
+            swprintf(why, 700, TN(pv.files_need_passphrase, L"%lld file to back up is in a folder you chose to encrypt. Enter the passphrase "
+                                                           L"to back it up too. Without it, everything else is backed up and it waits for "
+                                                           L"the passphrase.",
+                                  L"%lld files to back up are in folders you chose to encrypt. Enter the passphrase to back them up too. "
+                                  L"Without it, everything else is backed up and they wait for the passphrase."),
+                     (long long)pv.files_need_passphrase);
+            if (unlock_ui(why)) continue; /* what it copies, with the key */
+        }
         if (g_changes_ok && g_changes_ok == b->media_id) pv.mass_change = 0;
         int unscanned = !pv.last_scan_ms && offer_scan;
         if (!pv.mass_change && !unscanned) { enqueue(b); return; }
@@ -9650,7 +9701,20 @@ typedef struct {
     int count, greyed_lost, usable;
     int64_t to_copy;     /* backup menus: files every usable drive would get, together */
     wchar_t names[400];  /* and their names, in the order they are backed up */
+    int64_t oldest_scan; /* backup menus: the oldest scan the drives' backups copy from */
 } menu_ctx;
+
+/* A backup copies what the scans found: when the oldest is this old, the
+ * Back up menu offers to scan first. */
+#define SCAN_OLD_MS (4 * 3600 * 1000LL)
+
+static int64_t now_unix_ms(void)
+{
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULONGLONG t = ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (int64_t)((t - 116444736000000000ULL) / 10000ULL);
+}
 
 /* One drive in the Back up or Check menu, saying what choosing it does:
  * how much a backup would copy, or how many copies a check reads and when
@@ -9686,6 +9750,10 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
         swprintf(what, 400, TN(g->pv.files_to_copy, L"%lld file to copy, %ls (%ls free)", L"%lld files to copy, %ls (%ls free)"),
                  (long long)g->pv.files_to_copy, size, freeb);
         c->to_copy += g->pv.files_to_copy;
+    } else if (g && g->has_pv && g->pv.last_scan_ms > 0) {
+        wchar_t when[96];
+        friendly_time(g->pv.last_scan_ms, when, 96);
+        swprintf(what, 400, T(L"up to date as of the scan %ls (%ls free)"), when, freeb);
     } else if (g && g->has_pv) {
         swprintf(what, 400, T(L"up to date (%ls free)"), freeb);
     } else {
@@ -9693,6 +9761,9 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
     }
     swprintf(text, 600, L"%ls: %ls%ls\t%ls", l, what, m->hide_names ? T(L", encrypted, names hidden") : m->encrypted ? T(L", encrypted") : L"",
              root ? root : L"");
+    if (backup && !m->lost_ms && !m->secondary && g && g->has_pv && g->pv.last_scan_ms > 0 &&
+        (!c->oldest_scan || g->pv.last_scan_ms < c->oldest_scan))
+        c->oldest_scan = g->pv.last_scan_ms;
     if (!m->lost_ms) {
         c->usable++;
         size_t len = wcslen(c->names);
@@ -9708,7 +9779,8 @@ static int drive_menu_cb(void *ctx, const bd_media_info *m)
 }
 
 /* Returns a media id, 0 for "another drive or folder", -1 if cancelled.
- * allow_other 2 also offers every plugged-in drive at once: -2. */
+ * allow_other 2 also offers every plugged-in drive at once: -2, and when
+ * the last scan is old, to scan first and then back up to them: -3. */
 static int64_t choose_drive(HWND button, int allow_other)
 {
     menu_ctx c;
@@ -9728,6 +9800,17 @@ static int64_t choose_drive(HWND button, int allow_other)
         AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(c.menu, MF_STRING, ID_MENU_EVERY, every);
     }
+    if (allow_other == 2 && c.usable && c.oldest_scan > 0 && now_unix_ms() - c.oldest_scan >= SCAN_OLD_MS) {
+        /* Files changed since then are copied as the scan found them, or
+         * not at all: an offer to scan first, never a scan by itself. */
+        wchar_t when[96], first[400];
+        friendly_time(c.oldest_scan, when, 96);
+        swprintf(first, 400, c.usable >= 2 ? T(L"Scan first, then back up to every plugged-in drive (the last scan was %ls)")
+                                           : T(L"Scan first, then back up (the last scan was %ls)"),
+                 when);
+        AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(c.menu, MF_STRING, ID_MENU_SCAN_FIRST, first);
+    }
     if (allow_other) {
         if (c.count) AppendMenuW(c.menu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(c.menu, MF_STRING, ID_MENU_OTHER, T(L"Another drive or folder..."));
@@ -9742,6 +9825,7 @@ static int64_t choose_drive(HWND button, int allow_other)
     DestroyMenu(c.menu);
     if (cmd == ID_MENU_OTHER) return 0;
     if (cmd == ID_MENU_EVERY) return -2;
+    if (cmd == ID_MENU_SCAN_FIRST) return -3;
     if (cmd >= ID_MENU_DRIVE_BASE) return cmd - ID_MENU_DRIVE_BASE;
     return -1;
 }
@@ -12396,6 +12480,26 @@ static const media_row *next_opt(void)
     return NULL;
 }
 
+/* A backup root the backups leave out, and why: a line for the Next
+ * backup tab. */
+static int left_out_line_cb(void *ctx, const bd_root_left_out *r)
+{
+    wtext *t = ctx;
+    wchar_t *name = widen(r->name ? r->name : "");
+    if (r->why == BD_ROOT_HELD)
+        wadd(t, T(L"\r\nLeft out: backup root %ls, because the last scan did not find %lld of its files in its folder. Say where it is "
+                L"now, or scan again."),
+             name ? name : L"", (long long)r->files_gone);
+    else if (r->why == BD_ROOT_WAITING)
+        wadd(t, T(L"\r\nLeft out: backup root %ls, which waits for its disk to be plugged in."), name ? name : L"");
+    else if (r->why == BD_ROOT_NOT_SCANNED)
+        wadd(t, T(L"\r\nLeft out: backup root %ls, which is there again. Scan it first."), name ? name : L"");
+    else
+        wadd(t, T(L"\r\nLeft out: backup root %ls, because its folder cannot be found."), name ? name : L"");
+    free(name);
+    return 0;
+}
+
 static void fill_next(void)
 {
     HWND combo = CTL(ID_NEXT_FOR), lv = CTL(ID_NEXT_LIST), ed = CTL(ID_NEXT_TEXT);
@@ -12528,7 +12632,11 @@ static void fill_next(void)
         if (have) {
             if (!o->connected) wadd(&t, T(L"Plug in %ls to back up to it.\r\n"), g_next_label);
             format_bytes(pv.bytes_to_copy, a, 64);
-            if (pv.files_to_copy == 0) wadd(&t, T(L"This drive is up to date: the next backup to it copies nothing."));
+            if (pv.files_to_copy == 0 && pv.last_scan_ms > 0) {
+                friendly_time(pv.last_scan_ms, when, 64);
+                wadd(&t, T(L"This drive is up to date as of the scan %ls: the next backup to it copies nothing."), when);
+            } else if (pv.files_to_copy == 0)
+                wadd(&t, T(L"This drive is up to date: the next backup to it copies nothing."));
             else
                 wadd(&t, TN(pv.files_to_copy, L"The next backup to this drive copies %lld file (%ls): %lld new, %lld changed. A changed file goes "
                                               L"alongside its older copy; nothing on the drive is overwritten.",
@@ -12552,8 +12660,14 @@ static void fill_next(void)
             if (pv.last_scan_ms) {
                 format_time_ms(pv.last_scan_ms, when, 64);
                 wadd(&t, T(L"\r\nIt copies what the scans found; the oldest scan of your backup roots was %ls."), when);
-            } else
+            } else if (!pv.roots_left_out)
                 wadd(&t, T(L"\r\nYour backup roots have not been scanned yet, so there is nothing to copy. Press Scan now."));
+            if (pv.roots_left_out > 0) bd_list_roots_left_out(g_cat, 0, left_out_line_cb, &t, NULL);
+            if (pv.files_need_passphrase > 0 && !media_encryption(g_next_media).encrypted)
+                wadd(&t, TN(pv.files_need_passphrase, L"\r\n%lld file is in a folder you chose to encrypt, so it waits for the passphrase. "
+                                                      L"Back up asks for it.",
+                            L"\r\n%lld files are in folders you chose to encrypt, so they wait for the passphrase. Back up asks for it."),
+                     (long long)pv.files_need_passphrase);
             if (pv.mass_change && pv.held_everywhere)
                 wadd(&t, T(L"\r\nWarning: %lld of the %lld files whose copies on your drives were up to date have changed or were deleted at "
                          L"once, and this drive holds too few of them to tell them apart. That can mean ransomware. Look at Changed since "
@@ -14156,6 +14270,14 @@ static void cmd_backup_at(HWND anchor)
 {
     int64_t id = choose_drive(anchor, 2);
     if (id == -2) { cmd_backup_all(1); return; }
+    if (id == -3) {
+        job *s = new_job(JOB_SCAN);
+        if (s) {
+            s->then_all = 1;
+            enqueue(s);
+        }
+        return;
+    }
     if (id < 0) return;
     if (id == 0) { add_disk(); return; }
     drive_action(id, 0);
@@ -14168,13 +14290,16 @@ static void cmd_backup_all(int offer_scan)
     drive_list dl = load_drives();
     int64_t ids[16];
     int n = 0, places = 0, encrypted = 0, left_out = 0;
+    char sealed[16] = {0}, place[16] = {0};
     for (int i = 0; i < dl.n; i++) {
         const drive_snap *d = &dl.items[i];
         if (strcmp(d->kind, "drive") != 0 || !d->connected || d->lost_ms) continue;
         if (n == 16) { left_out++; continue; }
+        sealed[n] = (char)(d->encrypted != 0);
+        place[n] = (char)(d->secondary != 0);
         ids[n++] = d->id;
         if (d->secondary) places++;
-        if (d->encrypted) encrypted = 1;
+        if (d->encrypted) encrypted++;
     }
     free(dl.items);
     if (!n) {
@@ -14184,12 +14309,36 @@ static void cmd_backup_all(int offer_scan)
     bd_encrypt_stats es;
     memset(&es, 0, sizeof(es));
     bd_encrypt_stats_get(g_cat, &es);
-    if ((encrypted || es.files) && !unlock_ui(T(L"Some of what this backs up is encrypted. Enter the passphrase to back up."))) return;
+    if ((encrypted || es.files) &&
+        !unlock_ui(encrypted == n ? T(L"Some of what this backs up is encrypted. Enter the passphrase to back up.")
+                                  : T(L"Some of what this backs up is encrypted. Enter the passphrase to back it all up. Without it, "
+                                      L"BRODALF backs up what needs no passphrase, and the rest waits for it."))) {
+        /* Without it: the plain drives, without the files in folders set
+         * to be encrypted. */
+        int kept = 0;
+        places = 0;
+        for (int i = 0; i < n; i++)
+            if (!sealed[i]) {
+                ids[kept++] = ids[i];
+                places += place[i];
+            }
+        if (!kept) return;
+        if (encrypted) {
+            wchar_t line[300];
+            swprintf(line, 300, TN(encrypted, L"%d encrypted drive is left out of this backup: it needs the passphrase.",
+                                   L"%d encrypted drives are left out of this backup: they need the passphrase."),
+                     encrypted);
+            log_append(line);
+        }
+        n = kept;
+    }
     if (n == 1) {
         job *j = new_job(JOB_BACKUP);
         if (!j) return;
         j->media_id = ids[0];
+        g_key_asked = 1;
         start_backup(j, offer_scan);
+        g_key_asked = 0;
         return;
     }
     /* The same two questions a backup to one drive asks. */
@@ -18382,14 +18531,17 @@ static int pick_found(const found_list *l)
     return pressed >= 400 && pressed < 400 + l->n ? pressed - 400 : -1;
 }
 
-/* The copies of one database in the folder a copy is in, newest first. */
-#define MAX_REVS 64
+/* The copies of one database in the folder a copy is in, and on every
+ * other drive plugged in, newest first. */
+#define MAX_REVS 256
 typedef struct { char *paths[MAX_REVS]; int64_t revs[MAX_REVS], saved[MAX_REVS]; int n; } rev_paths;
 
 static int rev_paths_cb(void *ctx, const bd_catalog_copy_info *c)
 {
     rev_paths *r = ctx;
     if (r->n == MAX_REVS) return 1;
+    for (int i = 0; i < r->n; i++)
+        if (_stricmp(r->paths[i], c->path) == 0) return 0; /* found twice: by its letter and where it was last seen */
     if ((r->paths[r->n] = xstrdup(c->path)) != NULL) {
         r->revs[r->n] = c->revision;
         r->saved[r->n++] = c->saved_ms;
@@ -18397,25 +18549,88 @@ static int rev_paths_cb(void *ctx, const bd_catalog_copy_info *c)
     return 0;
 }
 
+/* The folder a copy is in (its catalog's folder on the drive), or NULL. */
+static char *copy_folder(const char *path)
+{
+    char *folder = xstrdup(path);
+    char *cut = folder ? strrchr(folder, '\\') : NULL, *slash = folder ? strrchr(folder, '/') : NULL;
+    if (slash && (!cut || slash > cut)) cut = slash;
+    if (!cut) {
+        free(folder);
+        return NULL;
+    }
+    *cut = 0;
+    return folder;
+}
+
+/* The copies of the database with this id on another drive. */
+typedef struct { const char *id; rev_paths *rp; } other_copies;
+
+static int other_copy_cb(void *ctx, const bd_catalog_copy_info *c)
+{
+    other_copies *o = ctx;
+    char *folder = strcmp(c->catalog_id, o->id) == 0 ? copy_folder(c->path) : NULL;
+    if (folder) bd_find_catalog_revisions(folder, rev_paths_cb, o->rp);
+    free(folder);
+    return 0;
+}
+
+static int other_root_cb(void *ctx, const bd_media_info *m)
+{
+    if (m->connected && !m->secondary && !m->lost_ms && m->last_root && *m->last_root)
+        bd_find_catalog_copies(m->last_root, other_copy_cb, ctx);
+    return 0;
+}
+
+/* Newest first: the highest revision, then the latest saved. */
+static void sort_revs(rev_paths *rp)
+{
+    for (int i = 1; i < rp->n; i++)
+        for (int k = i; k > 0 && (rp->revs[k] > rp->revs[k - 1] || (rp->revs[k] == rp->revs[k - 1] && rp->saved[k] > rp->saved[k - 1]));
+             k--) {
+            char *p = rp->paths[k];
+            int64_t r = rp->revs[k], sv = rp->saved[k];
+            rp->paths[k] = rp->paths[k - 1];
+            rp->revs[k] = rp->revs[k - 1];
+            rp->saved[k] = rp->saved[k - 1];
+            rp->paths[k - 1] = p;
+            rp->revs[k - 1] = r;
+            rp->saved[k - 1] = sv;
+        }
+}
+
 /* Copy the database copy at path (on a drive) to this PC and open it. When
- * it will not open, the next older copy beside it is tried, and so on; the
- * one that opened is named. Nothing on the drive is changed. */
+ * it will not open, the next older copy is tried, beside it or on any other
+ * drive plugged in, and so on; the one that opened is named. Nothing on a
+ * drive is changed. */
 static int recover_copy(const char *path)
 {
     wchar_t dest[MAX_PATH * 2] = L"";
     if (!save_dialog(dest, MAX_PATH * 2, T(L"Choose where to keep your database on this PC"))) return 0;
     rev_paths rp;
     memset(&rp, 0, sizeof(rp));
-    char *folder = xstrdup(path);
-    char *cut = folder ? strrchr(folder, '\\') : NULL, *slash = folder ? strrchr(folder, '/') : NULL;
-    if (slash && (!cut || slash > cut)) cut = slash;
-    if (cut) {
-        *cut = 0;
+    char *folder = copy_folder(path);
+    if (folder) {
         bd_find_catalog_revisions(folder, rev_paths_cb, &rp);
+        /* The folder is named by the database's id: its copies on the other
+         * drives plugged in are tried too. */
+        const char *id = folder + strlen(folder);
+        while (id > folder && id[-1] != '\\' && id[-1] != '/') id--;
+        other_copies oc = {id, &rp};
+        DWORD mask = GetLogicalDrives();
+        for (int i = 2; i < 26 && *id; i++) {
+            if (!(mask & (1u << i))) continue;
+            wchar_t wroot[4] = {(wchar_t)(L'A' + i), L':', L'\\', 0};
+            char root[4] = {(char)('A' + i), ':', '\\', 0};
+            UINT type = GetDriveTypeW(wroot);
+            if (type == DRIVE_NO_ROOT_DIR || type == DRIVE_UNKNOWN || type == DRIVE_CDROM) continue;
+            bd_find_catalog_copies(root, other_copy_cb, &oc);
+        }
+        if (*id && g_cat && !g_busy) bd_list_media(g_cat, other_root_cb, &oc);
+        sort_revs(&rp);
     }
-    free(folder);
     int start = -1;
-    for (int i = 0; i < rp.n; i++)
+    for (int i = 0; i < rp.n && start < 0; i++)
         if (_stricmp(rp.paths[i], path) == 0) start = i;
     if (start < 0) {
         /* Not among them (a copy named otherwise): only that one. */
@@ -18454,7 +18669,22 @@ static int recover_copy(const char *path)
         g_cat = nc;
         database_opened(dest, 0, 1);
         ok = 1;
-        if (used > start) {
+        char *used_in = used > start ? copy_folder(rp.paths[used]) : NULL;
+        int elsewhere = used_in && folder && _stricmp(used_in, folder) != 0;
+        free(used_in);
+        if (elsewhere) {
+            wchar_t when[64], msg[1400], *wp = widen(rp.paths[used]);
+            format_time_ms(rp.saved[used], when, 64);
+            swprintf(msg, 1400, TN(used - start, L"The newest copy of your database is damaged, so BRODALF opened the next older one, from "
+                                                 L"another drive: revision %lld, saved %ls (%ls).\n\nWhat was backed up after it was saved "
+                                                 L"is not in it. The next scan and backup catch up.",
+                                   L"The newest copies of your database are damaged, so BRODALF opened the newest one that opens, from "
+                                   L"another drive: revision %lld, saved %ls (%ls).\n\nWhat was backed up after it was saved is not in it. "
+                                   L"The next scan and backup catch up."),
+                     (long long)rp.revs[used], when, wp ? wp : L"");
+            free(wp);
+            MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
+        } else if (used > start) {
             wchar_t when[64], msg[900];
             format_time_ms(rp.saved[used], when, 64);
             swprintf(msg, 900, TN(used - start, L"The newest copy of your database on the drive is damaged, so BRODALF opened the next older one: "
@@ -18479,10 +18709,18 @@ static int recover_copy(const char *path)
             MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
         }
     } else if (s != BD_ERR_PASSPHRASE) {
-        show_open_error(s, rp.n - start > 1 ? T(L"No copy of the database on the drive could be opened: each one BRODALF tried is damaged.")
-                                            : T(L"The database could not be recovered."));
+        int drives = 0;
+        for (int i = start + 1; i < rp.n && !drives && folder; i++) {
+            char *in = copy_folder(rp.paths[i]);
+            drives = in && _stricmp(in, folder) != 0;
+            free(in);
+        }
+        show_open_error(s, drives ? T(L"No copy of the database on your drives could be opened: each one BRODALF tried is damaged.")
+                           : rp.n - start > 1 ? T(L"No copy of the database on the drive could be opened: each one BRODALF tried is damaged.")
+                                              : T(L"The database could not be recovered."));
     }
     for (int i = 0; i < rp.n; i++) free(rp.paths[i]);
+    free(folder);
     return ok;
 }
 

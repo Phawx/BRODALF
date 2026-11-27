@@ -1419,6 +1419,7 @@ static void note_missing(bd_catalog *cat, int64_t source_id, int missing, int64_
     if (missing) sqlite3_bind_int64(u, 2, gone);
     sqlite3_step(u);
     sqlite3_finalize(u);
+    if (!missing || gone > 0) bd_root_held_note(cat, source_id, missing ? gone : 0);
 }
 
 /* The user said the files of this root really were deleted: 1, and the

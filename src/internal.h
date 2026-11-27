@@ -214,6 +214,12 @@ int bd_record_version(bd_catalog *cat, int64_t node_id, const char *hash, int64_
  * for the copies of the catalog that go there. */
 int64_t bd_reserve_bytes(bd_catalog *cat);
 
+/* What a scan found of a backup root's folder, for bd_list_roots_left_out:
+ * files_gone > 0, the scan held the root back (most of its files were not
+ * there; settings key held_root.<id>); 0, the scan finished it. Kept in the
+ * catalog so a backup in a later session leaves the root out too. */
+void bd_root_held_note(bd_catalog *cat, int64_t source_id, int64_t files_gone);
+
 /* Catalog settings (the settings table). get: 1 if found. set: 0 on success. */
 int bd_setting_get(bd_catalog *cat, const char *key, char *out, size_t cap);
 int bd_setting_set(bd_catalog *cat, const char *key, const char *value);

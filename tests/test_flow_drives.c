@@ -498,6 +498,7 @@ static int fake_hw(const char *root, bd_drive_hw *hw)
         {"disk-NEW", "Seagate Expansion", "NAB1C2D3", 4000787030016},
         {"disk-SHARED", "USB Bridge", "000000001234", 1000204886016},
         {"disk-BLANK", "Card Reader", "", 64021856256},
+        {"disk-BRIDGE2", "USB Bridge", "000000001234", 500107862016},
     };
     for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
         if (!strstr(root, disks[i].mark)) continue;
@@ -704,6 +705,113 @@ static void test_lost_drive_takes_old_versions(void)
     bd_catalog_close(cat);
 }
 
+/* ---- D10: a wiped drive set up again ---------------------------------------- */
+
+static void set_seen_days_ago(bd_catalog *cat, int64_t id, int days)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET last_seen_ms=?2 WHERE id=?1", -1, &q, NULL) != SQLITE_OK) { failures++; return; }
+    sqlite3_bind_int64(q, 1, id);
+    sqlite3_bind_int64(q, 2, bd_now_ms() - (int64_t)days * 24 * 3600 * 1000);
+    CHECK(sqlite3_step(q) == SQLITE_DONE);
+    sqlite3_finalize(q);
+}
+
+static int has_id(const int64_t *ids, int n, int64_t id)
+{
+    for (int i = 0; i < n; i++)
+        if (ids[i] == id) return 1;
+    return 0;
+}
+
+static void test_wiped_drive_set_up_again(void)
+{
+    bd_catalog *cat;
+    bd_mkdirs(at("d10"));
+    REQUIRE_OK(bd_catalog_create(at("d10/db.brodalf"), &cat), NULL);
+    make_files("d10-src/Docs", 3, "d10");
+    int64_t src, stick, recent, bridge, bridge2, elements, id, ids[8];
+    bd_scan_stats ss;
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_source_add(cat, at("d10-src/Docs"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    /* A stick in a card reader that gives no serial number. */
+    bd_mkdirs(at("d10/disk-BLANK-1"));
+    REQUIRE_OK(bd_media_init(cat, at("d10/disk-BLANK-1"), "Stick", 0, &stick), cat);
+    REQUIRE_OK(bd_backup(cat, stick, 0, &bs, quiet, NULL), cat);
+    bd_mkdirs(at("d10/recent"));
+    REQUIRE_OK(bd_media_init(cat, at("d10/recent"), "Recent", 0, &recent), cat);
+    bd_media_disconnect(cat, stick);
+    bd_media_disconnect(cat, recent);
+    set_seen_days_ago(cat, stick, BD_AWAY_DAYS + 10);
+    CHECK(no_copy(cat) == 0);
+
+    /* It is reformatted and comes back: its hardware says nothing. While
+     * its old place still holds its ID, it is there, not wiped. */
+    bd_mkdirs(at("d10/disk-BLANK-2"));
+    CHECK(!has_id(ids, bd_media_maybe_erased(cat, at("d10/disk-BLANK-2"), "Stick", ids, 8), stick));
+    CHECK(rename(at("d10/disk-BLANK-1"), at("d10/stick-before")) == 0);
+    CHECK(bd_media_match_disk(cat, at("d10/disk-BLANK-2"), &id) == BD_ERR_NOT_FOUND);
+    int n = bd_media_maybe_erased(cat, at("d10/disk-BLANK-2"), "Spare", ids, 8);
+    CHECK(n == 1 && ids[0] == stick); /* about the same size (the same file system here) */
+    CHECK(!has_id(ids, n, recent));   /* seen lately: not wiped, only not plugged in */
+    /* By name too, whatever the case and spaces. */
+    n = bd_media_maybe_erased(cat, at("d10/disk-BLANK-2"), " stick ", ids, 8);
+    CHECK(n >= 1 && ids[0] == stick);
+    /* A drive marked lost is not offered. */
+    REQUIRE_OK(bd_media_mark_lost(cat, stick, "lost"), cat);
+    CHECK(bd_media_maybe_erased(cat, at("d10/disk-BLANK-2"), "Stick", ids, 8) == 0);
+    REQUIRE_OK(bd_media_found(cat, stick), cat);
+    set_seen_days_ago(cat, stick, BD_AWAY_DAYS + 10);
+    CHECK(bd_media_maybe_erased(cat, at("d10/disk-BLANK-2"), "Stick", ids, 8) == 1);
+    /* Yes, it is that drive: its copies stop counting, and it is backed up
+     * to again under its own name. */
+    REQUIRE_OK(bd_media_erased(cat, stick, at("d10/disk-BLANK-2")), cat);
+    CHECK(no_copy(cat) == 3);
+    REQUIRE_OK(bd_backup(cat, stick, 0, &bs, quiet, NULL), cat);
+    CHECK(no_copy(cat) == 0);
+    /* Plugged in now: not offered for another disk. */
+    bd_mkdirs(at("d10/disk-BLANK-3"));
+    CHECK(!has_id(ids, bd_media_maybe_erased(cat, at("d10/disk-BLANK-3"), "Stick", ids, 8), stick));
+
+    /* A disk whose serial number tells it apart is not an old drive, even
+     * of the same size and name. */
+    bd_mkdirs(at("d10/disk-ORIG"));
+    REQUIRE_OK(bd_media_init(cat, at("d10/disk-ORIG"), "Elements", 0, &elements), cat);
+    bd_media_disconnect(cat, elements);
+    set_seen_days_ago(cat, elements, BD_AWAY_DAYS + 1);
+    bd_mkdirs(at("d10/disk-NEW"));
+    n = bd_media_maybe_erased(cat, at("d10/disk-NEW"), "Elements", ids, 8);
+    CHECK(!has_id(ids, n, elements));
+    /* The same disk wiped comes first, whatever it is called now. */
+    char *away = bd_sprintf("%s-old", at("d10/disk-ORIG"));
+    CHECK(rename(at("d10/disk-ORIG"), away) == 0);
+    free(away);
+    bd_mkdirs(at("d10/disk-ORIG"));
+    CHECK(bd_media_match_disk(cat, at("d10/disk-ORIG"), &id) == BD_OK && id == elements);
+    n = bd_media_maybe_erased(cat, at("d10/disk-ORIG"), "Stick", ids, 8);
+    CHECK(n >= 1 && ids[0] == elements);
+
+    /* A USB bridge that gives every disk in it the same serial number: a
+     * new disk of the same size must not be taken for the old one. */
+    bd_mkdirs(at("d10/disk-SHARED-a"));
+    REQUIRE_OK(bd_media_init(cat, at("d10/disk-SHARED-a"), "Bridge A", 0, &bridge), cat);
+    bd_media_disconnect(cat, bridge);
+    bd_mkdirs(at("d10/disk-SHARED-b"));
+    CHECK(bd_media_match_disk(cat, at("d10/disk-SHARED-b"), &id) == BD_OK && id == bridge); /* not known to be shared yet */
+    bd_mkdirs(at("d10/disk-BRIDGE2"));
+    REQUIRE_OK(bd_media_init(cat, at("d10/disk-BRIDGE2"), "Bridge B", 0, &bridge2), cat);
+    bd_media_disconnect(cat, bridge2);
+    CHECK(bd_media_match_disk(cat, at("d10/disk-SHARED-b"), &id) == BD_ERR_NOT_FOUND);
+    n = bd_media_maybe_erased(cat, at("d10/disk-SHARED-b"), "New", ids, 8);
+    CHECK(!has_id(ids, n, bridge)); /* seen lately, and the hardware no longer counts */
+    set_seen_days_ago(cat, bridge, BD_AWAY_DAYS + 1);
+    CHECK(rename(at("d10/disk-SHARED-a"), at("d10/bridge-before")) == 0);
+    n = bd_media_maybe_erased(cat, at("d10/disk-SHARED-b"), "New", ids, 8);
+    CHECK(has_id(ids, n, bridge)); /* by size alone, as for a disk that says nothing */
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -722,6 +830,7 @@ int main(void)
     test_key_reaches_drives();
     test_cloned_drive();
     test_lost_drive_takes_old_versions();
+    test_wiped_drive_set_up_again();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

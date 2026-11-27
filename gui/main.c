@@ -8548,6 +8548,10 @@ static int recover_copy(const char *path);
 /* The disk is the physical disk of one of the drives (its model, serial
  * number and size match) but has no BRODALF folder: most likely that drive,
  * wiped or reformatted. 1 if the user answered, 0 to ask as for any disk. */
+/* The drive the user said a disk is not, wiped (offer_erased_drive), so
+ * setting the disk up does not ask about it again. */
+static int64_t g_not_wiped_id;
+
 static int offer_erased_drive(const wchar_t *root, const char *root8)
 {
     int64_t id = 0;
@@ -8588,7 +8592,13 @@ static int offer_erased_drive(const wchar_t *root, const char *root8)
     tc.nDefaultButton = 662;
     int pressed = 662;
     if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return 1;
-    if (pressed == 661) return 0;
+    if (pressed == 661) {
+        g_not_wiped_id = id;
+        wchar_t line[900];
+        swprintf(line, 900, T(L"If %ls was wiped or is gone for good, mark it lost in Drives...: until then its copies keep counting."), name);
+        log_append(line);
+        return 0;
+    }
     if (pressed != 660) return 1;
     /* Its copies stop counting: asked twice, like marking a drive lost. */
     wchar_t msg[1200];
@@ -10037,6 +10047,86 @@ static void add_disk(void)
     if (root) add_disk_at(root);
 }
 
+/* Before the disk at root is set up as a new drive called label: whether
+ * it is a known drive, wiped (bd_media_maybe_erased), as a disk's hardware
+ * often says too little to tell. The drive the user picked, with its
+ * copies marked missing on a second yes; 0 a new drive; -1 cancelled. */
+static int64_t offer_maybe_erased(const char *root8, const char *label8)
+{
+    int64_t found[4], ids[3];
+    int nf = bd_media_maybe_erased(g_cat, root8, label8, found, 4), n = 0;
+    for (int i = 0; i < nf && n < 3; i++)
+        if (found[i] != g_not_wiped_id) ids[n++] = found[i];
+    if (n == 0) return 0;
+    int64_t hw_id = 0;
+    if (bd_media_match_disk(g_cat, root8, &hw_id) != BD_OK) hw_id = 0;
+    media_one o[3];
+    wchar_t name[3][600], text[3][1400], *w = widen(root8);
+    TASKDIALOG_BUTTON b[4];
+    int nb = 0;
+    for (int i = 0; i < n; i++) {
+        memset(&o[i], 0, sizeof(o[i]));
+        o[i].id = ids[i];
+        bd_list_media(g_cat, media_one_cb, &o[i]);
+        if (!o[i].found) continue;
+        wchar_t seen[96], size[64] = L"", line[400];
+        drive_name(o[i].label, o[i].location, name[i], 600);
+        format_time_ms(o[i].info.last_seen_ms, seen, 96);
+        if (o[i].info.total_bytes > 0) format_bytes(o[i].info.total_bytes, size, 64);
+        if (ids[i] == hw_id)
+            swprintf(line, 400, T(L"The same model, serial number and size as this disk. Last plugged in %ls."), seen);
+        else if (*size)
+            swprintf(line, 400, T(L"%ls. Last plugged in %ls."), size, seen);
+        else
+            swprintf(line, 400, T(L"Last plugged in %ls."), seen);
+        swprintf(text[i], 1400, TN(o[i].info.copies, L"%ls\n%ls It holds %lld copy.", L"%ls\n%ls It holds %lld copies."), name[i], line,
+                 (long long)o[i].info.copies);
+        b[nb].nButtonID = 4206 + i;
+        b[nb].pszButtonText = text[i];
+        nb++;
+    }
+    if (nb == 0) { free(w); return 0; }
+    b[nb].nButtonID = 4209;
+    b[nb].pszButtonText = T(L"No, set it up as a new drive\nThe drives above keep counting their copies until you mark one lost.");
+    nb++;
+    wchar_t content[1200];
+    swprintf(content, 1200, T(L"The disk at %ls has no BRODALF folder. If it is one of these drives, reformatted or erased, the copies "
+                              L"BRODALF recorded on it are gone, but they still count toward the copies you want until it is set up "
+                              L"again as that drive. Choose it, and BRODALF puts its folder back and backs up to it again. Nothing else "
+                              L"on the disk is touched."),
+             w ? w : L"");
+    free(w);
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_WARNING_ICON;
+    tc.pszMainInstruction = TN(nb - 1, L"Is this disk your drive below, wiped?", L"Is this disk one of your drives below, wiped?");
+    tc.pszContent = content;
+    tc.cButtons = (UINT)nb;
+    tc.pButtons = b;
+    tc.nDefaultButton = 4209;
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) || pressed == IDCANCEL) return -1;
+    if (pressed == 4209) return 0;
+    int k = pressed - 4206;
+    if (k < 0 || k >= n || !o[k].found) return -1;
+    /* Its copies stop counting: asked twice, like marking a drive lost. */
+    wchar_t msg[1200];
+    swprintf(msg, 1200, TN(o[k].info.copies, L"Mark the %lld copy on %ls missing?\n\nIt stops counting toward the copies you want, and the "
+                                             L"next backup copies that file to the disk again. If the disk was not wiped after all, choose Cancel.",
+                           L"Mark the %lld copies on %ls missing?\n\nThey stop counting toward the copies you want, and the "
+                           L"next backup copies those files to the disk again. If the disk was not wiped after all, choose Cancel."),
+             (long long)o[k].info.copies, name[k]);
+    if (ask_verbs(g_main, msg, MB_ICONWARNING | MB_YESNO, T(L"Mark them missing"), T(L"Cancel")) != IDYES) return -1;
+    if (o[k].info.encrypted && !unlock_ui(T(L"Enter the passphrase to back up to an encrypted drive."))) return -1;
+    return ids[k];
+}
+
 /* Set up a disk (or a folder on one) as backup storage and back up to it.
  * Takes root. */
 static void add_disk_at(char *root)
@@ -10062,6 +10152,17 @@ static void add_disk_at(char *root)
             if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }
             j->label = narrow(g_label_buf);
             j->location = narrow(g_label_location);
+            int64_t wiped = offer_maybe_erased(j->root, j->label);
+            if (wiped < 0) { job_free(j); return; }
+            if (wiped > 0) {
+                /* That drive again: it keeps its own name, place and encryption. */
+                free(j->label);
+                free(j->location);
+                j->label = j->location = NULL;
+                j->erased_id = wiped;
+                enqueue(j);
+                return;
+            }
             if (g_label_encrypt) {
                 int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(T(L"Enter the passphrase to set up an encrypted drive."))
                                                           : set_passphrase_ui();
@@ -18316,6 +18417,7 @@ static void close_database(void)
     g_n_check_offered = 0;
     g_n_dbcopy_offered = 0;
     g_n_suspect_offered = 0;
+    g_not_wiped_id = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");
     end_search();

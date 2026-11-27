@@ -821,10 +821,23 @@ bd_status bd_media_lost_impact(bd_catalog *cat, int64_t media_id, bd_lost_impact
 /* A disk at root that is not set up for this catalog, but whose model,
  * serial number and size match a known drive that is not plugged in now
  * and not marked lost or broken: most likely that drive, wiped or
- * reformatted. *media_id is that drive. BD_ERR_NOT_FOUND if none matches
- * or the disk says nothing about itself, BD_ERR_EXISTS if it is set up for
- * this catalog. Nothing is changed. */
+ * reformatted. *media_id is that drive. BD_ERR_NOT_FOUND if none matches,
+ * the disk says nothing about itself or its serial number is known to be
+ * shared by other disks, BD_ERR_EXISTS if it is set up for this catalog.
+ * Nothing is changed. */
 bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_id);
+/* Before a disk at root is set up as a new drive called label: the known
+ * drives it may be, wiped or reformatted, most likely first (up to max in
+ * ids; returns how many). First the one bd_media_match_disk gives, then,
+ * as a disk's hardware often says too little (many USB adapters and card
+ * readers report no serial number), drives not plugged in and not seen for
+ * BD_AWAY_DAYS days, not marked lost or broken, with the same name or
+ * about the same size. Left out: a drive whose serial number tells it
+ * apart from this disk, and one whose last place still holds its ID file
+ * (it is there, only not plugged in as far as this session knows).
+ * Changes nothing: bd_media_erased is the yes. */
+#define BD_AWAY_DAYS 30
+int bd_media_maybe_erased(bd_catalog *cat, const char *root, const char *label, int64_t *ids, int max);
 /* The user said the disk at root is that drive, erased. Every copy
  * recorded on it is marked missing, so the files are backed up again and
  * those copies stop counting; its ID file is written back on the disk (a

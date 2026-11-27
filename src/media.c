@@ -538,6 +538,91 @@ bd_status bd_media_lost_impact(bd_catalog *cat, int64_t media_id, bd_lost_impact
     return BD_OK;
 }
 
+/* SQL: a serial number known to be shared by more than one disk: recorded
+ * for drives of another model or size. Two partitions of one disk share
+ * model, serial and size. */
+#define SERIAL_SHARED(serial, model, bytes)                                                                       \
+    "(EXISTS(SELECT 1 FROM media_hardware sx WHERE upper(trim(sx.serial))=upper(trim(" serial "))"                  \
+    "  AND (lower(trim(COALESCE(sx.model,'')))<>lower(trim(COALESCE(" model ",'')))"                                \
+    "   OR (COALESCE(sx.disk_bytes,0)>0 AND COALESCE(" bytes ",0)>0 AND sx.disk_bytes<>" bytes ")))"                 \
+    " OR EXISTS(SELECT 1 FROM media_hardware sx, media_hardware sy WHERE upper(trim(sx.serial))=upper(trim(" serial "))" \
+    "  AND upper(trim(sy.serial))=upper(trim(" serial ")) AND sx.media_id<>sy.media_id"                             \
+    "  AND (lower(trim(COALESCE(sx.model,'')))<>lower(trim(COALESCE(sy.model,'')))"                                 \
+    "   OR (COALESCE(sx.disk_bytes,0)>0 AND COALESCE(sy.disk_bytes,0)>0 AND sx.disk_bytes<>sy.disk_bytes))))"
+/* SQL: a serial number that tells one disk from another (as BD_SQL_HW_KEY). */
+#define SERIAL_TELLS(serial) "(length(trim(" serial "))>=4 AND trim(" serial ",'0 ')<>'')"
+
+/* 1 if the drive's last place, another folder than root, still holds its
+ * ID file: it is there, only not plugged in as far as this session knows
+ * (two folders or partitions of one disk read as the same hardware). */
+static int still_there(bd_catalog *cat, int64_t id, const char *root)
+{
+    sqlite3_stmt *q;
+    char uuid[64] = "", *last = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT uuid, last_root FROM media WHERE id=?", -1, &q, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(q, 1, id);
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 1)) {
+        snprintf(uuid, sizeof(uuid), "%s", (const char *)sqlite3_column_text(q, 0));
+        last = bd_strdup((const char *)sqlite3_column_text(q, 1));
+    }
+    sqlite3_finalize(q);
+    int yes = last && *last && !same_root(last, root) && holds_media_id(cat, last, uuid);
+    free(last);
+    return yes;
+}
+
+int bd_media_maybe_erased(bd_catalog *cat, const char *root, const char *label, int64_t *ids, int max)
+{
+    if (max <= 0) return 0;
+    int n = 0;
+    int64_t hw_id = 0;
+    if (bd_media_match_disk(cat, root, &hw_id) == BD_OK && hw_id && !still_there(cat, hw_id, root)) ids[n++] = hw_id;
+    bd_drive_hw hw;
+    int have_hw = (bd_test_hw_read ? bd_test_hw_read(root, &hw) : bd_drive_hw_read(root, &hw)) == 0;
+    int64_t total = 0, freeb = 0;
+    if (bd_disk_space(root, &total, &freeb) != 0) total = 0;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT m.id FROM media m LEFT JOIN media_hardware h ON h.media_id=m.id"
+                           " WHERE m.kind='drive' AND m.retired_ms IS NULL AND m.secondary=0 AND m.id<>?6"
+                           " AND NOT EXISTS(SELECT 1 FROM temp.connected k WHERE k.media_id=m.id)"
+                           " AND COALESCE(m.last_seen_ms,0)<?3"
+                           " AND ((?1<>'' AND lower(trim(m.label))=lower(trim(?1)))"
+                           "  OR (?2>0 AND m.total_bytes>0 AND abs(m.total_bytes-?2)*50<=?2)"
+                           "  OR (?7>0 AND h.disk_bytes>0 AND h.disk_bytes=?7))"
+                           /* A disk that tells itself apart is not a drive that was another disk. */
+                           " AND NOT (?4<>'' AND " SERIAL_TELLS("?4") " AND h.serial IS NOT NULL AND " SERIAL_TELLS("h.serial")
+                           "  AND upper(trim(h.serial))<>upper(trim(?4)) AND NOT " SERIAL_SHARED("?4", "?8", "?7") ")"
+                           " ORDER BY (?1<>'' AND lower(trim(m.label))=lower(trim(?1))) DESC, COALESCE(m.last_seen_ms,0) DESC",
+                           -1, &q, NULL) != SQLITE_OK) {
+        bd_fail_db(cat, "compare the disk");
+        return n;
+    }
+    sqlite3_bind_text(q, 1, label ? label : "", -1, SQLITE_STATIC);
+    sqlite3_bind_int64(q, 2, total);
+    sqlite3_bind_int64(q, 3, bd_now_ms() - (int64_t)BD_AWAY_DAYS * 24 * 3600 * 1000);
+    sqlite3_bind_text(q, 4, have_hw ? hw.serial : "", -1, SQLITE_STATIC);
+    sqlite3_bind_int64(q, 6, hw_id);
+    sqlite3_bind_int64(q, 7, have_hw && hw.disk_bytes > 0 ? hw.disk_bytes : 0);
+    sqlite3_bind_text(q, 8, have_hw ? hw.model : "", -1, SQLITE_STATIC);
+    int64_t *maybe = NULL;
+    int nm = 0, cap = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        if (nm == cap) {
+            int64_t *more = realloc(maybe, (size_t)(cap = cap ? cap * 2 : 16) * sizeof(*maybe));
+            if (!more) break;
+            maybe = more;
+        }
+        maybe[nm++] = sqlite3_column_int64(q, 0);
+    }
+    sqlite3_finalize(q);
+    /* Read after the query: still_there runs queries of its own. */
+    for (int i = 0; i < nm && n < max; i++)
+        if (!still_there(cat, maybe[i], root)) ids[n++] = maybe[i];
+    free(maybe);
+    return n;
+}
+
 bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_id)
 {
     *media_id = 0;
@@ -551,11 +636,14 @@ bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_
     int rc = bd_test_hw_read ? bd_test_hw_read(root, &hw) : bd_drive_hw_read(root, &hw);
     if (rc != 0) return bd_fail(cat, BD_ERR_NOT_FOUND, "the disk at %s says nothing about itself", root);
     sqlite3_stmt *q;
+    /* Not when the serial number is known to be shared: some USB adapters
+     * give every disk in them the same one, so a new disk of the same size
+     * would match. */
     if (sqlite3_prepare_v2(cat->db,
                            "WITH h(model, serial, disk_bytes) AS (SELECT ?1, ?2, ?3)"
                            " SELECT m.id FROM media m, h WHERE m.kind='drive' AND m.retired_ms IS NULL"
                            " AND NOT EXISTS(SELECT 1 FROM temp.connected k WHERE k.media_id=m.id)"
-                           " AND " BD_SQL_HW_KEY("h") "=" BD_SQL_DISK("m.id") " ORDER BY m.id LIMIT 1",
+                           " AND " BD_SQL_HW_KEY("h") "=" BD_SQL_DISK("m.id") " AND NOT " SERIAL_SHARED("h.serial", "h.model", "h.disk_bytes") " ORDER BY m.id LIMIT 1",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "compare the disk");
     sqlite3_bind_text(q, 1, hw.model, -1, SQLITE_STATIC);

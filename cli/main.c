@@ -56,10 +56,14 @@ static void usage(void)
          "                                             or one root's own list)\n"
          "\n"
          "Drives\n"
-         "  drive    <catalog> <root> <label> [--encrypt [--hide-names]] [--location TEXT]\n"
+         "  drive    <catalog> <root> <label> [--encrypt [--hide-names]] [--location TEXT] [--new | --wiped NAME]\n"
          "                                             set up a drive or folder as a backup drive; --hide-names\n"
          "                                             also hides file and folder names on an encrypted drive\n"
-         "                                             (a catalog with such a drive needs BRODALF 0.9.0 or newer)\n"
+         "                                             (a catalog with such a drive needs BRODALF 0.9.0 or newer).\n"
+         "                                             First it lists drives the disk may be, wiped (the same disk,\n"
+         "                                             or not seen for 30 days with the same name or size):\n"
+         "                                             --wiped NAME sets it up again as that drive, its copies marked\n"
+         "                                             missing; --new sets it up as a new drive all the same\n"
          "  drives   <catalog>                         every drive: make, model, serial, health, where it is kept\n"
          "  status   <catalog> [label]                 where each drive stands: what it holds, its last backup and check\n"
          "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
@@ -370,7 +374,8 @@ static const char *opt(int argc, char **argv, const char *name)
 static int positional(int argc, char **argv, const char **out, int cap)
 {
     static const char *const with_value[] = {"--drive", "--root", "--source", "--path", "--dest", "--location", "--days",
-                                             "--add", "--set", "--accept", "--sheet", "--id", "--gone"};
+                                             "--add", "--set", "--accept", "--sheet", "--id", "--gone",
+                                             "--wiped"};
     int n = 0;
     for (int i = 3; i < argc; i++) {
         int takes = 0;
@@ -596,6 +601,67 @@ static void format_day(int64_t ms, char *out, size_t cap)
     time_t t = (time_t)(ms / 1000);
     struct tm *tm = localtime(&t);
     if (!tm || !strftime(out, cap, "%Y-%m-%d %H:%M", tm)) snprintf(out, cap, "?");
+}
+
+typedef struct { int64_t id; char label[256]; int64_t last_seen_ms, total_bytes, copies; int encrypted, secondary, lost, found; } wiped_ctx;
+
+static int wiped_cb(void *ctx, const bd_media_info *m)
+{
+    wiped_ctx *w = ctx;
+    if (m->media_id != w->id) return 0;
+    snprintf(w->label, sizeof(w->label), "%s", m->label);
+    w->last_seen_ms = m->last_seen_ms;
+    w->total_bytes = m->total_bytes;
+    w->copies = m->copies;
+    w->encrypted = m->encrypted;
+    w->secondary = m->secondary;
+    w->lost = m->lost_ms > 0;
+    w->found = 1;
+    return 1;
+}
+
+/* Before the disk at root is set up as a new drive: the known drives it
+ * may be, wiped (bd_media_maybe_erased). With a terminal the person types
+ * the one it is (that is the yes to mark its copies missing) or nothing
+ * for a new drive; without one nothing is set up until --wiped or --new
+ * says which. 0 to go on (*wiped the drive picked, or 0), 1 to stop. */
+static int ask_maybe_erased(bd_catalog *cat, const char *root, const char *label, int64_t *wiped)
+{
+    *wiped = 0;
+    int64_t ids[5], hw_id = 0;
+    int n = bd_media_maybe_erased(cat, root, label, ids, 5);
+    if (n <= 0) return 0;
+    if (n > 5) n = 5;
+    if (bd_media_match_disk(cat, root, &hw_id) != BD_OK) hw_id = 0;
+    wiped_ctx w[5];
+    fprintf(stderr, "The disk at %s has no BRODALF folder. It may be one of these drives, reformatted or erased:\n", root);
+    for (int i = 0; i < n; i++) {
+        memset(&w[i], 0, sizeof(w[i]));
+        w[i].id = ids[i];
+        bd_list_media(cat, wiped_cb, &w[i]);
+        char seen[32], size[32] = "";
+        format_day(w[i].last_seen_ms, seen, sizeof(seen));
+        if (w[i].total_bytes > 0) human_bytes(w[i].total_bytes, size, sizeof(size));
+        fprintf(stderr, "  \"%s\"%s%s, last plugged in %s, %lld copies%s\n", w[i].label, size[0] ? ", " : "", size, w[i].last_seen_ms > 0 ? seen : "never",
+                (long long)w[i].copies, ids[i] == hw_id ? " (the same model, serial number and size as this disk)" : "");
+    }
+    fprintf(stderr, "If it is, the copies recorded on it are gone but still count toward the copies you want.\n");
+    if (!isatty(fileno(stdin))) {
+        fprintf(stderr, "brodalf: nothing was set up. Add --wiped NAME --yes if the disk is that drive, wiped (its copies are\n"
+                        "marked missing and it is backed up to again as that drive), or --new to set it up as a new drive.\n");
+        return 1;
+    }
+    char buf[512];
+    fprintf(stderr, "Type the name of the drive it is, to mark its copies missing and back up to it again as that drive,\n"
+                    "or press Enter to set it up as a new drive: ");
+    fflush(stderr);
+    if (!fgets(buf, sizeof(buf), stdin)) return 1;
+    buf[strcspn(buf, "\r\n")] = '\0';
+    if (!buf[0]) return 0;
+    for (int i = 0; i < n; i++)
+        if (strcmp(buf, w[i].label) == 0) { *wiped = ids[i]; return 0; }
+    fprintf(stderr, "brodalf: \"%s\" is not one of them; nothing was set up\n", buf);
+    return 1;
 }
 
 static void print_when(const char *what, int64_t ms)
@@ -2092,6 +2158,45 @@ static int run(int argc, char **argv)
         int64_t id;
         int hide = has_flag(argc, argv, "--hide-names");
         int encrypt = has_flag(argc, argv, "--encrypt") || hide;
+        const char *wiped_label = opt(argc, argv, "--wiped");
+        if (wiped_label && has_flag(argc, argv, "--new")) return refuse(cat, "give --wiped or --new, not both");
+        if (wiped_label && encrypt)
+            return refuse(cat, "a drive set up again with --wiped keeps its own encryption: leave out --encrypt and --hide-names");
+        int64_t wiped = 0;
+        if (wiped_label) {
+            if (!(wiped = media_id_by_label(cat, wiped_label))) { bd_catalog_close(cat); return 1; }
+        } else if (!has_flag(argc, argv, "--new")) {
+            int r = ask_maybe_erased(cat, pos[0], pos[1], &wiped);
+            if (r != 0) { bd_catalog_close(cat); return 1; }
+        }
+        if (wiped) {
+            wiped_ctx w;
+            memset(&w, 0, sizeof(w));
+            w.id = wiped;
+            bd_list_media(cat, wiped_cb, &w);
+            if (!w.found || w.secondary) return refuse(cat, "--wiped takes the name of a backup drive (drives lists them)");
+            if (w.lost) {
+                char m[700];
+                snprintf(m, sizeof(m), "\"%s\" is marked lost or broken: drive-found \"%s\" first", w.label, w.label);
+                return refuse(cat, m);
+            }
+            if (wiped_label) {
+                char q[1200];
+                snprintf(q, sizeof(q), "Set up the disk at %s again as \"%s\", wiped? The %lld copies recorded on it are marked missing:\n"
+                                       "they stop counting, and the next backup copies those files to it again. Nothing else on the disk is touched.",
+                         pos[0], w.label, (long long)w.copies);
+                if (!confirm_typed(argc, argv, q, w.label)) { bd_catalog_close(cat); return 1; }
+            }
+            if (w.encrypted && ensure_unlocked(cat) != 0) { bd_catalog_close(cat); return 1; }
+            if (bd_media_erased(cat, wiped, pos[0]) != BD_OK) return refuse(cat, bd_catalog_error(cat));
+            const char *location = opt(argc, argv, "--location");
+            if (location && bd_media_set_location(cat, wiped, location) != BD_OK) return die(cat, "cannot set location");
+            if (g_json) { J_OBJ(NULL); j_int("id", wiped); j_str("label", w.label); j_bool("wiped", 1); j_int("copies_missing", w.copies); J_END(); }
+            else printf("set up %s again as \"%s\"; its %lld old copies are marked missing, and the next backup copies those files to it again\n",
+                        pos[0], w.label, (long long)w.copies);
+            save = 1;
+            goto drive_done;
+        }
         if (encrypt && !bd_catalog_has_passphrase(cat)) {
             char pass[512];
             if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
@@ -2109,6 +2214,7 @@ static int run(int argc, char **argv)
         if (g_json) { J_OBJ(NULL); j_int("id", id); j_str("label", pos[1]); j_bool("encrypted", encrypt); j_bool("hide_names", hide); J_END(); }
         else printf("set up %s as \"%s\"%s\n", pos[0], pos[1], hide ? ", encrypted, with file and folder names hidden" : encrypt ? ", encrypted" : "");
         save = 1;
+    drive_done:;
     } else if (strcmp(cmd, "option") == 0) {
         if (npos >= 2) {
             if (bd_option_set(cat, pos[0], atoi(pos[1])) != BD_OK) return refuse(cat, bd_catalog_error(cat));

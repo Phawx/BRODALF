@@ -247,6 +247,13 @@ typedef struct {
     /* Of roots_missing, those waiting for their disk to be plugged in
      * (bd_source_wait_for_disk): the caller need not ask about them. */
     int64_t roots_waiting;
+    /* Of files_online_only, those the catalog knew whose size or time
+     * changed: edited elsewhere, so the newest version is only in the
+     * cloud. Counted at risk until they are on this PC and scanned. */
+    int64_t files_cloud_changed;
+    /* Of skipped_links, those leading to a folder or file no backup root
+     * holds: what is behind them is not backed up (bd_list_links). */
+    int64_t links_not_followed;
 } bd_scan_stats;
 
 /* The skip lists: files and folders a scan leaves out. One list for the
@@ -301,6 +308,23 @@ bd_status bd_source_accept_gone(bd_catalog *cat, int64_t source_id);
  * cannot be found, scans skip it quietly (bd_scan_stats.roots_waiting).
  * The first scan that finds it again ends the wait. Kept in the catalog. */
 bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on);
+
+/* The links (symbolic links, junctions) the last scan found in the backup
+ * roots and did not follow, whose target no backup root holds; the old
+ * hidden "My Documents" kind are left out. Adding the target as a backup
+ * root backs up what is behind one. */
+typedef struct {
+    int64_t source_id;
+    const char *source_name;
+    const char *rel_path;
+    const char *target; /* where it leads, as a full path */
+    int is_dir;
+} bd_link_info;
+typedef int (*bd_link_fn)(void *ctx, const bd_link_info *info);
+bd_status bd_list_links(bd_catalog *cat, bd_link_fn fn, void *ctx);
+/* Where the link at path leads (a full path, malloc'd), or NULL if path is
+ * not a link or leads nowhere. */
+char *bd_path_link_target(const char *path);
 
 /* Files a bit-rot scan found changed without their size or time changing.
  * They are kept in the catalog, so they are still listed after it is
@@ -793,6 +817,10 @@ typedef struct {
     const char *older_on;    /* files with no good copy of the current version: where an older one is; "" if none */
     int64_t files_backed_up; /* folders: files inside with a good copy of the current version on a drive that counts */
     int64_t subfolders;      /* folders: how many folders are directly in it, deleted ones too */
+    /* Files the last scan found online-only (a cloud file not on this PC):
+     * 1 never read, 2 changed in the cloud since its last backup, so the
+     * newest version is not backed up (bd_risk_info.online_only). */
+    int online_only;
 } bd_node_info;
 
 typedef struct {
@@ -1153,6 +1181,11 @@ typedef struct {
     int unknown_place;  /* one of those places is drives with no "kept in" set */
     int older_copies;   /* the current version has no good copy anywhere, but an
                            older version has: the file changed since its last backup */
+    /* A cloud file that is online-only on this PC (OneDrive, Dropbox): 1
+     * never on this PC, so never read; 2 changed in the cloud since its
+     * last backup. Set it to "Always keep on this device" and scan again to
+     * back it up. 0 for any other file. */
+    int online_only;
 } bd_risk_info;
 
 typedef struct {

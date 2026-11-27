@@ -14,21 +14,31 @@
 
 /* Every live file with its copies and places; ?3 limits it to one source.
  * "older" means the file changed since its last backup: no good copy of the
- * current version anywhere, but an older version has one. */
+ * current version anywhere, but an older version has one. A cloud file
+ * edited elsewhere (temp.online_only, changed) has a newer version than the
+ * catalog's current one, only in the cloud: it counts as changed since its
+ * last backup, with no copies of that version. "oo" is 1 for a cloud file
+ * never on this PC, 2 for one changed in the cloud. */
 #define FILES_CTE                                                                                        \
-    "WITH f AS (SELECT n.id, n.source_id, n.rel_path, n.size, n.current_version_id AS v,"                \
+    "WITH g AS (SELECT n.id, n.source_id, n.rel_path, n.size, n.current_version_id AS v,"                \
+    "  COALESCE((SELECT o.changed+1 FROM temp.online_only o WHERE o.node_id=n.id),0) AS oo,"             \
     "  (SELECT COUNT(DISTINCT c.media_id) FROM copies c"                                                 \
-    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp,"     \
+    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp0,"    \
     "  (SELECT COUNT(DISTINCT " PLACE("m") ") FROM copies c JOIN media m ON m.id=c.media_id"             \
-    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl,"     \
+    "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl0,"    \
     "  EXISTS(SELECT 1 FROM copies c JOIN media m ON m.id=c.media_id"                                    \
     "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c")                \
-    "    AND m.kind='drive' AND trim(COALESCE(m.location,''))='') AS unk,"                               \
+    "    AND m.kind='drive' AND trim(COALESCE(m.location,''))='') AS unk0,"                              \
     "  (NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=n.current_version_id AND c.state='ok')"     \
     "   AND EXISTS(SELECT 1 FROM copies c JOIN versions ov ON ov.id=c.version_id"                        \
-    "    WHERE ov.node_id=n.id AND ov.id IS NOT n.current_version_id AND c.state='ok')) AS older"        \
+    "    WHERE ov.node_id=n.id AND ov.id IS NOT n.current_version_id AND c.state='ok')) AS older0"       \
     "  FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND (?3=0 OR n.source_id=?3)"                       \
     "  AND " BD_SQL_ACTIVE("n") "),"                                                                     \
+    " f AS (SELECT id, source_id, rel_path, size, v, oo,"                                                \
+    "  CASE WHEN oo=2 THEN 0 ELSE cp0 END AS cp, CASE WHEN oo=2 THEN 0 ELSE pl0 END AS pl,"              \
+    "  CASE WHEN oo=2 THEN 0 ELSE unk0 END AS unk,"                                                      \
+    "  CASE WHEN oo=2 THEN EXISTS(SELECT 1 FROM copies c JOIN versions ov ON ov.id=c.version_id"         \
+    "    WHERE ov.node_id=g.id AND c.state='ok') ELSE older0 END AS older FROM g),"                       \
     " r AS (SELECT * FROM f WHERE cp<?1 OR pl<?2) "
 
 bd_status bd_target_get(bd_catalog *cat, bd_target *out)
@@ -111,7 +121,7 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
     if (!fn) return BD_OK;
 
     if (sqlite3_prepare_v2(cat->db,
-                           FILES_CTE "SELECT r.id, r.source_id, s.name, r.rel_path, r.size, r.cp, r.pl, r.unk, r.older"
+                           FILES_CTE "SELECT r.id, r.source_id, s.name, r.rel_path, r.size, r.cp, r.pl, r.unk, r.older, r.oo"
                                      " FROM r JOIN sources s ON s.id=r.source_id"
                                      " ORDER BY r.cp, r.pl, s.name COLLATE NOCASE, r.rel_path COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -129,6 +139,7 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
         info.places = sqlite3_column_int(q, 6);
         info.unknown_place = sqlite3_column_int(q, 7);
         info.older_copies = sqlite3_column_int(q, 8);
+        info.online_only = sqlite3_column_int(q, 9);
         if (fn(ctx, &info) != 0) break;
     }
     sqlite3_finalize(q);
@@ -239,7 +250,7 @@ bd_status bd_list_risk_help(bd_catalog *cat, bd_risk_help_fn fn, void *ctx)
                                      " COUNT(*), COALESCE(SUM(r.size),0), m.free_bytes, COALESCE(m.total_bytes,0),"
                                      " (SELECT MAX(l.at_ms) FROM space_log l WHERE l.media_id=m.id)"
                                      " FROM media m JOIN r"
-                                     " WHERE m.kind='drive' AND m.retired_ms IS NULL AND m.secondary=0"
+                                     " WHERE m.kind='drive' AND m.retired_ms IS NULL AND m.secondary=0 AND r.oo=0"
                                      " AND NOT EXISTS(SELECT 1 FROM copies c WHERE c.version_id=r.v"
                                      "   AND c.media_id=m.id AND c.state='ok')"
                                      " AND (r.cp<?1 OR NOT EXISTS(SELECT 1 FROM copies c JOIN media m2 ON m2.id=c.media_id"

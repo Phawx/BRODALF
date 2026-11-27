@@ -544,6 +544,12 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY, files_gone INTEGER NOT NULL DEFAULT 0);"
                      /* Roots whose files the user said really were deleted: the next scan marks them. */
                      "CREATE TEMP TABLE IF NOT EXISTS accept_gone(source_id INTEGER PRIMARY KEY);"
+                     /* The last scan: cloud files not on this PC (changed: 1 if the
+                     * cloud has a newer version than the catalog's), and links it
+                     * did not follow whose target no backup root holds. */
+                     "CREATE TEMP TABLE IF NOT EXISTS online_only(node_id INTEGER PRIMARY KEY, changed INTEGER NOT NULL);"
+                     "CREATE TEMP TABLE IF NOT EXISTS links(source_id INTEGER NOT NULL, rel_path TEXT NOT NULL, target TEXT NOT NULL,"
+                     " is_dir INTEGER NOT NULL, PRIMARY KEY(source_id, rel_path));"
                      /* During a scan: files it added and files it marked deleted. */
                      "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"

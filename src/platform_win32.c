@@ -120,6 +120,29 @@ static char *to_utf8(const wchar_t *w)
     return s;
 }
 
+char *bd_link_target(const char *path, int *hidden_system)
+{
+    if (hidden_system) *hidden_system = 0;
+    wchar_t *w = to_wide(path);
+    if (!w) return NULL;
+    DWORD attrs = GetFileAttributesW(w);
+    if (hidden_system && attrs != INVALID_FILE_ATTRIBUTES)
+        *hidden_system = (attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) == (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+    /* Opening it follows every link on the way. */
+    HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    wchar_t got[MAX_PATH * 4];
+    DWORD n = GetFinalPathNameByHandleW(h, got, MAX_PATH * 4, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    CloseHandle(h);
+    if (n == 0 || n >= MAX_PATH * 4) return NULL;
+    wchar_t *p = got;
+    if (_wcsnicmp(p, L"\\\\?\\UNC\\", 8) == 0) unprefix_unc(p);
+    else if (wcsncmp(p, L"\\\\?\\", 4) == 0) p += 4;
+    return to_utf8(p);
+}
+
 static int64_t filetime_to_ns(FILETIME ft)
 {
     int64_t t = ((int64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;

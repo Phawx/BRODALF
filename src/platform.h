@@ -20,6 +20,14 @@ typedef struct {
 /* 0 on success, -1 if the path does not exist or cannot be read. */
 int bd_stat(const char *path, bd_stat_t *st);
 
+/* Where a link (a symbolic link or a junction) leads, every link on the
+ * way followed: the folder or file it reaches, as a full path. malloc'd;
+ * NULL if it leads nowhere that can be reached. Also attrs gets 1 when
+ * Windows marks the link itself hidden and system, as it does the old
+ * "My Documents" and "Application Data" links kept for old programs
+ * (NULL to leave out). */
+char *bd_link_target(const char *path, int *hidden_system);
+
 /* The same, telling a path that is not there from one that could not be
  * looked at: 0 found, 1 not there (POSIX ENOENT or ENOTDIR; Windows
  * ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND), -1 could not look (a

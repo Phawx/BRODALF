@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 static int failures = 0;
 
@@ -101,6 +104,163 @@ static void make_files(const char *dir, int n, const char *tag)
         snprintf(text, sizeof(text), "%s file %d", tag, i);
         write_file(at(rel), text);
     }
+}
+
+/* At-risk files, with how many are online-only of each kind. */
+typedef struct { int64_t n, never, changed; } risk_count;
+
+static int risk_cb(void *ctx, const bd_risk_info *r)
+{
+    risk_count *c = ctx;
+    c->n++;
+    if (r->online_only == 1) c->never++;
+    if (r->online_only == 2) c->changed++;
+    return 0;
+}
+
+static risk_count at_risk(bd_catalog *cat)
+{
+    risk_count c = {0, 0, 0};
+    bd_list_at_risk(cat, 0, risk_cb, &c, NULL);
+    return c;
+}
+
+typedef struct { const char *name; int online_only; int state; } node_find;
+
+static int node_cb(void *ctx, const bd_node_info *n)
+{
+    node_find *f = ctx;
+    if (strcmp(n->name, f->name) != 0) return 0;
+    f->online_only = n->online_only;
+    f->state = (int)n->state;
+    return 1;
+}
+
+static node_find node_of(bd_catalog *cat, int64_t src, const char *name)
+{
+    node_find f = {name, -1, -1};
+    bd_list_children(cat, src, 0, node_cb, &f);
+    return f;
+}
+
+static void target_one(bd_catalog *cat)
+{
+    bd_target t;
+    memset(&t, 0, sizeof(t));
+    t.copies = 1;
+    t.places = 1;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+}
+
+/* ---- Data at risk 1 and convenience 3: online-only cloud files ----------- */
+
+static void test_cloud_files(void)
+{
+    write_file(at("cloud/OneDrive/notes.txt"), "first notes");
+    bd_mkdirs(at("cloud/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("cloud/db.brodalf"), &cat), NULL);
+    target_one(cat);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("cloud/OneDrive"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("cloud/drive"), "Blue", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(at_risk(cat).n == 0);
+
+    /* Edited on another device: on this PC it is online-only, with another size. */
+    write_file(at("cloud/OneDrive/notes.txt"), "notes edited on the laptop");
+    bd_test_online_only = "notes.txt";
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_online_only == 1 && ss.files_cloud_changed == 1);
+    risk_count r = at_risk(cat);
+    CHECK(r.n == 1 && r.changed == 1); /* 0.11.0: backed up, not at risk */
+    bd_risk_stats rk;
+    REQUIRE_OK(bd_list_at_risk(cat, 0, NULL, NULL, &rk), cat);
+    CHECK(rk.files_at_risk == 1 && rk.files_no_copy == 1);
+    CHECK(node_of(cat, src, "notes.txt").online_only == 2);
+
+    /* A cloud file never on this PC: at risk, and said why. */
+    write_file(at("cloud/OneDrive/plan.txt"), "a plan");
+    bd_test_online_only = ".txt";
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    r = at_risk(cat);
+    CHECK(r.n == 2 && r.changed == 1 && r.never == 1);
+    CHECK(node_of(cat, src, "plan.txt").online_only == 1);
+
+    /* "Always keep on this device": the next scan reads both. */
+    bd_test_online_only = NULL;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_cloud_changed == 0 && ss.files_changed == 1 && ss.files_new == 1);
+    r = at_risk(cat);
+    CHECK(r.n == 2 && r.changed == 0 && r.never == 0); /* not backed up yet */
+    CHECK(node_of(cat, src, "notes.txt").online_only == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(at_risk(cat).n == 0);
+    bd_catalog_close(cat);
+}
+
+/* ---- Data at risk 2 and convenience 5: links ----------------------------- */
+
+typedef struct { int n; char rel[256], target[1024]; } link_list;
+
+static int link_cb(void *ctx, const bd_link_info *l)
+{
+    link_list *k = ctx;
+    if (k->n++ == 0) {
+        snprintf(k->rel, sizeof(k->rel), "%s", l->rel_path);
+        snprintf(k->target, sizeof(k->target), "%s", l->target);
+    }
+    return 0;
+}
+
+static void test_links(void)
+{
+#ifdef _WIN32
+    printf("links: skipped on Windows (making a link needs rights the test may not have)\n");
+#else
+    make_files("links/Games", 4, "save");
+    make_files("links/Docs/sub", 1, "doc");
+    write_file(at("links/Docs/a.txt"), "a");
+    char *games = bd_strdup(at("links/Games"));
+    CHECK(symlink(games, at("links/Docs/Games")) == 0);
+    CHECK(symlink("sub", at("links/Docs/alias")) == 0); /* inside the root: its files are backed up anyway */
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("links/db.brodalf"), &cat), NULL);
+    int64_t src, games_id;
+    REQUIRE_OK(bd_source_add(cat, at("links/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.skipped_links == 2);
+    CHECK(ss.links_not_followed == 1); /* 0.11.0: only logged */
+    link_list k;
+    memset(&k, 0, sizeof(k));
+    REQUIRE_OK(bd_list_links(cat, link_cb, &k), cat);
+    CHECK(k.n == 1 && strcmp(k.rel, "Games") == 0);
+    char *real = bd_link_target(games, NULL);
+    CHECK(real && strcmp(k.target, real) == 0);
+
+    /* Choosing the link itself as a backup root says where it leads. */
+    bd_status s = bd_source_add(cat, at("links/Docs/Games"), &games_id);
+    CHECK(s == BD_ERR_INVALID && strstr(bd_catalog_error(cat), "is a link to") != NULL); /* 0.11.0: "is not a folder" */
+    char *t = bd_path_link_target(at("links/Docs/Games"));
+    CHECK(t && real && strcmp(t, real) == 0);
+    CHECK(bd_path_link_target(at("links/Docs/a.txt")) == NULL);
+
+    /* Backing up what it leads to: no longer listed. */
+    REQUIRE_OK(bd_source_add(cat, t, &games_id), cat);
+    memset(&k, 0, sizeof(k));
+    REQUIRE_OK(bd_list_links(cat, link_cb, &k), cat);
+    CHECK(k.n == 0);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.skipped_links == 2 && ss.links_not_followed == 0);
+    free(t);
+    free(real);
+    free(games);
+    bd_catalog_close(cat);
+#endif
 }
 
 /* ---- Recovery 1: a new PC with the same user name ----------------------- */
@@ -229,6 +389,8 @@ int main(void)
 
     test_new_pc_empty_folders();
     test_root_waits_for_disk();
+    test_cloud_files();
+    test_links();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

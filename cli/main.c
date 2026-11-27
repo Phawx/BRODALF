@@ -32,14 +32,17 @@ static void usage(void)
          "  root-stop   <catalog> <root>               stop backing up a root (its copies stay and still restore)\n"
          "  root-resume <catalog> <root>               back a stopped root up again\n"
          "  root-move   <catalog> <root> <folder>      the root is somewhere else now (a new PC, another drive letter)\n"
-         "  scan     <catalog> [--bitrot] [--accept ROOT/PATH]... [--shadow-copy]\n"
+         "  scan     <catalog> [--bitrot] [--accept ROOT/PATH]... [--shadow-copy] [--gone ROOT]...\n"
          "                                             record files, sizes and checksums; --bitrot also reads\n"
          "                                             unchanged files to find ones damaged on this PC. Those\n"
          "                                             stay listed after every scan until a scan finds them\n"
          "                                             right again, or --accept records one as changed on purpose.\n"
          "                                             --shadow-copy (Windows, as administrator): files in use\n"
          "                                             by another program are read from a shadow copy of\n"
-         "                                             their drive instead of being skipped\n"
+         "                                             their drive instead of being skipped. A root that is there\n"
+         "                                             but almost empty (a new PC) is left as it was: restore it,\n"
+         "                                             or if its files really were deleted, --gone ROOT marks them\n"
+         "                                             deleted\n"
          "  deleted  <catalog> [--new] [--root NAME]   files deleted from their folders, and the drives holding them\n"
          "  deleted-ack    <catalog> <root> <path> | --all\n"
          "                                             mark deleted files as seen; they stay in the catalog\n"
@@ -360,7 +363,7 @@ static const char *opt(int argc, char **argv, const char *name)
 static int positional(int argc, char **argv, const char **out, int cap)
 {
     static const char *const with_value[] = {"--drive", "--root", "--source", "--path", "--dest", "--location", "--days",
-                                             "--add", "--set", "--accept", "--sheet", "--id"};
+                                             "--add", "--set", "--accept", "--sheet", "--id", "--gone"};
     int n = 0;
     for (int i = 3; i < argc; i++) {
         int takes = 0;
@@ -1732,6 +1735,12 @@ static int run(int argc, char **argv)
     } else if (strcmp(cmd, "scan") == 0) {
         bd_scan_stats st;
         bd_scan_opts so = {has_flag(argc, argv, "--bitrot")};
+        for (int i = 3; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "--gone") != 0) continue;
+            int64_t id = source_id_by_name(cat, argv[i + 1]);
+            if (!id) { bd_catalog_close(cat); return 1; }
+            bd_source_accept_gone(cat, id);
+        }
         bd_status s = bd_scan_ex(cat, &so, &st, log_line, NULL);
         char *shadow_dir = NULL;
         if (s == BD_OK && has_flag(argc, argv, "--shadow-copy") && shadow_stage(cat, st.files_in_use, &shadow_dir)) {
@@ -1761,7 +1770,11 @@ static int run(int argc, char **argv)
             j_int("files_online_only", st.files_online_only);
             j_int("files_damaged", st.files_damaged);
             j_int("roots_missing", st.roots_missing);
+            j_int("roots_emptied", st.roots_emptied);
+            j_int("roots_waiting", st.roots_waiting);
             j_int("roots_stopped", st.roots_stopped);
+            j_int("files_cloud_changed", st.files_cloud_changed);
+            j_int("links_not_followed", st.links_not_followed);
             if (listed) {
                 J_ARR("damaged");
                 bd_list_damaged(cat, print_damaged, &dc);
@@ -1774,9 +1787,16 @@ static int run(int argc, char **argv)
                    "%lld skipped, %lld errors\n",
                    (long long)st.files_seen, (long long)st.dirs_seen, (long long)st.files_new, (long long)st.files_changed,
                    (long long)st.files_moved, (long long)st.files_deleted, (long long)st.skipped, (long long)st.errors);
-            if (st.roots_missing)
+            if (st.roots_missing - st.roots_emptied - st.roots_waiting > 0)
                 printf("%lld backup roots were not found and were left as they were: plug in their drive, or say where\n"
-                       "they are now with root-move (roots shows which)\n", (long long)st.roots_missing);
+                       "they are now with root-move (roots shows which)\n",
+                       (long long)(st.roots_missing - st.roots_emptied - st.roots_waiting));
+            if (st.roots_emptied)
+                printf("%lld backup roots are there but almost empty (a new PC, or a reinstalled Windows?) and were left as\n"
+                       "they were: restore them, or if their files really were deleted, scan again with --gone ROOT\n",
+                       (long long)st.roots_emptied);
+            if (st.roots_waiting)
+                printf("%lld backup roots wait for their disk to be plugged in\n", (long long)st.roots_waiting);
             if (st.files_deleted)
                 printf("%lld files were deleted from their folders (%lld of them on no drive); they stay in the catalog:\n"
                        "see them with deleted, then keep them (deleted-ack) or forget them (deleted-forget)\n",
@@ -1785,6 +1805,12 @@ static int run(int argc, char **argv)
             if (st.files_online_only)
                 printf("%lld files are online-only (in the cloud, not on this PC) and were left alone\n",
                        (long long)st.files_online_only);
+            if (st.files_cloud_changed)
+                printf("%lld of them changed in the cloud, so their newest versions are not backed up: set them to\n"
+                       "\"Always keep on this device\" and scan again\n", (long long)st.files_cloud_changed);
+            if (st.links_not_followed)
+                printf("%lld links lead outside your backup roots and were not followed, so what they lead to is not\n"
+                       "backed up (the log says where each leads): add it as a backup root\n", (long long)st.links_not_followed);
             if (listed) {
                 printf("%lld files changed without their size or modified time changing (a bit-rot scan found them).\n"
                        "That is what damage on this PC's disk looks like; their copies on the drives are the good ones:\n",
@@ -1797,7 +1823,7 @@ static int run(int argc, char **argv)
                 puts("no damaged files found");
             }
         }
-        if (st.errors || st.files_in_use || st.roots_missing || dc.shown) problems = 1;
+        if (st.errors || st.files_in_use || st.roots_missing - st.roots_waiting > 0 || dc.shown) problems = 1;
         save = 1;
     } else if (strcmp(cmd, "deleted") == 0) {
         int64_t source_id = root_opt(cat, argc, argv);

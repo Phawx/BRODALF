@@ -184,6 +184,14 @@ static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
 {
     bd_stat_t st;
+    if (bd_stat(folder, &st) == 0 && st.is_link) {
+        char *target = bd_link_target(folder, NULL);
+        bd_status s = target ? bd_fail(cat, BD_ERR_INVALID, "%s is a link to %s. BRODALF does not follow links: add %s instead",
+                                       folder, target, target)
+                             : bd_fail(cat, BD_ERR_NOT_FOUND, "%s is a link that leads nowhere", folder);
+        free(target);
+        return s;
+    }
     if (bd_stat(folder, &st) != 0 || !st.is_dir) return bd_fail(cat, BD_ERR_NOT_FOUND, "%s is not a folder", folder);
 
     char *path = bd_strdup(folder);
@@ -558,6 +566,7 @@ typedef struct {
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
     sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged, *clear_damaged;
+    sqlite3_stmt *note_online, *note_link;
     int have_damaged; /* damaged_files has rows: a file read again may clear one */
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
@@ -871,13 +880,87 @@ static int is_own_store(const scan_ctx *c, const char *rel)
     return own;
 }
 
+/* 1 if path is in an active backup root. */
+static int in_a_root(bd_catalog *cat, const char *path)
+{
+    char *key = root_key(path);
+    if (!key) return 0;
+    sqlite3_stmt *q;
+    int in = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT path FROM sources WHERE active=1", -1, &q, NULL) == SQLITE_OK) {
+        while (!in && sqlite3_step(q) == SQLITE_ROW) {
+            char *okey = root_key((const char *)sqlite3_column_text(q, 0));
+            in = okey && (strcmp(key, okey) == 0 || key_inside(key, okey));
+            free(okey);
+        }
+        sqlite3_finalize(q);
+    }
+    free(key);
+    return in;
+}
+
+/* A link the scan does not follow: listed when what it leads to is in no
+ * backup root, so nothing backs it up. */
+static void note_link(scan_ctx *c, const char *rel)
+{
+    char *full = bd_path_join(c->root, rel);
+    int hidden_system = 0;
+    char *target = full ? bd_link_target(full, &hidden_system) : NULL;
+    free(full);
+    bd_stat_t t;
+    if (!target || hidden_system || bd_stat(target, &t) != 0 || (!t.is_dir && !t.is_file) || in_a_root(c->cat, target)) {
+        bd_logf(c->log, c->log_ctx, "skipped link: %s", rel);
+        free(target);
+        return;
+    }
+    c->stats->links_not_followed++;
+    bd_logf(c->log, c->log_ctx, "link not followed, so %s is not backed up: %s", target, rel);
+    sqlite3_reset(c->note_link);
+    sqlite3_bind_int64(c->note_link, 1, c->source_id);
+    sqlite3_bind_text(c->note_link, 2, rel, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(c->note_link, 3, target, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(c->note_link, 4, t.is_dir);
+    sqlite3_step(c->note_link);
+    free(target);
+}
+
+bd_status bd_list_links(bd_catalog *cat, bd_link_fn fn, void *ctx)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT l.source_id, s.name, l.rel_path, l.target, l.is_dir FROM temp.links l"
+                           " JOIN sources s ON s.id=l.source_id WHERE s.active=1"
+                           " ORDER BY s.name COLLATE NOCASE, l.rel_path COLLATE NOCASE",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "list links");
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        bd_link_info info;
+        info.source_id = sqlite3_column_int64(q, 0);
+        info.source_name = (const char *)sqlite3_column_text(q, 1);
+        info.rel_path = (const char *)sqlite3_column_text(q, 2);
+        info.target = (const char *)sqlite3_column_text(q, 3);
+        info.is_dir = sqlite3_column_int(q, 4);
+        if (in_a_root(cat, info.target)) continue; /* added as a root since */
+        if (fn(ctx, &info) != 0) break;
+    }
+    sqlite3_finalize(q);
+    return BD_OK;
+}
+
+char *bd_path_link_target(const char *path)
+{
+    bd_stat_t st;
+    if (bd_stat(path, &st) != 0 || !st.is_link) return NULL;
+    return bd_link_target(path, NULL);
+}
+
 static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 {
     scan_ctx *c = ctx;
     if (bd_cancelled(c->cat)) { c->cancelled = 1; return 1; }
     if (st->is_link) {
         c->stats->skipped_links++;
-        bd_logf(c->log, c->log_ctx, "skipped link: %s", rel);
+        note_link(c, rel);
         return 0;
     }
     if (!st->is_dir && !st->is_file) return 0;
@@ -981,7 +1064,18 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     if (st->online_only || (bd_test_online_only && bd_rel_ends_with(rel, bd_test_online_only))) {
         if (!c->stats->files_online_only++)
             bd_logf(c->log, c->log_ctx, "files that are online-only (in the cloud, not on this PC) are skipped, not downloaded");
-        bd_logf(c->log, c->log_ctx, "online-only, skipped: %s", rel);
+        /* Known, but not as the catalog has it: edited on another device. */
+        int changed = !is_new;
+        if (changed) {
+            c->stats->files_cloud_changed++;
+            bd_logf(c->log, c->log_ctx, "online-only, changed in the cloud and not backed up: %s", rel);
+        } else {
+            bd_logf(c->log, c->log_ctx, "online-only, skipped: %s", rel);
+        }
+        sqlite3_reset(c->note_online);
+        sqlite3_bind_int64(c->note_online, 1, node_id);
+        sqlite3_bind_int(c->note_online, 2, changed);
+        sqlite3_step(c->note_online);
         return 0;
     }
 
@@ -1210,6 +1304,8 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
                           " THEN found_ms ELSE excluded.found_ms END,"
                           " version_id=excluded.version_id, found_hash=excluded.found_hash"},
         {&c.clear_damaged, "DELETE FROM damaged_files WHERE node_id=?"},
+        {&c.note_online, "INSERT OR REPLACE INTO temp.online_only(node_id, changed) VALUES(?,?)"},
+        {&c.note_link, "INSERT OR REPLACE INTO temp.links(source_id, rel_path, target, is_dir) VALUES(?,?,?,?)"},
     };
     bd_status s = BD_OK;
     size_t n = sizeof(stmts) / sizeof(stmts[0]);
@@ -1225,6 +1321,19 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     }
     c.have_damaged = sqlite3_step(any) == SQLITE_ROW;
     sqlite3_finalize(any);
+    /* What the last scan of this root found is found again. */
+    sqlite3_stmt *clear;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.online_only WHERE node_id IN (SELECT id FROM nodes WHERE source_id=?1)",
+                           -1, &clear, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(clear, 1, source_id);
+        sqlite3_step(clear);
+        sqlite3_finalize(clear);
+    }
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.links WHERE source_id=?1", -1, &clear, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(clear, 1, source_id);
+        sqlite3_step(clear);
+        sqlite3_finalize(clear);
+    }
     int walk_rc = bd_walk(root, scan_entry, scan_error, &c);
     /* The files still with the workers. */
     pool_collect(&c, pool->submitted, walk_rc == 0 && !c.db_error && !c.cancelled);

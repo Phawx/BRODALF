@@ -1708,6 +1708,7 @@ typedef struct job {
     int64_t damaged;    /* scan: files changed without their size or time changing */
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
+    int64_t links;         /* scan: links not followed, leading somewhere no backup root holds */
     int problems;
     int saving;         /* refresh: a change made in the window is saved */
     int skip_figures;   /* another job is waiting: it reads the figures after it */
@@ -2857,6 +2858,14 @@ static DWORD WINAPI worker(LPVOID arg)
         if (st.skipped) say(j, T(L" %lld left out by the skip lists."), (long long)st.skipped);
         if (st.files_in_use) say(j, T(L" %lld in use by another program."), (long long)st.files_in_use);
         if (st.files_online_only) say(j, T(L" %lld online-only cloud files left alone (not downloaded)."), (long long)st.files_online_only);
+        if (st.files_cloud_changed)
+            say(j, TN(st.files_cloud_changed, L" %lld of them changed in the cloud, so its newest version is not backed up.",
+                      L" %lld of them changed in the cloud, so their newest versions are not backed up."),
+                (long long)st.files_cloud_changed);
+        if (st.links_not_followed)
+            say(j, TN(st.links_not_followed, L" %lld link to a folder or file outside your backup roots was not followed, so what it leads to is not backed up.",
+                      L" %lld links to folders or files outside your backup roots were not followed, so what they lead to is not backed up."),
+                (long long)st.links_not_followed);
         if (st.files_damaged)
             say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: it may be damaged.",
                       L" %lld files changed without their size or time changing: they may be damaged."),
@@ -2885,6 +2894,7 @@ static DWORD WINAPI worker(LPVOID arg)
         j->damaged = st.files_damaged;
         j->found_deleted = st.files_deleted;
         j->roots_missing = st.roots_missing - st.roots_waiting;
+        j->links = st.links_not_followed;
         break;
     }
     case JOB_BACKUP: {
@@ -3588,6 +3598,7 @@ typedef struct {
     wchar_t *copies_on, *copies_plugged, *older_on; /* drives and extra places, ", " between: see bd_node_info */
     int away;  /* not on this PC: its backup root is not there now, or it was deleted from its folder */
     int ghost; /* not on this PC, and no drive that is plugged in has it: faded, as Explorer fades a file whose tape is not loaded */
+    int online_only; /* files: a cloud file not on this PC, see bd_node_info */
 } node_ref;
 
 static void free_node_ref(node_ref *r)
@@ -3647,6 +3658,8 @@ static int collect_child(void *ctx, const bd_node_info *info)
  * plugged-in drive, and for a folder whose count says it. */
 static const wchar_t *state_suffix(const bd_node_info *n, const char *label)
 {
+    if (!n->is_dir && n->online_only == 2) return T(L"changed in the cloud, newest version not backed up");
+    if (!n->is_dir && n->online_only == 1) return T(L"online-only, not on this PC");
     switch (n->state) {
     case BD_STATE_AVAILABLE_OLDER:
         /* The newest version is backed up too, on a drive not plugged in. */
@@ -3937,6 +3950,7 @@ static node_ref *ref_of_child(const node_ref *parent, const child *c)
     r->copies_on = widen(c->on);
     r->copies_plugged = widen(c->plugged);
     r->older_on = widen(c->older);
+    r->online_only = c->info.online_only;
     if (c->label && *c->label && c->info.state == BD_STATE_OFFLINE) r->drive = widen(c->label);
     r->away = parent->away || c->info.state == BD_STATE_DELETED;
     set_ghost(r);
@@ -4271,6 +4285,13 @@ static void files_insert(int idx)
     wchar_t buf[300], when[64] = L"", size[64] = L"";
     int tone;
     const wchar_t *chip = list_chip(r, buf, COUNT_OF(buf), &tone);
+    /* What a screen reader reads for the Status column: the chip, and that
+     * it is not on this PC, which the row shows by fading. */
+    wchar_t spoken[400];
+    if (chip && wcscmp(chip, T(L"Not on this PC")) != 0 && !r->root && r->away && r->state != BD_STATE_DELETED) {
+        swprintf(spoken, COUNT_OF(spoken), T(L"%ls, not on this PC"), chip);
+        chip = spoken;
+    }
     ListView_SetItemText(g_files, pos, FC_STATUS, (wchar_t *)(chip ? chip : L""));
     ListView_SetItemText(g_files, pos, FC_COPIES, r->copies_on && *r->copies_on ? r->copies_on : (wchar_t *)L"");
     if (r->mtime_ns > 0) format_ns(r->mtime_ns, when, COUNT_OF(when));
@@ -6267,7 +6288,9 @@ static int risk_file_cb(void *ctx, const bd_risk_info *r)
     }
     format_bytes(r->size, size, 64);
     note[0] = 0;
-    if (r->older_copies) wcscat(note, T(L"Changed since its last backup. "));
+    if (r->online_only == 2) wcscat(note, T(L"Changed in the cloud, not on this PC: set it to Always keep on this device. "));
+    else if (r->online_only == 1) wcscat(note, T(L"Online-only, never on this PC: set it to Always keep on this device. "));
+    else if (r->older_copies) wcscat(note, T(L"Changed since its last backup. "));
     if (r->unknown_place) wcscat(note, T(L"On a drive with no place set."));
     const wchar_t *cells[] = {file, copies, places, size, note};
     lv_row(f->lv, cells, 5);
@@ -9075,6 +9098,23 @@ static void cmd_add_folder(void)
 {
     char *folder = pick_folder(g_main, T(L"Choose a folder to back up. BRODALF will scan it and keep track of every file inside."));
     if (!folder) return;
+    /* BRODALF does not follow links: offer the folder the link leads to. */
+    char *target = bd_path_link_target(folder);
+    if (target) {
+        wchar_t *wf = widen(folder), *wt = widen(target), q[MAX_PATH * 8 + 400];
+        swprintf(q, COUNT_OF(q), T(L"Back up %ls instead?\n\n%ls is a link to %ls. BRODALF does not follow links, so nothing "
+                                  L"would be backed up through it."),
+                 wt ? wt : L"", wf ? wf : L"", wt ? wt : L"");
+        free(wf);
+        free(wt);
+        if (ask_verbs(g_main, q, MB_YESNO | MB_ICONQUESTION, T(L"Back it up"), T(L"Cancel")) != IDYES) {
+            free(target);
+            free(folder);
+            return;
+        }
+        free(folder);
+        folder = target;
+    }
     int64_t id;
     if (bd_source_add(g_cat, folder, &id) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
@@ -10799,9 +10839,92 @@ static void list_context_menu(int x, int y)
 /* What a scan found that needs the user: backup roots it could not find,
  * files that may be damaged on this PC, files gone from the roots; then
  * the backup the user asked for, if they chose to scan first. */
+/* Links a scan did not follow, whose targets no backup root holds: offer
+ * to back up what they lead to. Each is asked about once while the
+ * window is open. */
+typedef struct { int n, shown; wchar_t text[2400]; char *targets[8]; } links_ask;
+static char **g_links_asked;
+static int g_links_asked_n;
+
+static int links_asked(const char *target)
+{
+    for (int i = 0; i < g_links_asked_n; i++)
+        if (strcmp(g_links_asked[i], target) == 0) return 1;
+    return 0;
+}
+
+static int link_ask_cb(void *ctx, const bd_link_info *l)
+{
+    links_ask *a = ctx;
+    if (!l->is_dir || links_asked(l->target)) return 0;
+    if (a->n < 8) {
+        a->targets[a->n] = xstrdup(l->target);
+        wchar_t *src = widen(l->source_name), *rel = widen(l->rel_path), *to = widen(l->target);
+        if (rel) for (wchar_t *c = rel; *c; c++) if (*c == L'/') *c = L'\\';
+        size_t len = wcslen(a->text);
+        if (a->n < 5)
+            swprintf(a->text + len, COUNT_OF(a->text) - len, T(L"\n%ls\\%ls leads to %ls"), src ? src : L"", rel ? rel : L"", to ? to : L"");
+        free(src);
+        free(rel);
+        free(to);
+    }
+    a->n++;
+    return 0;
+}
+
+static void ask_links(void)
+{
+    links_ask a;
+    memset(&a, 0, sizeof(a));
+    bd_list_links(g_cat, link_ask_cb, &a);
+    if (a.n == 0) return;
+    int listed = a.n < 8 ? a.n : 8;
+    for (int i = 0; i < listed; i++) {
+        if (!a.targets[i]) continue;
+        char **g = realloc(g_links_asked, (size_t)(g_links_asked_n + 1) * sizeof(*g));
+        if (!g) break;
+        g_links_asked = g;
+        g_links_asked[g_links_asked_n++] = xstrdup(a.targets[i]);
+    }
+    wchar_t q[3200];
+    swprintf(q, COUNT_OF(q), TN(a.n, L"Back up the folder this link leads to?\n\nBRODALF does not follow links, so what is behind it is "
+                                     L"not backed up:\n%ls",
+                                L"Back up the folders these links lead to?\n\nBRODALF does not follow links, so what is behind them is "
+                                L"not backed up:\n%ls"),
+             a.text);
+    if (a.n > 5) {
+        size_t len = wcslen(q);
+        swprintf(q + len, COUNT_OF(q) - len, TN(a.n - 5, L"\nand %d more (the log lists every one).", L"\nand %d more (the log lists every one)."), a.n - 5);
+    }
+    int added = 0;
+    if (ask_verbs(g_main, q, MB_YESNO | MB_ICONQUESTION, TN(a.n, L"Back it up", L"Back them up"), T(L"Not now")) == IDYES) {
+        for (int i = 0; i < listed; i++) {
+            int64_t id;
+            if (!a.targets[i]) continue;
+            wchar_t *w = widen(a.targets[i]), line[MAX_PATH * 4 + 200];
+            if (bd_source_add(g_cat, a.targets[i], &id) == BD_OK) {
+                swprintf(line, COUNT_OF(line), T(L"New backup root: %ls"), w ? w : L"");
+                added++;
+            } else {
+                wchar_t *e = widen(bd_catalog_error(g_cat));
+                swprintf(line, COUNT_OF(line), L"%ls", e ? e : L"");
+                free(e);
+            }
+            log_append(line);
+            free(w);
+        }
+    }
+    for (int i = 0; i < listed; i++) free(a.targets[i]);
+    if (added) {
+        places_changed();
+        enqueue(new_job(JOB_SCAN));
+    }
+}
+
 static void after_scan(job *j)
 {
     if (j->roots_missing) ask_missing_roots();
+    if (j->links) ask_links();
     if (j->damaged) {
         wchar_t q[600];
         swprintf(q, 600, TN(j->damaged, L"%lld file changed although its size and time did not. That usually means damage on this PC's disk "
@@ -15633,6 +15756,8 @@ static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int
     if (r->root && r->inactive) return T(L"No longer backed up");
     if (!r->is_dir) {
         if (r->state == BD_STATE_BAD) { *tone = TONE_BAD; return T(L"Copy damaged"); }
+        if (r->online_only == 2 && r->state != BD_STATE_DELETED) { *tone = TONE_WARN; return T(L"Changed in the cloud"); }
+        if (r->online_only == 1 && r->state != BD_STATE_DELETED) { *tone = TONE_WARN; return T(L"Online-only"); }
         if (r->damaged && r->state != BD_STATE_DELETED) { *tone = TONE_WARN; return T(L"May be damaged"); }
         switch (r->state) {
         case BD_STATE_AVAILABLE_OLDER:
@@ -15670,7 +15795,10 @@ static const wchar_t *list_chip(const node_ref *r, wchar_t *buf, size_t cap, int
 {
     node_ref t = *r;
     if (!r->root && r->state == BD_STATE_OFFLINE) t.drive = NULL;
-    return tree_chip(&t, buf, cap, tone);
+    const wchar_t *chip = tree_chip(&t, buf, cap, tone);
+    /* Not on this PC is shown by fading too, which a screen reader does not say. */
+    if (!chip && !r->root && r->away && r->state != BD_STATE_DELETED) chip = T(L"Not on this PC");
+    return chip;
 }
 
 /* One of Windows' small icons; faded (as Explorer fades a file that is not

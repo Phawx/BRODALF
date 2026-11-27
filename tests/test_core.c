@@ -2618,14 +2618,15 @@ static void test_encrypt_folders(void)
     REQUIRE_OK(bd_restore(cat, src, "", at("en/out1"), &rs, quiet, NULL), cat);
     CHECK(rs.files_restored == 1 && rs.files_need_passphrase == 1);
     /* A new file outside the encrypted folder backs up while locked; one
-     * inside needs the passphrase. */
+     * inside waits for the passphrase. */
     write_file(at("en/src/open/c.txt"), "more open text");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1);
     write_file(at("en/src/secret/d.txt"), "another secret");
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
-    CHECK(bd_backup(cat, drive, 0, &bs, quiet, NULL) == BD_ERR_PASSPHRASE);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_need_passphrase == 1);
 
     REQUIRE_OK(bd_catalog_unlock(cat, "a passphrase for the test"), cat);
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);

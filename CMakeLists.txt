@@ -154,6 +154,15 @@ if(BRODALF_BUILD_TESTS)
     target_link_libraries(test_flow_tests PRIVATE brodalf_core)
     target_include_directories(test_flow_tests PRIVATE src)
     add_test(NAME flow_tests COMMAND test_flow_tests)
+    # Real FAT32 and exFAT volumes and a share, which CI makes (c-core.yml).
+    set(BRODALF_WINDOWS_TESTS "")
+    if(WIN32)
+        add_executable(test_windows_volumes tests/test_windows_volumes.c)
+        target_link_libraries(test_windows_volumes PRIVATE brodalf_core netapi32)
+        target_include_directories(test_windows_volumes PRIVATE src)
+        add_test(NAME windows_volumes COMMAND test_windows_volumes)
+        set(BRODALF_WINDOWS_TESTS windows_volumes)
+    endif()
     add_test(NAME cli_exit_codes
              COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:brodalf-cli> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli-exit-codes
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_exit_codes.cmake)
@@ -170,7 +179,7 @@ if(BRODALF_BUILD_TESTS)
     add_test(NAME test_tmp_remove COMMAND ${CMAKE_COMMAND} -E remove_directory ${BRODALF_TEST_TMP})
     set_tests_properties(test_tmp_make PROPERTIES FIXTURES_SETUP brodalf_test_tmp)
     set_tests_properties(test_tmp_remove PROPERTIES FIXTURES_CLEANUP brodalf_test_tmp)
-    set_tests_properties(core crypto blake3 misc memory gaps flow_tests many_files PROPERTIES
+    set_tests_properties(core crypto blake3 misc memory gaps flow_tests ${BRODALF_WINDOWS_TESTS} many_files PROPERTIES
                          FIXTURES_REQUIRED brodalf_test_tmp
                          ENVIRONMENT "TMPDIR=${BRODALF_TEST_TMP};TMP=${BRODALF_TEST_TMP};TEMP=${BRODALF_TEST_TMP}")
 endif()

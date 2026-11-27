@@ -1430,13 +1430,21 @@ static class Shots {
     }
 
     // Say go ahead to a question before a job: "Back up anyway" (620) on
-    // the warning about many changed files, else yes.
+    // the warning about many changed files, else yes. Only a button the
+    // question has is pressed: a task dialog closes on any ID it is sent,
+    // and BRODALF takes one it did not offer for no.
     static void GoAhead(IntPtr d) {
-        if (IsTaskDialog(d)) {
+        if (IsTaskDialog(d) && HasButton(d, 620)) {
             ClickTask(d, 620);
             if (WaitGone(d, 1500)) return;
         }
         Yes(d, false);
+    }
+
+    static bool HasButton(IntPtr d, int id) {
+        foreach (IntPtr c in Children(d))
+            if (ClassOf(c) == "Button" && N.GetDlgCtrlID(c) == id) return true;
+        return false;
     }
 
     // Start a check, capture it running, press Stop, capture what it says.
@@ -1563,6 +1571,7 @@ static class Shots {
             IntPtr q = WaitDialog(30000, IntPtr.Zero);
             if (q != IntPtr.Zero) {
                 Shot(q, "new-disk-plugged-in");
+                if (!HasButton(q, 640)) Fail("the question about a new disk has no Set it up button");
                 ClickTask(q, 640);
                 WaitGone(q, 3000);
                 IntPtr label = WaitDialog(8000, IntPtr.Zero);
@@ -1694,7 +1703,7 @@ static class Shots {
                     Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
                 } else if (IsTaskDialog(d)) {
                     Shot(d, "back-up-to-every-drive-question-" + i);
-                    ClickTask(d, 620); // Back up anyway
+                    GoAhead(d); // Back up anyway
                 } else {
                     Shot(d, "back-up-to-every-drive-question-" + i);
                     Yes(d, true);

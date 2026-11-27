@@ -22,6 +22,7 @@
 #include "blake3.h"
 #include "monocypher.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -230,7 +231,7 @@ typedef struct {
     unsigned char *buf[COPY_RING];
     size_t len[COPY_RING];
     int64_t produced, consumed; /* blocks handed over, blocks written */
-    int eof, err;
+    int eof, err, err_no; /* err_no: errno of the write that failed */
     bd_mutex *m;
     bd_cond *cv;
     bd_thread *thread;
@@ -247,8 +248,12 @@ static void pipe_writer(void *arg)
         bd_mutex_unlock(p->m);
         int rc = bd_sink_write(p->dst, p->buf[i], p->len[i]);
         bd_mutex_lock(p->m);
-        if (rc != 0) p->err = 1;
-        else p->consumed++;
+        if (rc != 0) {
+            p->err = 1;
+            p->err_no = errno;
+        } else {
+            p->consumed++;
+        }
         bd_cond_broadcast(p->cv);
         if (p->err) break;
     }
@@ -293,7 +298,8 @@ static void pipe_push(copy_pipe *p, size_t n)
     bd_mutex_unlock(p->m);
 }
 
-/* Let the writer finish what it was given. -2 if a write failed. */
+/* Let the writer finish what it was given. -2 if a write failed, with
+ * errno as that write left it. */
 static int pipe_finish(copy_pipe *p)
 {
     bd_mutex_lock(p->m);
@@ -301,8 +307,9 @@ static int pipe_finish(copy_pipe *p)
     bd_cond_broadcast(p->cv);
     bd_mutex_unlock(p->m);
     bd_thread_join(p->thread);
-    int err = p->err;
+    int err = p->err, err_no = p->err_no;
     pipe_free(p);
+    if (err) errno = err_no;
     return err ? -2 : 0;
 }
 
@@ -328,7 +335,7 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
     unsigned char *buf = malloc(COPY_BUF);
     bd_source src = {f, NULL};
     bd_sink dst = {copy_to, NULL};
-    int rc = 0;
+    int rc = 0, werr = 0; /* werr: errno of a write that failed, given back in errno */
     if (!buf) rc = -1;
     if (!rc && src_key && !(src.opener = bd_open_begin(f, src_key))) rc = -3;
     if (!rc && copy_to && dst_key && !(dst.sealer = bd_seal_begin(copy_to, dst_key))) rc = -2;
@@ -352,16 +359,17 @@ int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const 
         bd_io_tick(n);
         if (!copy_to) continue;
         if (piped) { pipe_push(&pipe, (size_t)n); continue; }
-        if (bd_sink_write(&dst, b, (size_t)n) != 0) { rc = -2; break; }
+        if (bd_sink_write(&dst, b, (size_t)n) != 0) { rc = -2; werr = errno; break; }
         if (++blocks == COPY_THREAD_AFTER && n == COPY_BUF && pipe_start(&pipe, &dst) == 0) piped = 1;
     }
     /* A failed write was of an earlier block than any failed read, so it is
      * what the serial loop would have stopped at. */
-    if (piped && pipe_finish(&pipe) != 0) rc = -2;
-    if (dst.sealer && bd_seal_end(dst.sealer) != 0 && !rc) rc = -2;
+    if (piped && pipe_finish(&pipe) != 0) { rc = -2; werr = errno; }
+    if (dst.sealer && bd_seal_end(dst.sealer) != 0 && !rc) { rc = -2; werr = errno; }
     bd_open_end(src.opener);
     if (buf) { crypto_wipe(buf, high); free(buf); }
     fclose(f);
+    if (rc == -2) errno = werr ? werr : EIO;
     if (rc != 0) return rc;
 
     uint8_t out[BLAKE3_OUT_LEN];

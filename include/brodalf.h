@@ -781,6 +781,10 @@ typedef struct {
     int64_t files_conflict;   /* another file was already at the destination: left alone, see bd_list_restore_conflicts */
     int64_t files_older_version; /* restored as an older version: the newest was never backed up (or has no good
                                     copy left), so the latest backed-up state came back; the log names each one */
+    int64_t files_beside;     /* of files_restored: written beside another file already where it goes, as
+                                 "name (restored 2026-11-27).ext" (bd_restore_opts.keep_both); the log names each one */
+    int64_t files_cannot_write; /* of files_failed: could not be written where they go (no permission there, too big
+                                   for that disk's file system...); the log says why. No other drive is tried for them */
 } bd_restore_stats;
 
 /* Restore the latest backed-up state of every file in a backup root (0:
@@ -795,7 +799,20 @@ typedef struct {
  * overwritten: a file already at its destination with the right contents
  * is left as it is, so the same restore can be run again as each drive
  * holding the rest arrives; any other file there is left alone and listed
- * (bd_list_restore_conflicts). */
+ * (bd_list_restore_conflicts). A file already there is compared by its
+ * checksum; once this restore has compared it (or written it), a later
+ * run of the same restore takes it as there while its size and modified
+ * time stay the same, so each drive's pass does not read everything
+ * already back again.
+ * A file whose good copies on the drives plugged in cannot be read back
+ * right, while another drive holds a good one, waits for that drive
+ * (files_offline; the log names it). One whose only copies here are
+ * encrypted waits for the passphrase (files_need_passphrase) and the
+ * rest are restored. What cannot be written where it goes is the
+ * destination's fault, not the copy's: it is logged with the reason and
+ * no other drive is tried for it; when the disk there is full or
+ * read-only the restore stops (BD_ERR_IO, the message says so) and keeps
+ * what it restored. */
 bd_status bd_restore(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                      bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
 
@@ -803,6 +820,14 @@ typedef struct {
     /* Only files deleted from their folder, each as it was when last seen.
      * See bd_list_deleted. */
     int deleted_only;
+    /* With the files there now, also those deleted from their folder,
+     * each as it was when last seen. */
+    int with_deleted;
+    /* When another file is already where one goes, write this one beside
+     * it as "name (restored 2026-11-27).ext" (the day of the restore; a
+     * number after the day if that is taken too) instead of leaving it
+     * out. Nothing is ever overwritten. */
+    int keep_both;
 } bd_restore_opts;
 
 bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
@@ -812,6 +837,10 @@ bd_status bd_restore_ex(bd_catalog *cat, int64_t source_id, const char *rel_pref
  * dest_folder, under the file's own name. Never overwrites, as above. */
 bd_status bd_restore_version(bd_catalog *cat, int64_t version_id, const char *dest_folder, bd_restore_stats *stats,
                              bd_log_fn log, void *log_ctx);
+/* The same with options (keep_both: beside a file already there, as
+ * bd_restore_opts says; the others do not apply to one version). */
+bd_status bd_restore_version_ex(bd_catalog *cat, int64_t version_id, const char *dest_folder, const bd_restore_opts *opts,
+                                bd_restore_stats *stats, bd_log_fn log, void *log_ctx);
 
 /* The files the last restore left alone because another file was there,
  * to compare: what the backup has against what is there. */
@@ -830,9 +859,13 @@ bd_status bd_list_restore_conflicts(bd_catalog *cat, bd_conflict_fn fn, void *ct
 
 /* Which drives a restore needs, in the order to plug them in: drives that
  * are already plugged in first, then each drive that holds the most of
- * what is still missing. Drives marked lost or broken are left out. Files
- * already at dest_root (when given) are not counted. files_no_copy is set
- * to the files no drive holds. */
+ * what is still missing. Drives marked lost or broken are left out. With
+ * dest_root given, a file counts as already there only when an earlier
+ * run of this restore compared it by checksum (and its size and modified
+ * time have not changed since); any other file already where one goes is
+ * counted in files_total, for the restore to compare (or to leave alone
+ * and list), but needs no drive. files_no_copy is set to the files no
+ * drive holds. */
 typedef struct {
     int64_t media_id;
     const char *label;
@@ -851,13 +884,58 @@ bd_status bd_restore_plan_ex(bd_catalog *cat, int64_t source_id, const char *rel
                              const bd_restore_opts *opts, bd_restore_step_fn fn, void *ctx, int64_t *files_total,
                              int64_t *files_no_copy);
 
+/* The same plan, with what is already at dest_root told apart. */
+typedef struct {
+    int64_t files;            /* files the restore has something to do with: all of them but files_checked */
+    int64_t files_no_copy;    /* of those, files no drive holds */
+    int64_t files_to_compare; /* of those, a file of the same size is already where it goes: the restore compares
+                                 it by checksum, and leaves it be when it is the same */
+    int64_t files_in_the_way; /* of those, another file (or a folder) is already where it goes: left alone and
+                                 listed, or with keep_both restored beside it */
+    int64_t files_checked;    /* already there: this restore compared it by checksum before, and its size and
+                                 modified time are the same since */
+} bd_restore_counts;
+bd_status bd_restore_plan_counts(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                                 const bd_restore_opts *opts, bd_restore_step_fn fn, void *ctx, bd_restore_counts *counts);
+
+/* A restore that waits for more drives (or the passphrase), kept in the
+ * database so it is still there the next time it is opened, on this PC
+ * or another. One at a time: setting one replaces the last. offer_root:
+ * a whole backup root that could not be found was restored somewhere
+ * else, so once it is all back the window offers to back up that folder
+ * as the root from now on (bd_source_relocate). get gives BD_ERR_NOT_FOUND
+ * when none waits; free what it filled with bd_restore_pending_free.
+ * clear also forgets which files that restore found already there. */
+typedef struct {
+    int64_t source_id;  /* 0: every backup root */
+    char *rel_prefix;   /* "" for all of it */
+    char *dest;
+    bd_restore_opts opts;
+    int64_t offer_root; /* a backup root's id, or 0 */
+    int64_t saved_ms;
+} bd_restore_pending;
+bd_status bd_restore_pending_set(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest,
+                                 const bd_restore_opts *opts, int64_t offer_root);
+bd_status bd_restore_pending_get(bd_catalog *cat, bd_restore_pending *out);
+void bd_restore_pending_free(bd_restore_pending *p);
+bd_status bd_restore_pending_clear(bd_catalog *cat);
+
+/* Before a restore into dest: 1 when dest is inside an active backup root
+ * (or is one), so what is restored there would be backed up again as new
+ * files, unless it is the root of the files restored put back at their
+ * own place (source_id that root, flat: its files go straight into dest);
+ * 2 when dest is inside a drive's BRODALF folder, among the copies. *what
+ * gets that root's or that folder's path (free it), or NULL. 0: neither. */
+int bd_restore_dest_check(bd_catalog *cat, int64_t source_id, const char *dest, char **what);
+
 /* Whether a restore fits where it goes, asked before it starts: what the
- * files it would restore take (bytes_needed: those with a copy on a drive,
- * not already at dest_root, as bd_restore_plan counts them; version_id > 0
- * for one version, as bd_restore_version) and the free space at dest_root,
- * or at the nearest folder above it that is there (bytes_free; -1 if it
- * cannot be read). A restore that does not fit stops with errors once the
- * disk is full; nothing there is overwritten either way. */
+ * files it would restore take (bytes_needed: those with a copy on a drive
+ * and nothing where they go, or with keep_both anything but what is known
+ * to be there; version_id > 0 for one version, as bd_restore_version) and
+ * the free space at dest_root, or at the nearest folder above it that is
+ * there (bytes_free; -1 if it cannot be read). A restore that does not
+ * fit stops once the disk is full, with an error that says so; nothing
+ * there is overwritten either way. */
 bd_status bd_restore_room(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                           const bd_restore_opts *opts, int64_t version_id, int64_t *bytes_needed, int64_t *bytes_free);
 

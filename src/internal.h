@@ -68,7 +68,7 @@ int bd_hash_file(const char *path, FILE *copy_to, char hex_out[BD_HASH_HEX_LEN +
 /* Like bd_hash_file, but the source can be a sealed (encrypted) file when
  * src_key is set, and the copy is sealed when dst_key is set. The hash is
  * always of the plaintext. -3 means the sealed source is damaged or was
- * sealed with another key. */
+ * sealed with another key. After -2, errno says why the write failed. */
 int bd_hash_copy(const char *path, const uint8_t *src_key, FILE *copy_to, const uint8_t *dst_key,
                  char hex_out[BD_HASH_HEX_LEN + 1], int64_t *size_out);
 
@@ -150,6 +150,20 @@ extern void (*bd_test_spoil_catalog_copy)(const char *path);
  * extra places included. */
 #define BD_SQL_USABLE(c) \
     "NOT EXISTS(SELECT 1 FROM media rm WHERE rm.id=" c ".media_id AND rm.retired_ms IS NOT NULL)"
+/* SQL: version vid can be restored from: it has a good copy on a drive not
+ * marked lost or broken, or on one plugged in now. */
+#define BD_SQL_RESTORABLE(vid)                                                                         \
+    "EXISTS(SELECT 1 FROM copies rc WHERE rc.version_id=" vid " AND rc.state='ok' AND (" BD_SQL_USABLE("rc") \
+    " OR EXISTS(SELECT 1 FROM temp.connected rk WHERE rk.media_id=rc.media_id)))"
+/* SQL: the version of node n a restore brings back, the latest backed-up
+ * state: the current version if it can be restored from, else the newest
+ * other version that can (its newest contents were never backed up, as
+ * when ransomware or a bad edit changed it after the last backup), else
+ * the current version. */
+#define BD_SQL_RESTORE_VERSION(n)                                                                      \
+    "(CASE WHEN " BD_SQL_RESTORABLE(n ".current_version_id") " THEN " n ".current_version_id ELSE"       \
+    " COALESCE((SELECT ov.id FROM versions ov WHERE ov.node_id=" n ".id AND " BD_SQL_RESTORABLE("ov.id") \
+    "  ORDER BY ov.version_no DESC LIMIT 1), " n ".current_version_id) END)"
 /* SQL: the node n is starred, or is in a starred folder (tbl "stars"), or
  * set to be encrypted (tbl "encrypt_paths"). */
 #define BD_SQL_MARKED(tbl, n)                                                                           \
@@ -369,5 +383,13 @@ bd_status bd_sources_fix_names(bd_catalog *cat, bd_log_fn log, void *log_ctx);
 extern int bd_test_scan_workers;
 /* Tests: files whose path ends with this are taken for online-only cloud files. */
 extern const char *bd_test_online_only;
+/* Tests only: what a restore writes where it restores to fails as on a
+ * disk that is full once this many more bytes are written (-1: off), or
+ * as on a read-only disk (bd_test_dest_read_only). */
+extern int64_t bd_test_dest_room;
+extern int bd_test_dest_read_only;
+/* Tests only: the file system where a restore writes has this name (FAT
+ * ones hold files up to bd_test_fat_limit when that is set). */
+extern const char *bd_test_dest_fs_name;
 
 #endif

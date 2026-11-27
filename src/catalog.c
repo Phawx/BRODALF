@@ -675,6 +675,8 @@ static bd_status decompress_to(bd_catalog *cat, bd_source *in, const char *out_p
             }
             if (mem) {
                 mem->len += (sqlite3_int64)ob.pos;
+            } else if (!out) {
+                /* Only read through: what it unpacks to is not kept. */
             } else if (fwrite(obuf, 1, ob.pos, out) != ob.pos) {
                 status = bd_fail(cat, BD_ERR_IO, "cannot write working copy %s", out_path);
                 goto done;
@@ -1136,6 +1138,43 @@ bd_status bd_option_set(bd_catalog *cat, const char *name, int value)
 }
 
 /* ---- Recovery on a new PC -------------------------------------------------- */
+
+bd_status bd_catalog_copy_readable(bd_catalog *cat, const char *path)
+{
+    FILE *in = bd_fopen(path, "rb");
+    if (!in) return bd_fail(cat, BD_ERR_NOT_FOUND, "cannot open %s", path);
+    unsigned char header[16];
+    if (fread(header, 1, sizeof(header), in) != sizeof(header) || memcmp(header, BD_MAGIC, 8) != 0) {
+        fclose(in);
+        return bd_fail(cat, BD_ERR_FORMAT, "%s is not a BRODALF catalog", path);
+    }
+    uint32_t version = get_u32(header + 8), flags = get_u32(header + 12);
+    if (version > BD_FORMAT_VERSION || (flags & ~3u) || flags == 2u) {
+        fclose(in);
+        return bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format", path);
+    }
+    bd_source src = {in, NULL};
+    if (flags & 1u) {
+        uint8_t block[BD_KEY_BLOCK];
+        if (!cat->have_key) {
+            fclose(in);
+            return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to read the encrypted copy %s", path);
+        }
+        if (fread(block, 1, sizeof(block), in) != sizeof(block) || ((flags & 2u) && fread(block, 1, sizeof(block), in) != sizeof(block)) ||
+            !(src.opener = bd_open_begin(in, cat->key))) {
+            fclose(in);
+            return bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
+        }
+    }
+    /* Every byte is read and unpacked, which checks its checksum (and, when
+     * it is encrypted, that nothing in it was changed). */
+    bd_status s = decompress_to(cat, &src, NULL, NULL);
+    bd_open_end(src.opener);
+    fclose(in);
+    if (s == BD_ERR_FORMAT) return bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
+    if (s != BD_OK) return bd_fail(cat, s, "cannot read %s", path);
+    return BD_OK;
+}
 
 bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)
 {

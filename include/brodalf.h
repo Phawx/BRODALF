@@ -86,6 +86,23 @@ typedef struct {
 typedef int (*bd_catalog_copy_fn)(void *ctx, const bd_catalog_copy_info *info);
 bd_status bd_find_catalog_copies(const char *dir, bd_catalog_copy_fn fn, void *ctx);
 
+/* Every copy of one catalog in a folder (one catalog's folder on a drive,
+ * as bd_find_catalog_copies gives in info->path's folder), newest first:
+ * to try the next older one when the newest will not open. */
+bd_status bd_find_catalog_revisions(const char *folder, bd_catalog_copy_fn fn, void *ctx);
+
+/* Read the whole catalog copy at path (one on a drive) through, as opening
+ * it would, without keeping it: BD_OK if it reads, BD_ERR_FORMAT if it is
+ * damaged or not a catalog, BD_ERR_PASSPHRASE if it is encrypted and cat
+ * is locked (it was not read). An encrypted copy is read with cat's key. */
+bd_status bd_catalog_copy_readable(bd_catalog *cat, const char *path);
+
+/* 1 if path is a copy of a catalog on a backup drive: named like one
+ * (catalog-r<revision>.brodalf, catalog-backup.brodalf) or inside a
+ * BRODALF/<catalog id> folder. Opening it would save over it, so it is
+ * recovered instead (bd_catalog_recover). */
+int bd_path_is_drive_copy(const char *path);
+
 /* 1 if the file at path is an encrypted catalog (needs a passphrase). */
 int bd_catalog_file_needs_passphrase(const char *path);
 
@@ -451,6 +468,15 @@ typedef struct {
     int64_t bad;
     int64_t rehashed;
     int64_t skipped;   /* encrypted copies that need the passphrase to check */
+    /* bd_media_check only. The newest copy of the catalog on the drive:
+     * 1 it reads, -1 it is damaged (the next backup puts a new revision
+     * there), 0 not read (none there, or encrypted and locked). */
+    int catalog_copy;
+    int64_t catalog_revision;
+    /* Half-written files BRODALF left on the drive (names ending in
+     * .brodalf-tmp, from a copy that stopped, as at a power cut), older
+     * than an hour: bd_media_remove_leftovers removes them. */
+    int64_t leftovers, leftover_bytes;
 } bd_check_stats;
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx);
@@ -473,6 +499,10 @@ bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
  * BD_ERR_DRIVE_GONE, keeps the copies it found good, and marks nothing
  * missing or damaged. */
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx);
+/* Remove the half-written files bd_media_check counted in leftovers: only
+ * BRODALF's own .brodalf-tmp files in its folder on the drive, never a
+ * copy. *removed is how many went. */
+bd_status bd_media_remove_leftovers(bd_catalog *cat, int64_t media_id, int64_t *removed);
 
 /* Read back and hash every copy on a connected drive that has not been
  * read back in max_age_days (0: every copy). Copies never read back since
@@ -668,6 +698,20 @@ bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
 bd_status bd_media_mark_lost(bd_catalog *cat, int64_t media_id, const char *why);
 /* It turned up again (or was marked by mistake): its copies count again. */
 bd_status bd_media_found(bd_catalog *cat, int64_t media_id);
+
+/* A disk at root that is not set up for this catalog, but whose model,
+ * serial number and size match a known drive that is not plugged in now
+ * and not marked lost or broken: most likely that drive, wiped or
+ * reformatted. *media_id is that drive. BD_ERR_NOT_FOUND if none matches
+ * or the disk says nothing about itself, BD_ERR_EXISTS if it is set up for
+ * this catalog. Nothing is changed. */
+bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_id);
+/* The user said the disk at root is that drive, erased. Every copy
+ * recorded on it is marked missing, so the files are backed up again and
+ * those copies stop counting; its ID file is written back on the disk (a
+ * new file: BD_ERR_EXISTS if one is there), so it keeps its name and
+ * place; and it is recorded as plugged in at root. */
+bd_status bd_media_erased(bd_catalog *cat, int64_t media_id, const char *root);
 
 typedef struct {
     int64_t files_restored;

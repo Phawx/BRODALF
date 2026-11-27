@@ -334,6 +334,7 @@ static int fake_hw(const char *root, bd_drive_hw *hw)
         {"disk-OTHER", "Seagate Expansion", "NAB1C2D3", "good", 4000787030016},
         {"disk-ROOT", "Samsung SSD 980", "S64DNX0R123", "good", 1000204886016},
         {"disk-FAIL", "Toshiba Canvio", "Z8T4P1QXA", "failing", 1000204886016},
+        {"disk-WIPE", "SanDisk Extreme", "32154D2A8F11", "good", 1000170586112},
     };
     for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
         if (!strstr(root, disks[i].mark)) continue;
@@ -425,6 +426,166 @@ static void test_one_disk(void)
     CHECK(bs.files_copied == 3);
     CHECK(at_risk(cat).n == 3); /* 0.11.0: 0 */
     bd_catalog_close(cat);
+}
+
+/* ---- Data at risk 5: a backup drive that was wiped -------------------------- */
+
+static void test_wiped_drive(void)
+{
+    make_files("wipe-src/Docs", 3, "wipe");
+    bd_mkdirs(at("wipe/disk-WIPE-a"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("wipe/db.brodalf"), &cat), NULL);
+    int64_t src, green, id = -1;
+    REQUIRE_OK(bd_source_add(cat, at("wipe-src/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    target_one(cat);
+    REQUIRE_OK(bd_media_init(cat, at("wipe/disk-WIPE-a"), "Green", 0, &green), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, green, 0, &bs, quiet, NULL), cat);
+    CHECK(at_risk(cat).n == 0);
+    CHECK(bd_media_match_disk(cat, at("wipe/disk-WIPE-a"), &id) == BD_ERR_EXISTS);
+    bd_media_disconnect(cat, green);
+
+    /* The same disk, reformatted: empty, no BRODALF folder. */
+    bd_mkdirs(at("wipe/disk-WIPE-b"));
+    bd_mkdirs(at("wipe/disk-OTHER-c"));
+    CHECK(bd_media_match_disk(cat, at("wipe/disk-WIPE-b"), &id) == BD_OK && id == green);
+    CHECK(bd_media_match_disk(cat, at("wipe/disk-OTHER-c"), &id) == BD_ERR_NOT_FOUND && id == 0);
+    CHECK(at_risk(cat).n == 0); /* nothing changes until the user says so */
+    REQUIRE_OK(bd_media_erased(cat, green, at("wipe/disk-WIPE-b")), cat);
+    CHECK(at_risk(cat).n == 3);
+    CHECK(bd_media_erased(cat, green, at("wipe/disk-WIPE-b")) == BD_ERR_EXISTS);
+    REQUIRE_OK(bd_backup(cat, green, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    CHECK(at_risk(cat).n == 0);
+    bd_media_disconnect(cat, green);
+    REQUIRE_OK(bd_media_connect(cat, at("wipe/disk-WIPE-b"), &id, quiet, NULL), cat);
+    CHECK(id == green);
+    bd_catalog_close(cat);
+}
+
+/* ---- Recovery 2: the newest catalog copy on a drive is damaged -------------- */
+
+static void spoil(const char *path)
+{
+    FILE *f = bd_fopen(path, "r+b");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, n / 2, SEEK_SET);
+    for (int i = 0; i < 8; i++) fputc(0x5A ^ i, f);
+    fclose(f);
+}
+
+static int spoil_next = 0;
+static void spoil_once(const char *path)
+{
+    if (spoil_next) {
+        spoil_next = 0;
+        spoil(path);
+    }
+}
+
+typedef struct { char paths[8][2048]; int64_t revs[8]; int n; } revs_seen;
+
+static int revs_cb(void *ctx, const bd_catalog_copy_info *c)
+{
+    revs_seen *r = ctx;
+    if (r->n < 8) {
+        snprintf(r->paths[r->n], sizeof(r->paths[0]), "%s", c->path);
+        r->revs[r->n++] = c->revision;
+    }
+    return 0;
+}
+
+static void test_damaged_catalog_copy(void)
+{
+    make_files("dmg-src/Docs", 2, "dmg");
+    bd_mkdirs(at("dmg/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("dmg/db.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("dmg-src/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("dmg/drive"), "Blue", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    write_file(at("dmg-src/Docs/new.txt"), "a new file");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    char dir[2048];
+    snprintf(dir, sizeof(dir), "%s/BRODALF/%s", at("dmg/drive"), bd_catalog_uuid(cat));
+
+    /* A copy that does not read back is written again as the next revision. */
+    revs_seen before = {0}, after = {0};
+    bd_find_catalog_revisions(dir, revs_cb, &before);
+    write_file(at("dmg-src/Docs/newer.txt"), "a newer file");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    spoil_next = 1;
+    bd_test_spoil_catalog_copy = spoil_once;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    bd_test_spoil_catalog_copy = NULL;
+    bd_find_catalog_revisions(dir, revs_cb, &after);
+    CHECK(after.n == before.n + 2); /* 0.11.0: + 1, and that one damaged */
+    CHECK(after.n >= 2 && bd_catalog_copy_readable(cat, after.paths[0]) == BD_OK);
+    CHECK(after.n >= 2 && bd_catalog_copy_readable(cat, after.paths[1]) == BD_ERR_FORMAT);
+
+    /* Check drive reads the newest copy. */
+    bd_check_stats cs;
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.catalog_copy == 1 && cs.catalog_revision == after.revs[0]);
+    spoil(after.paths[0]);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.catalog_copy == -1);
+    /* The next backup puts a new revision there, though nothing changed. */
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.catalog_copy == 1 && cs.catalog_revision > after.revs[0]);
+    revs_seen now = {0};
+    bd_find_catalog_revisions(dir, revs_cb, &now);
+    spoil(now.paths[0]); /* newest to oldest: spoiled, spoiled, spoiled by the hook, good */
+
+    /* Leftovers from a copy that stopped. */
+    char tmp[2200], fresh[2200];
+    snprintf(tmp, sizeof(tmp), "%s/Docs/half.txt.brodalf-tmp", dir);
+    snprintf(fresh, sizeof(fresh), "%s/Docs/now.txt.brodalf-tmp", dir);
+    write_file(tmp, "half of a file");
+    write_file(fresh, "being written");
+    FILE *f = bd_fopen(tmp, "r+b");
+    bd_set_mtime(f, (bd_now_ms() - 2 * 3600 * 1000) * 1000000);
+    fclose(f);
+    REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
+    CHECK(cs.leftovers == 1); /* 0.11.0: nothing said */
+    int64_t removed = 0;
+    REQUIRE_OK(bd_media_remove_leftovers(cat, drive, &removed), cat);
+    CHECK(removed == 1 && !exists(tmp) && exists(fresh));
+    bd_catalog_close(cat);
+
+    /* Recover: the newest copy does not open, the next older one does. */
+    revs_seen all = {0};
+    bd_find_catalog_revisions(dir, revs_cb, &all);
+    int opened = -1;
+    for (int i = 0; i < all.n && opened < 0; i++) {
+        char dest[2048];
+        snprintf(dest, sizeof(dest), "%s/recovered-%d.brodalf", at("dmg"), i);
+        bd_catalog *rc = NULL;
+        if (bd_catalog_recover(all.paths[i], dest) == BD_OK && bd_catalog_open(dest, &rc) == BD_OK) {
+            opened = i;
+            bd_catalog_close(rc);
+        }
+    }
+    CHECK(opened == 3);
+
+    /* Recovery 5: a copy on a drive is recognised as one. */
+    CHECK(bd_path_is_drive_copy(all.paths[0]));
+    CHECK(bd_path_is_drive_copy("E:\\BRODALF\\0f8e7a3c-1b2d-4c5e-9f60-7a8b9c0d1e2f\\catalog-old.brodalf"));
+    CHECK(bd_path_is_drive_copy("E:\\Backups\\catalog-r00000012.brodalf"));
+    CHECK(!bd_path_is_drive_copy(at("dmg/db.brodalf")));
+    CHECK(!bd_path_is_drive_copy("C:\\Users\\Sam\\Documents\\catalog.brodalf"));
+    CHECK(!bd_path_is_drive_copy("C:\\BRODALF\\notes\\home.brodalf"));
 }
 
 /* ---- Recovery 1: a new PC with the same user name ----------------------- */
@@ -558,6 +719,8 @@ int main(void)
     test_links();
     test_changes_during_copy();
     test_one_disk();
+    test_wiped_drive();
+    test_damaged_catalog_copy();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

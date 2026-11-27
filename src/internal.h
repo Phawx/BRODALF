@@ -144,6 +144,8 @@ int64_t bd_drive_file_limit(bd_catalog *cat, int64_t media_id, const char *root)
 void bd_refresh_uncounted(bd_catalog *cat);
 /* For tests: stands in for bd_drive_hw_read when set. */
 extern int (*bd_test_hw_read)(const char *root, bd_drive_hw *hw);
+/* For tests: called on each catalog copy just written to a drive. */
+extern void (*bd_test_spoil_catalog_copy)(const char *path);
 /* SQL: a copy can still be restored from (its drive is not lost or broken),
  * extra places included. */
 #define BD_SQL_USABLE(c) \

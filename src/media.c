@@ -243,6 +243,7 @@ void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw,
 }
 
 int (*bd_test_hw_read)(const char *root, bd_drive_hw *hw) = NULL;
+void (*bd_test_spoil_catalog_copy)(const char *path) = NULL;
 
 void bd_refresh_uncounted(bd_catalog *cat)
 {
@@ -389,6 +390,86 @@ bd_status bd_media_found(bd_catalog *cat, int64_t media_id)
     return BD_OK;
 }
 
+bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_id)
+{
+    *media_id = 0;
+    char *path;
+    if (bd_media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
+    bd_media_file mf;
+    int known = bd_media_file_read(path, &mf) == 0;
+    free(path);
+    if (known) return bd_fail(cat, BD_ERR_EXISTS, "%s is already set up for this catalog", root);
+    bd_drive_hw hw;
+    int rc = bd_test_hw_read ? bd_test_hw_read(root, &hw) : bd_drive_hw_read(root, &hw);
+    if (rc != 0) return bd_fail(cat, BD_ERR_NOT_FOUND, "the disk at %s says nothing about itself", root);
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           "WITH h(model, serial, disk_bytes) AS (SELECT ?1, ?2, ?3)"
+                           " SELECT m.id FROM media m, h WHERE m.kind='drive' AND m.retired_ms IS NULL"
+                           " AND NOT EXISTS(SELECT 1 FROM temp.connected k WHERE k.media_id=m.id)"
+                           " AND " BD_SQL_HW_KEY("h") "=" BD_SQL_DISK("m.id") " ORDER BY m.id LIMIT 1",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "compare the disk");
+    sqlite3_bind_text(q, 1, hw.model, -1, SQLITE_STATIC);
+    sqlite3_bind_text(q, 2, hw.serial, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(q, 3, hw.disk_bytes > 0 ? hw.disk_bytes : 0);
+    if (sqlite3_step(q) == SQLITE_ROW) *media_id = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    return *media_id ? BD_OK : bd_fail(cat, BD_ERR_NOT_FOUND, "the disk at %s is not one of your drives", root);
+}
+
+bd_status bd_media_erased(bd_catalog *cat, int64_t media_id, const char *root)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT uuid, label, encrypted, secondary, COALESCE(hide_names,0) FROM media WHERE id=? AND kind='drive'",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "read the drive");
+    sqlite3_bind_int64(q, 1, media_id);
+    bd_media_file mf;
+    memset(&mf, 0, sizeof(mf));
+    int found = sqlite3_step(q) == SQLITE_ROW;
+    if (found) {
+        snprintf(mf.media_uuid, sizeof(mf.media_uuid), "%s", (const char *)sqlite3_column_text(q, 0));
+        snprintf(mf.label, sizeof(mf.label), "%s", (const char *)sqlite3_column_text(q, 1));
+        mf.encrypted = sqlite3_column_int(q, 2) != 0;
+        mf.secondary = sqlite3_column_int(q, 3) != 0;
+        mf.hide_names = sqlite3_column_int(q, 4) != 0;
+    }
+    sqlite3_finalize(q);
+    if (!found) return bd_fail(cat, BD_ERR_NOT_FOUND, "no such drive");
+    snprintf(mf.catalog_uuid, sizeof(mf.catalog_uuid), "%s", cat->uuid);
+    bd_stat_t st;
+    if (bd_stat(root, &st) != 0 || !st.is_dir) return bd_fail(cat, BD_ERR_NOT_FOUND, "%s is not a drive or folder", root);
+    char *path;
+    if (bd_media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;
+    bd_media_file old;
+    if (bd_media_file_read(path, &old) == 0) {
+        free(path);
+        return bd_fail(cat, BD_ERR_EXISTS, "%s is already set up for this catalog as \"%s\"", root, old.label);
+    }
+    char *dir = bd_media_catalog_dir(cat, root);
+    int made = dir && bd_mkdirs(dir) == 0;
+    free(dir);
+    /* Never replaces a file: an ID file that is there already stops it. */
+    if (!made || bd_media_file_write(path, &mf) != 0) {
+        free(path);
+        return bd_fail(cat, BD_ERR_IO, "cannot write the drive ID file on %s", root);
+    }
+    free(path);
+    sqlite3_stmt *u;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE copies SET state='missing', last_quick_check_ms=?2 WHERE media_id=?1 AND state<>'missing'",
+                           -1, &u, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "mark the copies missing");
+    sqlite3_bind_int64(u, 1, media_id);
+    sqlite3_bind_int64(u, 2, bd_now_ms());
+    int rc = sqlite3_step(u);
+    sqlite3_finalize(u);
+    if (rc != SQLITE_DONE) return bd_fail_db(cat, "mark the copies missing");
+    bd_status s = bd_media_record_connected(cat, media_id, root);
+    if (s == BD_OK) read_hardware(cat, media_id, root, NULL, NULL);
+    return s;
+}
+
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx)
 {
     char *path;
@@ -525,10 +606,94 @@ enum { CHECK_EVERY, CHECK_DUE, CHECK_UNREAD };
 static bd_status check_copies(bd_catalog *cat, int64_t media_id, int mode, int64_t due_before,
                               bd_check_stats *stats, bd_log_fn log, void *log_ctx);
 
+typedef struct { char *path; } newest_rev;
+
+static int newest_rev_cb(void *ctx, const bd_catalog_copy_info *c)
+{
+    newest_rev *n = ctx;
+    n->path = bd_strdup(c->path);
+    return 1;
+}
+
+/* Half-written files: BRODALF's own, from a copy that stopped. */
+typedef struct { const char *dir; int64_t n, bytes, before_ns; int remove; } leftover_walk;
+
+static int leftover_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    leftover_walk *w = ctx;
+    size_t n = strlen(rel), m = sizeof(BD_TMP_MARKER) - 1;
+    if (!st->is_file || n <= m || strcmp(rel + n - m, BD_TMP_MARKER) != 0 || st->mtime_ns > w->before_ns) return 0;
+    if (w->remove) {
+        char *p = bd_path_join(w->dir, rel);
+        if (p && bd_remove(p) == 0) { w->n++; w->bytes += st->size; }
+        free(p);
+        return 0;
+    }
+    w->n++;
+    w->bytes += st->size;
+    return 0;
+}
+
+static void leftovers(bd_catalog *cat, int64_t media_id, int remove, int64_t *n, int64_t *bytes)
+{
+    *n = *bytes = 0;
+    char *root = bd_connected_root(cat, media_id);
+    char *dir = root ? bd_media_catalog_dir(cat, root) : NULL;
+    if (dir) {
+        leftover_walk w = {dir, 0, 0, (bd_now_ms() - 3600 * 1000) * 1000000, remove};
+        bd_walk(dir, leftover_cb, NULL, &w);
+        *n = w.n;
+        *bytes = w.bytes;
+    }
+    free(dir);
+    free(root);
+}
+
+bd_status bd_media_remove_leftovers(bd_catalog *cat, int64_t media_id, int64_t *removed)
+{
+    int64_t n = 0, bytes = 0;
+    if (!bd_media_present(cat, media_id)) return bd_fail(cat, BD_ERR_NOT_FOUND, "that drive is not connected");
+    leftovers(cat, media_id, 1, &n, &bytes);
+    if (removed) *removed = n;
+    return BD_OK;
+}
+
 bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stats, bd_log_fn log, void *log_ctx)
 {
+    bd_check_stats local;
+    if (!stats) stats = &local;
     bd_cancel_reset(cat);
-    return check_copies(cat, media_id, CHECK_EVERY, 0, stats, log, log_ctx);
+    bd_status s = check_copies(cat, media_id, CHECK_EVERY, 0, stats, log, log_ctx);
+    if (s != BD_OK) return s;
+    /* The newest copy of the catalog on the drive: the one Recover takes. */
+    char *root = bd_connected_root(cat, media_id);
+    char *dir = root ? bd_media_catalog_dir(cat, root) : NULL;
+    newest_rev nr = {NULL};
+    if (dir) bd_find_catalog_revisions(dir, newest_rev_cb, &nr);
+    if (nr.path) {
+        const char *name = nr.path + strlen(nr.path);
+        while (name > nr.path && name[-1] != '/' && name[-1] != '\\') name--;
+        stats->catalog_revision = 0;
+        if (strncmp(name, "catalog-r", 9) == 0) stats->catalog_revision = strtoll(name + 9, NULL, 10);
+        bd_status r = bd_catalog_copy_readable(cat, nr.path);
+        if (r == BD_OK) {
+            stats->catalog_copy = 1;
+        } else if (r != BD_ERR_PASSPHRASE) {
+            stats->catalog_copy = -1;
+            bd_logf(log, log_ctx, "the newest copy of the catalog on the drive (revision %lld) is damaged: the next backup puts a new one there",
+                    (long long)stats->catalog_revision);
+            /* So that the next save is a new revision, under a new name. */
+            bd_catalog_mark_changed(cat);
+        }
+    }
+    free(nr.path);
+    free(dir);
+    free(root);
+    leftovers(cat, media_id, 0, &stats->leftovers, &stats->leftover_bytes);
+    if (stats->leftovers)
+        bd_logf(log, log_ctx, "%lld half-written files from a copy that stopped are on the drive (%lld bytes); they can be removed",
+                (long long)stats->leftovers, (long long)stats->leftover_bytes);
+    return BD_OK;
 }
 
 bd_status bd_media_verify(bd_catalog *cat, int64_t media_id, int max_age_days,
@@ -730,7 +895,16 @@ static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id);
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
 {
     bd_status s = bd_catalog_save(cat);
-    return s == BD_OK ? put_catalog_copy(cat, media_id) : s;
+    if (s == BD_OK) s = put_catalog_copy(cat, media_id);
+    if (s == BD_ERR_FORMAT) {
+        /* It did not read back right: once more, as the next revision. The
+         * bad copy stays (nothing on a drive is overwritten); Recover tries
+         * an older one when the newest will not open. */
+        bd_catalog_mark_changed(cat);
+        s = bd_catalog_save(cat);
+        if (s == BD_OK) s = put_catalog_copy(cat, media_id);
+    }
+    return s;
 }
 
 static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
@@ -758,6 +932,20 @@ static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
     if (staged && s != BD_OK) bd_remove(staged);
     free(staged);
     bd_store_close(store);
+    if (s == BD_OK) {
+        /* Read it back as Recover would. */
+        char *root = bd_connected_root(cat, media_id);
+        char *dir = root ? bd_media_catalog_dir(cat, root) : NULL;
+        char *path = dir ? bd_path_join(dir, rel) : NULL;
+        if (path && bd_test_spoil_catalog_copy) bd_test_spoil_catalog_copy(path);
+        bd_status r = path ? bd_catalog_copy_readable(cat, path) : BD_OK;
+        if (r == BD_ERR_FORMAT || r == BD_ERR_NOT_FOUND)
+            s = bd_fail(cat, BD_ERR_FORMAT, "the copy of the catalog on the drive did not read back right (revision %lld)",
+                        (long long)bd_catalog_revision(cat));
+        free(path);
+        free(dir);
+        free(root);
+    }
     return s;
 }
 

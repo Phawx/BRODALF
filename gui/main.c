@@ -1690,6 +1690,8 @@ typedef struct job {
     int64_t many[16];   /* backup: several drives and extra places in one job */
     int n_many, many_places;
     int64_t no_room, bytes_no_room; /* backup: what did not fit */
+    int64_t erased_id;  /* backup: the disk at root is this drive, wiped: put it back first (bd_media_erased) */
+    int64_t leftovers;  /* check: half-written files left on the drive */
     int64_t offline;    /* restore: files on drives not plugged in */
     int deleted;        /* restore: only files deleted from their folder */
     int64_t version_id; /* restore: this one version of a file, into dest */
@@ -2903,7 +2905,13 @@ static DWORD WINAPI worker(LPVOID arg)
             break;
         }
         int64_t id = j->media_id;
-        if (j->label) {
+        if (j->erased_id) {
+            s = bd_media_erased(g_cat, j->erased_id, j->root);
+            if (s == BD_OK) {
+                id = j->media_id = j->erased_id;
+                j->erased_id = 0; /* a retry must not do it again */
+            }
+        } else if (j->label) {
             s = bd_media_init(g_cat, j->root, j->label, j->flags, &id);
             if (s == BD_OK) {
                 if (j->location && *j->location) bd_media_set_location(g_cat, id, j->location);
@@ -2996,6 +3004,16 @@ static DWORD WINAPI worker(LPVOID arg)
                  (long long)cs.copies, (long long)cs.ok, (long long)cs.bad,
                  (long long)cs.missing, cs.bad || cs.missing ? T(L" The next backup to this drive writes them again.") : L"");
         if (cs.skipped) say(j, T(L" %lld encrypted copies need the passphrase to check."), (long long)cs.skipped);
+        if (cs.catalog_copy == 1) say(j, T(L" The newest copy of the database on it reads fine."));
+        else if (cs.catalog_copy < 0)
+            say(j, T(L" The newest copy of the database on it is damaged: the next backup to it puts a new one there."));
+        if (cs.leftovers) {
+            format_bytes(cs.leftover_bytes, size, 64);
+            say(j, TN(cs.leftovers, L" %lld half-written file (%ls) from a copy that stopped is on it.",
+                      L" %lld half-written files (%ls) from a copy that stopped are on it."),
+                (long long)cs.leftovers, size);
+        }
+        j->leftovers = cs.leftovers;
         j->n_problems = j->n_tell = cs.bad + cs.missing;
         break;
     }
@@ -8172,6 +8190,127 @@ static void disk_ignore(const wchar_t *serial)
 }
 
 static void add_disk_at(char *root);
+static int recover_copy(const char *path);
+
+/* The disk is the physical disk of one of the drives (its model, serial
+ * number and size match) but has no BRODALF folder: most likely that drive,
+ * wiped or reformatted. 1 if the user answered, 0 to ask as for any disk. */
+static int offer_erased_drive(const wchar_t *root, const char *root8)
+{
+    int64_t id = 0;
+    if (bd_media_match_disk(g_cat, root8, &id) != BD_OK || !id) return 0;
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    if (!o.found) return 0;
+    wchar_t name[600], head[800], content[1600];
+    drive_name(o.label, o.location, name, 600);
+    swprintf(head, 800, T(L"Is this %ls, wiped?"), name);
+    swprintf(content, 1600, TN(o.info.copies, L"The disk plugged in at %ls is the same disk as your backup drive %ls: the same model, serial "
+                                              L"number and size. But BRODALF's folder on it is gone, so it was most likely reformatted or "
+                                              L"erased, and the %lld copy BRODALF recorded on it is gone with it.",
+                               L"The disk plugged in at %ls is the same disk as your backup drive %ls: the same model, serial "
+                               L"number and size. But BRODALF's folder on it is gone, so it was most likely reformatted or "
+                               L"erased, and the %lld copies BRODALF recorded on it are gone with them."),
+             root, name, (long long)o.info.copies);
+    TASKDIALOG_BUTTON b[3] = {
+        {660, T(L"Yes, it was wiped: back up to it again\nIts old copies stop counting. BRODALF puts its folder back and backs up "
+                L"to it; it keeps its name and where it is kept. Nothing else on the disk is touched.")},
+        {661, T(L"No, it is another disk\nBRODALF asks whether to set it up as a new backup drive.")},
+        {662, T(L"Not now")},
+    };
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_WARNING_ICON;
+    tc.pszMainInstruction = head;
+    tc.pszContent = content;
+    tc.cButtons = 3;
+    tc.pButtons = b;
+    tc.nDefaultButton = 662;
+    int pressed = 662;
+    if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return 1;
+    if (pressed == 661) return 0;
+    if (pressed != 660) return 1;
+    /* Its copies stop counting: asked twice, like marking a drive lost. */
+    wchar_t msg[1200];
+    swprintf(msg, 1200, TN(o.info.copies, L"Mark the %lld copy on %ls missing?\n\nIt stops counting toward the copies you want, and the "
+                                          L"next backup copies that file to the disk again. If the disk was not wiped after all, choose Cancel.",
+                           L"Mark the %lld copies on %ls missing?\n\nThey stop counting toward the copies you want, and the "
+                           L"next backup copies those files to the disk again. If the disk was not wiped after all, choose Cancel."),
+             (long long)o.info.copies, name);
+    if (ask_verbs(g_main, msg, MB_ICONWARNING | MB_YESNO, T(L"Mark them missing"), T(L"Cancel")) != IDYES) return 1;
+    if (o.info.encrypted && !unlock_ui(T(L"Enter the passphrase to back up to an encrypted drive."))) return 1;
+    job *j = new_job(JOB_BACKUP);
+    if (!j) return 1;
+    j->root = xstrdup(root8);
+    j->erased_id = id;
+    enqueue(j);
+    return 1;
+}
+
+/* The disk holds backups made from another database (a BRODALF folder for
+ * another database's id): most likely the database of an old PC. 1 if the
+ * user answered, 0 to ask as for any disk. */
+typedef struct { const char *own; char *path; int64_t revision, saved_ms; } other_db;
+
+static int other_db_cb(void *ctx, const bd_catalog_copy_info *c)
+{
+    other_db *o = ctx;
+    if (strcmp(c->catalog_id, o->own) == 0) return 0;
+    if (o->path && (c->revision < o->revision || (c->revision == o->revision && c->saved_ms <= o->saved_ms))) return 0;
+    char *p = xstrdup(c->path);
+    if (!p) return 0;
+    free(o->path);
+    o->path = p;
+    o->revision = c->revision;
+    o->saved_ms = c->saved_ms;
+    return 0;
+}
+
+static int offer_other_database(const wchar_t *root, const char *root8)
+{
+    other_db o = {bd_catalog_uuid(g_cat), NULL, 0, 0};
+    bd_find_catalog_copies(root8, other_db_cb, &o);
+    if (!o.path) return 0;
+    wchar_t when[64], content[1400];
+    format_time_ms(o.saved_ms, when, 64);
+    swprintf(content, 1400, T(L"The drive at %ls holds BRODALF backups made from another database, not the one open now. The newest copy of "
+                            L"that database on it was saved %ls.\n\nIf that database is yours, for example from your old PC, recover it "
+                            L"to see and restore what this drive holds."),
+             root, when);
+    TASKDIALOG_BUTTON b[3] = {
+        {670, T(L"Recover that database\nBRODALF copies it from the drive to this PC and opens it in place of the one open now. "
+                L"Nothing on the drive is changed.")},
+        {671, T(L"Set it up as a backup drive of this database too\nThe two databases keep their backups in separate folders on it.")},
+        {672, T(L"Not now")},
+    };
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_INFORMATION_ICON;
+    tc.pszMainInstruction = T(L"This drive has backups from another database");
+    tc.pszContent = content;
+    tc.cButtons = 3;
+    tc.pButtons = b;
+    tc.nDefaultButton = 670;
+    int pressed = 672;
+    if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) {
+        if (pressed == 670) recover_copy(o.path);
+        else if (pressed == 671) add_disk_at(xstrdup(root8));
+    }
+    free(o.path);
+    return 1;
+}
 
 /* A disk that is not a BRODALF drive was plugged in: offer to set it up.
  * Nothing happens unless the user says so. */
@@ -8180,6 +8319,10 @@ static void offer_new_disk(const wchar_t *root)
     wchar_t serial[16] = L"", windir[MAX_PATH] = L"";
     if (GetWindowsDirectoryW(windir, MAX_PATH) && towupper(windir[0]) == towupper(root[0])) return; /* the system disk */
     if (disk_serial(root, serial, 16) && disk_ignored(serial)) return;
+    char *root8 = narrow(root);
+    int answered = root8 && (offer_erased_drive(root, root8) || offer_other_database(root, root8));
+    free(root8);
+    if (answered) return;
     wchar_t vname[MAX_PATH + 1] = L"", size[64] = L"", used[64] = L"", content[900];
     GetVolumeInformationW(root, vname, MAX_PATH + 1, NULL, NULL, NULL, NULL, 0);
     ULARGE_INTEGER total, freeb;
@@ -8218,6 +8361,33 @@ static void offer_new_disk(const wchar_t *root)
     if (FAILED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) return;
     if (pressed == 642) disk_ignore(serial);
     else if (pressed == 640) add_disk_at(narrow(root));
+}
+
+/* A check found half-written files BRODALF left on the drive, from a copy
+ * that stopped: they are its own, not the user's, and go only on a yes. */
+static void offer_leftovers(job *j)
+{
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = j->media_id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    wchar_t name[600], msg[1400];
+    drive_name(o.found ? o.label : "", o.found ? o.location : "", name, 600);
+    swprintf(msg, 1400, TN(j->leftovers, L"Remove the half-written file BRODALF left on %ls?\n\nA copy to it stopped partway, "
+                                        L"for example at a power cut, and left %lld file ending in .brodalf-tmp. It is BRODALF's own, "
+                                        L"not one of your files or copies, and nothing else is removed.",
+                           L"Remove the half-written files BRODALF left on %ls?\n\nCopies to it stopped partway, "
+                           L"for example at a power cut, and left %lld files ending in .brodalf-tmp. They are BRODALF's own, "
+                           L"not your files or copies, and nothing else is removed."),
+             name, (long long)j->leftovers);
+    if (ask_verbs(g_main, msg, MB_ICONQUESTION | MB_YESNO, T(L"Remove them"), T(L"Leave them")) != IDYES) return;
+    int64_t removed = 0;
+    if (bd_media_remove_leftovers(g_cat, j->media_id, &removed) == BD_OK) {
+        wchar_t line[300];
+        swprintf(line, 300, TN(removed, L"Removed %lld half-written file from the drive.", L"Removed %lld half-written files from the drive."),
+                 (long long)removed);
+        log_append(line);
+    }
 }
 
 /* Drives offered a check this time BRODALF runs: offered once each. */
@@ -17207,6 +17377,7 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 offer_read_back(j);
             }
             else if (j->kind == JOB_RESTORE && j->status == BD_OK) after_restore(j);
+            else if (j->kind == JOB_CHECK && j->status == BD_OK && j->leftovers) offer_leftovers(j);
             else if (j->kind == JOB_SHADOW && j->status == BD_OK) after_shadow(j);
             /* A scan that leads to a backup from the shadow copy waits for the backup to ask. */
             if ((j->kind == JOB_SCAN || j->kind == JOB_BACKUP) && j->in_use && j->status == BD_OK &&
@@ -17568,11 +17739,24 @@ static int damaged_database(const wchar_t *path, const wchar_t *why)
     return pressed;
 }
 
+static int recover_copy(const char *path);
+
 static int try_open(const wchar_t *path)
 {
     if (g_cat && _wcsicmp(path, g_cat_path) == 0) return 1;
     char *p = narrow(path);
     if (!p) return 0;
+    /* A copy on a backup drive: saving would change it, and it would become
+     * the database. Recover makes a copy on this PC instead. */
+    if (bd_path_is_drive_copy(p)) {
+        int yes = ask_verbs(g_main, T(L"Recover this copy instead of opening it?\n\nIt is a copy of a database on a backup drive. "
+                                    L"Opening it would save your changes over it, and BRODALF never changes what is on a backup drive. "
+                                    L"Recover copies it to this PC and opens that copy; the one on the drive stays as it is."),
+                            MB_ICONQUESTION | MB_YESNO, T(L"Recover it"), T(L"Cancel")) == IDYES;
+        int ok = yes && recover_copy(p);
+        free(p);
+        return ok;
+    }
     bd_catalog *nc = NULL;
     bd_status s = open_maybe_encrypted(p, &nc);
     free(p);
@@ -17838,6 +18022,110 @@ static int pick_found(const found_list *l)
     return pressed >= 400 && pressed < 400 + l->n ? pressed - 400 : -1;
 }
 
+/* The copies of one database in the folder a copy is in, newest first. */
+#define MAX_REVS 64
+typedef struct { char *paths[MAX_REVS]; int64_t revs[MAX_REVS], saved[MAX_REVS]; int n; } rev_paths;
+
+static int rev_paths_cb(void *ctx, const bd_catalog_copy_info *c)
+{
+    rev_paths *r = ctx;
+    if (r->n == MAX_REVS) return 1;
+    if ((r->paths[r->n] = xstrdup(c->path)) != NULL) {
+        r->revs[r->n] = c->revision;
+        r->saved[r->n++] = c->saved_ms;
+    }
+    return 0;
+}
+
+/* Copy the database copy at path (on a drive) to this PC and open it. When
+ * it will not open, the next older copy beside it is tried, and so on; the
+ * one that opened is named. Nothing on the drive is changed. */
+static int recover_copy(const char *path)
+{
+    wchar_t dest[MAX_PATH * 2] = L"";
+    if (!save_dialog(dest, MAX_PATH * 2, T(L"Choose where to keep your database on this PC"))) return 0;
+    rev_paths rp;
+    memset(&rp, 0, sizeof(rp));
+    char *folder = xstrdup(path);
+    char *cut = folder ? strrchr(folder, '\\') : NULL, *slash = folder ? strrchr(folder, '/') : NULL;
+    if (slash && (!cut || slash > cut)) cut = slash;
+    if (cut) {
+        *cut = 0;
+        bd_find_catalog_revisions(folder, rev_paths_cb, &rp);
+    }
+    free(folder);
+    int start = -1;
+    for (int i = 0; i < rp.n; i++)
+        if (_stricmp(rp.paths[i], path) == 0) start = i;
+    if (start < 0) {
+        /* Not among them (a copy named otherwise): only that one. */
+        for (int i = 0; i < rp.n; i++) free(rp.paths[i]);
+        rp.n = 0;
+        if ((rp.paths[0] = xstrdup(path)) != NULL) {
+            rp.revs[0] = -1;
+            rp.n = 1;
+        }
+        start = 0;
+    }
+    char *d8 = narrow(dest);
+    bd_catalog *nc = NULL;
+    bd_status s = d8 ? BD_ERR_FORMAT : BD_ERR_NOMEM;
+    int used = -1;
+    for (int i = start; d8 && i < rp.n; i++) {
+        s = bd_catalog_recover(rp.paths[i], d8);
+        if (s == BD_OK) {
+            bd_applog("recovered the catalog from %s to %s", rp.paths[i], d8);
+            s = open_maybe_encrypted(d8, &nc);
+            if (s != BD_OK) DeleteFileW(dest); /* only the copy just made; the drive's is untouched */
+        }
+        if (s == BD_OK) {
+            used = i;
+            break;
+        }
+        /* Damaged or unreadable: the next older one. Anything else (the
+         * passphrase not given, the file in use) stops here. */
+        if (s != BD_ERR_FORMAT && s != BD_ERR_IO && s != BD_ERR_NOT_FOUND) break;
+        bd_applog("the catalog copy %s did not open: %s", rp.paths[i], bd_open_error());
+    }
+    free(d8);
+    int ok = 0;
+    if (s == BD_OK) {
+        close_database();
+        g_cat = nc;
+        database_opened(dest, 0, 1);
+        ok = 1;
+        if (used > start) {
+            wchar_t when[64], msg[900];
+            format_time_ms(rp.saved[used], when, 64);
+            swprintf(msg, 900, TN(used - start, L"The newest copy of your database on the drive is damaged, so BRODALF opened the next older one: "
+                                                L"revision %lld, saved %ls.\n\nWhat was backed up after it was saved is not in it. "
+                                                L"The next scan and backup catch up.",
+                                  L"The newest copies of your database on the drive are damaged, so BRODALF opened the newest one that "
+                                  L"opens: revision %lld, saved %ls.\n\nWhat was backed up after it was saved is not in it. "
+                                  L"The next scan and backup catch up."),
+                     (long long)rp.revs[used], when);
+            MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
+        }
+        /* A database from a drive may hold anything: say if some stored
+         * paths would lead outside the folder a restore writes to. */
+        int64_t unsafe = 0;
+        if (bd_check_stored_paths(g_cat, ui_log, NULL, &unsafe) == BD_OK && unsafe) {
+            wchar_t msg[600];
+            swprintf(msg, 600, TN(unsafe, L"%lld file in this database has a stored path that would lead outside the folder you restore to. "
+                                          L"A restore leaves it out and lists it as failed; the log names it.",
+                                  L"%lld files in this database have stored paths that would lead outside the folder you restore to. "
+                                  L"A restore leaves them out and lists them as failed; the log names the first 20."),
+                     (long long)unsafe);
+            MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
+        }
+    } else if (s != BD_ERR_PASSPHRASE) {
+        show_open_error(s, rp.n - start > 1 ? T(L"No copy of the database on the drive could be opened: each one BRODALF tried is damaged.")
+                                            : T(L"The database could not be recovered."));
+    }
+    for (int i = 0; i < rp.n; i++) free(rp.paths[i]);
+    return ok;
+}
+
 /* Copy the newest copy of the database from a drive to this PC and open
  * it. The scan that follows finds which backup roots are here, and asks
  * about the others. */
@@ -17860,38 +18148,7 @@ static int recover_database_ui(void)
         if (!l.n) MessageBoxW(g_main, T(L"No copy of a BRODALF database was found there."), APP_NAME, MB_ICONINFORMATION);
     }
     int pick = pick_found(&l), ok = 0;
-    wchar_t dest[MAX_PATH * 2] = L"";
-    if (pick >= 0 && save_dialog(dest, MAX_PATH * 2, T(L"Choose where to keep your database on this PC"))) {
-        char *d8 = narrow(dest);
-        bd_catalog *nc = NULL;
-        bd_status s = d8 ? bd_catalog_recover(l.items[pick].path, d8) : BD_ERR_NOMEM;
-        if (s == BD_OK) {
-            bd_applog("recovered the catalog from %s to %s", l.items[pick].path, d8);
-            s = open_maybe_encrypted(d8, &nc);
-            if (s != BD_OK) DeleteFileW(dest); /* only the copy just made; the drive's is untouched */
-        }
-        free(d8);
-        if (s == BD_OK) {
-            close_database();
-            g_cat = nc;
-            database_opened(dest, 0, 1);
-            ok = 1;
-            /* A database from a drive may hold anything: say if some stored
-             * paths would lead outside the folder a restore writes to. */
-            int64_t unsafe = 0;
-            if (bd_check_stored_paths(g_cat, ui_log, NULL, &unsafe) == BD_OK && unsafe) {
-                wchar_t msg[600];
-                swprintf(msg, 600, TN(unsafe, L"%lld file in this database has a stored path that would lead outside the folder you restore to. "
-                                              L"A restore leaves it out and lists it as failed; the log names it.",
-                                      L"%lld files in this database have stored paths that would lead outside the folder you restore to. "
-                                      L"A restore leaves them out and lists them as failed; the log names the first 20."),
-                         (long long)unsafe);
-                MessageBoxW(g_main, msg, APP_NAME, MB_ICONWARNING);
-            }
-        } else if (s != BD_ERR_PASSPHRASE) {
-            show_open_error(s, T(L"The database could not be recovered."));
-        }
-    }
+    if (pick >= 0) ok = recover_copy(l.items[pick].path);
     found_free(&l);
     return ok;
 }

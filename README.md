@@ -19,13 +19,13 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-On the `portable-roots` branch, not released yet: a backup root is known
-by its files, not by where it was. A root whose folder is not there is
-looked for by its files and carried on with where one folder holds them,
-and a folder at a root's path that holds other files is no longer taken
-for the root. Nothing ties a database to the computer it is opened on.
+Version **0.13.0** (2026-11-27) knows a backup root by its files, not by
+where it was. A root whose folder is not there is looked for by its files
+and carried on with where one folder holds them, and a folder at a root's
+path that holds other files is no longer taken for the root. Nothing ties
+a database to the computer it is opened on.
 
-Version **0.12.0** (2026-11-27) fixes the 21 gaps that walking real use
+0.12.0 (2026-11-27) fixed the 21 gaps that walking real use
 cases through 0.11.0 found: above all, an empty folder at a backup root's
 path (as a fresh Windows makes) no longer marks every file deleted, copies count once per physical disk, and a
 wiped drive, a cloud file changed elsewhere and a link that is not followed
@@ -882,7 +882,7 @@ on a local machine needs to pick the work up without the chat history.
   the database format: 0.10.2 and 0.11.0 open the files 0.12.0 saves, and
   their command-line tools were seen reading, backing up to and recovering
   one.
-- Next, on the `portable-roots` branch (not released): a backup root is
+- v0.13.0 (2026-11-27, built on the `portable-roots` branch first): a backup root is
   known by its files. A folder at a root's path counts as the root by
   what it holds: the files the catalog knows there (where it has them, or
   moved inside it), not how many files it has, so a folder of other files
@@ -892,7 +892,9 @@ on a local machine needs to pick the work up without the chat history.
   mounted for this user) and pointed where one folder holds them; the
   missing-root choices offer that folder, and `roots` names it. Nothing
   about the computer is used or kept, and no text guesses at a new PC any
-  more. No change to the database format.
+  more. No change to the database format: 0.10.2 and 0.11.0 open the files
+  0.13.0 saves, and their command-line tools were seen reading and scanning
+  one.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -1048,7 +1050,7 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-Everything new on the `portable-roots` branch (built by CI, tested on Linux
+Everything new in 0.13.0 (built by CI, tested on Linux
 only): a root found by its files on another drive letter and under another
 user name; the missing-root choices offering that folder; a folder of other
 files at a root's path held as it was.

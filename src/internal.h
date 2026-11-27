@@ -284,6 +284,12 @@ void bd_names_key(const uint8_t master[32], const char *media_uuid, uint8_t out[
 char *bd_hide_rel(const uint8_t names_key[32], const char *plain_rel);
 /* 1 if the drive hides names; the key for it in out when so. */
 int bd_media_hides_names(bd_catalog *cat, int64_t media_id, uint8_t out[32]);
+/* newest.c: newest-copies-r<revision>.txt beside a drive's database copy,
+ * naming each file whose newest copy there is not in its own place. Plain
+ * drives only; nothing on the drive is overwritten. */
+bd_status bd_newest_list_to_media(bd_catalog *cat, int64_t media_id);
+/* 1 for such a list's name (or its temp name). */
+int bd_newest_list_name(const char *name);
 
 /* Media root directory for this catalog: <root>/BRODALF/<uuid>. */
 char *bd_media_catalog_dir(const bd_catalog *cat, const char *root);

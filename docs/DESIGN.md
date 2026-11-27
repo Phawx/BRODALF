@@ -301,7 +301,24 @@ X:\BRODALF\<catalog id>\BRODALF.media
 X:\BRODALF\<catalog id>\<root name>\<path>              first copy of a file on this drive
 X:\BRODALF\<catalog id>\.versions\<root name>\<dir>\<stem>.v<N><ext>   later versions
 X:\BRODALF\<catalog id>\catalog-r<revision>.brodalf     copies of the database
+X:\BRODALF\<catalog id>\newest-copies-r<revision>.txt   where each file's newest copy is (plain drives)
 ```
+
+A root's folder holds the first copy made of each file on that drive; a
+version that finds its path taken goes to `.versions`, a moved or renamed
+file keeps its copies under the old name, and deleted files stay where they
+were. `bd_catalog_copy_to_media` therefore also writes
+`newest-copies-r<revision>.txt` (src/newest.c) on a drive that is neither
+encrypted nor hides names: UTF-8 text with CRLF line ends, a short
+explanation, then per backup root a heading with its file counts and one
+line per file whose newest good copy on the drive is not at
+`<root name>/<path>` (a newer version, moved or renamed, sealed `.bdenc`, or
+an older version when the newest is not on this drive), then the root's
+deleted files with copies there, and a count of its files with no copy on
+the drive. It is written like the database copy (temp name, then a rename
+that never replaces), skipped when that revision's list is there, and a
+failure to write it is not an error. Root names matching the list's name
+are escaped like other reserved names.
 
 Files stay browsable without BRODALF, unless the drive hides names (an
 encrypted drive set up so, since 0.9.0): then each part of the copies'

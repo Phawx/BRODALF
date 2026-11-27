@@ -279,6 +279,16 @@ then given its real name, so a cut-off copy never looks like a real
 one. A file whose checksum has not changed is never copied again, whatever
 its date.
 
+So a backup root's folder on a drive holds the first copy made of each
+file: newer versions are in `.versions`, a moved or renamed file keeps its
+old name there, and deleted files stay mixed in with the rest. To make the
+drive usable without BRODALF, every database copy on a plain drive gets a
+plain text list beside it, `newest-copies-r<revision>.txt`, naming each
+file whose newest copy on that drive is somewhere else and where that copy
+is (and which copies are sealed `.bdenc` files). Like the database copies,
+a new list is written each time and none is ever written over. Encrypted
+drives, and drives that hide names, get no list.
+
 If many of the files whose copies on that drive were up to date have
 changed at once, BRODALF stops and asks first, since that is what
 ransomware encrypting your files looks like. **Show the changed files**
@@ -950,8 +960,9 @@ The owner's answers of 2026-11-25 (in the project's files as
   0.3.0 that lists a cloud account still opens: the account is shown as
   unsupported, nothing can be backed up to it, and the copies it holds
   still count towards the number of copies you want, as a place of their own.
-- **The catalog holds no file data**, only where the bits live. Old versions
-  stay browsable on the drive in a `.versions` folder.
+- **The catalog holds no file data**, only where the bits live. A file's
+  first copy stays in its backup root's folder on the drive, and later
+  versions stay browsable beside it in a `.versions` folder.
 - **Encryption is optional**, and off unless chosen: per drive, per
   folder (since 0.8.0) and for the database file. It encrypts file
   contents; file and folder names stay readable so a drive is still

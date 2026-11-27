@@ -1035,7 +1035,7 @@ typedef struct { int files, tmp; } tmp_count;
 static int count_tmp(void *ctx, const char *rel, const bd_stat_t *st)
 {
     tmp_count *t = ctx;
-    if (st->is_file && strncmp(rel, "catalog-r", 9) != 0) t->files++; /* the catalog's own copies aside */
+    if (st->is_file && strncmp(rel, "catalog-r", 9) != 0 && !bd_newest_list_name(rel)) t->files++; /* the catalog's own copies and lists aside */
     if (strstr(rel, BD_TMP_MARKER)) t->tmp++;
     return 0;
 }

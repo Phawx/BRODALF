@@ -192,9 +192,18 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
           "<p>Without BRODALF: a drive that is not encrypted holds your files as plain files and folders, in "
           "<b>BRODALF\\", f);
     put_html(f, cat->uuid);
-    fputs("</b> on the drive, one folder per backup root. Copy them off as they are; older versions are in the "
-          ".versions folder there. An encrypted drive, or one that hides names, can be read only with BRODALF, "
-          "so keep a copy of its installer with this sheet.</p>\n",
+    fputs("</b> on the drive, one folder per backup root. Those folders hold the first copy made of each file:</p>\n<ul>"
+          "<li>Newer versions of a file that changed are in the <b>.versions</b> folder there, named like "
+          "report.v3.docx.</li>"
+          "<li>A file that was moved or renamed keeps its old name on the drive.</li>"
+          "<li>Files deleted from this PC are still there, mixed in with the rest.</li>"
+          "<li>A copy ending in <b>.bdenc</b> is sealed: only BRODALF can open it, with the passphrase or the "
+          "recovery key.</li></ul>\n"
+          "<p>So copy the folders off as they are, then open the newest list next to them, "
+          "<b>newest-copies-r&lt;number&gt;.txt</b> (the highest number is the newest). It names every file whose "
+          "newest copy on that drive is somewhere else, and where that copy is: take that copy instead. "
+          "An encrypted drive, or one that hides names, can be read only with BRODALF, so keep a copy of its "
+          "installer with this sheet.</p>\n",
           f);
 
     if (encrypted) {

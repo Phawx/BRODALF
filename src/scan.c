@@ -39,7 +39,7 @@ static int catalog_copy_name(const char *name)
 /* Names next to the backup roots on a drive that are BRODALF's own. */
 static int name_reserved(const char *name)
 {
-    if (catalog_copy_name(name)) return 1;
+    if (catalog_copy_name(name) || bd_newest_list_name(name)) return 1;
     static const char *const own[] = {BD_VERSIONS_DIR, BD_MEDIA_FILE, "catalog-backup.brodalf"};
     size_t tl = strlen(BD_TMP_MARKER);
     for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++) {

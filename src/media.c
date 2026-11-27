@@ -922,6 +922,14 @@ bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
         s = bd_catalog_save(cat);
         if (s == BD_OK) s = put_catalog_copy(cat, media_id);
     }
+    if (s == BD_OK) {
+        /* Beside it, the plain list of where each file's newest copy is on
+         * the drive (newest.c). It only helps: a list that cannot be
+         * written leaves the database copy as good as it was. */
+        char keep[sizeof(cat->err)];
+        memcpy(keep, cat->err, sizeof(keep));
+        if (bd_newest_list_to_media(cat, media_id) != BD_OK) memcpy(cat->err, keep, sizeof(keep));
+    }
     return s;
 }
 

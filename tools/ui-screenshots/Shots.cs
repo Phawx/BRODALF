@@ -1244,7 +1244,7 @@ static class Shots {
             DialogStep("tab-4-description-and-details", "ID_PLACE_EDIT", true);
             DialogStep("tab-4-mark-lost", "ID_PLACE_LOST", true);
             // Backs up the starred files to it at once (nothing to ask).
-            JobStep("tab-4-back-up-to-it", delegate { Click("ID_PLACE_BACKUP"); });
+            JobStep("tab-4-back-up-to-it", 620, delegate { Click("ID_PLACE_BACKUP"); });
         }
         Tab(3);
         DialogStep("tab-4-add-an-extra-place", "ID_PLACE_ADD", true);
@@ -1413,8 +1413,9 @@ static class Shots {
     }
 
     // Answer what a job asks before it starts: the passphrase is entered,
-    // a yes or no question answered yes, anything else captured and closed.
-    static void AnswerJobQuestions(string name, IntPtr d) {
+    // a question answered with goAhead (the button that starts the job),
+    // anything else captured and closed.
+    static void AnswerJobQuestions(string name, IntPtr d, int goAhead) {
         for (int i = 1; i <= 4 && d != IntPtr.Zero; i++) {
             if (IsPassphrase(d)) {
                 Shot(d, name + "-passphrase");
@@ -1422,29 +1423,25 @@ static class Shots {
                 Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
             } else {
                 Shot(d, name + "-question-" + i);
-                GoAhead(d);
+                GoAhead(d, goAhead);
             }
             if (!WaitGone(d, 5000)) Fail(name + ": a question did not close when answered");
             d = NextDialogOrBusy(3000);
         }
     }
 
-    // Say go ahead to a question before a job: "Back up anyway" (620) on
-    // the warning about many changed files, else yes. Only a button the
-    // question has is pressed: a task dialog closes on any ID it is sent,
-    // and BRODALF takes one it did not offer for no.
-    static void GoAhead(IntPtr d) {
-        if (IsTaskDialog(d) && HasButton(d, 620)) {
-            ClickTask(d, 620);
+    // Say go ahead to a question before a job, with the button that starts
+    // it: IDYES on most, "Back up anyway" (620) on the warnings before a
+    // backup. Each step names it: a task dialog closes on any ID it is
+    // sent, and BRODALF takes one it did not offer for no; and the button
+    // windows a task dialog draws do not carry BRODALF's IDs, so the driver
+    // cannot ask the question which ones it has.
+    static void GoAhead(IntPtr d, int id) {
+        if (IsTaskDialog(d)) {
+            ClickTask(d, id);
             if (WaitGone(d, 1500)) return;
         }
         Yes(d, false);
-    }
-
-    static bool HasButton(IntPtr d, int id) {
-        foreach (IntPtr c in Children(d))
-            if (ClassOf(c) == "Button" && N.GetDlgCtrlID(c) == id) return true;
-        return false;
     }
 
     // Start a check, capture it running, press Stop, capture what it says.
@@ -1454,7 +1451,7 @@ static class Shots {
             Foreground(main);
             Click("ID_LOCAL_CHECK");
             IntPtr d = NextDialogOrBusy(5000);
-            AnswerJobQuestions(name, d);
+            AnswerJobQuestions(name, d, IDYES);
             if (!Busy()) { Log(name + ": over before Stop could be pressed"); Shot(main, name + "-over-too-soon"); return; }
             Thread.Sleep(150);
             Shot(main, name + "-running");
@@ -1571,7 +1568,6 @@ static class Shots {
             IntPtr q = WaitDialog(30000, IntPtr.Zero);
             if (q != IntPtr.Zero) {
                 Shot(q, "new-disk-plugged-in");
-                if (!HasButton(q, 640)) Fail("the question about a new disk has no Set it up button");
                 ClickTask(q, 640);
                 WaitGone(q, 3000);
                 IntPtr label = WaitDialog(8000, IntPtr.Zero);
@@ -1609,10 +1605,12 @@ static class Shots {
     static bool JobRan(long logAt) { return sawBusy || AppLogLength() > logAt; }
 
     // Start a job and let it run: a passphrase question is answered, a
-    // yes/no question is answered yes (go ahead), anything else is
-    // captured and cancelled. Captures the window while the job runs.
-    // No job at all fails the step.
-    static void JobStep(string name, Action start) {
+    // question answered with goAhead (IDYES, or 620 for a backup's "Back up
+    // anyway"), anything else is captured and cancelled. Captures the
+    // window while the job runs. No job at all fails the step.
+    static void JobStep(string name, Action start) { JobStep(name, IDYES, start); }
+
+    static void JobStep(string name, int goAhead, Action start) {
         Step(name, delegate {
             WaitIdle("before-" + name, 30000);
             Foreground(main);
@@ -1621,7 +1619,7 @@ static class Shots {
             start();
             IntPtr d = WaitDialog(4000, IntPtr.Zero);
             if (Busy()) sawBusy = true;
-            AnswerJobQuestions(name, d);
+            AnswerJobQuestions(name, d, goAhead);
             if (Busy()) sawBusy = true;
             Running(name);
             WaitIdle(name + "-finished", 240000);
@@ -1703,7 +1701,7 @@ static class Shots {
                     Post(d, WM_COMMAND, IDOK, IntPtr.Zero);
                 } else if (IsTaskDialog(d)) {
                     Shot(d, "back-up-to-every-drive-question-" + i);
-                    GoAhead(d); // Back up anyway
+                    GoAhead(d, 620); // Back up anyway
                 } else {
                     Shot(d, "back-up-to-every-drive-question-" + i);
                     Yes(d, true);

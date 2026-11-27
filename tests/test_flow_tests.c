@@ -374,8 +374,15 @@ static void test_shadow_copy(void)
     REQUIRE_OK(bd_restore(cat, src, "", at("restored"), &rs, quiet, NULL), cat);
     CHECK(rs.files_failed == 0 && rs.files_restored == 2);
     CHECK(file_equals(at("restored/Mail/mail.pst"), SNAPSHOT_TEXT));
-    /* Still held: without the copy it is in use again. */
+    /* Still held, and unchanged since it was read from the shadow copy: a
+     * scan has no need to read it. A bit-rot scan reads every file, and
+     * without the copy it is in use again. */
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_in_use == 0 && ss.errors == 0);
+    bd_scan_opts so;
+    memset(&so, 0, sizeof(so));
+    so.bitrot = 1;
+    REQUIRE_OK(bd_scan_ex(cat, &so, &ss, quiet, NULL), cat);
     CHECK(ss.files_in_use == 1);
     bd_catalog_close(cat);
     if (held != INVALID_HANDLE_VALUE) CloseHandle(held);

@@ -240,6 +240,13 @@ static void test_volume(const char *label, const char *root, const char *want_fs
            (long long)unit);
     CHECK(total == wtotal && freeb == wfree && total > 100 * 1024 * 1024 && freeb > 0 && freeb <= total);
     CHECK(unit >= 512);
+    /* A backup counts the room each copy takes there in these units (R2). */
+    char *in_root = bd_sprintf("%sbrodalf-test-unit", root);
+    bd_mkdirs(in_root);
+    printf("  %s: BRODALF reads the allocation unit as %lld bytes\n", root, (long long)bd_fs_cluster_bytes(in_root));
+    CHECK(bd_fs_cluster_bytes(root) == unit && bd_fs_cluster_bytes(in_root) == unit);
+    remove_tree(in_root);
+    free(in_root);
     const char *want_unit = getenv(unit_env);
     if (want_unit && *want_unit) CHECK(unit == strtoll(want_unit, NULL, 10));
 
@@ -453,6 +460,9 @@ static void test_long_path(const char *fat, const char *exfat)
     bd_backup_stats bs;
     REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
     CHECK(bs.files_copied == 1 && bs.files_failed == 0);
+    /* Counted as a copy whose path there is longer than Explorer opens (R12). */
+    printf("  copies with a long path there: %lld after the backup\n", (long long)bs.long_paths);
+    CHECK(bs.long_paths == 1);
     char *dir = copies_dir(cat, drive_root, "L");
     char *copy = bd_sprintf("%s/%s", dir, rel);
     printf("  its copy's path is %u characters\n", (unsigned)strlen(copy));
@@ -460,7 +470,7 @@ static void test_long_path(const char *fat, const char *exfat)
     CHECK(file_equals(copy, "deep down"));
     bd_check_stats cs;
     REQUIRE_OK(bd_media_check(cat, drive, &cs, quiet, NULL), cat);
-    CHECK(cs.copies == 1 && cs.ok == 1);
+    CHECK(cs.copies == 1 && cs.ok == 1 && cs.long_paths == 1);
 
     bd_restore_stats rs;
     REQUIRE_OK(bd_restore(cat, src, "", at("restored"), &rs, quiet, NULL), cat);

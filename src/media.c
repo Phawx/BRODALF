@@ -242,10 +242,25 @@ void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw,
     sqlite3_finalize(q);
 }
 
+int (*bd_test_hw_read)(const char *root, bd_drive_hw *hw) = NULL;
+
+void bd_refresh_uncounted(bd_catalog *cat)
+{
+    bd_exec(cat, "DELETE FROM temp.uncounted;"
+                 "INSERT OR IGNORE INTO temp.uncounted(media_id, why) SELECT m.id, 1 FROM media m WHERE m.kind='drive'"
+                 " AND EXISTS(SELECT 1 FROM temp.root_disks rd WHERE " BD_SQL_HW_KEY("rd") "=" BD_SQL_DISK("m.id") ");"
+                 "INSERT OR IGNORE INTO temp.uncounted(media_id, why) SELECT h.media_id, 2 FROM media_hardware h"
+                 " WHERE h.health='failing';");
+}
+
 static void read_hardware(bd_catalog *cat, int64_t media_id, const char *root, bd_log_fn log, void *log_ctx)
 {
     bd_drive_hw hw;
-    if (bd_drive_hw_read(root, &hw) == 0) bd_media_store_hw(cat, media_id, &hw, log, log_ctx);
+    int rc = bd_test_hw_read ? bd_test_hw_read(root, &hw) : bd_drive_hw_read(root, &hw);
+    if (rc == 0) {
+        bd_media_store_hw(cat, media_id, &hw, log, log_ctx);
+        bd_refresh_uncounted(cat);
+    }
 }
 
 static bd_status set_text(bd_catalog *cat, const char *sql, int64_t media_id, const char *text)

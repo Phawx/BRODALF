@@ -655,6 +655,22 @@ drop:
     return 0;
 }
 
+/* A file changed while it was being copied: how many times now. */
+static int note_copy_changed(bd_catalog *cat, const char *path)
+{
+    sqlite3_stmt *q;
+    int times = 1;
+    if (sqlite3_prepare_v2(cat->db,
+                           "INSERT INTO temp.copy_changed(path, times) VALUES(?1,1)"
+                           " ON CONFLICT(path) DO UPDATE SET times=times+1 RETURNING times",
+                           -1, &q, NULL) != SQLITE_OK)
+        return times;
+    sqlite3_bind_text(q, 1, path, -1, SQLITE_STATIC);
+    if (sqlite3_step(q) == SQLITE_ROW) times = sqlite3_column_int(q, 0);
+    sqlite3_finalize(q);
+    return times;
+}
+
 /* The copy is written (rc and failed from bd_hash_copy_multi): give it the
  * file's modified time and close it, and keep it only if what was read
  * is the version being backed up. 1 if it waits to be synced, 0 dropped,
@@ -689,7 +705,20 @@ static int dest_written(bd_store *store, pending_copy *p, int rc, int failed, in
         bd_logf(log, log_ctx, "cannot copy %s to the drive%s%s", p->orig, store->err[0] ? ": " : "", store->err);
     } else if (strcmp(hash, it->hash) != 0) {
         stats->files_failed++;
-        bd_logf(log, log_ctx, "changed while copying, scan again: %s", p->orig);
+        /* Once is a file saved during the backup. Again and again is a file
+         * another program keeps writing (a virtual machine's disk, a mail
+         * store): like a file in use, a shadow copy can back it up. */
+        if (!*in_use_noted) {
+            if (note_copy_changed(cat, p->orig) >= 2) {
+                bd_note_in_use(cat, p->orig, it->node_size);
+                bd_logf(log, log_ctx, "changed while copying again, so another program keeps writing it: %s", p->orig);
+                *in_use_noted = 3;
+            } else {
+                bd_logf(log, log_ctx, "changed while copying, scan again: %s", p->orig);
+                *in_use_noted = 2;
+            }
+        }
+        if (*in_use_noted == 3) stats->files_in_use++;
     } else {
         keep = 1;
     }
@@ -1454,7 +1483,7 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
 
 #define PENDING_SELECT                                                                                  \
     "SELECT n.id AS id, n.source_id AS sid, s.name AS sname, n.rel_path AS rel, v.size AS size, n.mtime_ns AS mt," \
-    " (SELECT COUNT(DISTINCT c.media_id) FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp," \
+    " (SELECT " BD_SQL_COPIES("c") " FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp," \
     " (SELECT COUNT(DISTINCT " BD_SQL_PLACE("m") ") FROM copies c JOIN media m ON m.id=c.media_id"      \
     "   WHERE c.version_id=v.id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl,"                     \
     " NOT EXISTS(SELECT 1 FROM copies oc JOIN versions ov ON ov.id=oc.version_id"                       \

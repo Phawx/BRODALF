@@ -1606,6 +1606,45 @@ bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *lo
     return bd_scan_ex(cat, NULL, stats, log, log_ctx);
 }
 
+/* The disk each backup root is on, read once a session: a drive on the
+ * same disk does not count as a copy (bd_refresh_uncounted). */
+static void note_root_disks(bd_catalog *cat, const void *roots, size_t n)
+{
+    typedef struct { int64_t id; char *path; } src;
+    const src *list = roots;
+    sqlite3_stmt *have = NULL, *put = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM temp.root_disks WHERE source_id=?", -1, &have, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.root_disks(source_id, model, serial, disk_bytes) VALUES(?,?,?,?)",
+                           -1, &put, NULL) != SQLITE_OK) {
+        sqlite3_finalize(have);
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!list[i].path) continue;
+        sqlite3_reset(have);
+        sqlite3_bind_int64(have, 1, list[i].id);
+        if (sqlite3_step(have) == SQLITE_ROW) continue;
+        bd_drive_hw hw;
+        int rc = bd_test_hw_read ? bd_test_hw_read(list[i].path, &hw) : bd_drive_hw_read(list[i].path, &hw);
+        sqlite3_reset(put);
+        sqlite3_bind_int64(put, 1, list[i].id);
+        if (rc == 0 && hw.serial[0]) {
+            sqlite3_bind_text(put, 2, hw.model, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(put, 3, hw.serial, -1, SQLITE_TRANSIENT);
+            if (hw.disk_bytes >= 0) sqlite3_bind_int64(put, 4, hw.disk_bytes);
+            else sqlite3_bind_null(put, 4);
+        } else {
+            sqlite3_bind_null(put, 2);
+            sqlite3_bind_null(put, 3);
+            sqlite3_bind_null(put, 4);
+        }
+        sqlite3_step(put);
+    }
+    sqlite3_finalize(have);
+    sqlite3_finalize(put);
+    bd_refresh_uncounted(cat);
+}
+
 bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_scan_stats local;
@@ -1652,6 +1691,7 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
     }
     bd_progress_begin(cat, bitrot ? "bit-rot scan" : "scan", expect, bitrot ? expect_bytes : 0);
     bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.scan_new; DELETE FROM temp.scan_gone;");
+    note_root_disks(cat, list, len);
     int64_t job = bd_job_start(cat, bitrot ? "bit-rot scan" : "scan", 0);
 
     bd_status s = BD_OK;

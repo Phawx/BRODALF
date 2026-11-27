@@ -59,8 +59,18 @@ static void lap(const char *what, int64_t files)
     t0 = bd_now_ms();
 }
 
+/* The test folders all sit on one disk; tests not about disks treat every
+ * drive as a disk of its own, as before copies were counted by disk. */
+static int no_disk_known(const char *root, bd_drive_hw *hw)
+{
+    (void)root;
+    memset(hw, 0, sizeof(*hw));
+    return -1;
+}
+
 int main(int argc, char **argv)
 {
+    bd_test_hw_read = no_disk_known;
     long n = argc > 1 ? atol(argv[1]) : 20000;
     if (n < 100) n = 100;
     char tmp[512], id[37];

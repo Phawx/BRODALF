@@ -123,7 +123,27 @@ int64_t bd_drive_file_limit(bd_catalog *cat, int64_t media_id, const char *root)
  * starred files (a Dropbox folder, a share): those are a second line, not
  * one of the N full sets. */
 #define BD_SQL_COUNTS(c) \
-    "NOT EXISTS(SELECT 1 FROM media rm WHERE rm.id=" c ".media_id AND (rm.retired_ms IS NOT NULL OR rm.secondary<>0))"
+    "NOT EXISTS(SELECT 1 FROM media rm WHERE rm.id=" c ".media_id AND (rm.retired_ms IS NOT NULL OR rm.secondary<>0))" \
+    " AND NOT EXISTS(SELECT 1 FROM temp.uncounted uc WHERE uc.media_id=" c ".media_id)"
+/* Nor while it does not count by its disk (temp.uncounted, see
+ * bd_refresh_uncounted): it is on the same physical disk as a backup root,
+ * so one disk failure loses both, or its health data says it is failing. */
+/* SQL: the physical disk a hardware reading h (media_hardware, or
+ * temp.root_disks) names, or NULL when it says too little to tell. */
+#define BD_SQL_HW_KEY(h)                                                                                  \
+    "(CASE WHEN length(trim(" h ".serial))>=4 AND trim(" h ".serial,'0 ')<>''"                             \
+    " THEN 'd:'||lower(trim(COALESCE(" h ".model,'')))||'|'||upper(trim(" h ".serial))||'|'||COALESCE(" h ".disk_bytes,0) END)"
+/* SQL: the physical disk a drive is on, as last read: two drives that are
+ * partitions of one disk share it, and count as one copy. A drive whose
+ * disk cannot be told is a disk of its own. */
+#define BD_SQL_DISK(mid) \
+    "COALESCE((SELECT " BD_SQL_HW_KEY("dh") " FROM media_hardware dh WHERE dh.media_id=" mid "),'m:'||" mid ")"
+/* How many distinct disks hold the copies c (an aggregate). */
+#define BD_SQL_COPIES(c) "COUNT(DISTINCT " BD_SQL_DISK(c ".media_id") ")"
+/* Work out again which drives do not count by their disk (temp.uncounted). */
+void bd_refresh_uncounted(bd_catalog *cat);
+/* For tests: stands in for bd_drive_hw_read when set. */
+extern int (*bd_test_hw_read)(const char *root, bd_drive_hw *hw);
 /* SQL: a copy can still be restored from (its drive is not lost or broken),
  * extra places included. */
 #define BD_SQL_USABLE(c) \

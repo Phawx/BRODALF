@@ -4681,6 +4681,8 @@ typedef struct {
     int check_due;
     int secondary;       /* an extra place for starred files */
     int64_t limit_bytes; /* its size limit; 0 none */
+    int uncounted;       /* its copies do not count: 1 on a backup root's disk, 2 its health data says failing */
+    char same_disk[256]; /* another drive on the same physical disk; "" none */
     bd_drive_hw hw;
 } drive_snap;
 
@@ -4706,6 +4708,8 @@ static int drive_snap_cb(void *ctx, const bd_media_info *m)
     d->connected = m->connected;
     d->encrypted = m->encrypted;
     d->hide_names = m->hide_names;
+    d->uncounted = m->uncounted;
+    snprintf(d->same_disk, sizeof(d->same_disk), "%s", m->same_disk_as ? m->same_disk_as : "");
     d->last_seen_ms = m->last_seen_ms;
     d->total = m->total_bytes;
     d->freeb = m->free_bytes;
@@ -4969,7 +4973,7 @@ static const wchar_t *replace_advice(const drive_snap *d)
     if (!d->has_hw || d->lost_ms) return NULL;
     const bd_drive_hw *h = &d->hw;
     if (strcmp(h->health, "failing") == 0)
-        return T(L"The drive says it is failing. Set up another drive and back up to it; then mark this one broken.");
+        return T(L"The drive says it is failing, so its copies no longer count. Set up another drive and back up to it; then mark this one broken.");
     if (h->percent_used >= 90) return T(L"The drive is nearly worn out. Plan to set up another drive.");
     if (strcmp(h->health, "warning") == 0 || h->pending_sectors > 0 || h->uncorrectable_sectors > 0)
         return T(L"The drive reports problems reading some of its sectors. Plan to set up another drive.");
@@ -5017,6 +5021,9 @@ static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent
     if (*note) wadd(t, L"%ls(%ls)\r\n", indent, note);
     const wchar_t *advice = replace_advice(d);
     if (advice) wadd(t, L"%ls%ls\r\n", indent, advice);
+    wchar_t cbuf[400];
+    const wchar_t *counts = count_note(d, cbuf, 400);
+    if (counts) wadd(t, L"%ls%ls\r\n", indent, counts);
     format_time_ms(d->hw_read_ms, when, 64);
     wadd(t, T(L"%lsRead from the drive %ls\r\n"), indent, when);
     if (d->total > 0) {
@@ -5025,6 +5032,22 @@ static void add_drive_lines(wtext *t, const drive_snap *d, const wchar_t *indent
         wadd(t, T(L"%ls%ls free of %ls when last seen\r\n"), indent, a, b);
     }
     free(vendor); free(model); free(bus); free(serial); free(fw); free(vname); free(vser); free(fs); free(health); free(note);
+}
+
+/* Why a drive's copies count for less than it looks: it shares a physical
+ * disk with your files or with another drive. NULL when they count fully.
+ * A failing drive says so in its health advice. */
+static const wchar_t *count_note(const drive_snap *d, wchar_t *buf, size_t n)
+{
+    if (d->lost_ms || strcmp(d->kind, "drive") != 0) return NULL;
+    if (d->uncounted == 1) return T(L"Its copies do not count: it is on the same disk as your files, so one disk failure would lose both.");
+    if (*d->same_disk) {
+        wchar_t *other = widen(d->same_disk);
+        swprintf(buf, n, T(L"It is on the same disk as %ls, so copies on the two count as one."), other);
+        free(other);
+        return buf;
+    }
+    return NULL;
 }
 
 /* One drive: its name, where it is kept, whether it is plugged in. */
@@ -5623,6 +5646,12 @@ static void drive_form(HWND lv, const drive_snap *d)
     else if (root && *root) kv_row(lv, KV_FACT, T(L"State"), T(L"Not plugged in. Last seen %ls at %ls"), when, root);
     else kv_row(lv, KV_FACT, T(L"State"), T(L"Not plugged in. Last seen %ls"), when);
     kv_row(lv, KV_FACT, T(L"Encryption"), L"%ls", d->hide_names ? T(L"Encrypted, names hidden") : d->encrypted ? T(L"Encrypted") : T(L"Not encrypted"));
+    {
+        wchar_t cbuf[400];
+        const wchar_t *counts = count_note(d, cbuf, 400);
+        if (!counts && d->uncounted == 2 && !d->lost_ms) counts = T(L"Its copies do not count: its health data says the disk is failing.");
+        if (counts) kv_row(lv, KV_FACT, T(L"Copies count"), L"%ls", counts);
+    }
     format_time_ms(d->added_ms, when, 64);
     kv_row(lv, KV_FACT, T(L"Set up"), TN(d->copies, L"%ls, %lld copy recorded", L"%ls, %lld copies recorded"), when, (long long)d->copies);
     if (is_drive && !d->lost_ms && d->copies) {

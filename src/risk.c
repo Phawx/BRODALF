@@ -22,7 +22,7 @@
 #define FILES_CTE                                                                                        \
     "WITH g AS (SELECT n.id, n.source_id, n.rel_path, n.size, n.current_version_id AS v,"                \
     "  COALESCE((SELECT o.changed+1 FROM temp.online_only o WHERE o.node_id=n.id),0) AS oo,"             \
-    "  (SELECT COUNT(DISTINCT c.media_id) FROM copies c"                                                 \
+    "  (SELECT " BD_SQL_COPIES("c") " FROM copies c"                                                 \
     "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp0,"    \
     "  (SELECT COUNT(DISTINCT " PLACE("m") ") FROM copies c JOIN media m ON m.id=c.media_id"             \
     "    WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS pl0,"    \
@@ -99,7 +99,7 @@ bd_status bd_list_at_risk(bd_catalog *cat, int64_t source_id, bd_risk_fn fn, voi
         /* Deleted files (their last version) and older versions. */
         if (sqlite3_prepare_v2(cat->db,
                                "WITH k AS (SELECT n.deleted AS del, v.id IS NOT n.current_version_id AS old,"
-                               "  (SELECT COUNT(DISTINCT c.media_id) FROM copies c WHERE c.version_id=v.id AND c.state='ok'"
+                               "  (SELECT " BD_SQL_COPIES("c") " FROM copies c WHERE c.version_id=v.id AND c.state='ok'"
                                "   AND " BD_SQL_COUNTS("c") ") AS cp"
                                "  FROM versions v JOIN nodes n ON n.id=v.node_id"
                                "  WHERE n.is_dir=0 AND (?2=0 OR n.source_id=?2)"
@@ -157,7 +157,7 @@ bd_status bd_backup_sets(bd_catalog *cat, bd_set_progress *out, int cap, int *se
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT cp, COUNT(*), COALESCE(SUM(size),0) FROM ("
-                           " SELECT n.size AS size, (SELECT COUNT(DISTINCT c.media_id) FROM copies c"
+                           " SELECT n.size AS size, (SELECT " BD_SQL_COPIES("c") " FROM copies c"
                            "  WHERE c.version_id=n.current_version_id AND c.state='ok' AND " BD_SQL_COUNTS("c") ") AS cp"
                            " FROM nodes n WHERE n.is_dir=0 AND n.deleted=0 AND " BD_SQL_ACTIVE("n") ")"
                            " GROUP BY cp",

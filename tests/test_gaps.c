@@ -263,6 +263,170 @@ static void test_links(void)
 #endif
 }
 
+/* ---- Data at risk 3: a file that changes during every copy ------------- */
+
+typedef struct { int n; char path[1024]; } in_use_list;
+
+static int in_use_cb(void *ctx, const char *path, int64_t size)
+{
+    in_use_list *l = ctx;
+    (void)size;
+    if (l->n++ == 0) snprintf(l->path, sizeof(l->path), "%s", path);
+    return 0;
+}
+
+/* New contents of the same size, with the old modified time: what a
+ * program writing into an open file looks like to a backup. */
+static void rewrite_same_time(const char *path, const char *text)
+{
+    bd_stat_t st;
+    if (bd_stat(path, &st) != 0) { fprintf(stderr, "cannot stat %s\n", path); exit(1); }
+    FILE *f = bd_fopen(path, "wb");
+    if (!f) { fprintf(stderr, "cannot write %s\n", path); exit(1); }
+    fputs(text, f);
+    bd_set_mtime(f, st.mtime_ns);
+    fclose(f);
+}
+
+static void test_changes_during_copy(void)
+{
+    write_file(at("vm/Machines/disk.vhdx"), "disk image AAAA");
+    bd_mkdirs(at("vm/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("vm/db.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("vm/Machines"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("vm/drive"), "Blue", 0, &drive), cat);
+
+    /* Changed once while the backup copied it: scan again, as before. */
+    rewrite_same_time(at("vm/Machines/disk.vhdx"), "disk image BBBB");
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_failed == 1 && bs.files_in_use == 0);
+    in_use_list l;
+    memset(&l, 0, sizeof(l));
+    bd_list_in_use(cat, in_use_cb, &l);
+    CHECK(l.n == 0);
+
+    /* Changed again on the next try: listed in use, so the window offers a shadow copy. */
+    rewrite_same_time(at("vm/Machines/disk.vhdx"), "disk image CCCC");
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_failed == 1);
+    CHECK(bs.files_in_use == 1); /* 0.11.0: 0, failed forever */
+    memset(&l, 0, sizeof(l));
+    bd_list_in_use(cat, in_use_cb, &l);
+    CHECK(l.n == 1 && strstr(l.path, "disk.vhdx") != NULL);
+    bd_catalog_close(cat);
+}
+
+/* ---- Data at risk 4: two copies on one disk -------------------------------- */
+
+/* The test folders all sit on one disk: a folder's name says which disk
+ * it stands for. */
+static int fake_hw(const char *root, bd_drive_hw *hw)
+{
+    memset(hw, 0, sizeof(*hw));
+    hw->disk_bytes = -1;
+    static const struct { const char *mark, *model, *serial, *health; int64_t bytes; } disks[] = {
+        {"disk-SAME", "WD Elements", "WX51A2345", "good", 2000398934016},
+        {"disk-OTHER", "Seagate Expansion", "NAB1C2D3", "good", 4000787030016},
+        {"disk-ROOT", "Samsung SSD 980", "S64DNX0R123", "good", 1000204886016},
+        {"disk-FAIL", "Toshiba Canvio", "Z8T4P1QXA", "failing", 1000204886016},
+    };
+    for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
+        if (!strstr(root, disks[i].mark)) continue;
+        snprintf(hw->model, sizeof(hw->model), "%s", disks[i].model);
+        snprintf(hw->serial, sizeof(hw->serial), "%s", disks[i].serial);
+        snprintf(hw->health, sizeof(hw->health), "%s", disks[i].health);
+        hw->disk_bytes = disks[i].bytes;
+        return 0;
+    }
+    return -1;
+}
+
+typedef struct { int64_t id; int uncounted; char same[64]; } media_find;
+
+static int media_cb(void *ctx, const bd_media_info *m)
+{
+    media_find *f = ctx;
+    if (m->media_id != f->id) return 0;
+    f->uncounted = m->uncounted;
+    snprintf(f->same, sizeof(f->same), "%s", m->same_disk_as ? m->same_disk_as : "");
+    return 1;
+}
+
+static media_find media_of(bd_catalog *cat, int64_t id)
+{
+    media_find f;
+    memset(&f, 0, sizeof(f));
+    f.id = id;
+    bd_list_media(cat, media_cb, &f);
+    return f;
+}
+
+static int64_t copies_of_first(bd_catalog *cat)
+{
+    bd_set_progress sets[4];
+    int n = 0;
+    bd_backup_sets(cat, sets, 4, &n);
+    return sets[1].files_done; /* files with a second copy */
+}
+
+static void test_one_disk(void)
+{
+    make_files("disk-ROOT/Docs", 3, "doc");
+    bd_mkdirs(at("onedisk/disk-SAME-p1"));
+    bd_mkdirs(at("onedisk/disk-SAME-p2"));
+    bd_mkdirs(at("onedisk/disk-OTHER"));
+    bd_mkdirs(at("onedisk/disk-ROOT-backup"));
+    bd_mkdirs(at("onedisk/disk-FAIL"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("onedisk/db.brodalf"), &cat), NULL);
+    bd_target t;
+    memset(&t, 0, sizeof(t));
+    t.copies = 2;
+    t.places = 1;
+    REQUIRE_OK(bd_target_set(cat, &t), cat);
+    int64_t src, p1, p2, other, own, fail;
+    REQUIRE_OK(bd_source_add(cat, at("disk-ROOT/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("onedisk/disk-SAME-p1"), "Blue 1", 0, &p1), cat);
+    REQUIRE_OK(bd_media_init(cat, at("onedisk/disk-SAME-p2"), "Blue 2", 0, &p2), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, p1, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, p2, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+
+    /* Two partitions of one disk: one copy, not two. */
+    CHECK(at_risk(cat).n == 3); /* 0.11.0: 0 */
+    CHECK(copies_of_first(cat) == 0);
+    CHECK(strcmp(media_of(cat, p1).same, "Blue 2") == 0);
+    CHECK(media_of(cat, p1).uncounted == 0);
+    REQUIRE_OK(bd_media_init(cat, at("onedisk/disk-OTHER"), "Red", 0, &other), cat);
+    REQUIRE_OK(bd_backup(cat, other, 0, &bs, quiet, NULL), cat);
+    CHECK(at_risk(cat).n == 0);
+    CHECK(media_of(cat, other).same[0] == 0);
+
+    /* A "drive" on the PC's own disk, where the files are: does not count. */
+    REQUIRE_OK(bd_media_init(cat, at("onedisk/disk-ROOT-backup"), "Spare partition", 0, &own), cat);
+    CHECK(media_of(cat, own).uncounted == 1);
+    bd_media_mark_lost(cat, other, "lost");
+    REQUIRE_OK(bd_backup(cat, own, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    CHECK(at_risk(cat).n == 3); /* 0.11.0: 0, Blue and Spare partition counted as two */
+
+    /* A drive whose health data says it is failing: does not count. */
+    REQUIRE_OK(bd_media_init(cat, at("onedisk/disk-FAIL"), "Old", 0, &fail), cat);
+    CHECK(media_of(cat, fail).uncounted == 2);
+    REQUIRE_OK(bd_backup(cat, fail, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 3);
+    CHECK(at_risk(cat).n == 3); /* 0.11.0: 0 */
+    bd_catalog_close(cat);
+}
+
 /* ---- Recovery 1: a new PC with the same user name ----------------------- */
 
 static void test_new_pc_empty_folders(void)
@@ -386,11 +550,14 @@ int main(void)
     for (char *p = base; *p; p++) if (*p == '\\') *p = '/';
     bd_mkdirs(base);
     printf("working in %s\n", base);
+    bd_test_hw_read = fake_hw;
 
     test_new_pc_empty_folders();
     test_root_waits_for_disk();
     test_cloud_files();
     test_links();
+    test_changes_during_copy();
+    test_one_disk();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

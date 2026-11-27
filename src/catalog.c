@@ -548,6 +548,14 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      * cloud has a newer version than the catalog's), and links it
                      * did not follow whose target no backup root holds. */
                      "CREATE TEMP TABLE IF NOT EXISTS online_only(node_id INTEGER PRIMARY KEY, changed INTEGER NOT NULL);"
+                     /* Files whose contents changed while a backup copied them, and how often. */
+                     "CREATE TEMP TABLE IF NOT EXISTS copy_changed(path TEXT PRIMARY KEY, times INTEGER NOT NULL);"
+                     /* The disks the backup roots are on (read at a scan), and the
+                     * drives whose copies do not count by their disk: why 1 on a
+                     * backup root's disk, 2 failing. */
+                     "CREATE TEMP TABLE IF NOT EXISTS root_disks(source_id INTEGER PRIMARY KEY, model TEXT, serial TEXT,"
+                     " disk_bytes INTEGER);"
+                     "CREATE TEMP TABLE IF NOT EXISTS uncounted(media_id INTEGER PRIMARY KEY, why INTEGER NOT NULL);"
                      "CREATE TEMP TABLE IF NOT EXISTS links(source_id INTEGER NOT NULL, rel_path TEXT NOT NULL, target TEXT NOT NULL,"
                      " is_dir INTEGER NOT NULL, PRIMARY KEY(source_id, rel_path));"
                      /* During a scan: files it added and files it marked deleted. */
@@ -566,6 +574,7 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      /* During a backup: the drives it writes to. */
                      "CREATE TEMP TABLE IF NOT EXISTS bk_dests(media_id INTEGER PRIMARY KEY, secondary INTEGER NOT NULL);") != 0)
         return bd_fail_db(cat, "cannot create session tables");
+    bd_refresh_uncounted(cat);
     return BD_OK;
 }
 

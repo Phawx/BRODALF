@@ -360,7 +360,10 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
                            "   WHERE c.media_id=m.id AND c.state='ok'),"
                            " m.secondary, COALESCE(m.limit_bytes,0), m.hide_names,"
                            " (SELECT MIN(c.written_ms) FROM copies c WHERE c.media_id=m.id AND c.state='ok'"
-                           "   AND c.last_full_check_ms IS NULL)"
+                           "   AND c.last_full_check_ms IS NULL),"
+                           " COALESCE((SELECT u.why FROM temp.uncounted u WHERE u.media_id=m.id),0),"
+                           " (SELECT o.label FROM media o WHERE o.id<>m.id AND o.kind='drive' AND o.retired_ms IS NULL"
+                           "   AND m.kind='drive' AND " BD_SQL_DISK("o.id") "=" BD_SQL_DISK("m.id") " ORDER BY o.label LIMIT 1)"
                            " FROM media m LEFT JOIN temp.connected k ON k.media_id=m.id LEFT JOIN media_hardware h ON h.media_id=m.id"
                            " ORDER BY m.label COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
@@ -397,6 +400,8 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
         info.secondary = sqlite3_column_int(q, 37);
         info.limit_bytes = sqlite3_column_int64(q, 38);
         info.hide_names = sqlite3_column_int(q, 39);
+        info.uncounted = sqlite3_column_int(q, 41);
+        info.same_disk_as = sqlite3_column_type(q, 42) == SQLITE_NULL ? "" : (const char *)sqlite3_column_text(q, 42);
         int64_t oldest_unread = col_num(q, 40);
         info.oldest_unread_ms = oldest_unread > 0 ? oldest_unread : 0;
         info.check_due = check_days > 0 &&

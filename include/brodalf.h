@@ -903,6 +903,16 @@ typedef struct {
     int secondary;           /* an extra place for starred files (bd_place_add) */
     int64_t limit_bytes;     /* an extra place: most it takes of starred files; 0 no limit */
     int hide_names;          /* file and folder names on it are hidden (BD_MEDIA_HIDE_NAMES) */
+    /* Its copies do not count toward the copies you want: 1 it is on the
+     * same physical disk as a backup root (a partition of the PC's own
+     * disk), so one disk failure would lose both; 2 its health data says
+     * the disk is failing. 0 they count. As last read: a drive's disk when
+     * it was last plugged in, a root's disk at the first scan since the
+     * catalog was opened. */
+    int uncounted;
+    /* Another drive on the same physical disk (two partitions of one disk):
+     * its label, "" if none. Copies on both count as one. */
+    const char *same_disk_as;
 } bd_media_info;
 
 /* Read make, model, serial and SMART data for the disk holding root. 0 on

@@ -677,6 +677,30 @@ static void test_new_database_checks(void)
     CHECK(bd_backup_drive_holding(at("newdb/home/x.brodalf")) == NULL);
 }
 
+#ifndef _WIN32
+/* C4: a root on a network share can wait until it can be reached, and the
+ * scan says so in those words. (Not run on Windows, where looking at a
+ * share that is not there can take long.) */
+static void test_network_root_waits(void)
+{
+    make_files("net/Docs", 2, "net");
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("net/db.brodalf"), &cat), NULL);
+    int64_t id;
+    REQUIRE_OK(bd_source_add(cat, at("net/Docs"), &id), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    char sql[200];
+    snprintf(sql, sizeof(sql), "UPDATE sources SET path='//brodalf-no-such-server/share/Docs' WHERE id=%lld", (long long)id);
+    CHECK(bd_exec(cat, sql) == 0);
+    REQUIRE_OK(bd_source_wait_for_disk(cat, id, 1), cat);
+    log_count lc = {"waits until its network share can be reached", 0};
+    REQUIRE_OK(bd_scan(cat, &ss, count_log, &lc), cat);
+    CHECK(lc.n == 1 && ss.roots_waiting == 1 && ss.files_deleted == 0);
+    bd_catalog_close(cat);
+}
+#endif
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -696,6 +720,9 @@ int main(void)
     test_skip_patterns_unicode();
     test_roots_taken_in();
     test_new_database_checks();
+#ifndef _WIN32
+    test_network_root_waits();
+#endif
 #ifdef _WIN32
     test_bad_name_named();
 #endif

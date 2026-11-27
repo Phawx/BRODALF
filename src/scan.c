@@ -1962,6 +1962,18 @@ int bd_setting_del(bd_catalog *cat, const char *key)
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
+/* 1 if a backup root is on a network share: a \\server\share path, or a
+ * drive letter that stands for one (bd_real_path). */
+static int on_network(const char *root)
+{
+    char *real = bd_real_path(root);
+    const char *p = real ? real : root;
+    int unc = (p[0] == '\\' || p[0] == '/') && (p[1] == '\\' || p[1] == '/');
+    int net = unc && p[2] && ((p[2] != '?' && p[2] != '.') || strncmp(p + 2, "?\\UNC\\", 5) == 0 || strncmp(p + 2, "?/UNC/", 5) == 0);
+    free(real);
+    return net;
+}
+
 static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot, hash_pool *pool, int64_t source_id,
                              const char *root, int64_t scan_ms, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
@@ -1974,7 +1986,10 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         note_missing(cat, source_id, 1, 0);
         if (waiting) {
             stats->roots_waiting++;
-            bd_logf(log, log_ctx, "backup root %s waits for its disk to be plugged in; skipped (nothing marked deleted)", root);
+            if (on_network(root))
+                bd_logf(log, log_ctx, "backup root %s waits until its network share can be reached; skipped (nothing marked deleted)", root);
+            else
+                bd_logf(log, log_ctx, "backup root %s waits for its disk to be plugged in; skipped (nothing marked deleted)", root);
         } else {
             bd_logf(log, log_ctx, "backup root %s is not reachable; skipped (nothing marked deleted)", root);
         }

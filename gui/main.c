@@ -26,6 +26,7 @@
 #include <sddl.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <winnetwk.h>
 #include <stdarg.h>
 
 #include <stdio.h>
@@ -771,6 +772,7 @@ static void cmd_backup_all(int offer_scan);
 static void cmd_backup_at(HWND anchor);
 static void cmd_add_place(void);
 static void toggle_star_selected(void);
+static int network_place(const wchar_t *path, wchar_t *share, size_t cap);
 static void toggle_encrypt_selected(void);
 static void load_marks(void);
 static int good_description(const wchar_t *s);
@@ -2256,6 +2258,8 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
     {"online-only, changed in the cloud and not backed up: %p", N_(L"Online only and changed in the cloud, so it is not backed up: %ls")},
     {"backup root %p waits for its disk to be plugged in; skipped (nothing marked deleted)",
      N_(L"Backup root %ls waits for its disk to be plugged in, so it was skipped. Nothing in it was marked deleted.")},
+    {"backup root %p waits until its network share can be reached; skipped (nothing marked deleted)",
+     N_(L"Backup root %ls waits until its network share can be reached, so it was skipped. Nothing in it was marked deleted.")},
     {"backup root %p is there, but %n of the %n files the catalog knows in it are not: left as it was (nothing marked deleted). "
      "Another folder with the same name?",
      N_(L"Backup root %ls is there, but %ls of the %ls files the database knows in it are not, so it was left as it was. Nothing was "
@@ -2939,8 +2943,8 @@ static DWORD WINAPI worker(LPVOID arg)
                       L" %lld backup roots' old folders are back: say which ones to back up."),
                 (long long)st.roots_back);
         if (st.roots_waiting)
-            say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk to be plugged in.",
-                      L" %lld backup roots wait for their disks to be plugged in."),
+            say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk or network share.",
+                      L" %lld backup roots wait for their disks or network shares."),
                 (long long)st.roots_waiting);
         if (st.roots_stopped)
             say(j, TN(st.roots_stopped, L" %lld stopped root left alone.", L" %lld stopped roots left alone."), (long long)st.roots_stopped);
@@ -4223,10 +4227,12 @@ static void rebuild_tree(void)
         wchar_t counts[512], text[1600];
         item_text(&as_folder, l.names[i], NULL, counts, 512);
         wchar_t *wp = widen(l.paths[i]);
-        wchar_t bytes[64];
+        wchar_t bytes[64], share[MAX_PATH * 2 + 16];
         format_bytes(l.items[i].bytes_total, bytes, 64);
+        int on_net = l.items[i].missing && l.items[i].wait_for_disk && wp && network_place(wp, share, COUNT_OF(share));
         swprintf(text, COUNT_OF(text), L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
                  l.items[i].missing && l.items[i].files_gone > 0 ? T(L"   - its folder holds other files, or none")
+                 : on_net ? T(L"   - waits until its network share can be reached")
                  : l.items[i].missing && l.items[i].wait_for_disk ? T(L"   - waits for its disk to be plugged in")
                  : l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
                  : !l.items[i].active ? T(L"   - no longer backed up") : L"");
@@ -9398,6 +9404,31 @@ static void source_places_free(source_places *l)
 enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE, PLACE_GONE, PLACE_WAIT, PLACE_FOUND };
 /* PLACE_FOUND + i: the i-th folder that holds the files (new_places). */
 
+/* A backup root on the network: a \\server\share path, or a drive letter
+ * mapped to a network share (connected or not, as Windows keeps it). share
+ * gets where it is, like "\\server\share" or "Z: (\\server\share)". */
+static int network_place(const wchar_t *path, wchar_t *share, size_t cap)
+{
+    const wchar_t *server = NULL;
+    if (wcsncmp(path, L"\\\\?\\UNC\\", 8) == 0) server = path + 8;
+    else if (path[0] == L'\\' && path[1] == L'\\' && path[2] && path[2] != L'?' && path[2] != L'.') server = path + 2;
+    if (server) {
+        const wchar_t *e = server;
+        int seps = 0;
+        while (*e && !(*e == L'\\' && ++seps == 2)) e++;
+        swprintf(share, cap, L"\\\\%.*ls", (int)(e - server), server);
+        return 1;
+    }
+    if (wcslen(path) < 2 || path[1] != L':' || !iswalpha(path[0])) return 0;
+    wchar_t root[4] = {path[0], L':', L'\\', 0}, dev[3] = {towupper(path[0]), L':', 0}, remote[MAX_PATH] = L"";
+    if (GetDriveTypeW(root) != DRIVE_REMOTE) return 0;
+    DWORD n = MAX_PATH;
+    DWORD rc = WNetGetConnectionW(dev, remote, &n);
+    if ((rc == NO_ERROR || rc == ERROR_CONNECTION_UNAVAIL) && remote[0]) swprintf(share, cap, L"%ls (%ls)", dev, remote);
+    else swprintf(share, cap, L"%ls", dev);
+    return 1;
+}
+
 /* A missing backup root's disk is not plugged in: no disk at all has its
  * drive letter now. disk gets the letter, like "E:". */
 static int disk_unplugged(const wchar_t *path, wchar_t *disk, size_t cap)
@@ -9415,13 +9446,15 @@ static int disk_unplugged(const wchar_t *path, wchar_t *disk, size_t cap)
  * waits for its disk. Nothing is scanned here; the caller saves and scans. */
 static int relocate_source(const source_place *sp)
 {
-    wchar_t guess_btn[PLACES_SHOWN][MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 800], disk[8];
+    wchar_t guess_btn[PLACES_SHOWN][MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 800], disk[8], share[MAX_PATH * 2 + 16];
     new_places places;
     guess_new_places(sp->id, &places);
     int here = is_folder(sp->path);
     int emptied = here && sp->missing && sp->gone > 0;
-    int unplugged = !here && disk_unplugged(sp->path, disk, COUNT_OF(disk));
+    int network = !here && network_place(sp->path, share, COUNT_OF(share));
+    int unplugged = !here && !network && disk_unplugged(sp->path, disk, COUNT_OF(disk));
     if (emptied) swprintf(head, 512, T(L"\"%ls\" does not hold its files"), sp->name);
+    else if (network) swprintf(head, 512, T(L"\"%ls\" cannot be reached on the network"), sp->name);
     else if (unplugged) swprintf(head, 512, T(L"Plug in the disk with \"%ls\""), sp->name);
     else if (here) swprintf(head, 512, T(L"Where is \"%ls\" now?"), sp->name);
     else swprintf(head, 512, T(L"\"%ls\" cannot be found"), sp->name);
@@ -9435,6 +9468,10 @@ static int relocate_source(const source_place *sp)
                                               L"files are somewhere else, choose where. To get them back, restore them from "
                                               L"your backup drives."),
                  sp->path, (long long)sp->gone, (long long)(sp->total > sp->gone ? sp->total : sp->gone));
+    else if (network)
+        swprintf(body, MAX_PATH * 4 + 800, T(L"%ls is on the network share %ls, which cannot be reached now, for example while this "
+                                            L"PC is away from that network. Connect to it and scan again. Nothing in it is marked "
+                                            L"deleted."), sp->path, share);
     else if (unplugged)
         swprintf(body, MAX_PATH * 4 + 800, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
                                             L"Nothing in it is marked deleted."), sp->path, disk, disk);
@@ -9464,6 +9501,10 @@ static int relocate_source(const source_place *sp)
             b[n].nButtonID = PLACE_WAIT;
             b[n++].pszButtonText = T(L"Skip it until the disk is plugged in\nBRODALF stops asking about this backup root. Once the disk "
                                      L"is back, the next scan backs it up as usual.");
+        } else if (network) {
+            b[n].nButtonID = PLACE_WAIT;
+            b[n++].pszButtonText = T(L"Wait until it can be reached\nBRODALF stops asking about this backup root. Once the network "
+                                     L"share can be reached again, the next scan backs it up as usual.");
         }
         for (int k = 0; k < places.n; k++) {
             swprintf(guess_btn[k], MAX_PATH * 4 + 256, TN(places.checked[k], L"Use %ls\nBRODALF found %lld of the %lld file it checked there",
@@ -9507,7 +9548,9 @@ static int relocate_source(const source_place *sp)
         if (pressed == PLACE_WAIT) {
             if (bd_source_wait_for_disk(g_cat, sp->id, 1) != BD_OK) return 0;
             wchar_t line[600];
-            swprintf(line, 600, T(L"Backup root \"%ls\" waits for its disk to be plugged in"), sp->name);
+            swprintf(line, 600, network ? T(L"Backup root \"%ls\" waits until its network share can be reached")
+                                        : T(L"Backup root \"%ls\" waits for its disk to be plugged in"),
+                     sp->name);
             log_append(line);
             return 4;
         }

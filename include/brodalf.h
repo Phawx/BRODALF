@@ -421,8 +421,9 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
  * the catalog with their copies). Good for one scan; until this database
  * is closed. */
 bd_status bd_source_accept_gone(bd_catalog *cat, int64_t source_id);
-/* The backup root is on a disk that is usually unplugged (on: 1): while it
- * cannot be found, scans skip it quietly (bd_scan_stats.roots_waiting).
+/* The backup root is on a disk that is usually unplugged, or on a network
+ * share that is often out of reach (on: 1): while it cannot be found,
+ * scans skip it quietly (bd_scan_stats.roots_waiting).
  * The first scan that finds it again ends the wait. Kept in the catalog. */
 bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on);
 

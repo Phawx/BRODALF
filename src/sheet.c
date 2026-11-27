@@ -1,7 +1,7 @@
 /* The recovery sheet: one self-contained HTML page to print and keep away
  * from the PC. It lists the backup drives (name, where kept, size, free
  * space, which backup roots they hold and how many files, last backup),
- * the backup roots, what to do on a new PC, and for an encrypted
+ * the backup roots, what to do when the catalog file is lost, and for an encrypted
  * catalog the recovery key it is given. Nothing is fetched: no scripts, no
  * images, no links. The passphrase is never written. */
 #include "internal.h"
@@ -175,8 +175,8 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
     fputs(".</p>\n", f);
 
     int encrypted = bd_catalog_has_passphrase(cat);
-    fputs("<h2>If this PC is lost or replaced</h2>\n<ol>"
-          "<li>Install BRODALF on the new PC: BRODALF ", f);
+    fputs("<h2>If the catalog file is lost</h2>\n<ol>"
+          "<li>Install BRODALF on any computer: BRODALF ", f);
     put_html(f, bd_version());
     fputs(" or newer, from https://github.com/Phawx/BRODALF/releases</li>"
           "<li>Plug in one of the drives below. The one backed up to most recently is best.</li>"
@@ -187,8 +187,8 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
         fputs("<li>When it asks for the passphrase, type it, or choose <b>Use the recovery key</b> and type the key "
               "below.</li>",
               f);
-    fputs("<li>Restore your backup roots with <b>Restore</b>, or point them at where they are now with "
-          "<b>Change where a root is...</b></li></ol>\n"
+    fputs("<li>BRODALF looks for each backup root by its files. One it does not find you can restore with "
+          "<b>Restore</b>, or point at where it is now with <b>Change where a root is...</b></li></ol>\n"
           "<p>Without BRODALF: a drive that is not encrypted holds your files as plain files and folders, in "
           "<b>BRODALF\\", f);
     put_html(f, cat->uuid);

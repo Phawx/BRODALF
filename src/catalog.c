@@ -1140,7 +1140,7 @@ bd_status bd_option_set(bd_catalog *cat, const char *name, int value)
     return bd_setting_set(cat, key, v) == 0 ? BD_OK : bd_fail_db(cat, "save the option");
 }
 
-/* ---- Recovery on a new PC -------------------------------------------------- */
+/* ---- Recovering a lost catalog ---------------------------------------------- */
 
 bd_status bd_catalog_copy_readable(bd_catalog *cat, const char *path)
 {
@@ -1199,7 +1199,7 @@ bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)
         snprintf(g_open_error, sizeof(g_open_error), "%s is not a BRODALF catalog this version can read", backup_path);
         return BD_ERR_FORMAT;
     }
-    /* The folder it goes in may not exist yet on a new PC. */
+    /* The folder it goes in may not exist yet. */
     char *dir = bd_strdup(dest_path);
     if (dir) {
         char *slash = strrchr(dir, '/'), *back = strrchr(dir, '\\');

@@ -110,8 +110,43 @@ A backup root's folder on a drive sits next to `.versions`, `BRODALF.media`
 and the catalog copies, so a root with one of those names (in any case)
 gets a name with `_` in front (`_versions`).
 
-A root that moved as a whole (a new PC, another drive letter) is pointed at
-its new place with `bd_source_relocate`, which changes only `sources.path`.
+A root is its folder structure: the files the catalog records at their
+paths inside it. `sources.path` is only where it was last, and nothing
+about the computer is kept. A root that moved as a whole (another user
+name, another drive letter) is pointed at its new place with
+`bd_source_relocate`, which changes only `sources.path`.
+
+### Finding a root by its files
+
+Before a scan walks its roots, each root whose folder is not there is
+looked for (`bd_source_find`): the same folder under this user's home
+folder when it was under another user's home folder next to it, the same
+disk mounted for this user (`/media/<user>`, `/run/media/<user>`), and on
+Windows the same folder on every other local drive letter (fixed,
+removable and RAM disks; not network drives, which can hang). A folder
+counts when at least half of the root's files the catalog checks are in it
+at their path in the root with their size: up to 64 files with contents,
+picked by checksum so the same ones are checked each time (a root without
+any is checked by the names of its folders and empty files). When exactly
+one folder counts, the root is relocated there, the scan goes on there and
+`roots_found` counts it; when several do, the log names the best and
+nothing is picked. A root whose folder is there is never moved by this:
+when the folder is held (below) and another folder holds its files, the
+log says so and the user decides.
+
+### Is the folder at the path the root?
+
+After the walk, the files the catalog knew in the root are sorted into
+kept (where the catalog has them as it has them, or moved inside the root:
+their checksum and size are those of a file new in this scan of it,
+`temp.scan_new_hash`), changed (at their path, other contents) and lost
+(neither). Files new in the root count for nothing. When `lost > 0`,
+`kept * 10 <= known` and `lost > changed`, the scan of that root is rolled
+back and it is listed like a missing root (`roots_emptied`,
+`bd_source_info.files_gone` = lost) until the user says where it is,
+restores it, or says the files were deleted (`bd_source_accept_gone`). An
+empty folder made under the same name and a folder of other files with the
+same path are both held; a folder whose files were all edited is not.
 
 ## Links and reparse points
 
@@ -370,7 +405,7 @@ The database is kept small: no file data, only paths, sizes, times,
 checksums and where each copy is, compressed with zstd, so a search works
 with the database on its own.
 
-## Recovery on a new PC
+## Recovering a lost database
 
 `bd_find_catalog_copies` lists, for each catalog folder on a drive, its
 newest copy: the highest `catalog-r<revision>.brodalf`, or
@@ -383,11 +418,11 @@ picks, and `bd_catalog_recover` copies it to a new file the user names
 the end). It is then opened as usual (passphrase asked if the copy is
 encrypted), which scans the backup roots.
 
-A backup root whose folder is not on this PC is left as it was by the scan
-(its files are not marked deleted) and recorded in `temp.missing_sources`,
-which `bd_source_info.missing` reports. The
-GUI asks where it is now (with a guess under `%USERPROFILE%` when the old
-path was under `X:\Users\<name>`); `bd_source_relocate` changes only
+A backup root whose folder is not there, and is not found by its files, is
+left as it was by the scan (its files are not marked deleted) and recorded
+in `temp.missing_sources`, which `bd_source_info.missing` reports. The
+GUI asks where it is now (offering the folder `bd_source_find` gives, with
+how many of the files it checked are there); `bd_source_relocate` changes only
 `sources.path`, so the root keeps its name on the drives and its files keep
 their versions and copies. "I cannot find it" offers a restore of that root
 from the drives, with the drives it needs in order. Tools > "Change where
@@ -604,15 +639,15 @@ copies on an encrypted drive.
   the same master key the same way as the passphrase (Argon2id with its own
   salt, then XChaCha20-Poly1305); the block is kept as `recovery_block` in
   `settings`, and an encrypted `.brodalf` file also carries it in the header
-  after the key block, with flag bit 1 set, so it opens a database copy on a
-  new PC. BRODALF before this change refuses such a file as a newer format.
+  after the key block, with flag bit 1 set, so it opens a database copy
+  when the passphrase is lost. BRODALF before this change refuses such a file as a newer format.
   Typed keys ignore case, dashes and spaces. A new recovery key replaces the
   old one; changing the passphrase keeps it.
 
 ## Recovery sheet
 
 `bd_write_recovery_sheet` writes one self-contained HTML page (no scripts,
-images or links; every catalog string HTML-escaped): what to do on a new PC,
+images or links; every catalog string HTML-escaped): what to do when the catalog file is lost,
 each drive with where it is kept, size, free space as last seen, the
 backup roots it holds current versions of with file counts and sizes,
 and its last backup (from `jobs`), the backup roots, and the recovery

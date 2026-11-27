@@ -55,7 +55,7 @@ bd_status bd_catalog_open(const char *path, bd_catalog **out);
  * plain one the passphrase is ignored. */
 bd_status bd_catalog_open_with(const char *path, const char *passphrase, bd_catalog **out);
 
-/* Start again on a new PC from a copy of the catalog a drive holds
+/* Start again without the catalog file, from a copy of it a drive holds
  * (BRODALF\<catalog id>\catalog-r<revision>.brodalf, the highest
  * revision being the newest; drives written by 0.6.0 and older hold
  * catalog-backup.brodalf): copy it to dest_path,
@@ -160,7 +160,7 @@ bd_status bd_catalog_unlock_recovery(bd_catalog *cat, const char *recovery_key);
 int bd_catalog_file_has_recovery_key(const char *path);
 /* Like bd_catalog_open_with, with the recovery key instead. */
 bd_status bd_catalog_open_with_recovery(const char *path, const char *recovery_key, bd_catalog **out);
-/* Write the recovery sheet, an HTML page to print: what to do on a new PC,
+/* Write the recovery sheet, an HTML page to print: what to do when the catalog file is lost,
  * the backup drives and what each holds, the backup roots, and the
  * recovery key when one is given (from bd_catalog_make_recovery_key). */
 bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char *recovery_key);

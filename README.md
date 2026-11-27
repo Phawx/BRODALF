@@ -19,9 +19,15 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
+On the `portable-roots` branch, not released yet: a backup root is known
+by its files, not by where it was. A root whose folder is not there is
+looked for by its files and carried on with where one folder holds them,
+and a folder at a root's path that holds other files is no longer taken
+for the root. Nothing ties a database to the computer it is opened on.
+
 Version **0.12.0** (2026-11-27) fixes the 21 gaps that walking real use
-cases through 0.11.0 found: above all, a new PC or a reinstalled Windows no
-longer marks every file deleted, copies count once per physical disk, and a
+cases through 0.11.0 found: above all, an empty folder at a backup root's
+path (as a fresh Windows makes) no longer marks every file deleted, copies count once per physical disk, and a
 wiped drive, a cloud file changed elsewhere and a link that is not followed
 are no longer silent. 0.11.0 (2026-11-27) redrew the window: the Primary
 Database tab looks like Windows Explorer, and a file or folder that no
@@ -82,15 +88,19 @@ database** and **New database** work: every other button, the tabs and the
 - **New database...**: first a checklist of the folders to back up (add as
   many as you like), then where to save the `.brodalf` file.
 - **Open database...**
-- **Recover the database from a backup drive...**: for a new PC or a lost
-  database. BRODALF looks on every drive for its database copies, offers the
+- **Recover the database from a backup drive...**: when you do not have
+  the database file. BRODALF looks on every drive for its database copies, offers the
   newest, and asks where to save it. Plug a backup drive in first, or point
   it at a folder.
 
 Opening a database starts a scan of the backup roots straight away. **That
 scan is the one thing BRODALF starts by itself**, because a backup is only
-as good as the last scan. If a backup root is not where the database says
-(a new PC, another drive letter), BRODALF asks where it is now. If you
+as good as the last scan. The database is not tied to a computer: it keeps
+where each backup root was last, but a root is its files. If a root's
+folder is not there (another user name, another drive letter), BRODALF
+looks for it by its files, under your user folder and on your other
+drives, and carries on there when one folder holds them. If none does, or
+the folder there holds other files, BRODALF asks where it is now. If you
 cannot find it, it offers to restore it from your backup drives instead,
 and says which drives to plug in.
 
@@ -445,8 +455,8 @@ offer.
 Add as many backup roots as you like. A root can be **stopped** (right-click
 it): it is not scanned or backed up any more, but its files stay in the
 database and their copies still restore. **Back up this root again** resumes
-it. If a root moves (a new PC, another drive letter), **Tools > Change
-where a backup root is** records the new place in the database; nothing on
+it. If a root moves somewhere BRODALF does not find it by its files,
+**Tools > Change where a backup root is** records the new place in the database; nothing on
 the drives moves. To back up a different set of folders, make another
 database: any number of databases can cover the same folders, each on its
 own.
@@ -872,6 +882,17 @@ on a local machine needs to pick the work up without the chat history.
   the database format: 0.10.2 and 0.11.0 open the files 0.12.0 saves, and
   their command-line tools were seen reading, backing up to and recovering
   one.
+- Next, on the `portable-roots` branch (not released): a backup root is
+  known by its files. A folder at a root's path counts as the root by
+  what it holds: the files the catalog knows there (where it has them, or
+  moved inside it), not how many files it has, so a folder of other files
+  with the same path is held as it was instead of having the root's files
+  marked deleted. A root whose folder is not there is looked for by its
+  files (under this user's folder, other drive letters, the same disk
+  mounted for this user) and pointed where one folder holds them; the
+  missing-root choices offer that folder, and `roots` names it. Nothing
+  about the computer is used or kept, and no text guesses at a new PC any
+  more. No change to the database format.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -1027,6 +1048,11 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
+Everything new on the `portable-roots` branch (built by CI, tested on Linux
+only): a root found by its files on another drive letter and under another
+user name; the missing-root choices offering that folder; a folder of other
+files at a root's path held as it was.
+
 Everything new in 0.12.0 (built by CI, tested on Linux only): Windows' empty Documents after a reinstall held as almost
 empty; a root on an unplugged USB disk waiting for it; disk serials of two
 partitions of one USB disk and of a disk behind a USB bridge; a drive on
@@ -1162,10 +1188,17 @@ limits of the new work:
   the drives still open with the old one; BRODALF says so, but a new key
   for later copies would make the database unreadable by 0.11.0 and
   older, so it is not done.
-- A database opened on a second PC whose paths are the same is not told
-  apart from the first PC (no machine ID is kept per root); only the
-  almost-empty check catches it. A drive letter taken over by another
-  disk is not noticed either.
+- A backup root is looked for by its files in a few places only: under
+  your user folder (when it was under another user's), the same disk
+  mounted for you on Linux, and on Windows the same folder on every other
+  local drive letter (not network drives). A root moved anywhere else is
+  asked about. A folder found there counts when at least half of up to 64
+  of the root's files are in it at their path with their size.
+- A folder at a root's path counts as the root while more than a tenth of
+  the files the catalog knows are in it as the catalog has them (or
+  moved inside it), or more of them changed than went missing. Until the
+  user answers, a folder of other files at that path is read (and its new
+  files hashed) at every scan, then left as it was.
 - A USB bridge that reports one serial for several disks makes them count
   as one copy (the safe side). Links whose target is inside a backup root
   are not listed, since what they lead to is backed up anyway.

@@ -1364,7 +1364,7 @@ static void print_restore_stats(bd_catalog *cat, const bd_restore_stats *rs)
     }
 }
 
-/* ---- Recovery on a new PC ------------------------------------------------ */
+/* ---- Recovering a lost catalog -------------------------------------------- */
 
 /* The newest copy across every drive given; more than one catalog needs --id. */
 typedef struct { int n, catalogs; const char *want; char id[64]; char path[4096]; int64_t revision, saved_ms; } copies_found;

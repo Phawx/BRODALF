@@ -1673,7 +1673,12 @@ static class Shots {
                     picked = true;
                 } else {
                     Shot(d, name + "-question-" + i);
-                    Yes(d, true);
+                    // After the folder is chosen, a task dialog asks what
+                    // to do with files already where restored files would
+                    // go: leave them alone, which this run checks for. It
+                    // has no yes, and takes any other button for Cancel.
+                    if (picked && IsTaskDialog(d)) ClickTask(d, Id("RB_LEAVE"));
+                    else Yes(d, true);
                 }
                 if (!WaitGone(d, 5000)) Fail(name + ": a dialog did not close when answered");
                 d = NextDialogOrBusy(3000);

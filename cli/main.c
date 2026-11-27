@@ -2423,6 +2423,14 @@ static int run(int argc, char **argv)
             int64_t source_id = root_opt(cat, argc, argv);
             if (source_id < 0) { bd_catalog_close(cat); return 1; }
             bd_restore_opts ro = {has_flag(argc, argv, "--deleted")};
+            int64_t need = 0, freeb = -1;
+            if (bd_restore_room(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, 0, &need, &freeb) == BD_OK && freeb >= 0 &&
+                need > freeb) {
+                char a[32], b[32];
+                human_bytes(need, a, sizeof(a));
+                human_bytes(freeb, b, sizeof(b));
+                fprintf(stderr, "warning: this restore needs %s, but only %s is free there: it stops with errors once the disk is full\n", a, b);
+            }
             s = bd_restore_ex(cat, source_id, opt(argc, argv, "--path"), pos[0], &ro, &rs, log_line, NULL);
         }
         if (s == BD_ERR_CANCELLED) return stopped(cat, "restore (run the same restore again to carry on)");
@@ -2443,11 +2451,26 @@ static int run(int argc, char **argv)
         else puts("plug these in, in this order:");
         bd_status s = bd_restore_plan_ex(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro,
                                          print_plan_step, &steps, &total, &none);
-        if (g_json) { J_END_ARR(); j_int("files", total); j_int("files_no_copy", none); J_END(); }
+        int64_t need = 0, freeb = -1;
+        if (s == BD_OK && opt(argc, argv, "--dest"))
+            s = bd_restore_room(cat, source_id, opt(argc, argv, "--path"), opt(argc, argv, "--dest"), &ro, 0, &need, &freeb);
+        if (g_json) {
+            J_END_ARR();
+            j_int("files", total);
+            j_int("files_no_copy", none);
+            if (opt(argc, argv, "--dest")) { j_int("bytes_needed", need); j_int("bytes_free", freeb); }
+            J_END();
+        }
         if (s != BD_OK) return die(cat, "cannot plan the restore");
         if (!g_json) {
             if (!steps) puts("  (nothing to plug in)");
             printf("%lld files to restore, %lld with no copy anywhere\n", (long long)total, (long long)none);
+            if (freeb >= 0 && need > freeb) {
+                char a[32], b[32];
+                human_bytes(need, a, sizeof(a));
+                human_bytes(freeb, b, sizeof(b));
+                printf("this needs %s, but only %s is free at --dest: free up space or restore somewhere else\n", a, b);
+            }
         }
         save = 1;
     } else if (strcmp(cmd, "need") == 0) {

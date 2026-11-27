@@ -2087,6 +2087,54 @@ typedef struct {
     int used;
 } plan_media;
 
+static int add_step_bytes(void *ctx, const bd_restore_step *st)
+{
+    *(int64_t *)ctx += st->bytes;
+    return 0;
+}
+
+/* Free space at path, or at the nearest folder above it that is there. */
+static int64_t free_at(const char *path)
+{
+    if (bd_test_free_bytes >= 0) return bd_test_free_bytes;
+    char *p = path ? bd_strdup(path) : NULL;
+    int64_t total = 0, freeb = -1;
+    for (int tries = 0; p && *p && tries < 256; tries++) {
+        if (bd_disk_space(p, &total, &freeb) == 0) break;
+        freeb = -1;
+        size_t n = strlen(p);
+        while (n > 1 && (p[n - 1] == '/' || p[n - 1] == '\\') && !(n == 3 && p[1] == ':')) p[--n] = '\0';
+        char *x = strrchr(p, '/'), *y = strrchr(p, '\\');
+        char *cut = !x ? y : !y ? x : x > y ? x : y;
+        if (!cut || cut[1] == '\0') break; /* the top, and it cannot be read */
+        if (cut == p || (cut == p + 2 && p[1] == ':')) cut[1] = '\0'; /* keep "/" or "C:\\" */
+        else *cut = '\0';
+    }
+    free(p);
+    return freeb;
+}
+
+bd_status bd_restore_room(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                          const bd_restore_opts *opts, int64_t version_id, int64_t *bytes_needed, int64_t *bytes_free)
+{
+    int64_t need = 0;
+    bd_status s = BD_OK;
+    if (version_id > 0) {
+        sqlite3_stmt *q;
+        if (sqlite3_prepare_v2(cat->db, "SELECT size FROM versions WHERE id=?", -1, &q, NULL) != SQLITE_OK)
+            return bd_fail_db(cat, "find the version to restore");
+        sqlite3_bind_int64(q, 1, version_id);
+        if (sqlite3_step(q) == SQLITE_ROW) need = sqlite3_column_int64(q, 0);
+        else s = bd_fail(cat, BD_ERR_NOT_FOUND, "no such version");
+        sqlite3_finalize(q);
+    } else {
+        s = bd_restore_plan_ex(cat, source_id, rel_prefix, dest_root, opts, add_step_bytes, &need, NULL, NULL);
+    }
+    if (bytes_needed) *bytes_needed = need;
+    if (bytes_free) *bytes_free = free_at(dest_root);
+    return s;
+}
+
 bd_status bd_restore_plan(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
                           bd_restore_step_fn fn, void *ctx, int64_t *files_total, int64_t *files_no_copy)
 {

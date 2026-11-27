@@ -8334,6 +8334,29 @@ static void after_restore(job *j)
     free(p.t.p);
 }
 
+/* A restore that needs need bytes into dest: when dest has less free, say
+ * so and ask. 1 to go ahead. */
+static int restore_fits(int64_t need, int64_t freeb, const char *dest)
+{
+    if (freeb < 0 || need <= freeb) return 1;
+    wchar_t a[64], b[64], *where = widen(dest), msg[MAX_PATH * 2 + 800];
+    format_bytes(need, a, 64);
+    format_bytes(freeb, b, 64);
+    swprintf(msg, MAX_PATH * 2 + 800,
+             T(L"This restore needs %ls, but only %ls is free where it goes (%ls).\n\nFree up space there, or choose another folder. If "
+               L"you restore anyway, it stops with errors once the disk is full; nothing there is overwritten."),
+             a, b, where ? where : L"");
+    free(where);
+    return ask_verbs(g_main, msg, MB_YESNO | MB_ICONWARNING, T(L"Restore anyway"), T(L"Cancel")) == IDYES;
+}
+
+static int restore_room_ok(int64_t source_id, const char *rel, const char *dest, const bd_restore_opts *ro, int64_t version_id)
+{
+    int64_t need = 0, freeb = -1;
+    if (bd_restore_room(g_cat, source_id, rel, dest, ro, version_id, &need, &freeb) != BD_OK) return 1; /* the restore says why */
+    return restore_fits(need, freeb, dest);
+}
+
 /* The drives the waiting restore still needs. */
 static int pending_needs(int64_t id)
 {
@@ -8354,6 +8377,7 @@ static void continue_restore(void)
     if (media_encryption(0).any_connected_encrypted && !bd_catalog_is_unlocked(g_cat) &&
         !unlock_ui(T(L"Some copies are on an encrypted drive. Enter the passphrase to restore them.")))
         return;
+    if (!restore_room_ok(g_pending.source_id, g_pending.rel, g_pending.dest, NULL, 0)) return;
     job *r = new_job(JOB_RESTORE);
     if (!r) return;
     r->source_id = g_pending.source_id;
@@ -9773,6 +9797,7 @@ static void restore_selection(int whole, int64_t source_id)
         if (!go) { free(p.t.p); free(dest); return; }
     }
     free(p.t.p);
+    if (!restore_room_ok(r->source_id, r->rel, dest, NULL, 0)) { free(dest); return; }
     job *j = new_job(JOB_RESTORE);
     if (!j) { free(dest); return; }
     j->source_id = r->source_id;
@@ -10136,6 +10161,19 @@ static void cmd_deleted(void)
         free(msg.p);
         if (!go) goto out;
     }
+    {
+        int64_t need = 0, freeb = -1;
+        for (int i = 0; i < n; i++) {
+            int64_t one = 0, f = -1;
+            char *d = pick_dest(dest, picks[i].root, several);
+            if (d && bd_restore_room(g_cat, picks[i].source_id, picks[i].rel, d, &ro, 0, &one, &f) == BD_OK) {
+                need += one;
+                if (freeb < 0) freeb = f;
+            }
+            free(d);
+        }
+        if (!restore_fits(need, freeb, dest)) goto out;
+    }
     job *j = new_job(JOB_RESTORE);
     if (!j) goto out;
     j->pick_src = calloc((size_t)n, sizeof(int64_t));
@@ -10168,6 +10206,7 @@ static void restore_version(int64_t version_id)
         return;
     char *dest = pick_folder(g_main, T(L"Choose the folder to put this version in. It keeps the file's own name; nothing there is overwritten."));
     if (!dest) return;
+    if (!restore_room_ok(0, NULL, dest, NULL, version_id)) { free(dest); return; }
     job *j = new_job(JOB_RESTORE);
     if (!j) { free(dest); return; }
     j->version_id = version_id;

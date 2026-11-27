@@ -874,6 +874,54 @@ static void test_too_big_and_versions(void)
     bd_catalog_close(cat);
 }
 
+/* ---- Convenience 6: room for a restore ----------------------------------- */
+
+static int first_version(void *ctx, const bd_copy_info *c)
+{
+    *(int64_t *)ctx = c->version_id;
+    return 1;
+}
+
+static void test_restore_room(void)
+{
+    write_file(at("room/Data/a.txt"), "0123456789");
+    write_file(at("room/Data/sub/b.txt"), "01234");
+    bd_mkdirs(at("room/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("room/db.brodalf"), &cat), NULL);
+    target_one(cat);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("room/Data"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("room/drive"), "Blue", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+
+    /* Into a folder not made yet: the free space of the disk it would be on. */
+    int64_t need = -1, freeb = -2;
+    REQUIRE_OK(bd_restore_room(cat, src, "", at("room/out/new/deeper"), NULL, 0, &need, &freeb), cat);
+    CHECK(need == 15 && freeb > 0);
+    bd_test_free_bytes = 12;
+    REQUIRE_OK(bd_restore_room(cat, src, "", at("room/out"), NULL, 0, &need, &freeb), cat);
+    CHECK(need == 15 && freeb == 12);
+    REQUIRE_OK(bd_restore_room(cat, src, "sub", at("room/out"), NULL, 0, &need, &freeb), cat);
+    CHECK(need == 5);
+    bd_test_free_bytes = -1;
+    bd_restore_stats rs;
+    REQUIRE_OK(bd_restore(cat, src, "", at("room/out"), &rs, quiet, NULL), cat);
+    REQUIRE_OK(bd_restore_room(cat, src, "", at("room/out"), NULL, 0, &need, &freeb), cat);
+    CHECK(need == 0); /* already there */
+
+    /* One version of one file. */
+    int64_t node = 0, vid = 0;
+    REQUIRE_OK(bd_find_node(cat, src, "a.txt", &node), cat);
+    bd_list_copies(cat, node, first_version, &vid);
+    REQUIRE_OK(bd_restore_room(cat, 0, NULL, at("room/one"), NULL, vid, &need, &freeb), cat);
+    CHECK(vid > 0 && need == 10);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -896,6 +944,7 @@ int main(void)
     test_damaged_catalog_copy();
     test_database_in_root();
     test_too_big_and_versions();
+    test_restore_room();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

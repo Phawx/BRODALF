@@ -820,6 +820,16 @@ bd_status bd_restore_plan_ex(bd_catalog *cat, int64_t source_id, const char *rel
                              const bd_restore_opts *opts, bd_restore_step_fn fn, void *ctx, int64_t *files_total,
                              int64_t *files_no_copy);
 
+/* Whether a restore fits where it goes, asked before it starts: what the
+ * files it would restore take (bytes_needed: those with a copy on a drive,
+ * not already at dest_root, as bd_restore_plan counts them; version_id > 0
+ * for one version, as bd_restore_version) and the free space at dest_root,
+ * or at the nearest folder above it that is there (bytes_free; -1 if it
+ * cannot be read). A restore that does not fit stops with errors once the
+ * disk is full; nothing there is overwritten either way. */
+bd_status bd_restore_room(bd_catalog *cat, int64_t source_id, const char *rel_prefix, const char *dest_root,
+                          const bd_restore_opts *opts, int64_t version_id, int64_t *bytes_needed, int64_t *bytes_free);
+
 /* ---- Ghost tree queries ---------------------------------------------- */
 
 typedef enum {

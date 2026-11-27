@@ -238,6 +238,15 @@ typedef struct {
     int64_t files_damaged;   /* bit-rot scan: contents changed but size and time did not; see bd_list_damaged */
     int64_t roots_missing;   /* backup roots not found (unplugged, moved): skipped, nothing marked deleted */
     int64_t roots_stopped;   /* backup roots no longer backed up: not scanned */
+    /* Of roots_missing, those whose folder is there but holds a tenth or
+     * less of the files the catalog knows in it (a new PC, or a reinstalled
+     * Windows, makes empty folders under the same names): left as the last
+     * scan saw them, nothing marked deleted. bd_source_info.files_gone says
+     * how many files were not found. */
+    int64_t roots_emptied;
+    /* Of roots_missing, those waiting for their disk to be plugged in
+     * (bd_source_wait_for_disk): the caller need not ask about them. */
+    int64_t roots_waiting;
 } bd_scan_stats;
 
 /* The skip lists: files and folders a scan leaves out. One list for the
@@ -278,9 +287,20 @@ typedef struct {
  * anything deleted, and listed (bd_source_info.missing) so the user can
  * say where it is now (bd_source_relocate) or restore it. Files moved or
  * renamed inside or between roots are recognised by checksum and keep
- * their versions and copies; nothing on any drive is moved. */
+ * their versions and copies; nothing on any drive is moved. A root that is
+ * there but holds a tenth or less of the files the catalog knows in it is
+ * treated the same way (bd_scan_stats.roots_emptied). */
 bd_status bd_scan(bd_catalog *cat, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
 bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *stats, bd_log_fn log, void *log_ctx);
+/* The user says the files missing from an emptied root really were
+ * deleted: the next scan of it marks them deleted as usual (they stay in
+ * the catalog with their copies). Good for one scan; until this database
+ * is closed. */
+bd_status bd_source_accept_gone(bd_catalog *cat, int64_t source_id);
+/* The backup root is on a disk that is usually unplugged (on: 1): while it
+ * cannot be found, scans skip it quietly (bd_scan_stats.roots_waiting).
+ * The first scan that finds it again ends the wait. Kept in the catalog. */
+bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on);
 
 /* Files a bit-rot scan found changed without their size or time changing.
  * They are kept in the catalog, so they are still listed after it is
@@ -740,6 +760,12 @@ typedef struct {
     const char *copies_on;
     const char *copies_on_plugged;
     int64_t files_backed_up; /* live files with a good copy of the current version on a drive that counts */
+    /* missing, but the folder is there: so many of its files were not
+     * (bd_scan_stats.roots_emptied). 0 when the folder could not be found. */
+    int64_t files_gone;
+    /* The user said it is on a disk that is usually unplugged: while it
+     * cannot be found, scans skip it without asking (bd_source_wait_for_disk). */
+    int wait_for_disk;
 } bd_source_info;
 
 typedef struct {

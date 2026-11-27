@@ -2861,8 +2861,17 @@ static DWORD WINAPI worker(LPVOID arg)
             say(j, TN(st.files_damaged, L" %lld file changed without its size or time changing: it may be damaged.",
                       L" %lld files changed without their size or time changing: they may be damaged."),
                 (long long)st.files_damaged);
-        if (st.roots_missing)
-            say(j, TN(st.roots_missing, L" %lld backup root could not be found.", L" %lld backup roots could not be found."), (long long)st.roots_missing);
+        int64_t not_found = st.roots_missing - st.roots_emptied - st.roots_waiting;
+        if (not_found > 0)
+            say(j, TN(not_found, L" %lld backup root could not be found.", L" %lld backup roots could not be found."), (long long)not_found);
+        if (st.roots_emptied)
+            say(j, TN(st.roots_emptied, L" %lld backup root is almost empty, so nothing in it was marked deleted.",
+                      L" %lld backup roots are almost empty, so nothing in them was marked deleted."),
+                (long long)st.roots_emptied);
+        if (st.roots_waiting)
+            say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk to be plugged in.",
+                      L" %lld backup roots wait for their disks to be plugged in."),
+                (long long)st.roots_waiting);
         if (st.roots_stopped)
             say(j, TN(st.roots_stopped, L" %lld stopped root left alone.", L" %lld stopped roots left alone."), (long long)st.roots_stopped);
         if (st.errors)
@@ -2870,12 +2879,12 @@ static DWORD WINAPI worker(LPVOID arg)
                       L" %lld files or folders could not be read; the log says which."),
                 (long long)st.errors);
         /* Damaged files and missing roots each get a question after the scan. */
-        j->n_problems = st.errors + st.files_damaged + st.roots_missing;
+        j->n_problems = st.errors + st.files_damaged + st.roots_missing - st.roots_waiting;
         j->n_tell = st.errors;
         j->in_use = st.files_in_use;
         j->damaged = st.files_damaged;
         j->found_deleted = st.files_deleted;
-        j->roots_missing = st.roots_missing;
+        j->roots_missing = st.roots_missing - st.roots_waiting;
         break;
     }
     case JOB_BACKUP: {
@@ -3563,6 +3572,7 @@ typedef struct {
     /* What the tree paints beside the name (tree_custom_draw). */
     int root;              /* a backup root's own item */
     int missing, inactive; /* roots: not found at the last scan; no longer backed up */
+    int emptied, waiting;  /* roots, missing: the folder is there but almost empty; its disk is not plugged in */
     int64_t size;          /* files: the current version; roots: every live file */
     int64_t files_total, files_available; /* folders */
     int damaged;           /* how many files a bit-rot scan found damaged: in it, or it */
@@ -4082,6 +4092,8 @@ static void rebuild_tree(void)
             r->rel = xstrdup("");
             r->name = widen(l.names[i]);
             r->missing = l.items[i].missing;
+            r->emptied = l.items[i].missing && l.items[i].files_gone > 0;
+            r->waiting = l.items[i].missing && l.items[i].wait_for_disk;
             r->inactive = !l.items[i].active;
             r->size = l.items[i].bytes_total;
             r->files_total = l.items[i].files_total;
@@ -4110,7 +4122,9 @@ static void rebuild_tree(void)
         wchar_t bytes[64];
         format_bytes(l.items[i].bytes_total, bytes, 64);
         swprintf(text, COUNT_OF(text), L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
-                 l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
+                 l.items[i].missing && l.items[i].files_gone > 0 ? T(L"   - almost empty: a new PC, or a reinstalled Windows?")
+                 : l.items[i].missing && l.items[i].wait_for_disk ? T(L"   - waits for its disk to be plugged in")
+                 : l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
                  : !l.items[i].active ? T(L"   - no longer backed up") : L"");
         add_marks(text, COUNT_OF(text), l.items[i].source_id, "", 1);
         if (r) {
@@ -4757,7 +4771,9 @@ typedef struct figures {
     int has_target;
     bd_target target;                  /* the copies and places wanted */
     int n_roots, n_missing;            /* backup roots in use; those the last scan could not find */
+    int n_waiting;                     /* of those, roots waiting for their disk (not in missing_id) */
     int64_t missing_id[4];
+    int64_t missing_gone[4];           /* the folder is there, but this many of its files are not */
     wchar_t missing_name[4][200];
     int64_t last_scan_ms;
 } figures;
@@ -4786,10 +4802,12 @@ static int fig_source_cb(void *ctx, const bd_source_info *s)
     if (!s->active) return 0;
     f->n_roots++;
     if (s->last_scan_ms > f->last_scan_ms) f->last_scan_ms = s->last_scan_ms;
-    if (s->missing) {
+    if (s->missing && s->wait_for_disk) f->n_waiting++;
+    else if (s->missing) {
         if (f->n_missing < 4) {
             wchar_t *w = widen(s->name ? s->name : "");
             f->missing_id[f->n_missing] = s->source_id;
+            f->missing_gone[f->n_missing] = s->files_gone;
             swprintf(f->missing_name[f->n_missing], 200, L"%ls", w ? w : L"");
             free(w);
         }
@@ -5968,6 +5986,20 @@ static void update_drives_label(void)
             swprintf(key, 80, L"missing:%lld", (long long)g_figs->missing_id[i]);
             warn_item *w = warn_add(TONE_BAD, GLYPH_CROSS, key);
             if (!w) break;
+            if (g_figs->missing_gone[i] > 0) {
+                swprintf(w->title, 200, T(L"%ls is almost empty"), g_figs->missing_name[i]);
+                swprintf(w->text, 900, TN(g_figs->missing_gone[i],
+                                          L"Its folder is there, but %lld file BRODALF knows in it is not. A new PC, or a reinstalled "
+                                          L"Windows, makes empty folders under the same names. Nothing is marked deleted. Restore it from "
+                                          L"your backup drives.",
+                                          L"Its folder is there, but %lld files BRODALF knows in it are not. A new PC, or a reinstalled "
+                                          L"Windows, makes empty folders under the same names. Nothing is marked deleted. Restore it from "
+                                          L"your backup drives."),
+                         (long long)g_figs->missing_gone[i]);
+                warn_button(w, 0, WA_RESTORE_ROOT, g_figs->missing_id[i], L"%ls", T(L"Restore it..."));
+                warn_button(w, 1, WA_RELOCATE, g_figs->missing_id[i], L"%ls", T(L"Other choices..."));
+                continue;
+            }
             swprintf(w->title, 200, T(L"%ls cannot be found"), g_figs->missing_name[i]);
             swprintf(w->text, 900, L"%ls",
                      T(L"The last scan could not find this backup root, so its files are not marked deleted. Say where it is now, or restore "
@@ -8785,7 +8817,7 @@ static int guess_new_place(const wchar_t *old, wchar_t *out, size_t cap)
     return _wcsicmp(out, old) != 0 && is_folder(out);
 }
 
-typedef struct { int64_t id; wchar_t *name, *path; int active, missing; } source_place;
+typedef struct { int64_t id; wchar_t *name, *path; int active, missing, waiting; int64_t gone, total; } source_place;
 typedef struct { source_place *items; int n, cap; } source_places;
 
 static int source_place_cb(void *ctx, const bd_source_info *info)
@@ -8804,6 +8836,9 @@ static int source_place_cb(void *ctx, const bd_source_info *info)
     p->path = widen(info->path);
     p->active = info->active;
     p->missing = info->missing;
+    p->waiting = info->wait_for_disk;
+    p->gone = info->files_gone;
+    p->total = info->files_total;
     if (!p->name || !p->path) { free(p->name); free(p->path); return 1; }
     l->n++;
     return 0;
@@ -8816,20 +8851,46 @@ static void source_places_free(source_places *l)
     memset(l, 0, sizeof(*l));
 }
 
-enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE };
+enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE, PLACE_GONE, PLACE_WAIT };
+
+/* A missing backup root's disk is not plugged in: no disk at all has its
+ * drive letter now. disk gets the letter, like "E:". */
+static int disk_unplugged(const wchar_t *path, wchar_t *disk, size_t cap)
+{
+    if (wcslen(path) < 3 || path[1] != L':' || path[2] != L'\\' || !iswalpha(path[0])) return 0;
+    wchar_t r[4] = {path[0], L':', L'\\', 0};
+    swprintf(disk, cap, L"%lc:", towupper(path[0]));
+    return GetDriveTypeW(r) == DRIVE_NO_ROOT_DIR;
+}
 
 /* Ask where a protected folder is now and point the catalog there. 1 if it
  * was changed, 2 if the user would rather restore it from the drives (only
- * offered when it cannot be found). Nothing is scanned here; the caller
- * saves and scans. */
+ * offered when it cannot be found or is almost empty), 3 if the user said
+ * its files really were deleted (the next scan marks them), 4 if it now
+ * waits for its disk. Nothing is scanned here; the caller saves and scans. */
 static int relocate_source(const source_place *sp)
 {
-    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 96], head[512], body[MAX_PATH * 4 + 512];
+    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 96], head[512], body[MAX_PATH * 4 + 512], disk[8];
     int have_guess = guess_new_place(sp->path, guess, MAX_PATH * 4);
     int here = is_folder(sp->path);
-    if (here) swprintf(head, 512, T(L"Where is \"%ls\" on this PC?"), sp->name);
+    int emptied = here && sp->missing && sp->gone > 0;
+    int unplugged = !here && disk_unplugged(sp->path, disk, COUNT_OF(disk));
+    if (emptied) swprintf(head, 512, T(L"\"%ls\" is almost empty"), sp->name);
+    else if (unplugged) swprintf(head, 512, T(L"Plug in the disk with \"%ls\""), sp->name);
+    else if (here) swprintf(head, 512, T(L"Where is \"%ls\" on this PC?"), sp->name);
     else swprintf(head, 512, T(L"\"%ls\" cannot be found"), sp->name);
-    if (here)
+    if (emptied)
+        swprintf(body, MAX_PATH * 4 + 512, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not. A new PC, "
+                                                       L"or a reinstalled Windows, makes empty folders under the same names. Nothing "
+                                                       L"is marked deleted. To get the files back, restore them from your backup drives.",
+                                              L"%ls is there, but %lld of the %lld files BRODALF knows in it are not. A new PC, "
+                                              L"or a reinstalled Windows, makes empty folders under the same names. Nothing "
+                                              L"is marked deleted. To get the files back, restore them from your backup drives."),
+                 sp->path, (long long)sp->gone, (long long)(sp->total > sp->gone ? sp->total : sp->gone));
+    else if (unplugged)
+        swprintf(body, MAX_PATH * 4 + 512, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
+                                            L"Nothing in it is marked deleted."), sp->path, disk, disk);
+    else if (here)
         swprintf(body, MAX_PATH * 4 + 512, T(L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
                                             L"keep their copies and history."), sp->path);
     else
@@ -8837,22 +8898,32 @@ static int relocate_source(const source_place *sp)
                                             L"somewhere else, for example under another user name or on another drive letter, choose "
                                             L"where it is now: its files keep their copies and history."), sp->path);
     for (;;) {
-        TASKDIALOG_BUTTON b[4];
+        TASKDIALOG_BUTTON b[6];
         int n = 0;
+        if (unplugged) {
+            b[n].nButtonID = PLACE_WAIT;
+            b[n++].pszButtonText = T(L"Skip it until the disk is plugged in\nBRODALF stops asking about this backup root. Once the disk "
+                                     L"is back, the next scan backs it up as usual.");
+        }
         if (have_guess) {
             swprintf(guess_btn, MAX_PATH * 4 + 96, T(L"Use %ls\nThe same folder in your user folder on this PC"), guess);
             b[n].nButtonID = PLACE_GUESS;
             b[n++].pszButtonText = guess_btn;
         }
         b[n].nButtonID = PLACE_PICK;
-        b[n++].pszButtonText = here ? T(L"Choose where it is now...") : T(L"It is somewhere else: choose where...");
-        if (!here) {
+        b[n++].pszButtonText = here && !emptied ? T(L"Choose where it is now...") : T(L"It is somewhere else: choose where...");
+        if (!here || emptied) {
             b[n].nButtonID = PLACE_RESTORE;
             b[n++].pszButtonText = T(L"Restore it from my backup drives...\nBRODALF says which drives to plug in, then puts the files "
                                      L"in a folder you choose.");
         }
+        if (emptied) {
+            b[n].nButtonID = PLACE_GONE;
+            b[n++].pszButtonText = T(L"The files really were deleted\nThe next scan marks them deleted. Their copies stay on your "
+                                     L"backup drives.");
+        }
         b[n].nButtonID = PLACE_LATER;
-        b[n++].pszButtonText = here ? T(L"Leave it where it is")
+        b[n++].pszButtonText = here && !emptied ? T(L"Leave it where it is")
                                     : T(L"Leave it for now\nIts files are not marked deleted. The next scan asks again.");
         TASKDIALOGCONFIG tc;
         memset(&tc, 0, sizeof(tc));
@@ -8861,7 +8932,7 @@ static int relocate_source(const source_place *sp)
         tc.hInstance = g_inst;
         tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
         tc.pszWindowTitle = APP_NAME;
-        if (!here) tc.pszMainIcon = TD_WARNING_ICON;
+        if (!here || emptied) tc.pszMainIcon = TD_WARNING_ICON;
         tc.pszMainInstruction = head;
         tc.pszContent = body;
         tc.cButtons = (UINT)n;
@@ -8871,6 +8942,24 @@ static int relocate_source(const source_place *sp)
 
         wchar_t *chosen = NULL;
         if (pressed == PLACE_RESTORE) return 2;
+        if (pressed == PLACE_WAIT) {
+            if (bd_source_wait_for_disk(g_cat, sp->id, 1) != BD_OK) return 0;
+            wchar_t line[600];
+            swprintf(line, 600, T(L"Backup root \"%ls\" waits for its disk to be plugged in"), sp->name);
+            log_append(line);
+            return 4;
+        }
+        if (pressed == PLACE_GONE) {
+            wchar_t q[900];
+            swprintf(q, 900, TN(sp->gone, L"Mark %lld file of \"%ls\" deleted?\n\nDo this only if you deleted it yourself. Its copies "
+                                         L"stay on your backup drives, and you can still restore it from the deleted files.",
+                                L"Mark %lld files of \"%ls\" deleted?\n\nDo this only if you deleted them yourself. Their copies "
+                                L"stay on your backup drives, and you can still restore them from the deleted files."),
+                     (long long)sp->gone, sp->name);
+            if (ask_verbs(g_main, q, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2, T(L"Mark them deleted"), T(L"Cancel")) != IDYES) continue;
+            if (bd_source_accept_gone(g_cat, sp->id) != BD_OK) return 0;
+            return 3;
+        }
         if (pressed == PLACE_GUESS) chosen = _wcsdup(guess);
         else if (pressed == PLACE_PICK) {
             char *f = pick_folder(g_main, T(L"Choose where this backup root is now."));
@@ -8922,18 +9011,23 @@ static void ask_missing_roots(void)
     source_places l;
     memset(&l, 0, sizeof(l));
     bd_list_sources(g_cat, source_place_cb, &l);
-    int changed = 0;
+    int changed = 0, saved = 0;
     for (int i = 0; i < l.n; i++) {
         const source_place *sp = &l.items[i];
-        if (!sp->active || !sp->missing || is_folder(sp->path)) continue;
+        /* A root waiting for its disk is not asked about; an almost empty
+         * one is, though its folder is there. */
+        if (!sp->active || !sp->missing || sp->waiting || (is_folder(sp->path) && !sp->gone)) continue;
         int r = relocate_source(sp);
-        if (r == 1) changed = 1;
+        if (r == 1 || r == 3) changed = 1;
         else if (r == 2) restore_selection(1, sp->id);
+        else if (r == 4) saved = 1;
     }
     source_places_free(&l);
     if (changed) {
         places_changed();
         enqueue(new_job(JOB_SCAN));
+    } else if (saved) {
+        places_changed();
     }
 }
 
@@ -8941,9 +9035,11 @@ static void relocate_one(const source_place *sp)
 {
     int r = relocate_source(sp);
     if (r == 2) restore_selection(1, sp->id);
-    else if (r == 1) {
+    else if (r == 1 || r == 3) {
         places_changed();
         enqueue(new_job(JOB_SCAN));
+    } else if (r == 4) {
+        places_changed();
     }
 }
 
@@ -15222,7 +15318,9 @@ static void jp_result(const job *j, const wchar_t *headline, int stopped, int dr
         SetWindowTextW(g_jp_btn[0], T(L"Show the log"));
     } else if (j->kind == JOB_SCAN && j->roots_missing && g_figs && g_figs->n_missing > 0) {
         g_jp_state = JP_PROBLEM;
-        if (g_figs->n_missing == 1) swprintf(g_jp_title, 600, T(L"Scan finished, but %ls cannot be found"), g_figs->missing_name[0]);
+        if (g_figs->n_missing == 1 && g_figs->missing_gone[0] > 0)
+            swprintf(g_jp_title, 600, T(L"Scan finished, but %ls is almost empty"), g_figs->missing_name[0]);
+        else if (g_figs->n_missing == 1) swprintf(g_jp_title, 600, T(L"Scan finished, but %ls cannot be found"), g_figs->missing_name[0]);
         else swprintf(g_jp_title, 600, TN(g_figs->n_missing, L"Scan finished, but %d backup root cannot be found",
                                           L"Scan finished, but %d backup roots cannot be found"), g_figs->n_missing);
         g_jp_act[0] = JA_REPORTS;
@@ -15529,6 +15627,8 @@ static int draw_lock(HDC dc, int x, int y, int s, COLORREF c)
 static const wchar_t *tree_chip(const node_ref *r, wchar_t *buf, size_t cap, int *tone)
 {
     *tone = TONE_NEUTRAL;
+    if (r->root && r->emptied) { *tone = TONE_BAD; return T(L"Almost empty"); }
+    if (r->root && r->waiting) { *tone = TONE_WARN; return T(L"Disk not plugged in"); }
     if (r->root && r->missing) { *tone = TONE_BAD; return T(L"Cannot be found"); }
     if (r->root && r->inactive) return T(L"No longer backed up");
     if (!r->is_dir) {

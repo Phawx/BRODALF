@@ -563,6 +563,7 @@ typedef struct {
     size_t failed_len, failed_cap;
     int db_error;
     int cancelled;
+    int64_t inserted_files; /* files new to the catalog in this root */
     hash_pool *pool;
 } scan_ctx;
 
@@ -947,6 +948,7 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         if (sqlite3_step(c->insert_node) != SQLITE_DONE) { free(key); c->db_error = 1; return 1; }
         node_id = sqlite3_last_insert_rowid(c->cat->db);
         if (!st->is_dir) {
+            c->inserted_files++;
             /* Perhaps a file moved here: matched after the scan. */
             sqlite3_reset(c->note_new);
             sqlite3_bind_int64(c->note_new, 1, node_id);
@@ -1052,10 +1054,12 @@ static int under_failed_dir(scan_ctx *c, const char *rel)
 
 /* What this scan did not see is marked deleted, files newly on a skip list
  * included: they stay in the catalog with their versions and copies until
- * the user forgets them (bd_deleted_forget). */
-static bd_status mark_deleted(scan_ctx *c)
+ * the user forgets them (bd_deleted_forget). With count_only, nothing is
+ * marked: the files that would be are counted in *files. */
+static bd_status mark_deleted(scan_ctx *c, int count_only, int64_t *files)
 {
     sqlite3_stmt *q, *u, *gone;
+    if (files) *files = 0;
     if (sqlite3_prepare_v2(c->cat->db, "SELECT id, rel_path, is_dir FROM nodes WHERE source_id=? AND deleted=0 AND last_seen_ms<?", -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(c->cat, "find deleted files");
     if (sqlite3_prepare_v2(c->cat->db, "UPDATE nodes SET deleted=1, deleted_ack=0 WHERE id=?", -1, &u, NULL) != SQLITE_OK) {
@@ -1072,6 +1076,11 @@ static bd_status mark_deleted(scan_ctx *c)
     while (sqlite3_step(q) == SQLITE_ROW) {
         const char *rel = (const char *)sqlite3_column_text(q, 1);
         if (under_failed_dir(c, rel)) continue;
+        int is_dir = sqlite3_column_int(q, 2);
+        if (count_only) {
+            if (!is_dir && files) (*files)++;
+            continue;
+        }
         int64_t id = sqlite3_column_int64(q, 0);
         sqlite3_reset(u);
         sqlite3_bind_int64(u, 1, id);
@@ -1079,7 +1088,7 @@ static bd_status mark_deleted(scan_ctx *c)
         sqlite3_reset(gone);
         sqlite3_bind_int64(gone, 1, id);
         sqlite3_step(gone);
-        if (!sqlite3_column_int(q, 2)) c->stats->files_deleted++;
+        if (!is_dir) c->stats->files_deleted++;
     }
     sqlite3_finalize(q);
     sqlite3_finalize(u);
@@ -1087,28 +1096,78 @@ static bd_status mark_deleted(scan_ctx *c)
     return BD_OK;
 }
 
-static void note_missing(bd_catalog *cat, int64_t source_id, int missing)
+/* gone: the folder is there but so many of its files were not (an
+ * emptied root); 0 when the folder itself could not be found. */
+static void note_missing(bd_catalog *cat, int64_t source_id, int missing, int64_t gone)
 {
     sqlite3_stmt *u;
-    const char *sql = missing ? "INSERT OR IGNORE INTO temp.missing_sources(source_id) VALUES(?)"
+    const char *sql = missing ? "INSERT OR REPLACE INTO temp.missing_sources(source_id, files_gone) VALUES(?,?)"
                               : "DELETE FROM temp.missing_sources WHERE source_id=?";
     if (sqlite3_prepare_v2(cat->db, sql, -1, &u, NULL) != SQLITE_OK) return;
     sqlite3_bind_int64(u, 1, source_id);
+    if (missing) sqlite3_bind_int64(u, 2, gone);
     sqlite3_step(u);
     sqlite3_finalize(u);
+}
+
+/* The user said the files of this root really were deleted: 1, and the
+ * word is used up, so the next emptied scan asks again. */
+static int take_accept_gone(bd_catalog *cat, int64_t source_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.accept_gone WHERE source_id=?", -1, &q, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(q, 1, source_id);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+    return sqlite3_changes(cat->db) > 0;
+}
+
+bd_status bd_source_accept_gone(bd_catalog *cat, int64_t source_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "INSERT OR IGNORE INTO temp.accept_gone(source_id) VALUES(?)", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "note the deleted files");
+    sqlite3_bind_int64(q, 1, source_id);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "note the deleted files");
+}
+
+bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on)
+{
+    char key[48];
+    snprintf(key, sizeof(key), "wait_disk.%lld", (long long)source_id);
+    if (on) return bd_setting_set(cat, key, "1") == 0 ? BD_OK : bd_fail_db(cat, "remember the backup root's disk");
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM settings WHERE key=?", -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "remember the backup root's disk");
+    sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "remember the backup root's disk");
 }
 
 static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot, hash_pool *pool, int64_t source_id,
                              const char *root, int64_t scan_ms, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
     bd_stat_t rst;
+    char wait_key[48], wait_val[8];
+    snprintf(wait_key, sizeof(wait_key), "wait_disk.%lld", (long long)source_id);
+    int waiting = bd_setting_get(cat, wait_key, wait_val, sizeof(wait_val));
     if (bd_stat(root, &rst) != 0 || !rst.is_dir) {
         stats->roots_missing++;
-        note_missing(cat, source_id, 1);
-        bd_logf(log, log_ctx, "backup root %s is not reachable; skipped (nothing marked deleted)", root);
+        note_missing(cat, source_id, 1, 0);
+        if (waiting) {
+            stats->roots_waiting++;
+            bd_logf(log, log_ctx, "backup root %s waits for its disk to be plugged in; skipped (nothing marked deleted)", root);
+        } else {
+            bd_logf(log, log_ctx, "backup root %s is not reachable; skipped (nothing marked deleted)", root);
+        }
         return BD_OK;
     }
-    note_missing(cat, source_id, 0);
+    if (waiting) bd_source_wait_for_disk(cat, source_id, 0);
+    note_missing(cat, source_id, 0, 0);
+    bd_scan_stats before = *stats;
     char *own_text = bd_source_skip_get(cat, source_id);
     skip_list own;
     skip_parse(own_text, &own);
@@ -1182,7 +1241,29 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         goto done;
     }
     if (c.db_error) { s = bd_fail_db(cat, "record scan results"); bd_exec(cat, "ROLLBACK"); goto done; }
-    s = mark_deleted(&c);
+    /* The folder is there but holds a tenth or less of the files the
+     * catalog knows in it: most likely a new PC or a reinstalled Windows,
+     * which makes empty Documents, Pictures and Desktop folders under the
+     * same names. Marking everything deleted would leave a restore with
+     * nothing to restore, so it is left as the last scan saw it and listed
+     * like a root that cannot be found: the user says where it is, restores
+     * it, or says the files really were deleted (bd_source_accept_gone). */
+    int64_t gone = 0;
+    s = mark_deleted(&c, 1, &gone);
+    int64_t seen = stats->files_seen - before.files_seen;
+    int64_t known = gone + seen - c.inserted_files;
+    if (s == BD_OK && gone > 0 && seen * 10 <= known && !take_accept_gone(cat, source_id)) {
+        bd_exec(cat, "ROLLBACK");
+        *stats = before;
+        stats->roots_missing++;
+        stats->roots_emptied++;
+        note_missing(cat, source_id, 1, gone);
+        bd_logf(log, log_ctx, "backup root %s is there, but %lld of the %lld files the catalog knows in it are not: left as it was "
+                              "(nothing marked deleted). A new PC, or a reinstalled Windows?",
+                root, (long long)gone, (long long)known);
+        goto done;
+    }
+    if (s == BD_OK) s = mark_deleted(&c, 0, NULL);
     if (s == BD_OK) {
         sqlite3_stmt *u;
         if (sqlite3_prepare_v2(cat->db, "UPDATE sources SET last_scan_ms=? WHERE id=?", -1, &u, NULL) == SQLITE_OK) {

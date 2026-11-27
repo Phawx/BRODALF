@@ -113,7 +113,9 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
                            " (SELECT COALESCE(SUM(n.size),0) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0),"
                            " s.active, EXISTS(SELECT 1 FROM temp.missing_sources ms WHERE ms.source_id=s.id),"
                            " COALESCE(s.last_scan_ms,0),"
-                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " CUR_COPY ")"
+                           " (SELECT COUNT(*) FROM nodes n WHERE n.source_id=s.id AND n.is_dir=0 AND n.deleted=0 AND " CUR_COPY "),"
+                           " COALESCE((SELECT ms.files_gone FROM temp.missing_sources ms WHERE ms.source_id=s.id),0),"
+                           " EXISTS(SELECT 1 FROM settings st WHERE st.key='wait_disk.'||s.id)"
                            " FROM sources s ORDER BY s.name COLLATE NOCASE",
                            -1, &q, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "list sources");
@@ -134,6 +136,8 @@ bd_status bd_list_sources(bd_catalog *cat, bd_source_fn fn, void *ctx)
         info.missing = sqlite3_column_int(q, 9);
         info.last_scan_ms = sqlite3_column_int64(q, 10);
         info.files_backed_up = sqlite3_column_int64(q, 11);
+        info.files_gone = sqlite3_column_int64(q, 12);
+        info.wait_for_disk = sqlite3_column_int(q, 13);
         char *all = NULL, *plugged = NULL;
         drives_under(dq, info.source_id, "", 0, &all, &plugged);
         info.copies_on = all ? all : "";

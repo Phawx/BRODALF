@@ -541,7 +541,9 @@ static bd_status open_db(bd_catalog *cat, unsigned char *image, sqlite3_int64 le
                      "CREATE TEMP TABLE IF NOT EXISTS substitute(path TEXT PRIMARY KEY, staged TEXT NOT NULL);"
                      /* The last scan: backup roots it could not reach. (Damaged
                       * files are kept in the catalog: damaged_files.) */
-                     "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY);"
+                     "CREATE TEMP TABLE IF NOT EXISTS missing_sources(source_id INTEGER PRIMARY KEY, files_gone INTEGER NOT NULL DEFAULT 0);"
+                     /* Roots whose files the user said really were deleted: the next scan marks them. */
+                     "CREATE TEMP TABLE IF NOT EXISTS accept_gone(source_id INTEGER PRIMARY KEY);"
                      /* During a scan: files it added and files it marked deleted. */
                      "CREATE TEMP TABLE IF NOT EXISTS scan_new(node_id INTEGER PRIMARY KEY);"
                      "CREATE TEMP TABLE IF NOT EXISTS scan_gone(node_id INTEGER PRIMARY KEY);"

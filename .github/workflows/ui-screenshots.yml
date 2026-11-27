@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch replaces a run still going; a run
+# started by hand is never cut short.
+concurrency:
+  group: window-app-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 jobs:
   screenshots:
     strategy:

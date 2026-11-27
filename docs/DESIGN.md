@@ -300,8 +300,8 @@ under `HKCU\Software\BRODALF\IgnoredDisks`.
 X:\BRODALF\<catalog id>\BRODALF.media
 X:\BRODALF\<catalog id>\<root name>\<path>              first copy of a file on this drive
 X:\BRODALF\<catalog id>\.versions\<root name>\<dir>\<stem>.v<N><ext>   later versions
-X:\BRODALF\<catalog id>\catalog-r<revision>.brodalf     copies of the database
-X:\BRODALF\<catalog id>\newest-copies-r<revision>.txt   where each file's newest copy is (plain drives)
+X:\BRODALF\<catalog id>\catalog-r<revision>[-<tag>].brodalf     copies of the database
+X:\BRODALF\<catalog id>\newest-copies-r<revision>[-<tag>].txt   where each file's newest copy is (plain drives)
 ```
 
 A root's folder holds the first copy made of each file on that drive; a
@@ -358,7 +358,15 @@ spreads across drives with no follow-up mode.
 At the end of every backup the database is saved and copied to the drive as
 `catalog-r<revision>.brodalf` (`bd_catalog_revision`: how many times the
 database has been saved), never over an existing copy. An encrypted drive
-always gets an encrypted copy.
+always gets an encrypted copy. Two copies of one database used apart can
+reach the same revision: when the drive's copy of that revision is not this
+one's (each save has a `save_id`, kept in the copy), this one goes beside it
+as `catalog-r<revision>-<tag>.brodalf`, the tag being the first 8
+characters of its `save_id`, the clash is kept in table `media_catalog` and
+the window says the drive holds two. Its list of newest copies gets the
+same tag (`newest-copies-r<revision>-<tag>.txt`) and names the copy it goes
+with. Recovery takes the copy written last; 0.14.0 and older skip tagged
+names.
 
 A scan also leaves out BRODALF's own store inside a backup root: a folder
 named `BRODALF` that holds this catalog's `BRODALF.media` (an extra place

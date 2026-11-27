@@ -19,7 +19,15 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.14.0** (2026-11-27) takes any set of folders as backup roots.
+Version **0.15.0** (2026-11-27) fixes what an independent walk through
+every flow of 0.14.0 found: 40 findings, the worst of them ways a change
+could go unbacked-up, a restore could quietly bring back an old version or
+a drive could stop getting database copies, and five gaps in how BRODALF
+is tested. It also fixes shadow copies, which failed in every Windows
+build of 0.14.0. What is left for a real PC is in
+[Open items](#open-items-what-still-needs-trying-on-a-real-windows-pc).
+
+0.14.0 (2026-11-27) took any set of folders as backup roots.
 A folder typed from the current folder is kept as a full path, the command
 line takes any number of folders at once, and one folder reached two ways
 (a link, a mapped network drive and its network path, a `subst` drive)
@@ -48,9 +56,14 @@ that needs no administrator rights, and a zip with the two exes. Both are
 unsigned, so SmartScreen warns.
 
 The C core library, the Windows app (`brodalf.exe`) and a command-line tool
-(`brodalf-cli`) work, with optional encryption. **Everything new since 0.5.0
-has only been built and tested off Windows** (Linux tests; the MSVC build in
-CI). See [Open items](#open-items-what-still-needs-trying-on-a-real-windows-pc).
+(`brodalf-cli`) work, with optional encryption. **No person has tried
+anything new since 0.5.0 on a real PC.** CI builds it with MSVC and runs
+every test on a Windows runner as an administrator: real disk details,
+shadow copies, FAT32 and exFAT volumes, long paths, a network share, a
+crash with an encrypted database open, and the window app driven through
+its tabs, menus and dialogs (in English on every push; in all three
+languages, light and dark, by hand). See
+[Open items](#open-items-what-still-needs-trying-on-a-real-windows-pc).
 
 **0.3.0 was the first build tried on a real Windows PC** (2026-10-04): the
 whole loop of scanning, backing up to a USB stick, checking, changing and
@@ -408,9 +421,17 @@ for a spreadsheet.
 
 A drive that is lost or broken can be marked so (**Mark it lost or
 broken**). BRODALF first shows what that does to each full copy; once
-marked, its copies stop counting, and what it held is backed up again to
-the other drives. If it turns up again, **Found it** makes its copies count
-again.
+marked, its copies stop counting, and the current version of each file
+it held is backed up again to the other drives; older versions that only it
+held are not, since they are no longer in the backup roots. If it turns up
+again, **Found it** makes its copies count again, and offers to check it.
+
+A drive whose disk looks different from the one set up (another serial
+number or size) is asked about before its copies count. A drive that was
+wiped or reformatted keeps its name and place when it is set up again:
+BRODALF offers to take it as the same drive, its old copies marked missing
+(on the command line, `drive ... --wiped NAME`).
+Drive names are kept unique.
 
 **Compressing a drive** is optional and never starts by itself. **Compress
 the copies on it** (a drive's menu, or **Compress copies** on the Local
@@ -664,6 +685,16 @@ brodalf-cli encrypted-folders family.brodalf          # what is encrypted, and w
 brodalf-cli drive family.brodalf G:\ "Grey Vault" --encrypt --hide-names   # names on it are hidden too
 brodalf-cli compress family.brodalf E:\ on            # Windows' own file compression for the copies on E:
 brodalf-cli scan  family.brodalf --shadow-copy         # as administrator: read files in use from a shadow copy
+
+brodalf-cli backup  family.brodalf --plugged          # every drive of the catalog that is plugged in
+brodalf-cli backup  family.brodalf E:\ --accept-changes   # back up even when many files changed at once
+brodalf-cli wait    family.brodalf Pictures on        # a root on a network share or USB disk waits for it
+brodalf-cli add     family.brodalf "C:\Users\me" --take-in   # the roots inside it become part of it
+brodalf-cli restore family.brodalf D:\restored --keep-both --drive E:\   # keep both when a file is there
+brodalf-cli recover E:\ D:\new.brodalf --recovery-key  # open the copy with the recovery key
+brodalf-cli passphrase family.brodalf --drive E:\ --drive F:\   # change it, and put copies with it on E: and F:
+brodalf-cli drive family.brodalf E:\ "Blue WD 4TB" --wiped "Blue WD 4TB"   # wiped: the same drive again
+brodalf-cli drive family.brodalf E:\ "Green 2TB" --new         # not the drive it looks like: a new one
 ```
 
 The command line starts nothing by itself: each command runs once, when you
@@ -672,7 +703,17 @@ between files and keeps what it finished. `--json` prints a command's result
 as JSON.
 
 Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
-(and `BRODALF_NEW_PASSPHRASE` when setting one).
+(and `BRODALF_NEW_PASSPHRASE` when setting one). With `--recovery-key`,
+the recovery key is asked for, or read from `BRODALF_RECOVERY_KEY`. Without
+a terminal or either variable, as in a task you schedule, a backup copies
+what needs no passphrase and says what it left.
+
+A mistyped option is refused. The exit code says how it went, for scripts
+and the Task Scheduler: 0 done, 1 an error, 2 done with problems to look
+at, 3 stopped with Ctrl+C, 4 not possible now and nothing done (the drive
+is not plugged in, or the catalog is open elsewhere), 5 many files changed
+at once and nothing was backed up (look at them, then use
+`--accept-changes`). Run it with no arguments for the full list.
 
 ## Layout
 
@@ -695,6 +736,7 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `src/drive_hw.c` | Disk make, model, serial and SMART health |
 | `src/recover.c` | Finding database copies on drives, backup roots that moved |
 | `src/sheet.c` | The recovery sheet |
+| `src/newest.c` | The list of each file's newest copy, written beside each database copy on a drive |
 | `src/report.c` | The app log and error reports |
 | `src/platform_*.c` | Windows and POSIX file system layer |
 | `gui/` | The Win32 app, `brodalf.exe` |
@@ -705,7 +747,11 @@ Passphrases are asked for on the terminal, or read from `BRODALF_PASSPHRASE`
 | `tests/test_crypto.c` | Encryption test |
 | `tests/test_memory.c` | An encrypted database is never on the disk unencrypted |
 | `tests/test_blake3.c` | Checksum test vectors |
+| `tests/test_gaps.c`, `tests/test_flow_*.c` | The gaps found in 0.11.0, and the flows walked in 0.15.0 |
+| `tests/test_windows_volumes.c` | FAT32, exFAT, long paths and a share, on the Windows CI runner |
+| `tests/cli_*.cmake` | The command line: exit codes and the flows |
 | `tests/bench_many.c` | Many files: timings and counts (`bench_many 1000000` by hand) |
+| `tools/ui-screenshots/` | Drives the window app through its tabs, menus and dialogs on the Windows CI runner |
 | `installer/brodalf.nsi` | The NSIS installer |
 
 ## Third-party code
@@ -930,6 +976,31 @@ on a local machine needs to pick the work up without the chat history.
   it. No change to the database format: 0.10.2 and 0.11.0 open the files
   0.14.0 saves, and their command-line tools were seen reading, scanning
   and checking one.
+- v0.15.0 (2026-11-27, built on the `flow-review-fixes` branch first, in
+  five parts on their own branches): what an independent walk through
+  every flow of 0.14.0 found (40 findings, in
+  `reviews/flow-review-0.14.0.md` in the project's files) and five gaps in
+  how BRODALF is tested. Scanning: a change that keeps a file's size and
+  modified time is caught by its change time; a missing root asks before
+  anything is marked deleted; a stopped scan keeps what it did; the
+  default skip list leaves out Windows' busy profile files. Drives: two
+  copies of one database that reach the same revision both go on the
+  drive (the later one with a tag in its name); a drive that looks
+  different, a wiped drive and a full drive are asked about or counted;
+  passphrase and recovery key changes reach the plugged drives; each
+  database copy on a plain drive has a list of where the newest copy of
+  each file is beside it. Restoring: what is already there is compared,
+  both files can be kept, and the drive that holds a good copy is waited
+  for. Command line: exit codes 4 and 5, `--plugged`, `--accept-changes`,
+  `wait`, `--recovery-key`, `drive --wiped` and `--take-in`; unknown
+  options are refused. Testing: the window app is driven on CI, the
+  checks that skipped on Windows run, and real FAT32 and exFAT volumes and
+  a share are made on the Windows runner. That found that shadow copies
+  failed in every MSVC build of 0.14.0 (the order a call's arguments are
+  worked out in); they work again. No change to the database format: new
+  facts go in new tables and settings, and the 0.10.2 and 0.11.0
+  command-line tools were seen reading, scanning and searching a database
+  0.15.0 saved.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -1009,12 +1080,26 @@ which describes the current implementation.
 ### How it is built and tested
 
 - `cmake -S . -B build && cmake --build build && ctest --test-dir build`.
-  Tests: `tests/test_core.c` (end to end, including the bit-rot and
-  at-risk cases added in 0.4.0) and `tests/test_crypto.c` (about 50 s
-  under ASan because of Argon2, 2 s in Release).
+  Tests in `tests/`: `core` (end to end), `crypto` (about 50 s under ASan
+  because of Argon2, 2 s in Release), `blake3`, `misc`, `memory`, `gaps`;
+  the flows walked in 0.15.0: `flow_main`, `flow_scan`, `flow_drives`,
+  `flow_restore`, `flow_cli`; `flow_tests` (real disk details),
+  `flow_shadow` (shadow copies), `windows_volumes` (Windows only: FAT32,
+  exFAT, long paths, a share); the command line: `cli_exit_codes`,
+  `cli_flow`, `cli_flow_drives`, `cli_restore`; and `many_files`. A check
+  that cannot be set up says "not tried", and fails on CI.
 - CI is `.github/workflows/c-core.yml`: on every push to any branch it
-  builds and tests on ubuntu-latest and windows-latest (MSVC), and uploads
-  `brodalf.exe` and `brodalf-cli.exe` as the `brodalf-windows` artifact.
+  builds and tests on ubuntu-latest and windows-latest (MSVC, as an
+  administrator). On Windows it first makes 1 GB FAT32 and exFAT virtual
+  disks and a share of the runner. It uploads `brodalf.exe` and
+  `brodalf-cli.exe` as the `brodalf-windows` artifact.
+- `.github/workflows/ui-screenshots.yml` (**Window app**) drives the
+  window app with `tools/ui-screenshots/` through its tabs, menus, dialogs
+  and jobs: in English, light, on every push; in all three languages,
+  light and dark, by hand. It fails on a crash, a hang, an error in the
+  app's log, or a step that does not get its window, dialog or job. The
+  screenshots are kept as an artifact, and a run started by hand also puts
+  them on the `ui-screenshots-images` branch.
 - `tests/bench_many.c` times a scan, a backup and a check of many small
   files and checks the counts; ctest runs it with a small number. On the
   Linux machine 0.7.0 was built on, 20,000 files: first scan about
@@ -1085,6 +1170,36 @@ in 0.4.0 came from the code review of the same day and this test:
    whose newest version was already backed up (`src/risk.c`).
 
 ### Open items: what still needs trying on a real Windows PC
+
+Everything new in 0.15.0 (built by CI, tested on Linux, and on the Windows
+runner as an administrator with real FAT32 and exFAT volumes and a share on
+the runner itself). On a real PC: a VeraCrypt container, or another file
+whose modified time a program puts back, caught by its change time, and
+whether FAT32, exFAT and real network shares keep a change time at all; a
+missing backup root found on another drive letter; Windows' own busy
+profile files skipped in a real user folder; a root on a slow or
+disconnected network share waiting for it; a drive whose disk really
+reports another serial number (a USB bridge or enclosure swapped) and a
+real USB bridge; a drive reformatted in Explorer and set up again as the
+same drive; a mapped network drive letter against its `\\server\share`
+path, and a disconnected letter that is slow to answer; how far Explorer
+opens the copies counted as having long paths; OneDrive online-only files
+where a restore writes, and a restore into a folder it may not write to;
+a backup root reached by a short 8.3 name (`PROGRA~1`); the passphrase
+prompts and menus in a real console, and `--plugged` with real drive
+letters; USB drives plugged in and pulled while BRODALF is open; the
+administrator prompt for the shadow-copy helper; the installer; and every
+new dialog in the three languages, with the keyboard, a screen reader,
+high DPI and a second monitor. The CI screenshots show two small faults:
+the list in the "back up to every drive" question indents its first line
+more than the rest, and the task dialogs stay light in dark mode.
+
+Since 0.15.0 the Windows runner does these items from the lists below for
+real: a FAT32 volume with a file of 4 GB or more, exFAT and FAT32 modified
+times, a network-share backup root (the runner's own share), the
+shadow-copy helper's access check and a shadow copy of a file in use, the
+disk details of the runner's disks, a `subst` drive, and a crash with an
+encrypted database open. The rest of each list still needs a real PC.
 
 Everything new in 0.14.0 (built by CI, tested on Linux
 through links, and on the CI runner through a `subst` drive and, where it
@@ -1210,6 +1325,14 @@ limits of the new work:
 - Copies of the database pile up on each drive, one per backup, since none
   is ever overwritten or deleted. The space kept free is for the newest;
   remove old `catalog-r*.brodalf` files by hand if a drive needs the room.
+- Two copies of one database used apart (say, one brought back from a
+  drive while the other went on) can reach the same revision. The later
+  one then goes beside the other with a tag in its name,
+  `catalog-r<revision>-<tag>.brodalf`, and BRODALF says the drive holds two
+  of them. 0.14.0 and older do not see a copy with a tag when recovering.
+- The list of newest copies beside a database copy is only written on
+  plain drives: on an encrypted drive it would show what the encryption
+  hides.
 - Reading each copy back straight after writing it is left out: Windows
   would usually serve the read from its cache, so it would not prove the
   drive holds the data. The read-back offer after a backup says to unplug
@@ -1229,16 +1352,32 @@ limits of the new work:
 - Case-insensitive matching keys (`nodes.rel_fold`) are only written by
   Windows builds, so files added to a catalog by a POSIX build have none.
 - The files are encrypted with one key that never changes. After a
-  passphrase change or a new recovery key, the older database copies on
-  the drives still open with the old one; BRODALF says so, but a new key
-  for later copies would make the database unreadable by 0.11.0 and
-  older, so it is not done.
+  passphrase change or a new recovery key, BRODALF writes a new copy of
+  the database to each drive that is plugged in (on the command line, to
+  each `--drive ROOT` given); a drive that was not plugged in keeps copies
+  that open with the old passphrase until its next backup, and BRODALF
+  says so. A new key for later copies would make the database unreadable
+  by 0.11.0 and older, so it is not done.
+- A change that keeps a file's size and modified time is caught by its
+  change time, which NTFS keeps. Where a file system or share keeps none,
+  such a change is only caught by a bit-rot scan.
+- The default skip list leaves out Windows' own busy profile files
+  (`NTUSER.DAT`, `UsrClass.dat`) and the caches and temporary files in
+  `AppData`. In a backup root scanned before 0.15.0 with the default list,
+  those files are marked deleted at the next scan; their copies stay.
 - A backup root is looked for by its files in a few places only: under
   your user folder (when it was under another user's), the same disk
   mounted for you on Linux, and on Windows the same folder on every other
   local drive letter (not network drives). A root moved anywhere else is
-  asked about. A folder found there counts when at least half of up to 64
-  of the root's files are in it at their path with their size.
+  asked about. A scan points the root at a folder found there without
+  asking only when it is the one such folder, at least 15 of 16 of up to
+  64 of the root's files are in it at their path with their size, and the
+  smallest few of them hold the contents the catalog has; otherwise the
+  window offers every folder found (at least half of the files checked)
+  and the root stays missing until the user picks. A root set to wait for
+  its disk is never pointed anywhere else. If the old folder comes back
+  holding the files, BRODALF says so, since only one of the two is backed
+  up.
 - A folder at a root's path counts as the root while more than a tenth of
   the files the catalog knows are in it as the catalog has them (or
   moved inside it), or more of them changed than went missing. Until the

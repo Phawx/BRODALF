@@ -12611,14 +12611,20 @@ static void fill_next(void)
             format_bytes(rs.bytes_at_risk, a, 64);
             if (root_count() == 0)
                 wadd(&t, T(L"Nothing to back up yet. Add a backup root first."));
-            else if (rs.files_at_risk == 0)
+            else if (rs.files_at_risk == 0 && !rs.roots_not_scanned)
                 wadd(&t, T(L"Every file has the %d copies in %d places you want. Nothing waits for a backup."), tg.copies, tg.places);
+            else if (rs.files_at_risk == 0)
+                wadd(&t, T(L"Every file scanned so far has the %d copies in %d places you want."), tg.copies, tg.places);
             else {
                 wadd(&t, T(L"%lld of your %lld files (%ls) do not have the %d copies in %d places you want yet"),
                      (long long)rs.files_at_risk, (long long)rs.files_total, a, tg.copies, tg.places);
                 if (rs.files_no_copy) wadd(&t, T(L", and %lld of them have no copy anywhere"), (long long)rs.files_no_copy);
                 wadd(&t, L".");
             }
+            if (rs.roots_not_scanned)
+                wadd(&t, TN(rs.roots_not_scanned, L" %lld backup root has not finished a scan yet, so not all its files are counted: scan to finish it.",
+                            L" %lld backup roots have not finished a scan yet, so not all their files are counted: scan to finish them."),
+                     (long long)rs.roots_not_scanned);
         }
         if (root_count() > 0) wadd(&t, T(L"\r\nEach Copy column is one full copy: \x2713 means the file is in it, \x2013 that it is not."));
     } else if (!o->secondary) {
@@ -14846,6 +14852,20 @@ static void header_refresh(void)
         g_verdict_tone = TONE_NEUTRAL;
         g_verdict_glyph = GLYPH_INFO;
         swprintf(g_verdict, 400, L"%ls", T(L"BRODALF could not tell how many copies your files have"));
+    } else if (f->risk.roots_not_scanned > 0 && f->risk.files_at_risk == 0) {
+        /* A root that never finished a scan has files the catalog does
+         * not know yet: "every file has its copies" would not be true. */
+        int64_t n = f->risk.roots_not_scanned;
+        g_verdict_tone = TONE_WARN;
+        g_verdict_glyph = GLYPH_BANG;
+        swprintf(g_verdict, 400, TN(n, L"%lld backup root is not scanned yet", L"%lld backup roots are not scanned yet"), (long long)n);
+        swprintf(g_verdict_sub, 600, L"%ls",
+                 TN(n, L"Its files are counted once a scan of it finishes. A scan you stop keeps what it read, and the next one goes on "
+                       L"from there.",
+                    L"Their files are counted once a scan of them finishes. A scan you stop keeps what it read, and the next one goes on "
+                    L"from there."));
+        swprintf(btn, 200, L"%ls", T(L"Scan now"));
+        g_next_kind = NEXT_SCAN;
     } else if (f->risk.files_total == 0) {
         g_verdict_tone = TONE_NEUTRAL;
         g_verdict_glyph = GLYPH_INFO;
@@ -14898,6 +14918,13 @@ static void header_refresh(void)
             size_t len = wcslen(g_verdict_sub);
             swprintf(g_verdict_sub + len, 600 - len, TN(none, L" %lld of them has no copy at all.", L" %lld of them have no copy at all."),
                      (long long)none);
+        }
+        if (f->risk.roots_not_scanned > 0) {
+            size_t len = wcslen(g_verdict_sub);
+            swprintf(g_verdict_sub + len, 600 - len,
+                     TN(f->risk.roots_not_scanned, L" %lld backup root is not scanned yet, so not all its files are counted.",
+                        L" %lld backup roots are not scanned yet, so not all their files are counted."),
+                     (long long)f->risk.roots_not_scanned);
         }
     }
     if (g_next_btn) {

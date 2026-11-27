@@ -2231,7 +2231,8 @@ static SRWLOCK g_report_lock = SRWLOCK_INIT;
 enum { CL_ROOTS_MISSING = 1, CL_CONFLICTS, CL_SAVED_SO_FAR, CL_COMPRESSED, CL_UNCOMPRESSED, CL_MORE_PATHS };
 static const struct { const char *pat; const wchar_t *say; int plural; } g_core_lines[] = {
     {"scanning %p", N_(L"Scanning %ls")},
-    {"contents changed but size and time did not (damage?): %p", N_(L"May be damaged: its contents changed, but its size and time did not: %ls")},
+    {"contents changed but size and time did not (damage?): %p",
+     N_(L"Changed although its size and time did not (damage, or a program that keeps its dates?): %ls")},
     {"something else is already at %p; left alone", N_(L"Left alone, because something else is already at %ls")},
     {"backup root %p is not reachable; skipped (nothing marked deleted)", N_(L"Backup root %ls cannot be reached, so it was skipped. Nothing in it was marked deleted.")},
     {"%n backup root(s) could not be found; nothing in them was marked deleted", NULL, CL_ROOTS_MISSING},
@@ -2259,8 +2260,19 @@ static const struct { const char *pat; const wchar_t *say; int plural; } g_core_
      "Another folder with the same name?",
      N_(L"Backup root %ls is there, but %ls of the %ls files the database knows in it are not, so it was left as it was. Nothing was "
         L"marked deleted. Is it another folder with the same name?")},
-    {"backup root %p is now at %p: found it there by its files (%n of %n checked)",
-     N_(L"Backup root %ls is now at %ls: BRODALF found its files there (%ls of the %ls it checked).")},
+    {"backup root %p is now at %p: found it there by its files (%n of %n checked, and the contents of the smallest ones)",
+     N_(L"Backup root %ls is now at %ls: BRODALF found its files there (%ls of the %ls it checked, and the contents of the smallest "
+        L"ones).")},
+    {"backup root %p is not where it was. %p holds %n of the %n of its files checked, which is not enough to point the root there "
+     "without asking: say where it is now",
+     N_(L"Backup root %ls is not where it was. %ls holds %ls of the %ls files BRODALF checked, which is not enough to point the "
+        L"backup root there without asking: say where it is now.")},
+    {"the folder backup root %p was in before, %p, is there again and holds its files: only %p is backed up. If %p is the real one, "
+     "point the root back there",
+     N_(L"The folder backup root %ls was in before, %ls, is there again and holds its files, but only %ls is backed up. If %ls is the "
+        L"real one, point the backup root back there.")},
+    {"scan of %p stopped: the %n files it read are kept; nothing was marked deleted",
+     N_(L"The scan of %ls was stopped. The %ls files it read are kept, and nothing was marked deleted.")},
     {"backup root %p is not where it was, and %n folders hold its files, so none was picked: say where it is now. One is %p "
      "(%n of %n checked)",
      N_(L"Backup root %ls is not where it was, and %ls folders hold its files, so BRODALF picked none: say where it is now. One "
@@ -2360,6 +2372,11 @@ static const struct { const char *pat; const wchar_t *say; } g_core_errs[] = {
     {"cannot create the folder for %p", N_(L"could not create the folder for %ls")},
     {"cannot write %p", N_(L"could not write %ls")},
     {"cannot move %p to %p", N_(L"could not move %ls to %ls")},
+    {"the name \"%s\" in this folder is not valid Unicode, so it cannot be read",
+     N_(L"the name \"%ls\" in this folder is not valid Unicode, so it cannot be read. Rename it to back it up")},
+    {"these names in this folder are not valid Unicode, so they cannot be read: %s (%n in all)",
+     N_(L"these names in this folder are not valid Unicode, so they cannot be read: %ls (%ls in all). Rename them to back them up")},
+    {"the folder could not be read to the end (error %n)", N_(L"the folder could not be read to the end (error %ls)")},
 };
 
 /* The lines that say how many, in the right form for the number. */

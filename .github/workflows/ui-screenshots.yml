@@ -1,0 +1,112 @@
+name: Window app
+
+# Runs the window app on a Windows machine and goes through its tabs, menus
+# and dialogs the way a person would (tools/ui-screenshots/Shots.cs), taking
+# a screenshot of each. It fails when the app crashes or ends by itself,
+# stops responding, writes an error to its log, does not close when asked,
+# or when a step does not get the window, dialog, menu or job it expects
+# (failures.txt beside the screenshots says which).
+#
+# On every push: English, light, on one machine, apart from the C core
+# workflow so that one stays quick. By hand (Actions > Window app > Run
+# workflow): all six, English, German and Spanish, light and dark, one
+# machine each. It builds the app the usual way and releases nothing.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch replaces a run still going; a run
+# started by hand is never cut short.
+concurrency:
+  group: window-app-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  screenshots:
+    strategy:
+      fail-fast: false
+      matrix:
+        combo: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["en-light","en-dark","de-light","de-dark","es-light","es-dark"]') || fromJSON('["en-light"]') }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBRODALF_BUILD_TESTS=OFF "-DBRODALF_BUILD_ID=${{ github.sha }}"
+          cmake --build build --config Release --parallel --target brodalf brodalf-cli
+      - name: Build the screenshot tool
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /platform:x64 /r:System.Drawing.dll /out:shots.exe tools\ui-screenshots\Shots.cs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools\ui-screenshots\ids.py gui\main.c gui\resource.h | Out-File -Encoding ascii ids.txt
+      # A crash must end the app, not wait on Windows' "stopped working" window.
+      - name: No crash windows
+        shell: pwsh
+        run: |
+          New-Item -Force -Path "HKCU:\Software\Microsoft\Windows\Windows Error Reporting" | Out-Null
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Windows Error Reporting" -Name DontShowUI -Value 1 -Type DWord
+      - name: Use a 1920 by 1080 screen
+        shell: pwsh
+        run: .\shots.exe --resolution 1920 1080
+      - name: Go through the window app
+        shell: pwsh
+        run: >-
+          tools\ui-screenshots\run-all.ps1
+          -Exe "$PWD\build\Release\brodalf.exe" -Cli "$PWD\build\Release\brodalf-cli.exe"
+          -Shots "$PWD\shots.exe" -Ids "$PWD\ids.txt" -Out "$PWD\screenshots" -Combos ${{ matrix.combo }}
+      - name: Keep the app's log, and say what went wrong
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force screenshots\${{ matrix.combo }} | Out-Null
+          $log = "$env:LOCALAPPDATA\BRODALF\brodalf.log"
+          if (Test-Path $log) { Copy-Item $log screenshots\${{ matrix.combo }}\brodalf.log }
+          $f = "screenshots\${{ matrix.combo }}\failures.txt"
+          if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) {
+            "### ${{ matrix.combo }}: what went wrong" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            Get-Content $f | ForEach-Object { "- $_" } | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
+      - name: Upload the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots-${{ matrix.combo }}
+          path: screenshots
+          retention-days: 14
+
+  # The same screenshots on a branch of their own, ui-screenshots-images,
+  # replaced at each run, for tools that can fetch a branch but not an
+  # artifact. Only for a run started by hand and for pushes to the branches
+  # named here; it pushes to that one branch only, never to another.
+  images-branch:
+    needs: screenshots
+    if: >-
+      always() && (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/flow-tests' || github.ref == 'refs/heads/flow-review-fixes')))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ui-screenshots-images
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ui-screenshots-*
+          merge-multiple: true
+          path: screenshots
+      - name: Push them to ui-screenshots-images
+        run: |
+          cd screenshots
+          git init -q -b ui-screenshots-images
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Screenshots from run ${{ github.run_id }} of ${{ github.sha }} (${{ github.ref_name }})"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:refs/heads/ui-screenshots-images

@@ -12,6 +12,7 @@
 #include "brodalf.h"
 #include "internal.h"
 #include "test_tree.h"
+#include "test_spawn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -286,9 +287,26 @@ static void test_reopen(void)
     CHECK(files_in(tmp) == 0);
 }
 
-#ifndef _WIN32
+/* What the crashing BRODALF does: opens the encrypted catalog, scans,
+ * saves, changes one more thing and ends there, the catalog still open.
+ * 0 when all went as expected. */
+static int crash_child(void)
+{
+    bd_catalog *c;
+    if (bd_catalog_open_with(at("c.brodalf"), PASS, &c) != BD_OK) return 2;
+    bd_scan_stats ss;
+    if (bd_scan(c, &ss, quiet, NULL) != BD_OK) return 3;
+    grow(c, "crash");
+    if (bd_catalog_save(c) != BD_OK) return 4;
+    if (bd_setting_set(c, "test.after-save", "lost") != 0) return 5;
+    return files_in(tmp) == 0 ? 0 : 6;
+}
+
 /* A BRODALF that ends without closing its encrypted catalog (a crash, a
- * power cut) leaves nothing readable: there was nothing on the disk. */
+ * power cut) leaves nothing readable: there was nothing on the disk. On
+ * Windows a second copy of this program is ended by TerminateProcess, as
+ * Windows ends a crashed program; elsewhere a forked child ends with
+ * _exit. */
 static void test_crash(void)
 {
     begin("crash");
@@ -303,23 +321,31 @@ static void test_crash(void)
     bd_catalog_close(cat);
 
     fflush(NULL);
+#ifdef _WIN32
+    char *args = bd_sprintf("--crash-child \"%s\"", top);
+    HANDLE child = args ? spawn_self(args) : NULL;
+    free(args);
+    CHECK(child != NULL);
+    int code = child ? wait_ready(child, at("crash.ready"), 120000) : -1000;
+    end_child(child); /* ends here, the catalog still open */
+    if (code != 0) fprintf(stderr, "  the crashing copy said %d\n", code);
+    CHECK(code == 0);
+    bd_remove(at("crash.ready"));
+    CHECK_NOTHING_READABLE();
+    /* Windows let go of the lock when it ended the program, and deleted
+     * the lock file: the catalog opens with nothing removed by hand. */
+    bd_stat_t lock_st;
+    CHECK(bd_stat(at("c.brodalf.lock"), &lock_st) != 0);
+#else
     pid_t child = fork();
-    if (child == 0) {
-        bd_catalog *c;
-        if (bd_catalog_open_with(at("c.brodalf"), PASS, &c) != BD_OK) _exit(2);
-        bd_scan_stats ss;
-        if (bd_scan(c, &ss, quiet, NULL) != BD_OK) _exit(3);
-        grow(c, "crash");
-        if (bd_catalog_save(c) != BD_OK) _exit(4);
-        if (bd_setting_set(c, "test.after-save", "lost") != 0) _exit(5);
-        _exit(files_in(tmp) == 0 ? 0 : 6); /* ends here, the catalog still open */
-    }
+    if (child == 0) _exit(crash_child()); /* ends here, the catalog still open */
     int status = 0;
     waitpid(child, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     CHECK_NOTHING_READABLE();
-    /* What was saved is there; what came after the save is not. */
     remove(at("c.brodalf.lock")); /* left by the crash, as on any system but Windows */
+#endif
+    /* What was saved is there; what came after the save is not. */
     REQUIRE_OK(bd_catalog_open_with(at("c.brodalf"), PASS, &cat), NULL);
     char v[32];
     CHECK(count_rows(cat, SECRET_ROWS) == 1);
@@ -327,7 +353,6 @@ static void test_crash(void)
     CHECK(!bd_setting_get(cat, "test.after-save", v, sizeof(v)));
     bd_catalog_close(cat);
 }
-#endif
 
 /* Encrypted files written the way 0.10.1 wrote them (from a working copy
  * in WAL mode, VACUUM INTO) open into memory, and 0.10.1's way of opening
@@ -443,8 +468,16 @@ static void test_threads(void)
     CHECK(files_in(tmp) == 0);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    /* The crashing copy of test_crash, on Windows: told the folder. */
+    int crash = 0;
+#ifdef _WIN32
+    crash = argc == 3 && strcmp(argv[1], "--crash-child") == 0;
+#else
+    (void)argc;
+    (void)argv;
+#endif
     /* SQLite's in-memory databases stop at 256 KiB here, unless the
      * catalog lifts the limit, as it must. */
     sqlite3_config(SQLITE_CONFIG_MEMDB_MAXSIZE, (sqlite3_int64)256 * 1024);
@@ -457,10 +490,13 @@ int main(void)
     bd_temp_dir(sys_tmp, sizeof(sys_tmp));
     bd_uuid_v4(id);
     snprintf(top, sizeof(top), "%s/brodalf-memory-%.8s", sys_tmp, id);
+#ifdef _WIN32
+    if (crash) snprintf(top, sizeof(top), "%s", argv[2]);
+#endif
     for (char *p = top; *p; p++) if (*p == '\\') *p = '/';
     snprintf(tmp, sizeof(tmp), "%s/tmp", top);
     bd_mkdirs(tmp);
-    printf("working in %s\n", top);
+    if (!crash) printf("working in %s\n", top);
     /* The catalogs' temp folder: its own, to see everything put there. */
 #ifdef _WIN32
     char native[1100];
@@ -473,12 +509,18 @@ int main(void)
 #endif
     char check[1100];
     CHECK(bd_temp_dir(check, sizeof(check)) == 0);
+#ifdef _WIN32
+    if (crash) {
+        snprintf(base, sizeof(base), "%s/crash", top);
+        child_ready(at("crash.ready"), failures ? 7 : crash_child());
+        Sleep(120000);
+        return 8; /* never ended: the parent stopped waiting */
+    }
+#endif
 
     test_switch_on();
     test_reopen();
-#ifndef _WIN32
     test_crash();
-#endif
     test_old_files();
     test_threads();
 

@@ -850,6 +850,17 @@ static void bad_names_report(bad_names *b, const char *pattern, bd_walk_err_cb e
     memset(b, 0, sizeof(*b));
 }
 
+/* Tests only (platform.h): the folder at bd_test_walk_fail stops being read
+ * after its first entry, as on a failing disk. */
+const char *bd_test_walk_fail = NULL;
+
+static int walk_test_fails(const char *rel, DWORD *werr)
+{
+    if (!bd_test_walk_fail || strcmp(rel, bd_test_walk_fail) != 0) return 0;
+    *werr = ERROR_IO_DEVICE;
+    return 1;
+}
+
 int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
 {
     char *base = strdup(root);
@@ -884,15 +895,13 @@ int bd_walk(const char *root, bd_walk_cb cb, bd_walk_err_cb err_cb, void *ctx)
         /* The error the listing stopped with, read before any other call
          * can change it: the folder was not read to the end. */
         DWORD werr = ERROR_SUCCESS;
-        int failed = 0;
+        int failed = 0, seen = 0;
         bad_names bad;
         memset(&bad, 0, sizeof(bad));
         dir_entry e;
         while (!stop) {
-            /* Test hook spot (Windows): a test that makes a folder listing
-             * fail part way, as bd_test_walk_fail does on POSIX
-             * (platform_posix.c), sets failed and werr here instead of
-             * calling dir_next. */
+            /* A test can make the listing fail after its first entry. */
+            if (seen++ && walk_test_fails(rel, &werr)) { failed = 1; break; }
             int got = dir_next(&r, &e, &werr);
             if (got < 0) { failed = 1; break; }
             if (got == 0) break;

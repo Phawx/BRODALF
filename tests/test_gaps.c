@@ -1171,6 +1171,20 @@ static void test_full_paths(void)
 
 /* ---- Any folders: one folder reached two ways --------------------------- */
 
+/* A check that could not be set up here: skipped on a person's PC, saying
+ * so; a failure on CI (the CI variable set, as GitHub sets it), where every
+ * check must run. */
+static void not_tried(const char *what, const char *why)
+{
+    const char *ci = getenv("CI");
+    if (ci && *ci) {
+        fprintf(stderr, "%s: not tried on CI, %s\n", what, why);
+        failures++;
+    } else {
+        printf("%s: not tried, %s\n", what, why);
+    }
+}
+
 #ifdef _WIN32
 /* A drive letter that is not in use, from Z: down; 0 if none. */
 static wchar_t free_letter(void)
@@ -1208,7 +1222,7 @@ static void test_same_folder_two_ways(void)
     free(target);
 #endif
     if (!other) {
-        printf("one folder reached two ways: not tried, no second way could be made\n");
+        not_tried("one folder reached two ways", "no second way could be made");
         return;
     }
     char *holder = bd_sprintf("%s/real", other), *photos = bd_sprintf("%s/real/Photos", other),
@@ -1255,7 +1269,9 @@ static void test_same_folder_two_ways(void)
     nr.lpRemoteName = share;
     DWORD rc = net[0] ? WNetAddConnection2W(&nr, NULL, NULL, 0) : ERROR_NO_MORE_ITEMS;
     if (rc != NO_ERROR) {
-        printf("mapped network drive: not tried, mapping %ls failed (%lu)\n", share, (unsigned long)rc);
+        char why[160];
+        snprintf(why, sizeof(why), "mapping %ls failed (%lu)", share, (unsigned long)rc);
+        not_tried("mapped network drive", why);
     } else {
         make_files("ways/net/Docs", 2, "net");
         char *unc = bd_sprintf("\\\\localhost\\%c$%s", base[0], at("ways/net/Docs") + 2);

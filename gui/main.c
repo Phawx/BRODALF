@@ -1714,6 +1714,7 @@ typedef struct job {
     int64_t found_deleted; /* scan: files gone from their folder */
     int64_t roots_missing; /* scan: backup roots not found */
     int64_t links;         /* scan: links not followed, leading somewhere no backup root holds */
+    int64_t roots_back;    /* scan: roots found somewhere else whose old folder is back */
     int problems;
     int saving;         /* refresh: a change made in the window is saved */
     int skip_figures;   /* another job is waiting: it reads the figures after it */
@@ -2916,6 +2917,10 @@ static DWORD WINAPI worker(LPVOID arg)
             say(j, TN(st.roots_found, L" %lld backup root was not where it was and was found by its files.",
                       L" %lld backup roots were not where they were and were found by their files."),
                 (long long)st.roots_found);
+        if (st.roots_back)
+            say(j, TN(st.roots_back, L" %lld backup root's old folder is back: say which one to back up.",
+                      L" %lld backup roots' old folders are back: say which ones to back up."),
+                (long long)st.roots_back);
         if (st.roots_waiting)
             say(j, TN(st.roots_waiting, L" %lld backup root waits for its disk to be plugged in.",
                       L" %lld backup roots wait for their disks to be plugged in."),
@@ -2934,6 +2939,7 @@ static DWORD WINAPI worker(LPVOID arg)
         j->found_deleted = st.files_deleted;
         j->roots_missing = st.roots_missing - st.roots_waiting;
         j->links = st.links_not_followed;
+        j->roots_back = st.roots_back;
         break;
     }
     case JOB_BACKUP: {
@@ -9306,18 +9312,36 @@ static int folder_is_empty(const wchar_t *dir)
     return empty;
 }
 
-/* The folder that holds a backup root's files now, found by them
- * (bd_source_find): out gets it, found and checked how many of the files
- * looked at are in it. 0 if no folder holds them. */
-static int guess_new_place(int64_t source_id, wchar_t *out, size_t cap, int64_t *found, int64_t *checked)
+/* The folders that hold a backup root's files now, found by them
+ * (bd_source_find_all), the one holding the most first: up to
+ * PLACES_SHOWN of them, with how many of the files looked at are in each,
+ * and how many there are in all. */
+#define PLACES_SHOWN 4
+typedef struct {
+    wchar_t path[PLACES_SHOWN][MAX_PATH * 4];
+    int64_t found[PLACES_SHOWN], checked[PLACES_SHOWN];
+    int n, total;
+} new_places;
+
+static int new_place_cb(void *ctx, const bd_place_info *p)
 {
-    char *p = bd_source_find(g_cat, source_id, found, checked, NULL);
-    wchar_t *w = p ? widen(p) : NULL;
-    free(p);
-    int ok = w && wcslen(w) < cap;
-    if (ok) wcscpy(out, w);
+    new_places *l = ctx;
+    wchar_t *w = widen(p->path);
+    if (w && wcslen(w) < MAX_PATH * 4 && l->n < PLACES_SHOWN) {
+        wcscpy(l->path[l->n], w);
+        l->found[l->n] = p->found;
+        l->checked[l->n] = p->checked;
+        l->n++;
+    }
     free(w);
-    return ok;
+    l->total++;
+    return 0;
+}
+
+static void guess_new_places(int64_t source_id, new_places *l)
+{
+    memset(l, 0, sizeof(*l));
+    bd_source_find_all(g_cat, source_id, new_place_cb, l);
 }
 
 typedef struct { int64_t id; wchar_t *name, *path; int active, missing, waiting; int64_t gone, total; } source_place;
@@ -9354,7 +9378,8 @@ static void source_places_free(source_places *l)
     memset(l, 0, sizeof(*l));
 }
 
-enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE, PLACE_GONE, PLACE_WAIT };
+enum { PLACE_GUESS = 300, PLACE_PICK, PLACE_LATER, PLACE_RESTORE, PLACE_GONE, PLACE_WAIT, PLACE_FOUND };
+/* PLACE_FOUND + i: the i-th folder that holds the files (new_places). */
 
 /* A missing backup root's disk is not plugged in: no disk at all has its
  * drive letter now. disk gets the letter, like "E:". */
@@ -9373,9 +9398,9 @@ static int disk_unplugged(const wchar_t *path, wchar_t *disk, size_t cap)
  * waits for its disk. Nothing is scanned here; the caller saves and scans. */
 static int relocate_source(const source_place *sp)
 {
-    wchar_t guess[MAX_PATH * 4], guess_btn[MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 512], disk[8];
-    int64_t guess_found = 0, guess_checked = 0;
-    int have_guess = guess_new_place(sp->id, guess, MAX_PATH * 4, &guess_found, &guess_checked);
+    wchar_t guess_btn[PLACES_SHOWN][MAX_PATH * 4 + 256], head[512], body[MAX_PATH * 4 + 800], disk[8];
+    new_places places;
+    guess_new_places(sp->id, &places);
     int here = is_folder(sp->path);
     int emptied = here && sp->missing && sp->gone > 0;
     int unplugged = !here && disk_unplugged(sp->path, disk, COUNT_OF(disk));
@@ -9384,7 +9409,7 @@ static int relocate_source(const source_place *sp)
     else if (here) swprintf(head, 512, T(L"Where is \"%ls\" now?"), sp->name);
     else swprintf(head, 512, T(L"\"%ls\" cannot be found"), sp->name);
     if (emptied)
-        swprintf(body, MAX_PATH * 4 + 512, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not, so it "
+        swprintf(body, MAX_PATH * 4 + 800, TN(sp->gone, L"%ls is there, but %lld of the %lld files BRODALF knows in it is not, so it "
                                                        L"may be another folder with the same name. Nothing is marked deleted. If the "
                                                        L"files are somewhere else, choose where. To get them back, restore them from "
                                                        L"your backup drives.",
@@ -9394,29 +9419,41 @@ static int relocate_source(const source_place *sp)
                                               L"your backup drives."),
                  sp->path, (long long)sp->gone, (long long)(sp->total > sp->gone ? sp->total : sp->gone));
     else if (unplugged)
-        swprintf(body, MAX_PATH * 4 + 512, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
+        swprintf(body, MAX_PATH * 4 + 800, T(L"%ls is on %ls, and no disk is plugged in as %ls now. Plug that disk in and scan again. "
                                             L"Nothing in it is marked deleted."), sp->path, disk, disk);
     else if (here)
-        swprintf(body, MAX_PATH * 4 + 512, T(L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
+        swprintf(body, MAX_PATH * 4 + 800, T(L"BRODALF backs up %ls. If you moved this backup root, choose where it is now. Its files "
                                             L"keep their copies and history."), sp->path);
     else
-        swprintf(body, MAX_PATH * 4 + 512, T(L"%ls was not there when BRODALF scanned. Nothing in it is marked deleted. If it is "
+        swprintf(body, MAX_PATH * 4 + 800, T(L"%ls was not there when BRODALF scanned. Nothing in it is marked deleted. If it is "
                                             L"somewhere else, for example under another user name or on another drive letter, choose "
                                             L"where it is now: its files keep their copies and history."), sp->path);
+    if (places.n > 1 || places.total > places.n) {
+        size_t len = wcslen(body);
+        swprintf(body + len, COUNT_OF(body) - len,
+                 TN(places.total, L"\n\n%d folder holds files of this backup root. Pick the one that is it: only one is backed up.",
+                    L"\n\n%d folders hold files of this backup root. Pick the one that is it: only one is backed up."),
+                 places.total);
+        if (places.total > places.n) {
+            len = wcslen(body);
+            swprintf(body + len, COUNT_OF(body) - len, TN(places.total - places.n, L" %d more is not listed here.", L" %d more are not listed here."),
+                     places.total - places.n);
+        }
+    }
     for (;;) {
-        TASKDIALOG_BUTTON b[6];
+        TASKDIALOG_BUTTON b[6 + PLACES_SHOWN];
         int n = 0;
         if (unplugged) {
             b[n].nButtonID = PLACE_WAIT;
             b[n++].pszButtonText = T(L"Skip it until the disk is plugged in\nBRODALF stops asking about this backup root. Once the disk "
                                      L"is back, the next scan backs it up as usual.");
         }
-        if (have_guess) {
-            swprintf(guess_btn, MAX_PATH * 4 + 256, TN(guess_checked, L"Use %ls\nBRODALF found %lld of the %lld file it checked there",
-                                                       L"Use %ls\nBRODALF found %lld of the %lld files it checked there"),
-                     guess, (long long)guess_found, (long long)guess_checked);
-            b[n].nButtonID = PLACE_GUESS;
-            b[n++].pszButtonText = guess_btn;
+        for (int k = 0; k < places.n; k++) {
+            swprintf(guess_btn[k], MAX_PATH * 4 + 256, TN(places.checked[k], L"Use %ls\nBRODALF found %lld of the %lld file it checked there",
+                                                          L"Use %ls\nBRODALF found %lld of the %lld files it checked there"),
+                     places.path[k], (long long)places.found[k], (long long)places.checked[k]);
+            b[n].nButtonID = PLACE_FOUND + k;
+            b[n++].pszButtonText = guess_btn[k];
         }
         b[n].nButtonID = PLACE_PICK;
         b[n++].pszButtonText = here && !emptied ? T(L"Choose where it is now...") : T(L"It is somewhere else: choose where...");
@@ -9468,7 +9505,7 @@ static int relocate_source(const source_place *sp)
             if (bd_source_accept_gone(g_cat, sp->id) != BD_OK) return 0;
             return 3;
         }
-        if (pressed == PLACE_GUESS) chosen = _wcsdup(guess);
+        if (pressed >= PLACE_FOUND && pressed < PLACE_FOUND + places.n) chosen = _wcsdup(places.path[pressed - PLACE_FOUND]);
         else if (pressed == PLACE_PICK) {
             char *f = pick_folder(g_main, T(L"Choose where this backup root is now."));
             if (!f) continue;
@@ -9537,6 +9574,67 @@ static void ask_missing_roots(void)
     } else if (saved) {
         places_changed();
     }
+}
+
+/* A backup root a scan found somewhere else by its files, whose old
+ * folder is back holding them (bd_source_old_place): only one of the two
+ * is backed up, so the user says which. */
+static void ask_old_places(void)
+{
+    source_places l;
+    memset(&l, 0, sizeof(l));
+    bd_list_sources(g_cat, source_place_cb, &l);
+    int moved = 0, kept = 0;
+    for (int i = 0; i < l.n; i++) {
+        const source_place *sp = &l.items[i];
+        int back = 0;
+        char *old = sp->active ? bd_source_old_place(g_cat, sp->id, &back) : NULL;
+        wchar_t *wold = old && back ? widen(old) : NULL;
+        if (!wold) { free(old); continue; }
+        wchar_t head[600], body[MAX_PATH * 8 + 800], b_old[MAX_PATH * 4 + 200], b_here[MAX_PATH * 4 + 200];
+        swprintf(head, COUNT_OF(head), T(L"Which folder is \"%ls\"?"), sp->name);
+        swprintf(body, COUNT_OF(body), T(L"When %ls was not there, BRODALF found the files of this backup root in %ls and backs that "
+                                         L"folder up now. %ls is back and holds the files too. Only one of the two is backed up: "
+                                         L"changes made in the other are not."),
+                 wold, sp->path, wold);
+        swprintf(b_old, COUNT_OF(b_old), T(L"Back up %ls\nThat is the real folder: the backup root goes back there."), wold);
+        swprintf(b_here, COUNT_OF(b_here), T(L"Keep backing up %ls\nBRODALF stops asking about the old folder."), sp->path);
+        TASKDIALOG_BUTTON b[3] = {{PLACE_FOUND, b_old}, {PLACE_PICK, b_here}, {PLACE_LATER, T(L"Not now\nThe next scan asks again.")}};
+        TASKDIALOGCONFIG tc;
+        memset(&tc, 0, sizeof(tc));
+        tc.cbSize = sizeof(tc);
+        tc.hwndParent = g_main;
+        tc.hInstance = g_inst;
+        tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+        tc.pszWindowTitle = APP_NAME;
+        tc.pszMainIcon = TD_WARNING_ICON;
+        tc.pszMainInstruction = head;
+        tc.pszContent = body;
+        tc.cButtons = 3;
+        tc.pButtons = b;
+        int pressed = IDCANCEL;
+        if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL))) {
+            if (pressed == PLACE_FOUND) {
+                if (bd_source_relocate(g_cat, sp->id, old) == BD_OK) {
+                    wchar_t line[MAX_PATH * 4 + 128];
+                    swprintf(line, COUNT_OF(line), T(L"Backup root \"%ls\" is now at %ls"), sp->name, wold);
+                    log_append(line);
+                    moved = 1;
+                } else {
+                    wchar_t *e = widen(bd_catalog_error(g_cat));
+                    MessageBoxW(g_main, e ? e : T(L"That folder cannot be used."), APP_NAME, MB_ICONWARNING);
+                    free(e);
+                }
+            } else if (pressed == PLACE_PICK) {
+                if (bd_source_keep_place(g_cat, sp->id) == BD_OK) kept = 1;
+            }
+        }
+        free(wold);
+        free(old);
+    }
+    source_places_free(&l);
+    if (moved || kept) places_changed();
+    if (moved) enqueue(new_job(JOB_SCAN));
 }
 
 static void relocate_one(const source_place *sp)
@@ -11463,6 +11561,7 @@ static void ask_links(void)
 static void after_scan(job *j)
 {
     if (j->roots_missing) ask_missing_roots();
+    if (j->roots_back) ask_old_places();
     if (j->links) ask_links();
     if (j->damaged) {
         wchar_t q[600];

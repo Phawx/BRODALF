@@ -732,6 +732,13 @@ typedef struct {
     int active;              /* 0: no longer backed up (bd_source_set_active) */
     int missing;             /* the last scan could not find it: ask where it is now, or offer to restore it */
     int64_t last_scan_ms;
+    /* Where its files' copies are: the drives and extra places holding a
+     * good copy of the current version of any live file in it, names
+     * sorted, ", " between them ("" if none; drives marked lost or broken
+     * are left out), and those of them plugged in now. */
+    const char *copies_on;
+    const char *copies_on_plugged;
+    int64_t files_backed_up; /* live files with a good copy of the current version on a drive that counts */
 } bd_source_info;
 
 typedef struct {
@@ -747,6 +754,17 @@ typedef struct {
     int64_t files_total;     /* folders only: live files inside, at any depth */
     int64_t files_available; /* folders only */
     const char *offline_media_label; /* OFFLINE files: a drive to plug in */
+    int64_t mtime_ns;        /* files: the current version's time; folders: as last scanned; 0 if not known */
+    /* Where its copies are, so a database opened on a PC without the files
+     * still says where each one is: the drives and extra places holding a
+     * good copy of the current version (folders: of any file inside, or of
+     * any file at all in a deleted folder), names sorted, ", " between
+     * them, "" if none. Drives marked lost or broken are left out. */
+    const char *copies_on;
+    const char *copies_on_plugged; /* those of them plugged in now, the same way */
+    const char *older_on;    /* files with no good copy of the current version: where an older one is; "" if none */
+    int64_t files_backed_up; /* folders: files inside with a good copy of the current version on a drive that counts */
+    int64_t subfolders;      /* folders: how many folders are directly in it, deleted ones too */
 } bd_node_info;
 
 typedef struct {

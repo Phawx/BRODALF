@@ -91,8 +91,10 @@ and says which drives to plug in.
 ### The main window
 
 Along the top are the buttons **Add backup root**, **Scan now**, **Back
-up**, **Check drive**, **Restore**, **Drives**, **Settings** and **At
-risk**. Beside them, one line says, for each drive that is plugged in, what
+up**, **Check drive**, **Restore**, **Drives**, **Settings** and **Files
+at risk**. The **Back up** menu says, for each plugged-in drive, how many
+files a backup to it would copy, and the **Check drive** menu how many
+copies a check reads and when the drive was last checked. Beside them, one line says, for each drive that is plugged in, what
 a backup to it would copy right now, or that it is up to date, and how
 your extra places stand. Under them, one bar per full copy of your backup
 roots: copy 1 is done when every file has at least one good copy, copy 2
@@ -101,8 +103,9 @@ when every file has two, and so on up to the number of copies you want.
 The rest of the window is six tabs. BRODALF opens on the tab you used
 last, and **View** lists them too.
 
-- **Primary Database**: the tree of everything in your backup roots, the
-  search box and the details of what is selected (below).
+- **Primary Database**: your backup roots laid out as in Windows Explorer:
+  the folders, the files in the folder you pick, and the details of what
+  is selected, with a search box (below).
 - **Next backup**: what the next backup copies, as a table.
 - **Local backups**: every drive BRODALF knows, plugged in or not.
 - **Starred files and extra places**: see
@@ -113,15 +116,35 @@ last, and **View** lists them too.
 Each tab has its own buttons for everything it shows, so nothing needs a
 menu.
 
-**Primary Database.** The tree shows everything in your backup roots.
-Greyed files have no copy on a drive that is plugged in (the label says
-which drive holds them, if any). Amber files have changed, and only an
-older version is reachable. Red means a copy is missing or damaged, and
-struck-through means deleted from your folder. Starred files and folders
-show **★ starred** after their name, and ones you chose to encrypt show
-**[encrypted]**. Folders show how many files inside are available. Select a
-file to see every version and where each copy is, even when none of those
-drives are plugged in, so you know which box to go and get. The buttons
+**Primary Database.** It looks like Windows Explorer: the folders of your
+backup roots on the left, the files and folders in the one you pick in the
+middle, with a line above them saying where you are, and the details of
+what is selected on the right (under the list in a narrow window).
+Double-click a folder to open it; Backspace goes up. The list has the
+columns **Name**, **Status**, **Copies on**, **Date modified**, **Type** and
+**Size**; click a heading to sort by it. **Copies on** names the drives that
+hold a copy of the newest version, in grey for those not plugged in.
+
+A file or folder that is not on this PC (its backup root is not here, or it
+was deleted from its folder) and that no plugged-in drive holds is drawn
+faded, the way Explorer shows a file kept offline, and its name is grey;
+deleted ones are also struck through. A backup root that is not on this PC
+has a red cross on its icon. So a database opened on a PC with none of its
+files and no drive plugged in still shows every file and folder, faded,
+with the drives each one is on: plug one in and what it holds comes back
+to full colour. The status is an amber **Changed since backup** or
+**Not backed up**, a red **Copy damaged**, or nothing when a good copy is
+plugged in. Starred files and folders show a ★ after their name, and ones
+you chose to encrypt a lock. Point at a name to read all of this in words.
+**Help > What the file list shows** draws a sample of each, with what it
+means beside it. Select a file to see every version and where each copy is,
+even when none of those drives are plugged in, so you know which box to go
+and get; its details also say whether it is on this PC and, when it is
+not, which drive to plug in to get it back. Its details read
+like a form: the name, the folder it is in, its state, size, version and
+checksum, then one row for each drive with a copy, saying whether the copy
+is good and where that drive is (plugged in, or last seen and where it is
+kept). Right-click a row, or press Ctrl+C, to copy its value. The buttons
 add a backup root, star or encrypt what is selected, run the bit-rot scan,
 change where a root is, change what to leave out, list the deleted,
 damaged, in-use and largest files, and export the list as CSV.
@@ -137,21 +160,23 @@ whether it is starred or encrypted. The buttons back up to that drive or
 to every plugged-in drive, list the files changed on it, and say which
 drive to plug in.
 
-**Local backups.** One row per drive: whether it is plugged in, its size
-and free space, how much of it is BRODALF's copies and how much other
-files, the space kept free, its health (SMART, temperature, hours powered
-on and SSD wear, where the disk passes them through), its oldest
-read-back, its copies and its problems. The buttons set up a disk, back up
-to the selected drive or to every plugged-in one, check it, open it in
-Explorer, list what changed since its last backup, change its name and
-where it is kept, mark it lost or broken, show where every drive stands
-and say which drive to plug in. **Back up to several drives at once** is
+**Local backups.** One row per drive, grouped by whether it is plugged in,
+not plugged in, or marked lost or broken: its name, whether it is plugged
+in, its copies, its space, its health (SMART, temperature, hours powered
+on and SSD wear, where the drive passes them through) and when it was last
+checked. The buttons set up a drive, back up to the selected drive or to
+every plugged-in one, check it, open it in Explorer, list what changed
+since its last backup, change its name and where it is kept, mark it lost
+or broken, show the status of every drive and the files at risk. **Back up to several drives at once** is
 here too (see [Backing up](#backing-up)).
 
 Below the tabs, BRODALF shows the **job** that is running (scan, backup,
 check or restore), with how many files and how much data, the data rate
 and a **Stop** button, then the **file** being copied or read right now,
-then the log.
+then the log. In a low window the log starts closed (**Show the log**
+opens it) and the top area gets smaller: each drive card is one line.
+Drag the strip between the tabs and the job to give the log more or less
+room; BRODALF remembers both.
 
 The menus are **File** (new, open, recover the database, the recovery
 sheet, CSV export, exit), **View** (the six tabs, the status of every
@@ -159,10 +184,10 @@ drive, files at risk, the largest, deleted, damaged and in-use files, the
 files the last restore left alone, Refresh, **Appearance** and
 **Language**), **Tools** (add a backup root,
 scan, the bit-rot scan, change where a root is, back up, back up to every
-plugged-in drive, check a drive, restore, set up a disk, add an extra
+plugged-in drive, check a drive, restore, set up a drive, add an extra
 place, star or encrypt what is selected, every drive and extra place BRODALF
 knows with its own submenu, and Settings) and **Help**. Right-click a file
-or folder in the tree to open it in Explorer, restore it, star it or
+or folder, in the folders or the file list, to open it in Explorer, restore it, star it or
 encrypt it; right-click a backup root to stop or resume backing it up,
 change what it leaves out, or say where it is now; right-click a version to
 restore just that version or open its copy on the drive.
@@ -173,15 +198,18 @@ restore just that version or open its copy on the drive.
 
 **View > Appearance** is **Like Windows** (light or dark, as Windows' app
 mode is set), **Light** or **Dark**. Dark covers the title bar, menus, tabs,
-lists, the tree, text boxes, buttons, the status bar and BRODALF's own
-dialogs. Message boxes and Windows' own question dialogs stay light. With
+lists, the tree, text boxes, buttons, tick boxes and choices (drawn with a
+blue tick or dot, greyed flat when they can't be changed), the status bar
+and BRODALF's own dialogs. Message boxes and Windows' own question dialogs stay light. With
 high contrast on, BRODALF always uses the high-contrast colours.
 
 **View > Language** is **Like Windows** (its display language), English,
 Deutsch or Español, and takes effect the next time BRODALF opens. The
 German and Spanish text is a machine translation that a native speaker has
-not checked yet; error messages from deep inside BRODALF, the command line
-and the installer stay in English. To add or correct a language, see
+not checked yet. The app log shows BRODALF's own lines in the window's
+language too, with paths and names as they are; error details from SQLite
+and the database itself, the command line and the installer stay in
+English. To add or correct a language, see
 `gui/lang/` and `tools/lang.py`.
 
 ### Nothing else starts by itself
@@ -196,6 +224,17 @@ BRODALF and nothing of it runs.
 
 By default a running job lets other programs come first, so the PC stays
 usable (**Settings > Let other programs come first while a job runs**).
+
+**Settings** opens one window with every setting of the open database, in
+four parts: **Copies** (how many copies of every file, in how many places,
+and how many files that goal leaves short right now), **Checks** (when a
+plugged-in drive offers a check, and what **Check copies not checked
+lately** reads), **Backups** (one drive after another or several at once,
+letting other programs come first, the space kept free on each drive, what
+to leave out in every backup root) and **Passphrase**. OK applies what you
+changed; Cancel leaves everything as it was. Appearance and language are
+in the **View** menu. The goal line at the top of the window has a
+**Change...** link to the same window.
 
 ### Backing up
 
@@ -221,12 +260,14 @@ its date.
 If many of the files whose copies on that drive were up to date have
 changed at once, BRODALF stops and asks first, since that is what
 ransomware encrypting your files looks like. **Show the changed files**
-lists them; **Back up anyway** goes ahead, and the copies already on the
+lists each one with what happened to it and when; if the changes are
+yours, **Back up these changes** in that list goes ahead. **Back up
+anyway** says how many files it copies, and the copies already on the
 drive stay as they are.
 
 A backup never fills a drive to the last byte: it leaves room for the
 database's own copies (512 MB by default; **Settings > Space kept free on
-each drive**). Files that don't fit wait for another drive, and each drive
+each drive for the database's copies**). Files that don't fit wait for another drive, and each drive
 gets whatever it is missing, so a big folder spreads across as many drives
 as it needs. At the end of every backup, a copy of the database goes onto
 the drive as `catalog-r<revision>.brodalf`, next to the older ones.
@@ -237,12 +278,13 @@ the drive as `catalog-r<revision>.brodalf`, next to the older ones.
 
 With two or more drives plugged in, **Back up to every plugged-in drive**
 backs up to each of them, one after another, as it starts. Tick **Back up
-to several drives at once** (on the **Local backups** tab or under
-**Settings**) and BRODALF instead reads each file once and writes it to all
+to several drives at once** (on the **Local backups** tab) or pick
+**Settings > Several drives at once** and BRODALF instead reads each file once and writes it to all
 the drives at the same time. That is quicker, but the PC works harder
 while it runs: the USB ports, memory and processor are shared by every
 drive at once, so other programs may be slower, and the backup goes at the
-pace of the slowest drive. BRODALF says so before it turns the option on.
+pace of the slowest drive. BRODALF says so before it turns the option on,
+and Settings says so beside the choice.
 A drive that fails to write a file does not stop the others.
 
 ### Starred files and extra places
@@ -268,7 +310,11 @@ restored, but they never count toward the copies you want or the full
 copies, and BRODALF never suggests plugging one in to get there. The tab
 lists what is starred, and for each extra place whether it is found now,
 its limit, how many starred files are there as they are now, what is
-waiting, what would go past the limit and the space it uses.
+waiting, what would go past the limit and the space it uses. **It is
+gone** marks an extra place that is no longer there: BRODALF stops copying
+to it, and your full copies do not change, since it never counted toward
+them. Its details window is called **Extra place details** and asks for a
+description instead of a name.
 
 A scan leaves out BRODALF's own copies when an extra place sits inside a
 backup root (a Dropbox folder in your home folder, say), so they are not
@@ -277,15 +323,16 @@ backed up again as new files.
 ### Full copies and files at risk
 
 You choose how many copies of every file you want, in how many places (by
-default **2 copies, in 2 places**). A place is what a drive's "where it is
+default **2 copies, in 2 places**), in **Settings** or the **Files at
+risk** window. A place is what a drive's "where it is
 kept" says (so "Box A" and "Office shelf" are two places), and drives with
 no place set count together as one. A copy counts when BRODALF last saw it
 good, whether or not the drive is plugged in right now.
 
-The **At risk** button shows how many files fall short. It opens a list of
-those files, fewest copies first, and the drives that would help most, with
-where each is kept. **Which drive to plug in** on the **Next backup** and
-**Local backups** tabs says the same in one go. **View > Largest files**
+The **Files at risk** button shows how many files fall short, or "none".
+It opens a list of those files, fewest copies first, and the drives that
+would help most, with where each is kept. **Files at risk** on the
+**Next backup** and **Local backups** tabs opens the same list. **View > Largest files**
 lists the biggest files, which BRODALF backs up like any other.
 
 ![Files at risk](docs/images/gui-at-risk.png)
@@ -293,10 +340,15 @@ lists the biggest files, which BRODALF backs up like any other.
 ### Drives
 
 A drive is recognised by the `BRODALF.media` file on it, not by its letter.
-When a disk BRODALF does not know is plugged in, it asks whether to set it
-up as a backup drive: **Set it up as a backup drive**, **Not now**, or **Never ask about
-this disk**. Setting it up makes BRODALF's own folder on it and touches nothing
-else on the disk.
+When a disk BRODALF does not know is plugged in, it says its name, its size
+and how much of it is used, and asks whether to set it up as a backup
+drive: **Set it up as a backup drive**, **Not now**, or **Never ask about
+this drive**. Setting it up asks for a name (the disk's own label to start
+with) and where it is kept, then makes BRODALF's own folder on it, touches
+nothing else on the disk and backs up to it. Whether the drive is encrypted
+is chosen then and cannot be changed later. **Settings > Ask again about
+the drives you said never to ask about** (shown when there are any) undoes
+**Never ask**.
 
 Each time a drive is plugged in BRODALF reads what the disk says about
 itself and keeps the latest reading in the database: make, model, serial
@@ -304,7 +356,8 @@ number, firmware, bus and size; the volume name, serial and file system;
 and SMART health (the drive's own failure prediction, temperature, hours
 powered on, power cycles, bad sectors and SSD wear), where the disk passes
 it through. Every drive can also have a free-text **where it is kept**
-label, such as "Box 3, garage shelf".
+label, such as "Box 3, garage shelf"; the places other drives already have
+are offered in a list, so drives kept together get the same words.
 
 ![Drive details](docs/images/gui-drive-details.png)
 
@@ -312,7 +365,11 @@ label, such as "Box 3, garage shelf".
 places**) shows where each drive stands, from the database alone, so it
 works with the drive in a box: what it holds, what changed since, its last
 backup and check, copies found missing or damaged, and its total, free and
-kept-free space. **View > Status of every drive** puts every drive in one
+kept-free space. Its details window puts the name and where it is kept at
+the top, then the facts as a form, one label and its value to a row, under
+**This drive**, **Where it stands** and **The disk**; when the drive's own
+health says to replace it, that advice is under them in the warning colour.
+**View > Status of every drive** puts every drive in one
 table, and the **Local backups** tab shows them all as a list. **File >
 Export the file list (CSV)** writes every file and the drives holding it,
 for a spreadsheet.
@@ -341,13 +398,13 @@ reads the copies on a plugged-in drive and compares each one's size, time
 and checksum. It offers two choices:
 
 - **Check every copy**: reads every copy. Takes a while on a big drive.
-- **Read back copies not read lately**: the copies not read back in the
+- **Check copies not checked lately**: the copies not checked in the
   last 30 days, and new ones, so a full check can be spread over time.
 
-When a plugged-in drive's oldest read-back is older than **Settings > A
-plugged-in drive offers a check after** (6 months by default), BRODALF
-offers a check. A copy never read back since it was written comes due a
-week after it was written. After a backup, **Read back what was just
+When a plugged-in drive's oldest check is older than **Settings > A
+plugged-in drive offers a check of its copies** (every 6 months by default), BRODALF
+offers a check. A copy never checked since it was written comes due a
+week after it was written. After a backup, **Check what was just
 written** reads just those copies; Windows may still hold some of them in
 memory, so unplug the drive and plug it in again first to read them from
 the drive itself. A copy found damaged is written again by the next backup
@@ -450,11 +507,21 @@ There are four kinds, each on its own, all on the **Encryption** tab:
 The first time, BRODALF asks you to choose a passphrase. File contents are
 encrypted (XChaCha20-Poly1305, key from Argon2id). File and folder names
 stay readable so you can still find things in Explorer, unless you choose
-otherwise (below). Encrypted copies end in `.bdenc`. The tab also changes the passphrase, makes BRODALF
+otherwise (below). Encrypted copies end in `.bdenc`. The **Encryption** tab's table says at a glance what is
+encrypted and what is not: the passphrase and its recovery key, this database file, and each drive and
+extra place (double-click one for its details). Under it are the folders you chose to encrypt, with how
+far their encrypted copies got and what it costs in time. The tab also changes the passphrase, makes BRODALF
 forget it until it is needed, makes a new recovery key and prints the
 recovery sheet (**File > Print a recovery sheet**), which lists your drives
 and a recovery key that opens your encrypted copies if the passphrase is
 lost.
+
+Wherever BRODALF asks for the passphrase, it says under the field when it
+is not right, and **Show** shows what you typed. A new passphrase is ticked
+off as you type it: at least 8 characters, and the same twice. Changing it
+is one window: the current passphrase (unless it is already entered), then
+the new one twice, with **Use the recovery key** if you no longer know the
+current one.
 
 **What it costs in time.** BRODALF measures how fast this PC encrypts and
 says what that means, for everything you chose and for each folder in the
@@ -482,10 +549,12 @@ longer open the database.
 
 ### Search
 
-Type in the box above the tree to find files and folders by name anywhere
-in your backup roots (every word must match, so `party 2024` works). Each
-result shows whether it is available and which drives hold it, with where
-each drive is kept. Double-click a result to go to it in the tree.
+Type in the box at the top right of the Primary Database tab to find files
+and folders by name anywhere in your backup roots (every word must match,
+so `party 2024` works). The results take the place of the file list while
+you search. Each result shows whether it is available and which drives
+hold it, with where each drive is kept. Double-click a result to go to its
+folder, with the file selected.
 
 ![Search](docs/images/gui-search.png)
 

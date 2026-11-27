@@ -429,10 +429,18 @@ static wchar_t *widen(const char *s)
     return w;
 }
 
-/* Run an asynchronous VSS step to the end. */
-static HRESULT finish(HRESULT hr, vss_async *a)
+/* Run an asynchronous VSS step to the end. *pa is the step's async object,
+ * read only here, after the step has filled it in: C leaves the order of a
+ * call's arguments open, and MSVC read a plain "a" argument before the step
+ * ran, so every shadow copy failed. */
+static HRESULT finish(HRESULT hr, vss_async **pa)
 {
-    if (FAILED(hr) || !a) return FAILED(hr) ? hr : E_FAIL;
+    vss_async *a = *pa;
+    *pa = NULL;
+    if (FAILED(hr) || !a) {
+        if (a) a->v->Release(a);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
     HRESULT status = E_FAIL;
     hr = a->v->Wait(a, INFINITE);
     if (SUCCEEDED(hr)) hr = a->v->QueryStatus(a, &status, NULL);
@@ -740,7 +748,7 @@ static int shadow_copy(const char *const *paths, int n, const char *dest_dir, co
         goto done;
     }
     a = NULL;
-    if (FAILED(hr = finish(b->v->GatherWriterMetadata(b, &a), a))) { say(err, err_len, "cannot ask programs to get ready", hr); goto done; }
+    if (FAILED(hr = finish(b->v->GatherWriterMetadata(b, &a), &a))) { say(err, err_len, "cannot ask programs to get ready", hr); goto done; }
     if (FAILED(hr = b->v->StartSnapshotSet(b, &set_id))) { say(err, err_len, "cannot start a shadow copy", hr); goto done; }
     for (int k = 0; k < nvol; k++) {
         if (FAILED(hr = b->v->AddToSnapshotSet(b, volumes[k], no_provider, &ids[k]))) {
@@ -749,9 +757,9 @@ static int shadow_copy(const char *const *paths, int n, const char *dest_dir, co
         }
     }
     a = NULL;
-    if (FAILED(hr = finish(b->v->PrepareForBackup(b, &a), a))) { say(err, err_len, "cannot prepare a shadow copy", hr); goto done; }
+    if (FAILED(hr = finish(b->v->PrepareForBackup(b, &a), &a))) { say(err, err_len, "cannot prepare a shadow copy", hr); goto done; }
     a = NULL;
-    if (FAILED(hr = finish(b->v->DoSnapshotSet(b, &a), a))) { say(err, err_len, "Windows could not take the shadow copy", hr); goto done; }
+    if (FAILED(hr = finish(b->v->DoSnapshotSet(b, &a), &a))) { say(err, err_len, "Windows could not take the shadow copy", hr); goto done; }
     for (int k = 0; k < nvol; k++) {
         if (FAILED(hr = b->v->GetSnapshotProperties(b, ids[k], &props[k]))) { say(err, err_len, "cannot find the shadow copy", hr); goto done; }
         have_props = k + 1;
@@ -777,7 +785,7 @@ static int shadow_copy(const char *const *paths, int n, const char *dest_dir, co
         free(from);
     }
     a = NULL;
-    finish(b->v->BackupComplete(b, &a), a);
+    finish(b->v->BackupComplete(b, &a), &a);
 
 done:
     for (int k = 0; k < have_props; k++) {

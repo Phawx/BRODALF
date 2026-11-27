@@ -88,16 +88,11 @@ jobs:
       - name: Test on real disks, FAT32, exFAT and a share
         if: runner.os == 'Windows'
         run: ctest --test-dir build -C Release -V -R "^(flow_tests|windows_volumes)$"
-      # Shadow copies, taken for real. This check fails today because of a
-      # fault in src/shadow.c: each step is run as finish(step(&a), a), and
-      # MSVC reads a (still empty) before the step runs, so every shadow
-      # copy stops with "cannot ask programs to get ready (Windows error
-      # 0x80004005)". Until that is fixed a failure here shows as a warning,
-      # not as a failed run. Remove continue-on-error once it is fixed.
-      - name: Test shadow copies (a known fault shows as a warning)
+      # Shadow copies, taken for real: a file held open with no sharing is
+      # copied through one, backed up and restored.
+      - name: Test shadow copies
         id: shadow
         if: ${{ !cancelled() && runner.os == 'Windows' }}
-        continue-on-error: true
         run: ctest --test-dir build -C Release -V -R "^flow_shadow$"
       # When it failed: what Windows itself says about shadow copies on this
       # machine, to tell BRODALF's part from the machine's.
@@ -106,8 +101,7 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          "::warning title=Shadow copies::The shadow-copy check failed. A known fault in src/shadow.c (see c-core.yml) does this; the run is not marked failed for it."
-          "### Shadow copies: the check failed (known fault in src/shadow.c)" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "### Shadow copies: the check failed; what Windows says about them here" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           Get-Service VSS, swprv | Format-Table Name, Status, StartType
           vssadmin list providers
           $drive = $env:GITHUB_WORKSPACE.Substring(0, 3)

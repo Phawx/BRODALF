@@ -252,6 +252,18 @@ bd_status bd_source_add_holding(bd_catalog *cat, const char *folder, int64_t *ou
  * database saved inside a root is not added to every backup again. */
 char *bd_root_holding(bd_catalog *cat, const char *path);
 
+/* How two folders lie, as bd_source_add compares backup roots (another
+ * spelling, a link or a mapped drive on the way count as the same): 1 the
+ * same folder, 2 a is inside b, 3 b is inside a, 0 neither. For the
+ * folders chosen for a new database, before it exists. */
+int bd_folders_overlap(const char *a, const char *b);
+
+/* The top of the BRODALF backup drive (of any database) that path, a file
+ * or folder there or to be made there, is on: the folder above it that
+ * holds BRODALF/<id>/BRODALF.media; malloc'd, or NULL when it is on none.
+ * A database kept there is lost with the drive. */
+char *bd_backup_drive_holding(const char *path);
+
 /* Point a backup root at where it is now, e.g. under another user name
  * or on another drive letter. The root keeps its name on the drives and
  * its files keep their versions and copies; the next scan finds them by

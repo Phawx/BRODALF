@@ -18078,7 +18078,24 @@ static int save_dialog(wchar_t *out, DWORD cap, const wchar_t *title)
         of.lpstrTitle = title;
         of.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if (!GetSaveFileNameW(&of)) return 0;
-        if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) return 1;
+        if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) {
+            /* On a backup drive the database is lost with the drive. */
+            char *p = narrow(out);
+            char *drive = p ? bd_backup_drive_holding(p) : NULL;
+            free(p);
+            if (!drive) return 1;
+            wchar_t *wd = widen(drive), q[MAX_PATH * 4 + 800];
+            free(drive);
+            swprintf(q, COUNT_OF(q),
+                     T(L"Keep the database on a backup drive?\n\n%ls is a BRODALF backup drive. A database kept there is lost "
+                       L"with the drive, and it cannot be opened while the drive is not plugged in. Keep it on this PC instead, "
+                       L"in Documents for example: every backup puts a copy of the database on the drive anyway."),
+                     wd ? wd : L"");
+            free(wd);
+            if (ask_verbs(g_main, q, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2, T(L"Keep it there"), T(L"Choose another place")) == IDYES)
+                return 1;
+            continue;
+        }
         MessageBoxW(g_main, T(L"A file with that name is already there. Choose another name, so nothing is overwritten."), APP_NAME,
                     MB_ICONINFORMATION);
     }
@@ -18356,6 +18373,78 @@ static int try_open(const wchar_t *path)
 
 static struct { char **paths; int n; } g_newdb;
 
+/* A folder chosen for the new database, checked against the list before
+ * the database is saved, as bd_source_add checks backup roots: a link is
+ * offered the folder it leads to, a folder inside one in the list is not
+ * added, and one that holds folders in the list takes their place if the
+ * user says so. 1 to add *folder (it may now be another), 0 not. */
+static int newdb_check(HWND dlg, char **folder)
+{
+    char *target = bd_path_link_target(*folder);
+    if (target) {
+        wchar_t *wf = widen(*folder), *wt = widen(target), q[MAX_PATH * 8 + 400];
+        swprintf(q, COUNT_OF(q), T(L"Back up %ls instead?\n\n%ls is a link to %ls. BRODALF does not follow links, so nothing "
+                                  L"would be backed up through it."),
+                 wt ? wt : L"", wf ? wf : L"", wt ? wt : L"");
+        free(wf);
+        free(wt);
+        if (ask_verbs(dlg, q, MB_YESNO | MB_ICONQUESTION, T(L"Back it up"), T(L"Cancel")) != IDYES) {
+            free(target);
+            return 0;
+        }
+        free(*folder);
+        *folder = target;
+    }
+    wchar_t held[MAX_PATH * 4 + 200] = L"";
+    int holds = 0;
+    for (int i = 0; i < g_newdb.n; i++) {
+        int how = bd_folders_overlap(*folder, g_newdb.paths[i]);
+        if (how == 1 && _stricmp(g_newdb.paths[i], *folder) != 0) return 0; /* the same folder, spelled another way */
+        if (how == 2) {
+            wchar_t *wf = widen(*folder), *wo = widen(g_newdb.paths[i]), m[MAX_PATH * 6 + 400];
+            swprintf(m, COUNT_OF(m), T(L"%ls is inside %ls, which is in the list already. Its files are backed up with it."),
+                     wf ? wf : L"", wo ? wo : L"");
+            free(wf);
+            free(wo);
+            MessageBoxW(dlg, m, APP_NAME, MB_ICONINFORMATION);
+            return 0;
+        }
+        if (how == 3) {
+            if (holds < 4) {
+                wchar_t *wo = widen(g_newdb.paths[i]);
+                size_t len = wcslen(held);
+                swprintf(held + len, COUNT_OF(held) - len, L"\n%ls", wo ? wo : L"");
+                free(wo);
+            }
+            holds++;
+        }
+    }
+    if (!holds) return 1;
+    if (holds > 4) {
+        size_t len = wcslen(held);
+        swprintf(held + len, COUNT_OF(held) - len, TN(holds - 4, L"\nand %d more", L"\nand %d more"), holds - 4);
+    }
+    wchar_t *wf = widen(*folder), q[MAX_PATH * 6 + 800];
+    swprintf(q, COUNT_OF(q),
+             TN(holds, L"Back up all of %ls instead?\n\nIt holds a folder that is in the list already:%ls\n\nA folder can be "
+                       L"in only one backup root, so that one comes off the list.",
+                L"Back up all of %ls instead?\n\nIt holds folders that are in the list already:%ls\n\nA folder can be in "
+                L"only one backup root, so those come off the list."),
+             wf ? wf : L"", held);
+    free(wf);
+    if (ask_verbs(dlg, q, MB_YESNO | MB_ICONQUESTION, T(L"Back up all of it"), T(L"Cancel")) != IDYES) return 0;
+    HWND lb = GetDlgItem(dlg, IDC_NEWDB_LIST);
+    for (int i = g_newdb.n - 1; i >= 0; i--) {
+        if (bd_folders_overlap(*folder, g_newdb.paths[i]) != 3) continue;
+        free(g_newdb.paths[i]);
+        memmove(&g_newdb.paths[i], &g_newdb.paths[i + 1], sizeof(char *) * (size_t)(g_newdb.n - i - 1));
+        g_newdb.n--;
+        SendMessageW(lb, LB_DELETESTRING, (WPARAM)i, 0);
+    }
+    EnableWindow(GetDlgItem(dlg, IDC_NEWDB_REMOVE), FALSE);
+    return 1;
+}
+
 static INT_PTR CALLBACK newdb_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     INT_PTR themed;
@@ -18371,6 +18460,10 @@ static INT_PTR CALLBACK newdb_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         switch (LOWORD(wp)) {
         case IDC_NEWDB_ADD: {
             char *folder = pick_folder(dlg, T(L"Choose a folder to back up (a backup root)."));
+            if (folder && !newdb_check(dlg, &folder)) {
+                free(folder);
+                folder = NULL;
+            }
             if (folder) {
                 int dup = 0;
                 for (int i = 0; i < g_newdb.n; i++)

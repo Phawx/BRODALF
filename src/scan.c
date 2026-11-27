@@ -1466,6 +1466,75 @@ char *bd_root_holding(bd_catalog *cat, const char *path)
     return found;
 }
 
+int bd_folders_overlap(const char *a, const char *b)
+{
+    root_keys ka, kb;
+    if (!a || !b || !keys_of(a, &ka)) return 0;
+    if (!keys_of(b, &kb)) {
+        keys_free(&ka);
+        return 0;
+    }
+    int r = keys_same(&ka, &kb) ? 1 : keys_inside(&ka, &kb) ? 2 : keys_inside(&kb, &ka) ? 3 : 0;
+    keys_free(&ka);
+    keys_free(&kb);
+    return r;
+}
+
+/* The folder p is in ("C:\x" for "C:\x\y", "C:\" for "C:\x", "/" for
+ * "/x"), or NULL at the top (of a drive, or of a network share). */
+static char *folder_above(const char *p)
+{
+    size_t n = strlen(p);
+    while (n > 1 && (p[n - 1] == '/' || p[n - 1] == '\\')) n--;
+    size_t i = n;
+    while (i > 0 && p[i - 1] != '/' && p[i - 1] != '\\') i--;
+    if (i == 0 || i == n) return NULL;
+    size_t keep = i;
+    if (keep > 1 && !(keep == 3 && p[1] == ':')) keep--; /* the '/' after it, but not a top folder's own */
+    int unc = (p[0] == '/' || p[0] == '\\') && (p[1] == '/' || p[1] == '\\');
+    if (unc) { /* not above \\server\share */
+        int seps = 0;
+        for (size_t k = 2; k < keep; k++) seps += p[k] == '/' || p[k] == '\\';
+        if (seps < 1) return NULL;
+    }
+    return bd_sprintf("%.*s", (int)keep, p);
+}
+
+typedef struct { const char *dir; int found; } drive_look;
+
+static int drive_look_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    drive_look *l = ctx;
+    if (!st->is_dir) return 0;
+    char *f = bd_sprintf("%s/%s/%s", l->dir, rel, BD_MEDIA_FILE);
+    bd_media_file mf;
+    if (f && bd_media_file_read(f, &mf) == 0) l->found = 1;
+    free(f);
+    return l->found ? 1 : BD_WALK_SKIP;
+}
+
+char *bd_backup_drive_holding(const char *path)
+{
+    char *d = path ? bd_full_path(path) : NULL;
+    while (d) {
+        char *m = bd_path_join(d, BD_MEDIA_DIR);
+        bd_stat_t st;
+        if (m && bd_stat(m, &st) == 0 && st.is_dir && !st.is_link) {
+            drive_look l = {m, 0};
+            bd_walk(m, drive_look_cb, NULL, &l);
+            if (l.found) {
+                free(m);
+                return d;
+            }
+        }
+        free(m);
+        char *up = folder_above(d);
+        free(d);
+        d = up;
+    }
+    return NULL;
+}
+
 /* 1 if path is in an active backup root. */
 static int in_a_root(bd_catalog *cat, const char *path)
 {

@@ -648,6 +648,35 @@ static void test_roots_taken_in(void)
     bd_catalog_close(cat);
 }
 
+/* C15: the new database's folders are checked against each other before
+ * it is saved, and a place on a backup drive is told. */
+static void test_new_database_checks(void)
+{
+    bd_mkdirs(at("newdb/home/Pictures"));
+    bd_mkdirs(at("newdb/homes"));
+    CHECK(bd_folders_overlap(at("newdb/home"), at("newdb/home/Pictures")) == 3);
+    CHECK(bd_folders_overlap(at("newdb/home/Pictures"), at("newdb/home")) == 2);
+    CHECK(bd_folders_overlap(at("newdb/home/"), at("newdb/home")) == 1);
+    CHECK(bd_folders_overlap(at("newdb/home"), at("newdb/homes")) == 0);
+
+    bd_mkdirs(at("newdb/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("newdb/first.brodalf"), &cat), NULL);
+    int64_t drive;
+    REQUIRE_OK(bd_media_init(cat, at("newdb/drive"), "Drive", 0, &drive), cat);
+    bd_catalog_close(cat);
+    char *top = bd_backup_drive_holding(at("newdb/drive/My backups.brodalf"));
+    CHECK(top && same_path(top, at("newdb/drive")));
+    free(top);
+    top = bd_backup_drive_holding(at("newdb/drive/Some/folder/My backups.brodalf"));
+    CHECK(top && same_path(top, at("newdb/drive")));
+    free(top);
+    CHECK(bd_backup_drive_holding(at("newdb/home/My backups.brodalf")) == NULL);
+    /* A BRODALF folder that is not a drive's (no BRODALF.media in it). */
+    bd_mkdirs(at("newdb/home/BRODALF/notes"));
+    CHECK(bd_backup_drive_holding(at("newdb/home/x.brodalf")) == NULL);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -666,6 +695,7 @@ int main(void)
     test_default_skips_profile_churn();
     test_skip_patterns_unicode();
     test_roots_taken_in();
+    test_new_database_checks();
 #ifdef _WIN32
     test_bad_name_named();
 #endif

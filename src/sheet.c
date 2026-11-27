@@ -176,17 +176,25 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
 
     int encrypted = bd_catalog_has_passphrase(cat);
     fputs("<h2>If this PC is lost or replaced</h2>\n<ol>"
-          "<li>Install BRODALF on the new PC.</li>"
+          "<li>Install BRODALF on the new PC: BRODALF ", f);
+    put_html(f, bd_version());
+    fputs(" or newer, from https://github.com/Phawx/BRODALF/releases</li>"
           "<li>Plug in one of the drives below. The one backed up to most recently is best.</li>"
-          "<li>Start BRODALF and choose <b>Recover from a backup drive...</b> It copies the catalog from the drive, "
+          "<li>Start BRODALF and choose <b>Recover the database from a backup drive...</b> It copies the catalog from the drive, "
           "then finds your files on every drive you plug in.</li>",
           f);
     if (encrypted)
         fputs("<li>When it asks for the passphrase, type it, or choose <b>Use the recovery key</b> and type the key "
               "below.</li>",
               f);
-    fputs("<li>Restore your folders with <b>Restore</b>, or point them at where they are now with "
-          "<b>Change where a folder is...</b></li></ol>\n",
+    fputs("<li>Restore your backup roots with <b>Restore</b>, or point them at where they are now with "
+          "<b>Change where a root is...</b></li></ol>\n"
+          "<p>Without BRODALF: a drive that is not encrypted holds your files as plain files and folders, in "
+          "<b>BRODALF\\", f);
+    put_html(f, cat->uuid);
+    fputs("</b> on the drive, one folder per backup root. Copy them off as they are; older versions are in the "
+          ".versions folder there. An encrypted drive, or one that hides names, can be read only with BRODALF, "
+          "so keep a copy of its installer with this sheet.</p>\n",
           f);
 
     if (encrypted) {
@@ -211,7 +219,7 @@ bd_status bd_write_recovery_sheet(bd_catalog *cat, const char *path, const char 
     c.rows = 0;
     bd_status s = bd_list_media(cat, drive_row, &c);
     if (s == BD_OK && !c.rows) fputs("<tr><td colspan=\"6\"><i>No backup drives yet.</i></td></tr>\n", f);
-    fputs("</table>\n<h2>Protected folders</h2>\n<table><tr><th>Name on the drives</th><th>Folder on this PC</th>"
+    fputs("</table>\n<h2>Backup roots</h2>\n<table><tr><th>Name on the drives</th><th>Folder on this PC</th>"
           "<th>Files</th><th>Size</th></tr>\n",
           f);
     c.rows = 0;

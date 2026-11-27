@@ -7557,6 +7557,7 @@ static char *ask_unlock_secret(HWND owner, const wchar_t *text, int allow_recove
 
 static int set_passphrase_ui(void);
 static void cmd_sheet(int with_key);
+static void warn_old_secret(int recovery);
 
 /* After unlocking with the recovery key the passphrase may be lost. */
 static void offer_new_passphrase(HWND owner)
@@ -7648,11 +7649,31 @@ static int set_passphrase_ui(void)
         return 0;
     }
     log_append(changing ? T(L"Passphrase changed.") : T(L"Passphrase set."));
+    if (changing && g_main) warn_old_secret(0);
     if (!changing && g_main &&
         ask_verbs(g_main, T(L"Print a recovery sheet now? It lists your drives and holds a recovery key, which opens your "
                             L"encrypted backups if you ever forget the passphrase."), MB_YESNO | MB_ICONQUESTION, T(L"Print it"), T(L"Not now")) == IDYES)
         cmd_sheet(1);
     return 1;
+}
+
+/* After a new passphrase or recovery key: what the old one still opens.
+ * The key the files are encrypted with does not change, and the copies of
+ * the database already on the drives keep it locked with the old secret. */
+static void warn_old_secret(int recovery)
+{
+    MessageBoxW(g_main,
+                recovery ? T(L"The old recovery key still opens the older copies of this database on your drives.\n\nYour files are encrypted "
+                             L"with one key that does not change, and every copy of the database BRODALF put on a drive keeps it locked "
+                             L"with the passphrase and recovery key it had then. BRODALF never changes or deletes what is on a drive, so "
+                             L"whoever has the old recovery key and one of those drives can still read your encrypted backups, new ones "
+                             L"too. If someone may have the old key, keep your drives where only you can reach them.")
+                         : T(L"The old passphrase still opens the older copies of this database on your drives.\n\nYour files are encrypted "
+                             L"with one key that does not change, and every copy of the database BRODALF put on a drive keeps it locked "
+                             L"with the passphrase it had then. BRODALF never changes or deletes what is on a drive, so whoever has the "
+                             L"old passphrase and one of those drives can still read your encrypted backups, new ones too. If someone "
+                             L"may know the old passphrase, keep your drives where only you can reach them."),
+                APP_NAME, MB_ICONWARNING);
 }
 
 typedef struct { int64_t id; int encrypted; int any_connected_encrypted; } enc_ctx;
@@ -8971,6 +8992,7 @@ static void cmd_sheet(int with_key)
     }
     if (with_key) {
         if (!unlock_ui(T(L"Enter the passphrase to make a recovery key."))) return;
+        int had_key = bd_catalog_has_recovery_key(g_cat);
         bd_status s = bd_catalog_make_recovery_key(g_cat, key);
         if (s == BD_OK) s = bd_catalog_save(g_cat);
         if (s != BD_OK) {
@@ -8991,6 +9013,7 @@ static void cmd_sheet(int with_key)
                 free(e);
             }
         log_append(T(L"Made a new recovery key. Drives that are not plugged in learn it at their next backup."));
+        if (had_key) warn_old_secret(1);
     }
 
     wchar_t path[MAX_PATH * 2];

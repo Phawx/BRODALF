@@ -359,6 +359,12 @@ bd_status bd_root_check(bd_catalog *cat, const char *path, int64_t except_id, in
  * the list malloc'd; NULL when out of memory. */
 char **bd_root_candidates(const char *path, const char *home, unsigned drives, int win);
 
+/* Remove a catalog setting (scan.c). 0 on success, also when it was not set. */
+int bd_setting_del(bd_catalog *cat, const char *key);
+/* Tests: scan as on a drive whose files have no change time (FAT), so a
+ * change made with the modified time put back goes unseen, as bit rot does. */
+extern int bd_test_no_change_time;
+
 /* Give a source whose name on the drives is one of BRODALF's own (the
  * .versions tree, BRODALF.media, the catalog copy) a name of its own; its
  * new copies go under that name. */

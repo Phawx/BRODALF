@@ -64,6 +64,25 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
             sqlite3_finalize(u);
         }
     }
+    /* The files there are other files on disk, with change times of their
+     * own: the next scan records them rather than reading every file again.
+     * Where the root was before is no longer worth a word. */
+    if (s == BD_OK) {
+        sqlite3_stmt *d;
+        if (sqlite3_prepare_v2(cat->db, "DELETE FROM file_change_times WHERE node_id IN (SELECT id FROM nodes WHERE source_id=?)",
+                               -1, &d, NULL) != SQLITE_OK) {
+            s = bd_fail_db(cat, "change the folder");
+        } else {
+            sqlite3_bind_int64(d, 1, source_id);
+            if (sqlite3_step(d) != SQLITE_DONE) s = bd_fail_db(cat, "change the folder");
+            sqlite3_finalize(d);
+        }
+    }
+    if (s == BD_OK) {
+        char key[48];
+        snprintf(key, sizeof(key), "moved_from.%lld", (long long)source_id);
+        if (bd_setting_del(cat, key) != 0) s = bd_fail_db(cat, "change the folder");
+    }
     free(path);
     return s;
 }

@@ -622,6 +622,7 @@ int bd_skip_match(const char *patterns, const char *rel_path, int is_dir)
 
 int bd_test_scan_workers = 0;
 const char *bd_test_online_only = NULL;
+int bd_test_no_change_time = 0;
 
 static int bd_rel_ends_with(const char *rel, const char *tail)
 {
@@ -637,6 +638,8 @@ typedef struct {
     int is_new, was_deleted;
     int bitrot;     /* unchanged by size and time: read again to find damage */
     int64_t node_id, old_version, size, mtime_ns, btime_ns;
+    int64_t ctime_ns, old_ctime; /* its change time now (0: not known), and as kept (had_ctime) */
+    int had_ctime;
     char expect[BD_HASH_HEX_LEN + 1]; /* with bitrot: the hash on record */
     /* From the worker. */
     int done, rc, in_use;
@@ -671,7 +674,7 @@ typedef struct {
     sqlite3_stmt *find_node, *find_parent, *insert_node, *touch_node, *update_file;
     sqlite3_stmt *find_version, *next_version_no, *insert_version;
     sqlite3_stmt *find_case, *rename_node, *note_new, *note_damaged, *clear_damaged;
-    sqlite3_stmt *note_online, *note_link;
+    sqlite3_stmt *note_online, *note_link, *set_ctime;
     int have_damaged; /* damaged_files has rows: a file read again may clear one */
     char **failed_dirs; /* relative folders that could not be read */
     size_t failed_len, failed_cap;
@@ -786,6 +789,17 @@ static int forget_damage(scan_ctx *c, int64_t node_id)
     return 0;
 }
 
+/* Keep the change time a file has now (file_change_times). 0, or -1
+ * (db_error set) on a database error. */
+static int note_ctime(scan_ctx *c, int64_t node_id, int64_t ctime_ns)
+{
+    sqlite3_reset(c->set_ctime);
+    sqlite3_bind_int64(c->set_ctime, 1, node_id);
+    sqlite3_bind_int64(c->set_ctime, 2, ctime_ns);
+    if (sqlite3_step(c->set_ctime) != SQLITE_DONE) { c->db_error = 1; return -1; }
+    return 0;
+}
+
 /* Record one hashed file, as the scan always did. Frees the job's strings. */
 static void apply_hash(scan_ctx *c, hash_job *j)
 {
@@ -803,6 +817,9 @@ static void apply_hash(scan_ctx *c, hash_job *j)
         goto done;
     }
     c->stats->bytes_hashed += j->hashed;
+    /* Read now: its change time is kept, so it is not read again until
+     * that moves (or its size or modified time do). */
+    if (j->ctime_ns && (!j->had_ctime || j->old_ctime != j->ctime_ns) && note_ctime(c, j->node_id, j->ctime_ns) != 0) goto done;
 
     if (j->bitrot) {
         /* Same size and time as before, but are the contents? A file that
@@ -1162,8 +1179,8 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     sqlite3_reset(c->find_node);
     sqlite3_bind_int64(c->find_node, 1, c->source_id);
     sqlite3_bind_text(c->find_node, 2, rel, -1, SQLITE_TRANSIENT);
-    int64_t node_id = 0, old_size = -1, old_mtime = -1, old_version = 0;
-    int was_deleted = 0;
+    int64_t node_id = 0, old_size = -1, old_mtime = -1, old_version = 0, old_ctime = 0;
+    int was_deleted = 0, had_ctime = 0;
     char old_hash[BD_HASH_HEX_LEN + 1] = "";
     if (sqlite3_step(c->find_node) == SQLITE_ROW) {
         node_id = sqlite3_column_int64(c->find_node, 0);
@@ -1173,6 +1190,8 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
         was_deleted = sqlite3_column_int(c->find_node, 4);
         const char *h = (const char *)sqlite3_column_text(c->find_node, 5);
         if (h) snprintf(old_hash, sizeof(old_hash), "%s", h);
+        had_ctime = sqlite3_column_type(c->find_node, 6) != SQLITE_NULL;
+        old_ctime = sqlite3_column_int64(c->find_node, 6);
     }
     /* Where names ignore case (Windows), Photo.JPG that is now photo.jpg
      * was renamed: keep its node, versions and copies under the new name. */
@@ -1190,6 +1209,8 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
             was_deleted = sqlite3_column_int(c->find_case, 4);
             const char *h = (const char *)sqlite3_column_text(c->find_case, 5);
             if (h) snprintf(old_hash, sizeof(old_hash), "%s", h);
+            had_ctime = sqlite3_column_type(c->find_case, 6) != SQLITE_NULL;
+            old_ctime = sqlite3_column_int64(c->find_case, 6);
             sqlite3_reset(c->find_case);
             sqlite3_reset(c->rename_node);
             sqlite3_bind_text(c->rename_node, 1, rel, -1, SQLITE_TRANSIENT);
@@ -1239,12 +1260,27 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
 
     int is_new = old_size < 0 || !old_version; /* no version yet: first read now */
     int bitrot = 0;
+    int64_t ctime_ns = bd_test_no_change_time ? 0 : st->ctime_ns;
     if (!is_new && old_version && old_size == st->size && old_mtime == st->mtime_ns) {
-        if (!c->bitrot || !old_hash[0] || st->online_only) {
-            if (was_deleted) c->stats->files_new++; /* back where it once was */
-            return 0;
+        /* The same size and modified time. If its change time moved, the
+         * contents may have changed with the modified time put back (some
+         * programs do that, VeraCrypt containers by default): read it again
+         * as a changed file. The same checksum is no new version. A file
+         * whose change time was never kept (scanned by an older BRODALF) is
+         * only recorded now; a cloud file is never read here. */
+        int ctime_moved = ctime_ns && had_ctime && old_ctime != ctime_ns && !st->online_only;
+        if (!ctime_moved) {
+            if (ctime_ns && !had_ctime && !st->online_only) {
+                if (note_ctime(c, node_id, ctime_ns) != 0) return 1;
+                had_ctime = 1;
+                old_ctime = ctime_ns;
+            }
+            if (!c->bitrot || !old_hash[0] || st->online_only) {
+                if (was_deleted) c->stats->files_new++; /* back where it once was */
+                return 0;
+            }
+            bitrot = 1;
         }
-        bitrot = 1;
     }
     /* A cloud file that is not on this PC would be downloaded by reading
      * it. Leave it alone: the catalog keeps what it knew, and nothing is
@@ -1288,6 +1324,9 @@ static int scan_entry(void *ctx, const char *rel, const bd_stat_t *st)
     j.size = st->size;
     j.mtime_ns = st->mtime_ns;
     j.btime_ns = st->btime_ns;
+    j.ctime_ns = st->online_only ? 0 : ctime_ns;
+    j.old_ctime = old_ctime;
+    j.had_ctime = had_ctime;
     j.bitrot = bitrot;
     if (bitrot) memcpy(j.expect, old_hash, sizeof(j.expect));
     if (pool_submit(c, &j) != 0) {
@@ -1458,6 +1497,16 @@ bd_status bd_source_wait_for_disk(bd_catalog *cat, int64_t source_id, int on)
     return rc == SQLITE_DONE ? BD_OK : bd_fail_db(cat, "remember the backup root's disk");
 }
 
+int bd_setting_del(bd_catalog *cat, const char *key)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM settings WHERE key=?", -1, &q, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
 static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot, hash_pool *pool, int64_t source_id,
                              const char *root, int64_t scan_ms, bd_scan_stats *stats, bd_log_fn log, void *log_ctx)
 {
@@ -1497,14 +1546,15 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
     c.pool = pool;
 
     struct { sqlite3_stmt **st; const char *sql; } stmts[] = {
-        {&c.find_node, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash FROM nodes n"
-                       " LEFT JOIN versions v ON v.id=n.current_version_id WHERE n.source_id=? AND n.rel_path=?"},
+        {&c.find_node, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash, t.ctime_ns FROM nodes n"
+                       " LEFT JOIN versions v ON v.id=n.current_version_id LEFT JOIN file_change_times t ON t.node_id=n.id"
+                       " WHERE n.source_id=? AND n.rel_path=?"},
         {&c.find_parent, "SELECT id FROM nodes WHERE source_id=? AND rel_path=?"},
         {&c.insert_node, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms,rel_fold,btime_ns)"
                          " VALUES(?,?,?,?,?,?,?,?)"},
         /* The same name in other letter case, not seen yet in this scan. */
-        {&c.find_case, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash FROM nodes n"
-                       " LEFT JOIN versions v ON v.id=n.current_version_id"
+        {&c.find_case, "SELECT n.id, n.size, n.mtime_ns, n.current_version_id, n.deleted, v.hash, t.ctime_ns FROM nodes n"
+                       " LEFT JOIN versions v ON v.id=n.current_version_id LEFT JOIN file_change_times t ON t.node_id=n.id"
                        " WHERE n.source_id=? AND n.rel_fold=? AND n.last_seen_ms<? ORDER BY n.deleted, n.id LIMIT 1"},
         {&c.rename_node, "UPDATE nodes SET rel_path=?, name=? WHERE id=?"},
         {&c.touch_node, "UPDATE nodes SET parent_id=?, is_dir=?, last_seen_ms=?, deleted=0, deleted_ack=0,"
@@ -1523,6 +1573,8 @@ static bd_status scan_source(bd_catalog *cat, const skip_list *skip, int bitrot,
         {&c.clear_damaged, "DELETE FROM damaged_files WHERE node_id=?"},
         {&c.note_online, "INSERT OR REPLACE INTO temp.online_only(node_id, changed) VALUES(?,?)"},
         {&c.note_link, "INSERT OR REPLACE INTO temp.links(source_id, rel_path, target, is_dir) VALUES(?,?,?,?)"},
+        {&c.set_ctime, "INSERT INTO file_change_times(node_id, ctime_ns) VALUES(?1,?2)"
+                       " ON CONFLICT(node_id) DO UPDATE SET ctime_ns=excluded.ctime_ns"},
     };
     bd_status s = BD_OK;
     size_t n = sizeof(stmts) / sizeof(stmts[0]);

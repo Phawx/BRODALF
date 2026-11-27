@@ -1127,7 +1127,9 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             sqlite3_bind_int64(q, 1, source_id);
             int64_t waiting = sqlite3_step(q) == SQLITE_ROW ? sqlite3_column_int64(q, 0) : 0;
             sqlite3_finalize(q);
-            if (waiting)
+            if (waiting == 1)
+                bd_logf(log, log_ctx, "1 file in a folder set to be encrypted is not backed up: it waits for the passphrase");
+            else if (waiting)
                 bd_logf(log, log_ctx, "%lld files in folders set to be encrypted are not backed up: they wait for the passphrase",
                         (long long)waiting);
         }

@@ -1,5 +1,8 @@
 # The command line's exit codes: 0 done and clean, 1 an error, 2 done with
-# problems to look at. Run as
+# problems to look at, 3 stopped with Ctrl+C, 4 not possible now (the drive
+# is not plugged in, or the catalog is open elsewhere: nothing was done),
+# 5 many files changed at once (nothing was backed up; --accept-changes).
+# cli_flow.cmake checks 4 and 5. Run as
 #   cmake -DCLI=<brodalf-cli> -DWORK=<empty folder to use> -P cli_exit_codes.cmake
 # Everything it writes (catalog, drive, working copies, the app log and any
 # error report) is under WORK, which is removed at the end.

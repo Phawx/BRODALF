@@ -19,11 +19,14 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.11.0** (2026-11-27) redraws the window. The Primary Database
-tab looks like Windows Explorer, and a file or folder that no plugged-in
-drive holds is drawn faded, with the drives it is on named beside it, so a
-database opened on a PC with none of its files still shows where each one
-is. The log is in the window's language too. 0.10.2 (2026-11-26) keeps an
+Version **0.12.0** (2026-11-27) fixes the 21 gaps that walking real use
+cases through 0.11.0 found: above all, a new PC or a reinstalled Windows no
+longer marks every file deleted, copies count once per physical disk, and a
+wiped drive, a cloud file changed elsewhere and a link that is not followed
+are no longer silent. 0.11.0 (2026-11-27) redrew the window: the Primary
+Database tab looks like Windows Explorer, and a file or folder that no
+plugged-in drive holds is drawn faded, with the drives it is on named
+beside it. 0.10.2 (2026-11-26) keeps an
 encrypted database in memory while it is open, so nothing of it is ever
 written to the disk unencrypted; 0.10.1 (2026-11-26) fixed twelve window
 problems that screenshots of 0.10.0 showed, and 0.10.0 (2026-11-25) what
@@ -845,8 +848,8 @@ on a local machine needs to pick the work up without the chat history.
   on a Windows CI runner, with a database opened with no local data and
   its drives unplugged. No change to the database format: 0.10.2 opens
   the files 0.11.0 saves.
-- Not released yet (branch `use-case-gaps`): the 21 gaps that walking
-  real use cases through 0.11.0 found. A new PC, or a reinstalled Windows,
+- v0.12.0 (2026-11-27, built on the `use-case-gaps` branch first): the 21
+  gaps that walking real use cases through 0.11.0 found. A new PC, or a reinstalled Windows,
   no longer marks every file deleted: a backup root holding a tenth or
   less of the files it had is held as it was and offered for restore, and
   a root on an unplugged disk can wait for it. Copies count once per
@@ -866,7 +869,9 @@ on a local machine needs to pick the work up without the chat history.
   at Check drive, the release page and version on the recovery sheet, and
   "Not on this PC" in the Status column for screen readers. A skip line
   starting with `/` is now a path from the top of the root. No change to
-  the database format: 0.10.2 and 0.11.0 open the files it saves.
+  the database format: 0.10.2 and 0.11.0 open the files 0.12.0 saves, and
+  their command-line tools were seen reading, backing up to and recovering
+  one.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -1022,8 +1027,7 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-Not released yet, from the `use-case-gaps` branch (built by CI, tested
-on Linux only): Windows' empty Documents after a reinstall held as almost
+Everything new in 0.12.0 (built by CI, tested on Linux only): Windows' empty Documents after a reinstall held as almost
 empty; a root on an unplugged USB disk waiting for it; disk serials of two
 partitions of one USB disk and of a disk behind a USB bridge; a drive on
 the system disk; SMART saying a disk is failing; a drive reformatted in

@@ -156,7 +156,28 @@ static const char *SCHEMA_SQL =
     "  node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,"
     "  version_id INTEGER NOT NULL REFERENCES versions(id) ON DELETE CASCADE,"
     "  found_hash TEXT NOT NULL,"
-    "  found_ms INTEGER NOT NULL);";
+    "  found_ms INTEGER NOT NULL);"
+    /* The last copy of the database put on each drive: its revision and
+     * when; failed_ms when the last try failed (failed_revision is the
+     * revision it was to be). Earlier versions of BRODALF do not know
+     * this table and leave it be. */
+    "CREATE TABLE IF NOT EXISTS media_catalog("
+    "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
+    "  revision INTEGER,"
+    "  written_ms INTEGER,"
+    "  failed_ms INTEGER,"
+    "  failed_revision INTEGER);"
+    /* Drives whose ID turned up where it should not: on two disks at once
+     * (why 1) or on a disk with another serial number (why 2), as when a
+     * drive is cloned. Their copies do not count until a check of every
+     * copy on the drive. Earlier versions of BRODALF do not know this
+     * table and leave it be. */
+    "CREATE TABLE IF NOT EXISTS media_suspect("
+    "  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,"
+    "  why INTEGER NOT NULL,"
+    "  found_ms INTEGER NOT NULL,"
+    "  root TEXT,"
+    "  other_root TEXT);";
 
 static void put_u32(unsigned char *p, uint32_t v)
 {
@@ -903,6 +924,7 @@ bd_status bd_catalog_save(bd_catalog *cat)
 {
     if (!cat || !cat->db) return BD_ERR_INVALID;
     if (!bd_catalog_unsaved(cat)) return BD_OK;
+    bd_media_record_catalog_copies(cat);
     char v[32];
     snprintf(v, sizeof(v), "%lld", (long long)(bd_catalog_revision(cat) + 1));
     if (meta_set(cat, "revision", v) != 0) return bd_fail_db(cat, "count the save");

@@ -771,6 +771,17 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
     return 0;
 }
 
+int64_t bd_fs_cluster_bytes(const char *path)
+{
+    wchar_t *w = unprefix_unc(to_wide(path)), vol[MAX_PATH + 8];
+    if (!w) return 0;
+    BOOL ok = GetVolumePathNameW(w, vol, MAX_PATH + 8);
+    free(w);
+    DWORD per_cluster = 0, sector = 0, free_clusters = 0, clusters = 0;
+    if (!ok || !GetDiskFreeSpaceW(vol, &per_cluster, &sector, &free_clusters, &clusters)) return 0;
+    return (int64_t)per_cluster * (int64_t)sector;
+}
+
 /* ---- Compression -------------------------------------------------------- */
 
 int bd_fs_can_compress(const char *path)

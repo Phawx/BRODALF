@@ -480,6 +480,16 @@ int bd_disk_space(const char *path, int64_t *total_bytes, int64_t *free_bytes)
     return 0;
 }
 
+int64_t bd_fs_cluster_bytes(const char *path)
+{
+    struct statvfs sv;
+    char *p = dup_native(path);
+    int rc = p ? statvfs(p, &sv) : -1;
+    free(p);
+    if (rc != 0) return 0;
+    return sv.f_frsize ? (int64_t)sv.f_frsize : (int64_t)sv.f_bsize;
+}
+
 /* File compression is Windows' own (NTFS): nothing to do elsewhere. */
 int bd_fs_name(const char *path, char *out, size_t cap)
 {

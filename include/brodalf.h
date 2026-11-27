@@ -612,6 +612,13 @@ typedef struct {
      * out. */
     int64_t files_bigger_than_drives;
     int64_t bytes_bigger_than_drives;
+    /* The copy of the database put on the drive at the end of the backup,
+     * also when it was stopped or another drive went: its revision (0 when
+     * none was). catalog_copy_failed is 1 when it could not be written:
+     * then no copy of the database on the drive knows what this backup
+     * copied, a problem to show as a failed file is. */
+    int64_t catalog_revision;
+    int catalog_copy_failed;
 } bd_backup_stats;
 
 /* The size of the biggest backup drive that counts (not lost or broken,
@@ -1211,6 +1218,13 @@ typedef struct {
     int64_t last_check_ms;      /* when the last check of its copies finished; 0: never */
     char last_check_kind[16];   /* "check" or "read back" */
     char last_check_status[16];
+    /* The newest copy of the database put on it: its revision and when
+     * (0: none known; a drive plugged in now is looked at). When the last
+     * try to put one there failed: when, and the revision it was to be. */
+    int64_t catalog_revision;
+    int64_t catalog_written_ms;
+    int64_t catalog_failed_ms;
+    int64_t catalog_failed_revision;
 } bd_media_status;
 
 bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status *out);

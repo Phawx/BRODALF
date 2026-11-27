@@ -104,6 +104,31 @@ bd_status bd_media_status_get(bd_catalog *cat, int64_t media_id, bd_media_status
         copy_text(out->last_check_status, sizeof(out->last_check_status), sqlite3_column_text(q, 2));
     }
     sqlite3_finalize(q);
+
+    /* The database's copy on it, as last put there; on a drive plugged in
+     * now, what the copies there say when that is newer. */
+    if (sqlite3_prepare_v2(cat->db, "SELECT COALESCE(revision,0), COALESCE(written_ms,0), COALESCE(failed_ms,0),"
+                                    " COALESCE(failed_revision,0) FROM media_catalog WHERE media_id=?",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, media_id);
+        if (sqlite3_step(q) == SQLITE_ROW) {
+            out->catalog_revision = sqlite3_column_int64(q, 0);
+            out->catalog_written_ms = sqlite3_column_int64(q, 1);
+            out->catalog_failed_ms = sqlite3_column_int64(q, 2);
+            out->catalog_failed_revision = sqlite3_column_int64(q, 3);
+        }
+        sqlite3_finalize(q);
+    }
+    char *root = bd_connected_root(cat, media_id);
+    bd_drive_catalog dc;
+    if (root && bd_media_catalog_compare(cat, media_id, &dc) == BD_OK) {
+        if (dc.revision > out->catalog_revision) {
+            out->catalog_revision = dc.revision;
+            out->catalog_written_ms = dc.written_ms;
+        }
+        free(dc.path);
+    }
+    free(root);
     return BD_OK;
 }
 

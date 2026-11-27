@@ -225,6 +225,175 @@ static void test_two_copies_same_revision(void)
     CHECK(!bd_path_is_drive_copy("E:\\Backups\\catalog-r12-1a-2b.brodalf"));
 }
 
+static int64_t count_rows(bd_catalog *cat, const char *sql, int64_t arg)
+{
+    sqlite3_stmt *q;
+    int64_t n = -1;
+    if (sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int64(q, 1, arg);
+    if (sqlite3_step(q) == SQLITE_ROW) n = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    return n;
+}
+
+/* Takes a drive away (renames its folder), or stops the job, from the
+ * progress callback, as if it were unplugged or Stop pressed halfway. */
+typedef struct {
+    bd_catalog *cat;
+    const char *from, *to; /* NULL: stop the job instead */
+    int64_t after_files;
+    int fired, moved;
+} vanish_at;
+
+static void vanish_progress(void *ctx, const bd_progress *p)
+{
+    vanish_at *v = ctx;
+    v->cat->progress_last_ms = 0; /* report every file */
+    if (v->fired || p->done || strcmp(p->phase, "backup") != 0 || p->files_done < v->after_files) return;
+    v->fired = 1;
+    if (v->from) v->moved = bd_rename_noreplace(v->from, v->to) == 0;
+    else bd_catalog_cancel(v->cat);
+}
+
+/* How many good copies on drive media_id the newest database copy on the
+ * drive at root knows of: what recovering from that drive alone gives. */
+static int64_t known_by_drive_copy(bd_catalog *cat, const char *root, int64_t media_id, const char *dest)
+{
+    revs_seen r = revisions_on(cat, root);
+    if (!r.n || bd_catalog_recover(r.paths[0], dest) != BD_OK) return -1;
+    bd_catalog *rc;
+    if (bd_catalog_open(dest, &rc) != BD_OK) return -1;
+    int64_t n = count_rows(rc, "SELECT COUNT(*) FROM copies WHERE media_id=? AND state='ok'", media_id);
+    bd_catalog_close(rc);
+    return n;
+}
+
+/* ---- R1: a backup that stops early, or loses one of its drives ------------ */
+
+static void test_backup_stops_early(void)
+{
+    make_files("r1-src/Docs", 12, "r1");
+    bd_mkdirs(at("r1/A"));
+    bd_mkdirs(at("r1/B"));
+    bd_mkdirs(at("r1/C"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("r1/db.brodalf"), &cat), NULL);
+    int64_t src, ids[2], c;
+    REQUIRE_OK(bd_source_add(cat, at("r1-src/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r1/A"), "A", 0, &ids[0]), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r1/B"), "B", 0, &ids[1]), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r1/C"), "C", 0, &c), cat);
+
+    /* B goes halfway: A gets everything, and a database copy that knows it. */
+    vanish_at va = {cat, at("r1/B"), at("r1/B-away"), 5, 0, 0};
+    bd_backup_stats bs[2];
+    bd_catalog_set_progress(cat, vanish_progress, &va);
+    bd_status st = bd_backup_many(cat, ids, 2, 0, bs, quiet, NULL);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(va.fired && va.moved);
+    CHECK(st == BD_ERR_DRIVE_GONE && strstr(bd_catalog_error(cat), "went on to the other drives") != NULL);
+    CHECK(bs[0].files_copied == 12); /* 0.14.0: it stopped with B */
+    CHECK(bs[1].files_copied < 12 && bs[1].catalog_revision == 0);
+    CHECK(bs[0].catalog_revision > 0 && bs[0].catalog_copy_failed == 0); /* 0.14.0: no database copy at all */
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM jobs WHERE media_id=? AND kind='backup' AND status='done'", ids[0]) == 1);
+    CHECK(known_by_drive_copy(cat, at("r1/A"), ids[0], at("r1/from-A.brodalf")) == 12);
+    CHECK(bd_rename_noreplace(at("r1/B-away"), at("r1/B")) == 0);
+
+    /* Stopped: the drive gets a database copy that knows what was copied. */
+    vanish_at stop = {cat, NULL, NULL, 4, 0, 0};
+    bd_backup_stats one;
+    bd_catalog_set_progress(cat, vanish_progress, &stop);
+    st = bd_backup(cat, c, 0, &one, quiet, NULL);
+    bd_catalog_set_progress(cat, NULL, NULL);
+    CHECK(stop.fired && st == BD_ERR_CANCELLED);
+    CHECK(one.files_copied > 0 && one.files_copied < 12);
+    CHECK(one.catalog_revision == bd_catalog_revision(cat)); /* 0.14.0: 0, only the copy from setup */
+    CHECK(revisions_on(cat, at("r1/C")).revs[0] == bd_catalog_revision(cat));
+    CHECK(known_by_drive_copy(cat, at("r1/C"), c, at("r1/from-C.brodalf")) == one.files_copied);
+    /* The status says which copy it holds. */
+    bd_media_status ms;
+    REQUIRE_OK(bd_media_status_get(cat, c, &ms), cat);
+    CHECK(ms.catalog_revision == one.catalog_revision && ms.catalog_written_ms > 0 && ms.catalog_failed_ms == 0);
+    bd_catalog_close(cat);
+}
+
+/* ---- R2: room counted by allocation unit; a database copy that fails ------- */
+
+static int spoil_all = 0;
+static void spoil_every(const char *path)
+{
+    if (!spoil_all) return;
+    FILE *f = bd_fopen(path, "r+b");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, n / 2, SEEK_SET);
+    for (int i = 0; i < 8; i++) fputc(0x5A ^ i, f);
+    fclose(f);
+}
+
+static void test_room_and_failed_catalog_copy(void)
+{
+    make_files("r2-src/Docs", 10, "r2");
+    bd_mkdirs(at("r2/A"));
+    bd_mkdirs(at("r2/B"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("r2/db.brodalf"), &cat), NULL);
+    int64_t src, a, b;
+    REQUIRE_OK(bd_source_add(cat, at("r2-src/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r2/A"), "A", 0, &a), cat);
+    REQUIRE_OK(bd_media_init(cat, at("r2/B"), "B", 0, &b), cat);
+
+    /* Each small file takes a whole 4 KB unit: four fit in 16 KB. */
+    bd_test_free_bytes = 4 * 4096;
+    bd_test_cluster_bytes = 4096;
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 4 && bs.files_no_room == 6); /* 0.14.0: 10 copied, by their 12 bytes each */
+
+    /* C16: a full drive does not read the files first. Every file changed
+     * since the scan, which would read each one again. */
+    for (int i = 0; i < 10; i++) {
+        char rel[64];
+        snprintf(rel, sizeof(rel), "r2-src/Docs/f%03d.txt", i);
+        write_file(at(rel), "changed since the scan, and longer");
+    }
+    bd_test_free_bytes = 0;
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 0 && bs.files_no_room == 10);
+    CHECK(bs.files_rehashed == 0); /* 0.14.0: 10, each read before its room was looked at */
+    bd_test_free_bytes = -1;
+    bd_test_cluster_bytes = 0;
+
+    /* A database copy that fails is a problem for that drive. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    int64_t good = bs.catalog_revision;
+    CHECK(good > 0 && !bs.catalog_copy_failed);
+    write_file(at("r2-src/Docs/new.txt"), "a new file");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    spoil_all = 1;
+    bd_test_spoil_catalog_copy = spoil_every;
+    log_count lc = {"could not be copied", 0};
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, count_log, &lc), cat);
+    spoil_all = 0;
+    CHECK(bs.files_copied == 1 && bs.catalog_copy_failed == 1 && bs.catalog_revision == 0 && lc.n == 1);
+    bd_media_status ms;
+    REQUIRE_OK(bd_media_status_get(cat, b, &ms), cat);
+    CHECK(ms.catalog_failed_ms > 0 && ms.catalog_failed_revision > good);
+    /* The next backup puts one there, and the problem is gone. */
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    bd_test_spoil_catalog_copy = NULL;
+    CHECK(bs.catalog_revision > good && !bs.catalog_copy_failed);
+    REQUIRE_OK(bd_media_status_get(cat, b, &ms), cat);
+    CHECK(ms.catalog_failed_ms == 0 && ms.catalog_revision == bs.catalog_revision);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -236,6 +405,8 @@ int main(void)
     printf("working in %s\n", base);
 
     test_two_copies_same_revision();
+    test_backup_stops_early();
+    test_room_and_failed_catalog_copy();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

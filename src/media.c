@@ -1001,9 +1001,84 @@ int bd_media_copy_clash(bd_catalog *cat, int64_t media_id, int64_t *revision)
     return found;
 }
 
+/* What became of the copies of the database put on the drives this
+ * session; kept in media_catalog by bd_media_record_catalog_copies. */
+#define COPY_RESULT_TABLE \
+    "CREATE TEMP TABLE IF NOT EXISTS copy_result(media_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL," \
+    " at_ms INTEGER NOT NULL, ok INTEGER NOT NULL);"
+
+static void note_copy_result(bd_catalog *cat, int64_t media_id, int64_t rev, int ok)
+{
+    sqlite3_stmt *q;
+    bd_exec(cat, COPY_RESULT_TABLE);
+    if (sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.copy_result(media_id, revision, at_ms, ok) VALUES(?,?,?,?)", -1, &q,
+                           NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int64(q, 2, rev);
+    sqlite3_bind_int64(q, 3, bd_now_ms());
+    sqlite3_bind_int(q, 4, ok);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+}
+
+void bd_media_record_catalog_copies(bd_catalog *cat)
+{
+    if (!cat || !cat->db || !sqlite3_get_autocommit(cat->db)) return; /* not inside another transaction */
+    sqlite3_stmt *q;
+    bd_exec(cat, COPY_RESULT_TABLE);
+    int any = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT 1 FROM temp.copy_result LIMIT 1", -1, &q, NULL) == SQLITE_OK) {
+        any = sqlite3_step(q) == SQLITE_ROW;
+        sqlite3_finalize(q);
+    }
+    if (!any) return;
+    int was_saved = cat->changes == cat->saved_changes || (cat->copies_noted_at && cat->changes == cat->copies_noted_at);
+    bd_exec(cat, "BEGIN;"
+                 "INSERT OR IGNORE INTO media_catalog(media_id) SELECT media_id FROM temp.copy_result r"
+                 " WHERE EXISTS(SELECT 1 FROM media m WHERE m.id=r.media_id);"
+                 "UPDATE media_catalog SET"
+                 " revision=(SELECT r.revision FROM temp.copy_result r WHERE r.media_id=media_catalog.media_id),"
+                 " written_ms=(SELECT r.at_ms FROM temp.copy_result r WHERE r.media_id=media_catalog.media_id),"
+                 " failed_ms=NULL, failed_revision=NULL"
+                 " WHERE media_id IN (SELECT media_id FROM temp.copy_result WHERE ok<>0);"
+                 "UPDATE media_catalog SET"
+                 " failed_ms=(SELECT r.at_ms FROM temp.copy_result r WHERE r.media_id=media_catalog.media_id),"
+                 " failed_revision=(SELECT r.revision FROM temp.copy_result r WHERE r.media_id=media_catalog.media_id)"
+                 " WHERE media_id IN (SELECT media_id FROM temp.copy_result WHERE ok=0);"
+                 "DELETE FROM temp.copy_result;"
+                 "COMMIT;");
+    if (sqlite3_get_autocommit(cat->db) == 0) bd_exec(cat, "ROLLBACK");
+    cat->copies_noted_at = was_saved ? cat->changes : 0;
+}
+
+/* This database put its copy of revision rev on the drive: this session,
+ * or recorded before (a record is always of an earlier revision than the
+ * database holding it, so another copy of the database has none for its
+ * later revisions). Nothing on the drive needs reading to tell. */
+static int wrote_revision(bd_catalog *cat, int64_t media_id, int64_t rev)
+{
+    sqlite3_stmt *q;
+    int yes = 0;
+    bd_exec(cat, COPY_RESULT_TABLE);
+    if (sqlite3_prepare_v2(cat->db,
+                           "SELECT 1 FROM temp.copy_result WHERE media_id=?1 AND revision=?2 AND ok<>0"
+                           " UNION ALL SELECT 1 FROM media_catalog WHERE media_id=?1 AND revision=?2",
+                           -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, media_id);
+        sqlite3_bind_int64(q, 2, rev);
+        yes = sqlite3_step(q) == SQLITE_ROW;
+        sqlite3_finalize(q);
+    }
+    return yes;
+}
+
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
 {
-    bd_status s = bd_catalog_save(cat);
+    /* What the copies put on the drives were is no change to save as a
+     * new revision of its own: it goes with the next save. */
+    int only_noted = cat->copies_noted_at && cat->changes == cat->copies_noted_at && cat->saved_changes != cat->changes;
+    bd_status s = only_noted ? BD_OK : bd_catalog_save(cat);
     if (s == BD_OK) s = put_catalog_copy(cat, media_id);
     if (s == BD_ERR_FORMAT) {
         /* It did not read back right: once more, as the next revision. The
@@ -1013,6 +1088,7 @@ bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
         s = bd_catalog_save(cat);
         if (s == BD_OK) s = put_catalog_copy(cat, media_id);
     }
+    note_copy_result(cat, media_id, bd_catalog_revision(cat), s == BD_OK);
     return s;
 }
 
@@ -1034,7 +1110,7 @@ static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
          * or one from another copy of this database that was used apart
          * from it and reached the same revision. That one stays; this one
          * goes beside it, under a name of its own. */
-        int ours = copy_is_ours(cat, media_id, rel);
+        int ours = wrote_revision(cat, media_id, rev) ? 1 : copy_is_ours(cat, media_id, rel);
         if (ours == 1) { bd_store_close(store); return BD_OK; }
         char id[40];
         if (!bd_catalog_save_id(cat, id, sizeof(id)) || strlen(id) < 8) bd_uuid_v4(id);

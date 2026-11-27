@@ -2821,10 +2821,11 @@ static bd_status run_backup_many(job *j)
         if (s == BD_OK) s = first_err;
     }
     g_job_dest[0] = 0;
-    int64_t copied = 0, bytes = 0, failed = 0, no_room = 0, no_room_bytes = 0, alongside = 0;
+    int64_t copied = 0, bytes = 0, failed = 0, no_room = 0, no_room_bytes = 0, alongside = 0, no_catalog = 0;
     wchar_t name[600], size[64];
     for (int i = 0; i < done; i++) {
         j->many_copied[i] = bs[i].files_copied;
+        no_catalog += bs[i].catalog_copy_failed;
         copied += bs[i].files_copied;
         bytes += bs[i].bytes_copied;
         failed += bs[i].files_failed;
@@ -2839,6 +2840,11 @@ static bd_status run_backup_many(job *j)
                  size, (long long)bs[i].files_already_there, (long long)bs[i].files_failed,
                  bs[i].files_no_room ? T(L", some did not fit") : L"");
         post_text(WM_APP_LOG, line);
+        if (bs[i].catalog_copy_failed) {
+            swprintf(line, 700, T(L"%ls: the database could not be copied to it, so no copy of it there knows what this backup copied. "
+                                  L"Back up to it again to put one there."), name);
+            post_text(WM_APP_LOG, line);
+        }
     }
     int drives = j->n_many - j->many_places;
     wchar_t what[160];
@@ -2851,7 +2857,11 @@ static bd_status run_backup_many(job *j)
     swprintf(j->summary, SUMMARY_LEN, T(L"Backup to %ls %ls, %ls: %lld files copied (%ls) in all, %lld failed."), what,
              s == BD_ERR_CANCELLED ? T(L"stopped") : T(L"done"), parallel ? T(L"all at once") : T(L"one after another"), (long long)copied, size,
              (long long)failed);
-    j->n_problems = j->n_tell = failed + no_room;
+    j->n_problems = j->n_tell = failed + no_room + no_catalog;
+    if (no_catalog)
+        say(j, TN(no_catalog, L" The database could not be copied to %lld drive: back up to it again to put one there.",
+                  L" The database could not be copied to %lld drives: back up to them again to put one there."),
+            (long long)no_catalog);
     if (alongside)
         say(j, T(L" %lld went alongside an older copy (under .versions): nothing there was overwritten."), (long long)alongside);
     if (no_room) {
@@ -3012,9 +3022,12 @@ static DWORD WINAPI worker(LPVOID arg)
             j->bytes_no_room = full > 0 ? full_bytes : 0;
             j->bigger = bs.files_bigger_than_drives;
             j->in_use = bs.files_in_use;
+            if (bs.catalog_copy_failed)
+                say(j, T(L" The database could not be copied to the drive, so no copy of it there knows what this backup copied: "
+                         L"back up to it again to put one there."));
             /* What did not fit gets its own question after the backup. */
-            j->n_problems = bs.files_failed + bs.files_no_room;
-            j->n_tell = bs.files_failed;
+            j->n_problems = bs.files_failed + bs.files_no_room + bs.catalog_copy_failed;
+            j->n_tell = bs.files_failed + bs.catalog_copy_failed;
         }
         break;
     }
@@ -5688,6 +5701,14 @@ static void add_drive_status(wtext *t, int64_t id, const wchar_t *indent)
     if (ms.copies_never_read)
         wadd(t, T(L"%ls    %lld copies were never checked since they were written (Check drive...)\r\n"), indent,
              (long long)ms.copies_never_read);
+    if (ms.catalog_revision) {
+        format_time_ms(ms.catalog_written_ms, when, 64);
+        wadd(t, T(L"%ls    Database copy on it: revision %lld, written %ls\r\n"), indent, (long long)ms.catalog_revision, when);
+    }
+    if (ms.catalog_failed_ms) {
+        format_time_ms(ms.catalog_failed_ms, when, 64);
+        wadd(t, T(L"%ls    The database could not be copied to it %ls: back up to it again to put one there\r\n"), indent, when);
+    }
 }
 
 static const drive_snap *g_edit_drive;
@@ -5786,6 +5807,15 @@ static void drive_form(HWND lv, const drive_snap *d)
             if (ms.copies_never_read)
                 kv_row(lv, KV_FACT, T(L"Never checked"), TN(ms.copies_never_read, L"%lld copy, since it was written", L"%lld copies, since they were written"),
                        (long long)ms.copies_never_read);
+            if (ms.catalog_revision) {
+                format_time_ms(ms.catalog_written_ms, when, 64);
+                kv_row(lv, KV_FACT, T(L"Database copy"), T(L"Revision %lld, written %ls"), (long long)ms.catalog_revision, when);
+            } else
+                kv_row(lv, KV_FACT, T(L"Database copy"), L"%ls", T(L"None known: the next backup to it puts one there"));
+            if (ms.catalog_failed_ms) {
+                format_time_ms(ms.catalog_failed_ms, when, 64);
+                kv_row(lv, KV_FACT, T(L"Database copy failed"), T(L"%ls: back up to it again to put one there"), when);
+            }
         }
     }
 

@@ -22,6 +22,7 @@
 
 int64_t bd_test_free_bytes = -1;
 int64_t bd_test_save_every_ms = 0;
+int64_t bd_test_cluster_bytes = 0;
 
 /* How often a long backup saves the catalog between batches. */
 #define SAVE_EVERY_MS (5 * 60 * 1000)
@@ -841,16 +842,68 @@ typedef struct {
     int64_t group_bytes;
     int64_t job;
     bd_copy_marks marks; /* copies found gone from it, recorded at the end */
-    int gone;            /* it was unplugged or stopped answering: the backup stops */
+    int gone;            /* it was unplugged or stopped answering: nothing more goes to it */
+    int left_out;        /* ... and it is out of the list of drives still to copy to */
     int64_t max_file;            /* the biggest copy its file system holds; -1: no limit */
     int too_big_said;
+    int64_t cluster;     /* its allocation unit: each copy takes a whole number of them */
 } backup_dest;
 
 static void say_gone(backup_dest *d, int n, bd_log_fn log, void *log_ctx)
 {
+    if (d->gone) return;
     d->gone = 1;
-    if (n > 1) bd_logf(log, log_ctx, "\"%s\" stopped answering or was unplugged: the backup stops", d->label);
+    if (n > 1) bd_logf(log, log_ctx, "\"%s\" stopped answering or was unplugged: nothing more is copied to it", d->label);
     else bd_logf(log, log_ctx, "the drive stopped answering or was unplugged: the backup stops");
+}
+
+/* The drives still there: one that went is left out of what is still to
+ * copy, and the backup goes on to the others. */
+static int dests_left(bd_catalog *cat, backup_dest *dests, int n)
+{
+    int left = 0;
+    for (int k = 0; k < n; k++) {
+        backup_dest *d = &dests[k];
+        if (!d->gone) {
+            left++;
+            continue;
+        }
+        if (d->left_out) continue;
+        d->left_out = 1;
+        sqlite3_stmt *q;
+        if (sqlite3_prepare_v2(cat->db, "DELETE FROM temp.bk_dests WHERE media_id=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, d->media_id);
+            sqlite3_step(q);
+            sqlite3_finalize(q);
+        }
+    }
+    return left;
+}
+
+/* The room a copy of bytes takes on the drive: whole allocation units. */
+static int64_t room_taken(const backup_dest *d, int64_t bytes)
+{
+    int64_t c = d->cluster > 1 ? d->cluster : 1;
+    return bytes <= 0 ? 0 : (bytes + c - 1) / c * c;
+}
+
+/* How big the item's copy is: sealed copies are a little bigger than the
+ * file. */
+static int64_t copy_need(const backup_item *it, int sealed)
+{
+    return it->version_size + (sealed ? it->version_size / 1024 + 4096 : 0);
+}
+
+enum { FITS, TOO_BIG_FOR_FS, DRIVE_FULL, OVER_LIMIT };
+
+/* Whether a copy of need bytes fits on the drive now, and if not, why not.
+ * The room it takes there is whole allocation units. */
+static int dest_fit(const backup_dest *d, int64_t need)
+{
+    if (d->max_file >= 0 && need > d->max_file) return TOO_BIG_FOR_FS;
+    if (d->space_free >= 0 && room_taken(d, need) > d->space_free - d->reserve) return DRIVE_FULL;
+    if (d->budget >= 0 && need > d->budget) return OVER_LIMIT;
+    return FITS;
 }
 
 /* Something failed on this drive (files_failed went up from before): if
@@ -1013,6 +1066,8 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
         d->store->hide_names = bd_media_hides_names(cat, d->media_id, d->store->names_key);
         char *root = bd_connected_root(cat, d->media_id);
         d->max_file = bd_drive_file_limit(cat, d->media_id, root);
+        d->cluster = bd_test_cluster_bytes > 0 ? bd_test_cluster_bytes
+                     : bd_test_free_bytes >= 0 || !root ? 0 : bd_fs_cluster_bytes(root);
         free(root);
         /* How much fits, leaving the reserve free for the catalog's copies.
          * Unknown space means no limit. */
@@ -1061,10 +1116,11 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
 
     backup_item items[BATCH];
     int64_t last_id = 0, items_done = 0, rehashed_total = 0, last_save_ms = bd_now_ms();
-    int cancelled = 0, gone = 0;
+    int cancelled = 0, gone = 0, left = n;
     int full_said[MAX_DESTS] = {0}, limit_said[MAX_DESTS] = {0};
     int64_t biggest = bd_biggest_drive(cat); /* a file over it fits no drive you have */
-    while (!cancelled && !gone) {
+    /* A drive that goes is left out; the others get everything. */
+    while (!cancelled && left > 0) {
         size_t ni = 0;
         sqlite3_reset(q);
         sqlite3_bind_int64(q, 1, source_id);
@@ -1112,7 +1168,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             /* Which drives still need it. */
             int want[MAX_DESTS], nw = 0;
             for (int k = 0; k < n; k++) {
-                want[k] = !dests[k].secondary || it->starred;
+                want[k] = (!dests[k].secondary || it->starred) && !dests[k].gone;
                 if (want[k] && n > 1) {
                     sqlite3_reset(have);
                     sqlite3_bind_int64(have, 1, it->version_id);
@@ -1123,8 +1179,13 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 if (want[k]) { nw++; stats[k].files_considered++; }
             }
             if (!nw) continue;
-            int rehashed = 0;
-            int prep = item_prepare(cat, it, &rehashed, log, log_ctx);
+            /* Where it cannot fit anywhere it is wanted (the drive full, the
+             * file too big for it), it is not even read. */
+            int fits_one = 0;
+            for (int k = 0; k < n && !fits_one; k++)
+                if (want[k]) fits_one = dest_fit(&dests[k], copy_need(it, dests[k].encrypted || it->encrypt)) == FITS;
+            int prep = PREP_OK, rehashed = 0;
+            if (fits_one) prep = item_prepare(cat, it, &rehashed, log, log_ctx);
             if (prep != PREP_OK) {
                 for (int k = 0; k < n; k++) {
                     if (!want[k]) continue;
@@ -1158,10 +1219,10 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 if (!want[k]) continue;
                 backup_dest *d = &dests[k];
                 const uint8_t *key = (d->encrypted || it->encrypt) ? cat->key : NULL;
+                int64_t need = copy_need(it, key != NULL);
+                int fit = dest_fit(d, need);
                 if (adopt_alongside(cat, d->store, key, it, &stats[k])) continue;
-                /* Sealed copies are a little bigger than the file. */
-                int64_t need = it->version_size + (key ? it->version_size / 1024 + 4096 : 0);
-                if (d->max_file >= 0 && need > d->max_file) {
+                if (fit == TOO_BIG_FOR_FS) {
                     /* Planned out: never read, never half written. */
                     if (!d->too_big_said++) {
                         if (n > 1) bd_logf(log, log_ctx, "\"%s\": " BD_WHY_FAT32 ". Such files wait for another drive", d->label);
@@ -1174,7 +1235,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                     stats[k].too_big_why = BD_WHY_FAT32;
                     continue;
                 }
-                if (d->space_free >= 0 && need > d->space_free - d->reserve) {
+                if (fit == DRIVE_FULL) {
                     if (biggest > 0 && need > biggest) {
                         /* No drive you have could take it. */
                         if (stats[k].files_bigger_than_drives < 20)
@@ -1189,7 +1250,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                     stats[k].bytes_no_room += it->version_size;
                     continue;
                 }
-                if (d->budget >= 0 && need > d->budget) {
+                if (fit == OVER_LIMIT) {
                     if (!limit_said[k]++)
                         bd_logf(log, log_ctx, "\"%s\" has reached the size you set for it; starred files over it are not copied there",
                                 d->label);
@@ -1224,7 +1285,7 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                 if (r == 0 && dest_gone(cat, d, failed_before, n, log, log_ctx)) gone = 1;
                 if (r != 1) continue;
                 pending_copy *p = ps[j];
-                if (d->space_free >= 0) d->space_free -= p->bytes;
+                if (d->space_free >= 0) d->space_free -= room_taken(d, p->bytes);
                 if (d->budget >= 0) d->budget -= p->bytes + (p->sealed ? p->bytes / 1024 + 4096 : 0);
                 d->group_bytes += p->bytes;
                 d->ng++;
@@ -1233,7 +1294,8 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
                     if (d->gone) gone = 1;
                 }
             }
-            if (cancelled || gone) break;
+            if (gone) left = dests_left(cat, dests, n);
+            if (cancelled || !left) break;
         }
         /* A stop during the batch's last copy is still a stop. */
         if (!cancelled && bd_cancelled(cat)) cancelled = 1;
@@ -1241,11 +1303,20 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
             dest_flush(cat, &dests[k], n, log, log_ctx);
             if (dests[k].gone) gone = 1;
         }
+        if (gone) left = dests_left(cat, dests, n);
         if (in_txn && bd_exec(cat, "COMMIT") != 0) {
             bd_logf(log, log_ctx, "cannot record the copies: %s", sqlite3_errmsg(cat->db));
             bd_exec(cat, "ROLLBACK");
         }
         free_items(items, ni);
+        /* The room left, read again: the file system's own count, which
+         * knows what each copy really took. */
+        for (int k = 0; k < n; k++) {
+            backup_dest *d = &dests[k];
+            int64_t total = 0, freeb = -1;
+            if (!d->gone && d->space_free >= 0 && bd_test_free_bytes < 0 && d->store->ops->space(d->store, &total, &freeb) == 0)
+                d->space_free = freeb;
+        }
         /* Every few minutes, between batches, when every copy made so far
          * is synced, in its place and recorded: save the catalog, so a
          * long backup that is cut short (a crash, a power cut) keeps what
@@ -1294,16 +1365,45 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
     bd_progress_end(cat);
     for (int k = 0; k < n; k++)
         bd_job_finish(cat, dests[k].job,
-                      dests[k].gone ? "failed" : cancelled || gone ? "stopped" : stats[k].files_failed ? "partial" : "done",
+                      dests[k].gone ? "failed" : cancelled ? "stopped" : stats[k].files_failed ? "partial" : "done",
                       stats[k].files_copied, stats[k].files_failed, stats[k].bytes_copied);
     bd_exec(cat, "DELETE FROM temp.bk_dests");
+    /* Each drive still there gets the catalog as it is now, under a new
+     * name, also when the backup was stopped or another drive went: what
+     * it holds can be found from the drive alone. */
+    for (int k = 0; k < n; k++) {
+        backup_dest *d = &dests[k];
+        if (d->gone) continue;
+        if (bd_catalog_copy_to_media(cat, d->media_id) == BD_OK) {
+            stats[k].catalog_revision = bd_catalog_revision(cat);
+        } else {
+            stats[k].catalog_copy_failed = 1;
+            if (n > 1)
+                bd_logf(log, log_ctx, "the catalog could not be copied to \"%s\", so no copy of it there knows what this backup copied: %s",
+                        d->label, bd_catalog_error(cat));
+            else
+                bd_logf(log, log_ctx, "the catalog could not be copied to the drive, so no copy of it there knows what this backup copied: %s",
+                        bd_catalog_error(cat));
+        }
+        int64_t rev = 0;
+        if (bd_media_copy_clash(cat, d->media_id, &rev))
+            bd_logf(log, log_ctx, "\"%s\" already had a different copy of this database at revision %lld: two copies of this database "
+                                  "were used separately. Both stay on the drive, this one beside it under a name of its own",
+                    d->label, (long long)rev);
+    }
+    bd_media_record_catalog_copies(cat);
     if (gone) {
         const char *label = "";
+        int others = 0;
         for (int k = 0; k < n; k++)
-            if (dests[k].gone) { label = dests[k].label; break; }
+            if (dests[k].gone && !*label) label = dests[k].label;
+            else if (!dests[k].gone) others++;
         bd_status r = n > 1 ? bd_fail(cat, BD_ERR_DRIVE_GONE,
-                                      "\"%s\" stopped answering or was unplugged during the backup. The copies finished"
-                                      " before are kept and nothing on it was marked missing; plug it in again and back up again",
+                                      others ? "\"%s\" stopped answering or was unplugged during the backup, which went on to the other"
+                                               " drives. The copies finished on it before are kept and nothing on it was marked missing;"
+                                               " plug it in again and back up again"
+                                             : "\"%s\" stopped answering or was unplugged during the backup. The copies finished"
+                                               " before are kept and nothing on it was marked missing; plug it in again and back up again",
                                       label)
                             : bd_fail(cat, BD_ERR_DRIVE_GONE,
                                       "the drive stopped answering or was unplugged during the backup. The copies finished"
@@ -1311,15 +1411,8 @@ bd_status bd_backup_many(bd_catalog *cat, const int64_t *media_ids, int n, int64
         free(dests);
         return r;
     }
-    if (cancelled) { free(dests); return bd_fail_cancelled(cat); }
-    /* Each drive gets the catalog as it is now, under a new name: what it
-     * holds can be found from the drive alone. */
-    for (int k = 0; k < n; k++)
-        if (bd_catalog_copy_to_media(cat, dests[k].media_id) != BD_OK) {
-            if (n > 1) bd_logf(log, log_ctx, "the catalog could not be copied to \"%s\": %s", dests[k].label, bd_catalog_error(cat));
-            else bd_logf(log, log_ctx, "the catalog could not be copied to the drive: %s", bd_catalog_error(cat));
-        }
     free(dests);
+    if (cancelled) return bd_fail_cancelled(cat);
     return BD_OK;
 }
 

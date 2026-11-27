@@ -140,7 +140,8 @@ static void usage(void)
          "  0  done, and nothing was left undone\n"
          "  1  an error: the message says what failed (or the command was mistyped)\n"
          "  2  done, but with problems to look at: files that could not be read or\n"
-         "     copied, or did not fit on the drive (backup); copies missing or damaged\n"
+         "     copied, or did not fit on the drive, or the database could not be copied\n"
+         "     to it (backup); copies missing or damaged\n"
          "     (check, verify); files that could not be read, files damaged on this PC\n"
          "     or backup roots not found (scan); files not restored (restore);\n"
          "     files whose compression could not be changed (compress)\n"
@@ -1143,6 +1144,9 @@ static int print_status(void *ctx, const bd_media_info *m)
         j_int("last_check_ms", st.last_check_ms);
         j_str("last_check_kind", st.last_check_kind);
         j_str("last_check_status", st.last_check_status);
+        j_int("catalog_revision", st.catalog_revision);
+        j_int("catalog_written_ms", st.catalog_written_ms);
+        j_int("catalog_failed_ms", st.catalog_failed_ms);
         J_END();
         return 0;
     }
@@ -1176,6 +1180,17 @@ static int print_status(void *ctx, const bd_media_info *m)
         printf(" (%s, %s)\n", st.last_check_kind, st.last_check_status);
     } else {
         puts("  last check:    never");
+    }
+    if (st.catalog_revision) {
+        printf("  database copy: revision %lld", (long long)st.catalog_revision);
+        print_when(", written ", st.catalog_written_ms);
+        putchar('\n');
+    } else {
+        puts("  database copy: none known");
+    }
+    if (st.catalog_failed_ms) {
+        print_when("  problems:      the database could not be copied to it ", st.catalog_failed_ms);
+        printf(", so no copy there knows what that backup copied\n");
     }
     if (st.copies_bad) printf("  problems:      %lld copies missing or damaged when last checked\n", (long long)st.copies_bad);
     if (st.copies_never_read) printf("  never read back: %lld copies\n", (long long)st.copies_never_read);
@@ -1715,6 +1730,8 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
         if (bs->too_big_why) j_str("too_big_why", bs->too_big_why);
         j_int("files_bigger_than_drives", bs->files_bigger_than_drives);
         j_int("bytes_bigger_than_drives", bs->bytes_bigger_than_drives);
+        j_int("catalog_revision", bs->catalog_revision);
+        j_bool("catalog_copy_failed", bs->catalog_copy_failed);
         report_in_use(cat, bs->files_in_use);
         J_END();
         return;
@@ -1753,6 +1770,9 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
                bs->files_bigger_than_drives == 1 ? "is" : "are", bs->files_bigger_than_drives == 1 ? "it" : "them",
                bs->files_bigger_than_drives == 1 ? "it" : "them");
     }
+    if (bs->catalog_copy_failed)
+        printf("the database could not be copied to the drive, so no copy of it there knows what this backup copied: "
+               "back up to it again to put one there\n");
 }
 
 /* ---- Commands ------------------------------------------------------------ */
@@ -1760,7 +1780,7 @@ static void print_backup_result(bd_catalog *cat, const char *label, const bd_bac
 /* Files that could not be read or copied, or did not fit: exit 2. */
 static int backup_problems(const bd_backup_stats *bs)
 {
-    return bs->files_failed > 0 || bs->files_no_room > 0;
+    return bs->files_failed > 0 || bs->files_no_room > 0 || bs->catalog_copy_failed;
 }
 
 static int run(int argc, char **argv)
@@ -2305,7 +2325,11 @@ static int run(int argc, char **argv)
                     for (int i = 0; i < npos; i++) bd_catalog_copy_to_media(cat, ids[i]);
                     return stopped(cat, "backup");
                 }
-                if (s == BD_ERR_DRIVE_GONE) return drive_gone(cat);
+                if (s == BD_ERR_DRIVE_GONE) {
+                    /* The backup went on to the others: what each got. */
+                    for (int i = 0; i < npos && !g_json; i++) print_backup_result(cat, label_of(cat, ids[i]), &bs[i]);
+                    return drive_gone(cat);
+                }
                 if (s != BD_OK) return die(cat, "backup failed");
                 if (g_json) J_ARR(NULL);
                 for (int i = 0; i < npos; i++) {

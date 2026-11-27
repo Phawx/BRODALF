@@ -1,0 +1,14 @@
+001-no-local-data-on-opening.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+002-no-local-data-on-opening-then-2.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+003-no-local-data-on-opening-then-3.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+004-no-local-data-tab-1.png	window	My backups.brodalf - BRODALF		1226x813
+005-no-local-data-letters.png	window	My backups.brodalf - BRODALF		1226x813
+006-no-local-data-a-faded-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+007-no-local-data-holiday-photos.png	window	My backups.brodalf - BRODALF		1226x813
+008-no-local-data-right-click-a-faded-file.png	menu			1226x813
+009-no-local-data-a-backup-root-selected.png	window	My backups.brodalf - BRODALF		1226x813
+010-no-local-data-tab-3-local-backups.png	window	My backups.brodalf - BRODALF		1226x813
+011-no-local-data-help-what-the-file-list-shows.png	dialog	What the file list shows	Each file and folder shows its name, its state, the drives its copies are on (in grey when not plugged in), when it was changed, its type and its size. Point at a name for all of it in words; a file's versions are in its details. / Close	825x681
+012-no-local-data-red-plugged-in-letters.png	window	My backups.brodalf - BRODALF		1226x813
+013-no-local-data-red-plugged-in-a-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+014-no-local-data-red-plugged-in-holiday-photos.png	window	My backups.brodalf - BRODALF		1226x813

@@ -1,0 +1,817 @@
+2026-11-27 00:37:53  brodalf-cli 0.10.2 (3baef82): new C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:53  brodalf-cli 0.10.2 (3baef82): passphrase C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:53  brodalf-cli 0.10.2 (3baef82): scan C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:53  scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 00:37:53  scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 00:37:53  scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 00:37:53  brodalf-cli 0.10.2 (3baef82): roots C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:53  brodalf-cli 0.10.2 (3baef82): encrypt-folder C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:54  brodalf-cli 0.10.2 (3baef82): star C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:54  brodalf-cli 0.10.2 (3baef82): star C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:54  brodalf-cli 0.10.2 (3baef82): drive C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:54  brodalf-cli 0.10.2 (3baef82): drive C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:54  brodalf-cli 0.10.2 (3baef82): drive C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:55  brodalf-cli 0.10.2 (3baef82): place C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:55  brodalf-cli 0.10.2 (3baef82): backup C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:37:59  brodalf-cli 0.10.2 (3baef82): drive-lost C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:38:04  brodalf-cli 0.10.2 (3baef82): scan C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:38:04  scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 00:38:04  contents changed but size and time did not (damage?): Recipes/Grandma's apple cake.txt
+2026-11-27 00:38:04  scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 00:38:04  scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 00:38:04  brodalf-cli 0.10.2 (3baef82): status C:\BrodalfDemo\My backups.brodalf
+2026-11-27 00:38:04  brodalf-cli 0.10.2 (3baef82): new C:\BrodalfDemo\Empty.brodalf
+2026-11-27 00:38:15  BRODALF 0.10.2 (3baef82) started
+2026-11-27 00:38:15  TREEDBG main clipchildren=0
+2026-11-27 00:38:15  TREEDBG 392234 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392234 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392312 main-erase clip=0,0,1224,761 tree=20,246,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=0,0,1224,738 tree=20,246,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=8,8,130,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=138,8,213,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=221,8,296,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=304,8,399,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=407,8,479,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=487,8,552,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=560,8,635,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 main-erase clip=643,8,733,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392328 page-erase clip=0,0,1200,412
+2026-11-27 00:38:15  TREEDBG 392328 page-erase clip=8,8,130,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=333,8,427,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=433,8,587,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=593,8,719,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=725,8,822,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=828,8,936,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=942,8,1087,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=1093,8,1188,34
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=8,40,144,66
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=8,72,846,96
+2026-11-27 00:38:15  TREEDBG 392375 page-erase clip=852,72,1192,96
+2026-11-27 00:38:15  TREEDBG 392375 paint-begin rc=0,0,209,298
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392390 main-erase clip=8,120,1216,560 tree=20,246,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392390 main-erase clip=8,620,1216,730 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=8,8,130,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=138,8,213,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=221,8,296,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=304,8,399,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=407,8,479,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=487,8,552,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=560,8,635,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392421 main-erase clip=643,8,733,38 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392437 main-erase clip=8,46,1216,131 tree=20,246,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392437 main-erase clip=8,46,1216,560 tree=20,246,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392437 main-erase clip=8,46,1216,560 tree=20,265,233,567 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392437 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=8,8,130,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=333,8,427,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=433,8,587,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=593,8,719,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=725,8,822,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=828,8,936,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=942,8,1087,34
+2026-11-27 00:38:15  TREEDBG 392437 page-erase clip=1093,8,1188,34
+2026-11-27 00:38:15  TREEDBG 392453 page-erase clip=8,40,144,66
+2026-11-27 00:38:15  TREEDBG 392468 rebuild-begin
+2026-11-27 00:38:15  TREEDBG 392468 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392468 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392468 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392468 rebuild-end
+2026-11-27 00:38:15  Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up.
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=8,8,130,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=138,8,213,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=221,8,296,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=304,8,399,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=407,8,479,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=487,8,552,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=560,8,635,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=643,8,733,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=8,8,130,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=333,8,427,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=433,8,587,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=593,8,719,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=725,8,822,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=828,8,936,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=942,8,1087,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=1093,8,1188,34
+2026-11-27 00:38:15  TREEDBG 392484 page-erase clip=8,40,144,66
+2026-11-27 00:38:15  TREEDBG 392500 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392500 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392500 main-erase clip=0,0,1224,738 tree=20,265,233,509 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392500 main-erase clip=0,0,1224,738 tree=20,265,233,509 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392500 main-erase clip=8,8,130,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=138,8,213,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=221,8,296,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=304,8,399,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=407,8,479,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=487,8,552,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=560,8,635,38 tree=20,265,233,509 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=8,139,1216,560 tree=20,265,233,509 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392515 main-erase clip=8,139,1216,560 tree=20,265,233,509 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=8,139,1216,612 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  No backup drive is plugged in.
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=643,8,733,38 tree=20,265,233,548 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=0,0,1224,738 tree=20,265,233,548 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392531 main-erase clip=0,0,1224,738 tree=20,394,233,677 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392546 main-erase clip=0,0,1224,738 tree=20,394,233,596 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392546 main-erase clip=0,0,1224,738 tree=20,394,233,596 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392546 rebuild-begin
+2026-11-27 00:38:15  TREEDBG 392546 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392546 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392546 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392562 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392562 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392562 paint-begin rc=0,0,0,0
+2026-11-27 00:38:15  TREEDBG paint-end
+2026-11-27 00:38:15  TREEDBG 392562 rebuild-end
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=8,8,130,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=138,8,213,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=221,8,296,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=304,8,399,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=407,8,479,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=487,8,552,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=560,8,635,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=643,8,756,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 main-erase clip=0,0,1224,738 tree=20,394,233,596 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392562 page-erase clip=8,8,130,34
+2026-11-27 00:38:15  TREEDBG 392562 page-erase clip=333,8,427,34
+2026-11-27 00:38:15  TREEDBG 392562 page-erase clip=433,8,587,34
+2026-11-27 00:38:15  TREEDBG 392562 page-erase clip=593,8,719,34
+2026-11-27 00:38:15  TREEDBG 392562 page-erase clip=725,8,822,34
+2026-11-27 00:38:15  TREEDBG 392562 page-erase clip=828,8,936,34
+2026-11-27 00:38:15  TREEDBG 392578 page-erase clip=942,8,1087,34
+2026-11-27 00:38:15  TREEDBG 392578 page-erase clip=1093,8,1188,34
+2026-11-27 00:38:15  TREEDBG 392578 page-erase clip=8,40,144,66
+2026-11-27 00:38:15  TREEDBG 392578 page-erase clip=828,8,936,34
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=8,8,130,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=138,8,213,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=221,8,296,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=304,8,399,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=407,8,479,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=487,8,552,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=560,8,635,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=643,8,756,38 tree=20,394,233,596 overlap=0 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 main-erase clip=0,0,1224,738 tree=20,394,233,596 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392578 page-erase clip=8,8,130,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=333,8,427,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=433,8,587,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=593,8,719,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=725,8,822,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=828,8,953,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=959,8,1104,34
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=8,40,103,66
+2026-11-27 00:38:15  TREEDBG 392593 page-erase clip=109,40,245,66
+2026-11-27 00:38:15  TREEDBG 392593 main-erase clip=0,0,1224,738 tree=20,394,233,596 overlap=1 vis=1
+2026-11-27 00:38:15  TREEDBG 392593 main-erase clip=0,0,1224,738 tree=20,394,233,596 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392625 main-erase clip=0,0,1224,738 tree=20,394,233,563 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392625 main-erase clip=0,0,1224,738 tree=20,394,233,563 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392625 main-erase clip=0,0,1224,738 tree=20,394,233,563 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392625 main-erase clip=8,8,130,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392625 main-erase clip=8,674,1216,730 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  Scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 00:38:16  Backup root C:\BrodalfDemo\Data\Documents cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 00:38:16  Scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 00:38:16  Backup root C:\BrodalfDemo\Data\Photos cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 00:38:16  Scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 00:38:16  Backup root C:\BrodalfDemo\Data\Projects cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 00:38:16  3 backup roots could not be found; nothing in them was marked deleted.
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=138,8,213,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=221,8,296,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=304,8,399,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=407,8,479,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=487,8,552,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=560,8,635,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 main-erase clip=643,8,756,38 tree=20,394,233,563 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=0,0,1200,279
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=8,8,130,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=333,8,427,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=433,8,587,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=593,8,719,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=725,8,822,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=828,8,953,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=959,8,1104,34
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=8,40,103,66
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=109,40,245,66
+2026-11-27 00:38:16  TREEDBG 392640 page-erase clip=8,72,846,96
+2026-11-27 00:38:16  TREEDBG 392656 page-erase clip=852,72,1192,96
+2026-11-27 00:38:16  TREEDBG 392656 paint-begin rc=0,0,192,165
+2026-11-27 00:38:16  TREEDBG pre Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,0,192,24
+2026-11-27 00:38:16  TREEDBG post Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,0,192,24
+2026-11-27 00:38:16  TREEDBG pre Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:16  TREEDBG post Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:16  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,48,192,72
+2026-11-27 00:38:16  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,48,192,72
+2026-11-27 00:38:16  TREEDBG variant 1 (n=1) ix=22 iy=52 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:16  TREEDBG icon 3
+2026-11-27 00:38:16  TREEDBG icon drawn
+2026-11-27 00:38:16  TREEDBG post-done
+2026-11-27 00:38:16  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,72,192,96
+2026-11-27 00:38:16  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,72,192,96
+2026-11-27 00:38:16  TREEDBG pre 2024 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,96,192,120
+2026-11-27 00:38:16  TREEDBG post 2024 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,96,192,120
+2026-11-27 00:38:16  TREEDBG pre Projects root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,120,192,144
+2026-11-27 00:38:16  TREEDBG post Projects root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,120,192,144
+2026-11-27 00:38:16  TREEDBG variant 2 (n=2) ix=22 iy=124 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:16  TREEDBG post-done
+2026-11-27 00:38:16  TREEDBG pre Thesis root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,144,192,168
+2026-11-27 00:38:16  TREEDBG post Thesis root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,144,192,168
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392718 main-erase clip=8,268,1216,593 tree=20,394,233,563 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392718 main-erase clip=8,268,1216,593 tree=20,394,233,563 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392734 main-erase clip=8,268,1216,666 tree=20,394,233,581 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392734 main-erase clip=8,674,1216,730 tree=20,394,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  Scan finished with 3 problems. Scan done: 0 files. Since the last scan: 0 new, 0 changed, 0 moved or renamed, 0 deleted; 0 bytes read. 3 backup roots could not be found.
+2026-11-27 00:38:16  TREEDBG 392734 main-erase clip=0,0,1224,738 tree=20,394,233,581 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392734 main-erase clip=0,0,1224,738 tree=20,394,233,581 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392734 main-erase clip=0,0,1224,738 tree=20,418,233,605 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392750 rebuild-begin
+2026-11-27 00:38:16  TREEDBG 392750 paint-begin rc=0,0,0,0
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392750 paint-begin rc=0,0,0,0
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392750 paint-begin rc=0,0,0,0
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392750 paint-begin rc=0,0,0,0
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392765 paint-begin rc=0,0,0,0
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392765 paint-begin rc=0,0,0,0
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392765 rebuild-end
+2026-11-27 00:38:16  TREEDBG 392859 paint-begin rc=0,0,192,159
+2026-11-27 00:38:16  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,0,192,24
+2026-11-27 00:38:16  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,0,192,24
+2026-11-27 00:38:16  TREEDBG variant 1 (n=3) ix=22 iy=4 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:16  TREEDBG icon 3
+2026-11-27 00:38:16  TREEDBG icon drawn
+2026-11-27 00:38:16  TREEDBG post-done
+2026-11-27 00:38:16  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:16  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:16  TREEDBG pre 2024 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:16  TREEDBG post 2024 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:16  TREEDBG pre Projects root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:16  TREEDBG post Projects root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:16  TREEDBG variant 2 (n=4) ix=22 iy=76 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:16  TREEDBG post-done
+2026-11-27 00:38:16  TREEDBG pre Thesis root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,96,192,120
+2026-11-27 00:38:16  TREEDBG post Thesis root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,96,192,120
+2026-11-27 00:38:16  TREEDBG pre Website root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:38:16  TREEDBG post Website root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:38:16  TREEDBG paint-end
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=0,0,1200,273
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=8,8,130,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=333,8,427,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=433,8,587,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=593,8,719,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=725,8,822,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=828,8,953,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=959,8,1104,34
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=8,40,103,66
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=109,40,245,66
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=8,72,846,96
+2026-11-27 00:38:16  TREEDBG 392875 page-erase clip=852,72,1192,96
+2026-11-27 00:38:16  TREEDBG 392890 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:16  TREEDBG 392890 main-erase clip=8,674,1216,730 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 main-erase clip=0,0,0,0 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=8,8,130,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=333,8,427,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=433,8,587,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=593,8,719,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=725,8,822,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=828,8,953,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=959,8,1104,34
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=8,40,103,66
+2026-11-27 00:38:22  TREEDBG 398890 page-erase clip=109,40,245,66
+2026-11-27 00:38:30  TREEDBG 406765 page-erase clip=0,0,0,0
+2026-11-27 00:38:30  TREEDBG 406765 paint-begin rc=0,0,192,72
+2026-11-27 00:38:30  TREEDBG pre Letters root=0 away=1 ghost=1 uis=0x11 tvis=0x6 rc=0,0,192,24
+2026-11-27 00:38:30  TREEDBG post Letters root=0 away=1 ghost=1 uis=0x11 tvis=0x6 rc=0,0,192,24
+2026-11-27 00:38:30  TREEDBG pre Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:30  TREEDBG post Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:30  TREEDBG pre Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:30  TREEDBG post Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:30  TREEDBG paint-end
+2026-11-27 00:38:33  TREEDBG 409750 page-erase clip=896,178,1192,265
+2026-11-27 00:38:33  TREEDBG 409750 page-erase clip=896,178,1192,184
+2026-11-27 00:38:34  TREEDBG 411203 paint-begin rc=0,0,0,0
+2026-11-27 00:38:34  TREEDBG paint-end
+2026-11-27 00:38:34  TREEDBG 411203 paint-begin rc=0,96,192,144
+2026-11-27 00:38:34  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:34  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:34  TREEDBG variant 1 (n=5) ix=22 iy=76 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:34  TREEDBG icon 3
+2026-11-27 00:38:34  TREEDBG icon drawn
+2026-11-27 00:38:34  TREEDBG post-done
+2026-11-27 00:38:34  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:38:34  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:38:34  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:38:34  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:38:34  TREEDBG paint-end
+2026-11-27 00:38:35  TREEDBG 412437 page-erase clip=0,0,0,0
+2026-11-27 00:38:35  TREEDBG 412437 page-erase clip=896,184,1192,265
+2026-11-27 00:38:35  TREEDBG 412437 page-erase clip=0,0,0,0
+2026-11-27 00:38:35  TREEDBG 412437 page-erase clip=0,0,0,0
+2026-11-27 00:38:35  TREEDBG 412437 paint-begin rc=0,0,192,144
+2026-11-27 00:38:35  TREEDBG pre Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,0,192,24
+2026-11-27 00:38:35  TREEDBG post Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,0,192,24
+2026-11-27 00:38:35  TREEDBG pre Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:35  TREEDBG post Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:35  TREEDBG pre Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:35  TREEDBG post Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:35  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:35  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:35  TREEDBG variant 1 (n=6) ix=22 iy=76 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:35  TREEDBG icon 3
+2026-11-27 00:38:35  TREEDBG icon drawn
+2026-11-27 00:38:35  TREEDBG post-done
+2026-11-27 00:38:35  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:38:35  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:38:35  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x11 tvis=0x6 rc=0,120,192,144
+2026-11-27 00:38:35  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x11 tvis=0x6 rc=0,120,192,144
+2026-11-27 00:38:35  TREEDBG paint-end
+2026-11-27 00:38:38  TREEDBG 414828 page-erase clip=0,0,0,0
+2026-11-27 00:38:38  TREEDBG 414828 paint-begin rc=0,0,192,144
+2026-11-27 00:38:38  TREEDBG pre Letters root=0 away=1 ghost=1 uis=0x11 tvis=0x6 rc=0,0,192,24
+2026-11-27 00:38:38  TREEDBG post Letters root=0 away=1 ghost=1 uis=0x11 tvis=0x6 rc=0,0,192,24
+2026-11-27 00:38:38  TREEDBG pre Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:38  TREEDBG post Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:38  TREEDBG pre Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:38  TREEDBG post Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:38  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:38  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:38  TREEDBG variant 1 (n=7) ix=22 iy=76 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:38  TREEDBG icon 3
+2026-11-27 00:38:38  TREEDBG icon drawn
+2026-11-27 00:38:38  TREEDBG post-done
+2026-11-27 00:38:38  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:38:38  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:38:38  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:38:38  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:38:38  TREEDBG paint-end
+2026-11-27 00:38:38  TREEDBG 415437 page-erase clip=896,178,1192,265
+2026-11-27 00:38:38  TREEDBG 415437 page-erase clip=896,178,1192,184
+2026-11-27 00:38:43  TREEDBG 420218 page-erase clip=0,0,0,0
+2026-11-27 00:38:43  TREEDBG 420218 page-erase clip=896,184,1192,265
+2026-11-27 00:38:43  TREEDBG 420218 page-erase clip=0,0,0,0
+2026-11-27 00:38:43  TREEDBG 420218 page-erase clip=0,0,0,0
+2026-11-27 00:38:43  TREEDBG 420218 paint-begin rc=0,0,192,48
+2026-11-27 00:38:43  TREEDBG pre Documents root=1 away=1 ghost=1 uis=0x11 tvis=0x72 rc=0,0,192,24
+2026-11-27 00:38:43  TREEDBG post Documents root=1 away=1 ghost=1 uis=0x11 tvis=0x72 rc=0,0,192,24
+2026-11-27 00:38:43  TREEDBG post-done
+2026-11-27 00:38:43  TREEDBG pre Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:43  TREEDBG post Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:43  TREEDBG paint-end
+2026-11-27 00:38:46  TREEDBG 422890 main-erase clip=8,292,281,316 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:46  TREEDBG 422906 main-erase clip=12,316,1212,589 tree=20,418,233,581 overlap=1 vis=0
+2026-11-27 00:38:46  TREEDBG 422937 main-erase clip=190,292,281,316 tree=20,418,233,581 overlap=0 vis=0
+2026-11-27 00:38:49  TREEDBG 425671 main-erase clip=8,292,281,316 tree=20,418,233,581 overlap=0 vis=0
+2026-11-27 00:38:49  TREEDBG 425671 main-erase clip=12,316,1212,589 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=0,0,1200,273
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=8,8,130,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=333,8,427,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=433,8,587,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=593,8,719,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=725,8,822,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=828,8,953,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=959,8,1104,34
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=8,40,103,66
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=109,40,245,66
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=8,72,846,96
+2026-11-27 00:38:49  TREEDBG 425671 page-erase clip=852,72,1192,96
+2026-11-27 00:38:49  TREEDBG 425671 paint-begin rc=0,0,192,159
+2026-11-27 00:38:49  TREEDBG pre Documents root=1 away=1 ghost=1 uis=0x1 tvis=0x72 rc=0,0,192,24
+2026-11-27 00:38:49  TREEDBG post Documents root=1 away=1 ghost=1 uis=0x1 tvis=0x72 rc=0,0,192,24
+2026-11-27 00:38:49  TREEDBG post-done
+2026-11-27 00:38:49  TREEDBG pre Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:49  TREEDBG post Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:49  TREEDBG pre Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:49  TREEDBG post Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:49  TREEDBG pre Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,72,192,96
+2026-11-27 00:38:49  TREEDBG post Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,72,192,96
+2026-11-27 00:38:49  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,96,192,120
+2026-11-27 00:38:49  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,96,192,120
+2026-11-27 00:38:49  TREEDBG variant 1 (n=8) ix=22 iy=100 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:49  TREEDBG icon 3
+2026-11-27 00:38:49  TREEDBG icon drawn
+2026-11-27 00:38:49  TREEDBG post-done
+2026-11-27 00:38:49  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,120,192,144
+2026-11-27 00:38:49  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,120,192,144
+2026-11-27 00:38:49  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,144,192,168
+2026-11-27 00:38:49  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,144,192,168
+2026-11-27 00:38:49  TREEDBG paint-end
+2026-11-27 00:38:49  TREEDBG 425687 main-erase clip=0,0,0,0 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:51  TREEDBG 427968 main-erase clip=8,292,116,316 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:52  TREEDBG 429265 main-erase clip=8,292,116,316 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 main-erase clip=0,0,0,0 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 433843 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 433859 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 433859 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=8,292,1216,666 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=0,0,1224,738 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=8,8,130,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=138,8,213,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=221,8,296,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=304,8,399,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433875 main-erase clip=407,8,479,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433890 main-erase clip=487,8,552,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433890 main-erase clip=560,8,635,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433890 main-erase clip=643,8,756,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 433890 page-erase clip=0,0,1200,255
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=8,72,846,96
+2026-11-27 00:38:57  TREEDBG 433906 page-erase clip=852,72,1192,96
+2026-11-27 00:38:57  TREEDBG 433906 paint-begin rc=0,0,192,141
+2026-11-27 00:38:57  TREEDBG pre Documents root=1 away=1 ghost=1 uis=0x1 tvis=0x72 rc=0,0,192,24
+2026-11-27 00:38:57  TREEDBG post Documents root=1 away=1 ghost=1 uis=0x1 tvis=0x72 rc=0,0,192,24
+2026-11-27 00:38:57  TREEDBG post-done
+2026-11-27 00:38:57  TREEDBG pre Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:57  TREEDBG post Letters root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:57  TREEDBG pre Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:57  TREEDBG post Recipes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:38:57  TREEDBG pre Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,72,192,96
+2026-11-27 00:38:57  TREEDBG post Taxes root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,72,192,96
+2026-11-27 00:38:57  TREEDBG pre Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,96,192,120
+2026-11-27 00:38:57  TREEDBG post Photos root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,96,192,120
+2026-11-27 00:38:57  TREEDBG variant 1 (n=9) ix=22 iy=100 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:38:57  TREEDBG icon 3
+2026-11-27 00:38:57  TREEDBG icon drawn
+2026-11-27 00:38:57  TREEDBG post-done
+2026-11-27 00:38:57  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,120,192,144
+2026-11-27 00:38:57  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,120,192,144
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 433921 main-erase clip=8,292,1216,575 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 433921 main-erase clip=8,674,1216,730 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434078 main-erase clip=8,292,1216,593 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434078 main-erase clip=8,292,1216,593 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434093 main-erase clip=8,292,1216,639 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434093 main-erase clip=8,674,1216,730 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  1 backup drive is plugged in.
+2026-11-27 00:38:57  TREEDBG 434093 rebuild-begin
+2026-11-27 00:38:57  TREEDBG 434093 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434093 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434093 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434093 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434093 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434093 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434109 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434109 rebuild-end
+2026-11-27 00:38:57  Red (kept in At my sister's) is plugged in.
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434109 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 434109 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 434109 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 434109 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 434109 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 434125 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434125 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=0,0,1224,738 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=0,0,1224,738 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=8,8,130,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=138,8,213,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=221,8,296,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=304,8,399,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=407,8,479,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=487,8,552,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=560,8,635,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 main-erase clip=643,8,756,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434140 page-erase clip=0,0,1200,255
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=8,72,846,96
+2026-11-27 00:38:57  TREEDBG 434156 page-erase clip=852,72,1192,96
+2026-11-27 00:38:57  TREEDBG 434156 paint-begin rc=0,0,192,141
+2026-11-27 00:38:57  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,0,192,24
+2026-11-27 00:38:57  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,0,192,24
+2026-11-27 00:38:57  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:57  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:57  TREEDBG pre 2024 root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:38:57  TREEDBG post 2024 root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:38:57  TREEDBG pre Projects root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:57  TREEDBG post Projects root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:57  TREEDBG post-done
+2026-11-27 00:38:57  TREEDBG pre Thesis root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,96,192,120
+2026-11-27 00:38:57  TREEDBG post Thesis root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,96,192,120
+2026-11-27 00:38:57  TREEDBG pre Website root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,120,192,144
+2026-11-27 00:38:57  TREEDBG post Website root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,120,192,144
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434156 main-erase clip=8,292,1216,575 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434171 main-erase clip=8,674,1216,730 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434203 main-erase clip=8,292,1216,593 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434203 main-erase clip=8,292,1216,593 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434203 main-erase clip=8,292,1216,639 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434203 main-erase clip=8,674,1216,730 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  1 backup drive is plugged in.
+2026-11-27 00:38:57  TREEDBG 434218 rebuild-begin
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 paint-begin rc=0,0,0,0
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434218 rebuild-end
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=0,0,1200,273
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=8,8,130,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=333,8,427,34
+2026-11-27 00:38:57  TREEDBG 434234 page-erase clip=433,8,587,34
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=593,8,719,34
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=725,8,822,34
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=828,8,953,34
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=959,8,1104,34
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=8,40,103,66
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=109,40,245,66
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=8,72,846,96
+2026-11-27 00:38:57  TREEDBG 434250 page-erase clip=852,72,1192,96
+2026-11-27 00:38:57  TREEDBG 434250 paint-begin rc=0,0,192,159
+2026-11-27 00:38:57  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,0,192,24
+2026-11-27 00:38:57  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,0,192,24
+2026-11-27 00:38:57  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:57  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,24,192,48
+2026-11-27 00:38:57  TREEDBG pre 2024 root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:38:57  TREEDBG post 2024 root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:38:57  TREEDBG pre Projects root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:57  TREEDBG post Projects root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:38:57  TREEDBG post-done
+2026-11-27 00:38:57  TREEDBG pre Thesis root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,96,192,120
+2026-11-27 00:38:57  TREEDBG post Thesis root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,96,192,120
+2026-11-27 00:38:57  TREEDBG pre Website root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,120,192,144
+2026-11-27 00:38:57  TREEDBG post Website root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,120,192,144
+2026-11-27 00:38:57  TREEDBG paint-end
+2026-11-27 00:38:57  TREEDBG 434250 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:39:08  TREEDBG 444718 page-erase clip=0,0,0,0
+2026-11-27 00:39:08  TREEDBG 444718 paint-begin rc=0,0,192,96
+2026-11-27 00:39:08  TREEDBG pre Letters root=0 away=1 ghost=0 uis=0x1 tvis=0x2 rc=0,0,192,24
+2026-11-27 00:39:08  TREEDBG post Letters root=0 away=1 ghost=0 uis=0x1 tvis=0x2 rc=0,0,192,24
+2026-11-27 00:39:08  TREEDBG pre Recipes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,24,192,48
+2026-11-27 00:39:08  TREEDBG post Recipes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,24,192,48
+2026-11-27 00:39:08  TREEDBG pre Taxes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:39:08  TREEDBG post Taxes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:39:08  TREEDBG pre Photos root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:39:08  TREEDBG post Photos root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:39:08  TREEDBG post-done
+2026-11-27 00:39:08  TREEDBG paint-end
+2026-11-27 00:39:11  TREEDBG 447687 page-erase clip=896,178,1192,265
+2026-11-27 00:39:11  TREEDBG 447687 page-erase clip=896,178,1192,184
+2026-11-27 00:39:13  TREEDBG 450375 page-erase clip=0,0,0,0
+2026-11-27 00:39:13  TREEDBG 450375 page-erase clip=896,184,1192,265
+2026-11-27 00:39:13  TREEDBG 450375 page-erase clip=0,0,0,0
+2026-11-27 00:39:13  TREEDBG 450375 page-erase clip=0,0,0,0
+2026-11-27 00:39:13  TREEDBG 450375 paint-begin rc=0,0,192,144
+2026-11-27 00:39:13  TREEDBG pre Letters root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,0,192,24
+2026-11-27 00:39:13  TREEDBG post Letters root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,0,192,24
+2026-11-27 00:39:13  TREEDBG pre Recipes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,24,192,48
+2026-11-27 00:39:13  TREEDBG post Recipes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,24,192,48
+2026-11-27 00:39:13  TREEDBG pre Taxes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:39:13  TREEDBG post Taxes root=0 away=1 ghost=0 uis=0x0 tvis=0x0 rc=0,48,192,72
+2026-11-27 00:39:13  TREEDBG pre Photos root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:39:13  TREEDBG post Photos root=1 away=1 ghost=0 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:39:13  TREEDBG post-done
+2026-11-27 00:39:13  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:39:13  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,96,192,120
+2026-11-27 00:39:13  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x1 tvis=0x6 rc=0,120,192,144
+2026-11-27 00:39:13  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x1 tvis=0x6 rc=0,120,192,144
+2026-11-27 00:39:13  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 main-erase clip=0,0,0,0 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452921 page-erase clip=8,8,130,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=333,8,427,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=433,8,587,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=593,8,719,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=725,8,822,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=828,8,953,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=959,8,1104,34
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=8,40,103,66
+2026-11-27 00:39:16  TREEDBG 452937 page-erase clip=109,40,245,66
+2026-11-27 00:39:16  TREEDBG 452937 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452937 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=8,292,1216,666 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=0,0,1224,738 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=8,8,130,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=138,8,213,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=221,8,296,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=304,8,399,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=407,8,479,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=487,8,552,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=560,8,635,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=643,8,756,38 tree=20,418,233,563 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=8,292,1216,593 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452953 main-erase clip=8,292,1216,593 tree=20,418,233,563 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452968 main-erase clip=8,292,1216,666 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 452968 main-erase clip=8,674,1216,730 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  No backup drive is plugged in.
+2026-11-27 00:39:16  TREEDBG 452984 rebuild-begin
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 paint-begin rc=0,0,0,0
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 452984 rebuild-end
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=0,0,1224,738 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=8,8,130,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=333,8,427,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=433,8,587,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=593,8,719,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=725,8,822,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=828,8,953,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=959,8,1104,34
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=8,40,103,66
+2026-11-27 00:39:16  TREEDBG 453000 page-erase clip=109,40,245,66
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=8,8,130,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453000 main-erase clip=138,8,213,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 main-erase clip=221,8,296,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 main-erase clip=304,8,399,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 main-erase clip=407,8,479,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 main-erase clip=487,8,552,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 main-erase clip=560,8,635,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 main-erase clip=643,8,756,38 tree=20,418,233,581 overlap=0 vis=1
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=0,0,1200,273
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=8,8,130,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=333,8,427,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=433,8,587,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=593,8,719,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=725,8,822,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=828,8,953,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=959,8,1104,34
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=8,40,103,66
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=109,40,245,66
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=8,72,846,96
+2026-11-27 00:39:16  TREEDBG 453015 page-erase clip=852,72,1192,96
+2026-11-27 00:39:16  TREEDBG 453015 paint-begin rc=0,0,192,159
+2026-11-27 00:39:16  TREEDBG pre 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,0,192,24
+2026-11-27 00:39:16  TREEDBG post 2023 root=0 away=1 ghost=1 uis=0x0 tvis=0x64 rc=0,0,192,24
+2026-11-27 00:39:16  TREEDBG pre Holiday root=0 away=1 ghost=1 uis=0x1 tvis=0x6 rc=0,24,192,48
+2026-11-27 00:39:16  TREEDBG post Holiday root=0 away=1 ghost=1 uis=0x1 tvis=0x6 rc=0,24,192,48
+2026-11-27 00:39:16  TREEDBG pre 2024 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:39:16  TREEDBG post 2024 root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,48,192,72
+2026-11-27 00:39:16  TREEDBG pre Projects root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:39:16  TREEDBG post Projects root=1 away=1 ghost=1 uis=0x0 tvis=0x70 rc=0,72,192,96
+2026-11-27 00:39:16  TREEDBG variant 2 (n=10) ix=22 iy=76 iw=16 ih=16 icon=3 open=3
+2026-11-27 00:39:16  TREEDBG post-done
+2026-11-27 00:39:16  TREEDBG pre Thesis root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,96,192,120
+2026-11-27 00:39:16  TREEDBG post Thesis root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,96,192,120
+2026-11-27 00:39:16  TREEDBG pre Website root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:39:16  TREEDBG post Website root=0 away=1 ghost=1 uis=0x0 tvis=0x4 rc=0,120,192,144
+2026-11-27 00:39:16  TREEDBG paint-end
+2026-11-27 00:39:16  TREEDBG 453031 main-erase clip=8,292,1216,593 tree=20,418,233,581 overlap=1 vis=1
+2026-11-27 00:39:17  TREEDBG 454453 paint-begin rc=0,0,0,0
+2026-11-27 00:39:17  TREEDBG paint-end
+2026-11-27 00:39:17  TREEDBG 454453 paint-begin rc=0,0,0,0
+2026-11-27 00:39:17  TREEDBG paint-end
+2026-11-27 00:39:17  TREEDBG 454453 paint-begin rc=0,0,0,0
+2026-11-27 00:39:17  TREEDBG paint-end

@@ -1,0 +1,96 @@
+2026-11-27 20:15:55  brodalf-cli 0.15.0 (0116476): new C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:55  brodalf-cli 0.15.0 (0116476): passphrase C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:56  brodalf-cli 0.15.0 (0116476): scan C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:56  scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 20:15:56  scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 20:15:56  scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 20:15:56  brodalf-cli 0.15.0 (0116476): roots C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:56  brodalf-cli 0.15.0 (0116476): encrypt-folder C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:57  brodalf-cli 0.15.0 (0116476): star C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:57  brodalf-cli 0.15.0 (0116476): star C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:57  brodalf-cli 0.15.0 (0116476): drive C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:57  brodalf-cli 0.15.0 (0116476): drive C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:57  brodalf-cli 0.15.0 (0116476): drive C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:58  brodalf-cli 0.15.0 (0116476): place C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:15:58  brodalf-cli 0.15.0 (0116476): backup C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:16:04  brodalf-cli 0.15.0 (0116476): drive-lost C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:16:09  brodalf-cli 0.15.0 (0116476): scan C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:16:09  scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 20:16:09  scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 20:16:09  scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 20:16:10  brodalf-cli 0.15.0 (0116476): status C:\BrodalfDemo\My backups.brodalf
+2026-11-27 20:16:10  brodalf-cli 0.15.0 (0116476): new C:\BrodalfDemo\Empty.brodalf
+2026-11-27 20:16:18  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:16:27  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:16:37  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:16:50  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:16:50  Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up.
+2026-11-27 20:16:50  It has no backup roots yet: use Add backup root to choose what to back up.
+2026-11-27 20:16:50  No backup drive is plugged in.
+2026-11-27 20:17:48  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:17:49  Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up.
+2026-11-27 20:17:49  1 backup drive is plugged in.
+2026-11-27 20:17:49  Blue (kept in Desk drawer at home) is plugged in.
+2026-11-27 20:17:49  Gray (kept in Office) is plugged in. It is marked lost or broken, so its copies do not count: if it is back and working, open Drives..., choose it and press Found it.
+2026-11-27 20:17:49  Extra place found: OneDrive folder on this PC.
+2026-11-27 20:17:49  Scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 20:17:49  Scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 20:17:49  Scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 20:17:49  Scan done: 86 files. Since the last scan: 0 new, 0 changed, 0 moved or renamed, 0 deleted; 0 bytes read.
+2026-11-27 20:24:12  Backup done: 41 files copied (8.9 MB), 0 already there, 0 failed. 40 went alongside an older copy (under .versions on the drive): nothing there was overwritten.
+2026-11-27 20:25:32  2 backup drives are plugged in.
+2026-11-27 20:25:32  Red (kept in At my sister's) is plugged in.
+2026-11-27 20:25:32  2 backup drives are plugged in.
+2026-11-27 20:25:52  2 backup drives are plugged in.
+2026-11-27 20:25:55  2 backup drives are plugged in.
+2026-11-27 20:26:00  2 backup drives are plugged in.
+2026-11-27 20:26:34  Check done: 85 copies checked, 85 good, 0 damaged, 0 missing.
+2026-11-27 20:26:48  Check done: 85 copies checked, 85 good, 0 damaged, 0 missing. The newest copy of the database on it reads fine.
+2026-11-27 20:27:03  Backing up to Blue (1 of 3).
+2026-11-27 20:27:06  Copying starred files to OneDrive folder on this PC (2 of 3).
+2026-11-27 20:27:06  Backing up to Red (3 of 3).
+2026-11-27 20:27:09  Blue (kept in Desk drawer at home): 44 files copied (308.9 MB), 0 already there, 0 failed.
+2026-11-27 20:27:09  OneDrive folder on this PC: 0 files copied (0 bytes), 0 already there, 0 failed.
+2026-11-27 20:27:09  Red (kept in At my sister's): 44 files copied (308.9 MB), 0 already there, 0 failed.
+2026-11-27 20:27:09  Backup to 2 drives and 1 extra place done, one after another: 88 files copied (617.8 MB) in all, 0 failed. 82 went alongside an older copy (under .versions): nothing there was overwritten.
+2026-11-27 20:27:23  Check done: 129 copies checked, 129 good, 0 damaged, 0 missing. The newest copy of the database on it reads fine.
+2026-11-27 20:27:36  Check done: 129 copies checked, 129 good, 0 damaged, 0 missing. The newest copy of the database on it reads fine.
+2026-11-27 20:27:43  Check done: 129 copies checked, 129 good, 0 damaged, 0 missing. The newest copy of the database on it reads fine.
+2026-11-27 20:27:44  1 backup drive is plugged in.
+2026-11-27 20:28:08  Left alone, because something else is already at C:\BrodalfRestore\2023\Holiday\IMG_0001.jpg
+2026-11-27 20:28:11  1 file was left alone, because something else was already there.
+2026-11-27 20:28:11  Restored 57 files (312.5 MB) into C:\BrodalfRestore. 1 file left alone because another file was already there: nothing was overwritten.
+2026-11-27 20:28:30  Left alone, because something else is already at C:\BrodalfRestore\2023\Holiday\IMG_0001.jpg
+2026-11-27 20:28:30  1 file was left alone, because something else was already there.
+2026-11-27 20:28:30  Restored 0 files (0 bytes) into C:\BrodalfRestore. 57 were already there. 1 file left alone because another file was already there: nothing was overwritten.
+2026-11-27 20:28:38  Scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 20:28:38  Scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 20:28:39  Scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 20:28:39  Bit-rot scan done: 86 files. Since the last scan: 0 new, 0 changed, 0 moved or renamed, 0 deleted; 315.9 MB read.
+2026-11-27 20:28:42  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:28:43  Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up.
+2026-11-27 20:28:43  1 backup drive is plugged in.
+2026-11-27 20:28:43  Blue (kept in Desk drawer at home) is plugged in.
+2026-11-27 20:28:43  Gray (kept in Office) is plugged in. It is marked lost or broken, so its copies do not count: if it is back and working, open Drives..., choose it and press Found it.
+2026-11-27 20:28:43  Extra place found: OneDrive folder on this PC.
+2026-11-27 20:28:43  Scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 20:28:43  Scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 20:28:43  Scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 20:28:43  Backup root C:\BrodalfDemo\Data\Projects cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 20:28:43  1 backup root could not be found; nothing in it was marked deleted.
+2026-11-27 20:28:43  Scan finished with 1 problem. Scan done: 82 files. Since the last scan: 0 new, 0 changed, 0 moved or renamed, 0 deleted; 0 bytes read. 1 backup root could not be found.
+2026-11-27 20:28:53  BRODALF 0.15.0 (0116476) started
+2026-11-27 20:28:53  Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up.
+2026-11-27 20:28:53  No backup drive is plugged in.
+2026-11-27 20:28:53  Scanning C:\BrodalfDemo\Data\Documents
+2026-11-27 20:28:53  Backup root C:\BrodalfDemo\Data\Documents cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 20:28:53  Scanning C:\BrodalfDemo\Data\Photos
+2026-11-27 20:28:53  Backup root C:\BrodalfDemo\Data\Photos cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 20:28:53  Scanning C:\BrodalfDemo\Data\Projects
+2026-11-27 20:28:53  Backup root C:\BrodalfDemo\Data\Projects cannot be reached, so it was skipped. Nothing in it was marked deleted.
+2026-11-27 20:28:53  3 backup roots could not be found; nothing in them was marked deleted.
+2026-11-27 20:28:53  Scan finished with 3 problems. Scan done: 0 files. Since the last scan: 0 new, 0 changed, 0 moved or renamed, 0 deleted; 0 bytes read. 3 backup roots could not be found.
+2026-11-27 20:29:34  1 backup drive is plugged in.
+2026-11-27 20:29:34  Red (kept in At my sister's) is plugged in.
+2026-11-27 20:29:35  1 backup drive is plugged in.
+2026-11-27 20:29:53  No backup drive is plugged in.

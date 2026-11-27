@@ -1,0 +1,175 @@
+001-start-which-database.png	task dialog	BRODALF	Open the last database / Open a database... / Create a new database... / Recover the database from a backup drive... / Cancel	542x402
+002-start-which-database-over-the-window.png	window+dialog	BRODALF	Open the last database / Open a database... / Create a new database... / Recover the database from a backup drive... / Cancel	1226x813
+003-no-database-open.png	window	BRODALF		1226x813
+004-no-database-menu-file.png	menu			1226x813
+005-error-last-database-moved-away.png	task dialog	BRODALF	Find it... / Open a database... / Create a new database... / Recover the database from a backup drive... / Cancel	542x417
+006-error-last-database-moved-away-over-the-window.png	window+dialog	BRODALF	Find it... / Open a database... / Create a new database... / Recover the database from a backup drive... / Cancel	1226x813
+007-error-last-database-moved-away-the-window-after.png	window	BRODALF		1226x813
+008-error-a-damaged-database-file.png	task dialog	BRODALF	Recover it from a backup drive... (recommended) / Open another database... / Cancel	408x318
+009-error-a-damaged-database-file-over-the-window.png	window+dialog	BRODALF	Recover it from a backup drive... (recommended) / Open another database... / Cancel	1226x813
+010-error-a-damaged-database-file-then-2.png	task dialog	BRODALF	Open the last database / Open a database... / Create a new database... / Recover the database from a backup drive... / Cancel	542x402
+011-error-a-damaged-database-file-the-window-after.png	window	BRODALF		1226x813
+012-empty-tab-1-primary-database.png	window	Empty.brodalf - BRODALF		1226x813
+013-empty-tab-2-next-backup.png	window	Empty.brodalf - BRODALF		1226x813
+014-empty-tab-3-local-backups.png	window	Empty.brodalf - BRODALF		1226x813
+015-empty-tab-4-starred.png	window	Empty.brodalf - BRODALF		1226x813
+016-empty-tab-5-encryption.png	window	Empty.brodalf - BRODALF		1226x813
+017-empty-tab-6-restore.png	window	Empty.brodalf - BRODALF		1226x813
+018-empty-button-back-up.png	menu			1226x813
+019-empty-button-check-drive-message.png	dialog	BRODALF	OK / You have no backup drives yet. Set one up with Local backups > Set up a drive..., or Back up > Set up an external or removable drive...	412x159
+020-empty-button-drives-message.png	dialog	BRODALF	OK / You have no backup drives yet. Set one up with Local backups > Set up a drive..., or Back up > Set up an external or removable drive...	412x159
+021-empty-view-status-of-every-drive.png	dialog	Status of every drive	Your backup drives are listed here once you have set one up. / Details... / Close	807x523
+022-empty-view-files-short-of-copies.png	dialog	Files at risk	No files yet. Add a folder and scan it first. / Keep / copies of every file, in / different places. / Apply / A drive's place is where it is kept; Drives... sets it. Drives with no place set count as one place together. / The drives that would fix the most, best first: / Back up to it / Files below your goal, fewest copies first: / Close	737x621
+023-tab-1-primary-database.png	window	My backups.brodalf - BRODALF		1226x813
+024-tab-1-a-folder-selected.png	window	My backups.brodalf - BRODALF		1226x813
+025-tab-1-a-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+026-tab-1-a-deleted-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+027-tab-1-a-changed-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+028-tab-1-search-receipt.png	window	My backups.brodalf - BRODALF		1226x813
+029-tab-1-right-click-a-folder.png	menu			1226x813
+030-tab-1-right-click-a-changed-file.png	menu			1226x813
+031-tab-2-next-backup.png	window	My backups.brodalf - BRODALF		1226x813
+032-tab-2-next-backup-for-the-red-drive.png	window	My backups.brodalf - BRODALF		1226x813
+033-tab-3-local-backups.png	window	My backups.brodalf - BRODALF		1226x813
+034-tab-3-blue-drive-selected.png	window	My backups.brodalf - BRODALF		1226x813
+035-tab-4-starred.png	window	My backups.brodalf - BRODALF		1226x813
+036-tab-4-extra-place-selected.png	window	My backups.brodalf - BRODALF		1226x813
+037-tab-5-encryption.png	window	My backups.brodalf - BRODALF		1226x813
+038-tab-5-encrypted-folder-selected.png	window	My backups.brodalf - BRODALF		1226x813
+039-tab-6-restore.png	window	My backups.brodalf - BRODALF		1226x813
+040-small-window-tab-1-primary-database.png	window	My backups.brodalf - BRODALF		1266x713
+041-small-window-tab-2-next-backup.png	window	My backups.brodalf - BRODALF		1266x713
+042-small-window-tab-3-local-backups.png	window	My backups.brodalf - BRODALF		1266x713
+043-small-window-tab-4-starred.png	window	My backups.brodalf - BRODALF		1266x713
+044-small-window-tab-5-encryption.png	window	My backups.brodalf - BRODALF		1266x713
+045-small-window-tab-6-restore.png	window	My backups.brodalf - BRODALF		1266x713
+046-menu-file.png	menu			1212x806
+047-menu-view.png	menu			1212x806
+048-menu-view-submenu-21.png	menu			1212x806
+049-menu-view-submenu-22.png	menu			1212x806
+050-menu-tools.png	menu			1212x806
+051-menu-tools-submenu-16.png	menu			1212x806
+052-menu-help.png	menu			1212x806
+053-button-settings.png	dialog	Settings	Copies / Copies of every file to keep: / Different places they must be in: / Drives kept in the same place count as one place, and so do drives with no place set. Where a drive is kept is in its details (Drives...). / With this goal, 44 files are short of copies now. / Checks / A plugged-in drive offers a check of its copies: / Check copies not checked lately reads: / Backups / One drive after another (easier on this PC) / Several drives at once / Faster with two or more drives, but this PC works harder while it runs, other programs may be slower, and the backup goes at the pace of the slowest drive. / Let other programs come first while a job runs / Space kept free on each drive for the database's copies: / What to leave out in every backup root... / Passphrase / This database has a passphrase. BRODALF asks for it when it needs it. / Change the passphrase... / Encrypt the database file / Forget the passphrase until it is needed / OK / Cancel	807x550
+054-button-drives.png	menu			1212x806
+055-button-drives-first.png	menu			1212x806
+056-button-drives-a-drive-s-details.png	dialog	Drive details	Name: / Where it is kept (optional). Drives kept in the same place count as one place: / Mark lost or broken... / Save / Cancel	702x549
+057-button-back-up.png	menu			1212x806
+058-button-check-drive.png	menu			1212x806
+059-file-new-database.png	dialog	New database: what to back up	Choose the folders to back up: these are your backup roots. BRODALF keeps track of every file and folder inside each one. You can add more later. Next you choose where to keep the database file. / Add a folder... / Remove / Next... / Cancel	562x445
+060-file-recover-the-database.png	dialog	Choose where to keep your database on this PC	&Save / Cancel	946x533
+061-file-print-a-recovery-sheet.png	task dialog	BRODALF	Put a new recovery key on it / Leave the recovery key off / Cancel	542x287
+062-view-status-of-every-drive.png	dialog	Status of every drive	Where each drive stands, from the database (the drives need not be plugged in). "Changed since": only an older version of the file is on the drive. Double-click a drive for its details. / Details... / Close	807x523
+063-view-files-short-of-copies.png	dialog	Files at risk	44 of 86 files (308.9 MB) have fewer than 2 copies in 2 different places. 44 have no copy of their current version at all. Also kept: 2 deleted files (0 short of the target) and 41 older versions (0 short). / Keep / copies of every file, in / different places. / Apply / A drive's place is where it is kept; Drives... sets it. Drives with no place set count as one place together. / The drives that would fix the most, best first: / Back up to Blue / Files below your goal, fewest copies first: / Close	737x621
+064-view-largest-files.png	dialog	Largest files	The largest files in your backup roots, largest first (the top 200): where the space on your drives goes. To stop backing one up, pick it and choose Leave it out. / Leave it out... / Close	807x523
+065-view-older-versions-using-the-most-space.png	dialog	Older versions using the most space	Every change to a file adds a whole copy of it to your drives, and BRODALF never removes one. These files' older versions take the most space, most first (the top 200; "Space they use" is on all your drives together). To stop backing one up, pick it and choose Leave it out. / Leave it out... / Close	807x523
+066-view-deleted-files.png	dialog	Deleted files	2 files deleted from your backup roots, most recently deleted first. 2 are new. Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them (BRODALF stops tracking them; nothing on the drives is deleted). / Restore selected files... / Restore their folders... / Keep tracking them / Forget selected... / Close	842x561
+067-view-damaged-files.png	dialog	Damaged files	A bit-rot scan (Tools > Bit-rot scan) reads every file again to look for them. / Back up this version / Restore the good copy... / Close	807x523
+068-view-files-in-use.png	dialog	BRODALF	OK / No files were in use by another program at the last scan or backup.	398x152
+069-view-files-the-restore-left-alone.png	dialog	Left alone by the last restore	A file is left alone when a restore finds another file already where it would go. / Open in Explorer / Restore it... / Close	807x523
+070-tools-bit-rot-scan.png	task dialog	BRODALF	Start the scan / Cancel	352x194
+071-tools-add-a-backup-root.png	dialog	Browse For Folder	Choose a folder to back up. BRODALF will scan it and keep track of every file inside. / &Make New Folder / OK / Cancel	320x376
+072-tools-change-where-a-root-is.png	task dialog	BRODALF	Choose where it is now... / Leave it where it is	352x230
+073-tools-encrypt-what-is-selected.png	task dialog	BRODALF	Encrypt / Cancel	417x374
+074-tools-restore-what-is-selected.png	task dialog	BRODALF	Restore them too / Only the files there now	352x164
+075-tools-restore-what-is-selected-then-2.png	dialog	Browse For Folder	Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten. / &Make New Folder / OK / Cancel	320x376
+076-file-open-a-database.png	dialog	Open a BRODALF database	File &name: / Files of &type: / &Open / Cancel	946x533
+077-tools-check-a-drive.png	menu			1212x806
+078-tools-all-disks.png	menu			1212x806
+079-tools-restore-deleted-files.png	dialog	Deleted files	2 files deleted from your backup roots, most recently deleted first. 2 are new. Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them (BRODALF stops tracking them; nothing on the drives is deleted). / Restore selected files... / Restore their folders... / Keep tracking them / Forget selected... / Close	842x561
+080-help-what-the-file-list-shows.png	dialog	What the file list shows	Each file and folder shows its name, its state, the drives its copies are on (in grey when not plugged in), when it was changed, its type and its size. Point at a name for all of it in words; a file's versions are in its details. / Close	825x681
+081-help-about.png	dialog	BRODALF	OK / BRODALF 0.15.0 (0116476) |  | Keeps track of what has been backed up from your backup roots, and to which drive, and whether each copy is still good. It does nothing until you press a button. |  | https://github.com/Phawx/BRODALF	400x211
+082-tab-1-what-to-leave-out.png	dialog	What to leave out	Scans of every backup root leave out files and folders that match these, one per line. * matches anything, ? one character. End a line with / for folders only (and everything in them). A line with / at the start or in the middle, like Photos/Exports/, is a path inside a backup root. Lines starting with # are notes. / Default list / Save and scan / Cancel	527x501
+083-tab-1-add-a-backup-root.png	dialog	Browse For Folder	Choose a folder to back up. BRODALF will scan it and keep track of every file inside. / &Make New Folder / OK / Cancel	320x376
+084-tab-1-deleted-files.png	dialog	Deleted files	2 files deleted from your backup roots, most recently deleted first. 2 are new. Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them (BRODALF stops tracking them; nothing on the drives is deleted). / Restore selected files... / Restore their folders... / Keep tracking them / Forget selected... / Close	842x561
+085-tab-1-older-versions.png	dialog	Older versions using the most space	Every change to a file adds a whole copy of it to your drives, and BRODALF never removes one. These files' older versions take the most space, most first (the top 200; "Space they use" is on all your drives together). To stop backing one up, pick it and choose Leave it out. / Leave it out... / Close	807x523
+086-tab-1-export.png	dialog	Export the file list	&Save / Cancel	946x533
+087-tab-2-files-changed-on-it.png	dialog	Changed since the copy on the drive	41 changed (8.8 MB) and 2 deleted since their copies on Blue (kept in Desk drawer at home) were made. If you made these changes, back them up. If you did not, do not trust them as they are: restore the drive's copy, or a whole folder from the Restore tab. / Back up these changes to Blue / Restore the drive's copy... / Close	807x523
+088-tab-2-short-of-copies.png	dialog	Files at risk	44 of 86 files (308.9 MB) have fewer than 2 copies in 2 different places. 44 have no copy of their current version at all. Also kept: 2 deleted files (0 short of the target) and 41 older versions (0 short). / Keep / copies of every file, in / different places. / Apply / A drive's place is where it is kept; Drives... sets it. Drives with no place set count as one place together. / The drives that would fix the most, best first: / Back up to Blue / Files below your goal, fewest copies first: / Close	737x621
+089-tab-2-back-up-to-blue-the-preview.png	dialog	Enter the passphrase	1 file to back up is in a folder you chose to encrypt. Enter the passphrase to back it up too. Without it, everything else is backed up and it waits for the passphrase. / Show / OK / Cancel	457x205
+090-tab-2-back-up-to-blue-the-preview-then-2.png	task dialog	BRODALF	Show the changed files / Back up anyway: 44 files, 308.9 MB to Blue / Cancel	433x383
+091-tab-3-name-and-where-it-is-kept.png	dialog	Drive details	Name: / Where it is kept (optional). Drives kept in the same place count as one place: / Mark lost or broken... / Save / Cancel	702x549
+092-tab-3-compress-copies.png	task dialog	BRODALF	Compress / Cancel	373x314
+093-tab-3-mark-lost-or-broken.png	task dialog	BRODALF	It is lost / It is broken / Cancel	398x339
+094-tab-3-files-changed-since.png	dialog	Changed since the copy on the drive	41 changed (8.8 MB) and 2 deleted since their copies on Blue (kept in Desk drawer at home) were made. If you made these changes, back them up. If you did not, do not trust them as they are: restore the drive's copy, or a whole folder from the Restore tab. / Back up these changes to Blue / Restore the drive's copy... / Close	807x523
+095-tab-3-status-of-every-drive.png	dialog	Status of every drive	Where each drive stands, from the database (the drives need not be plugged in). "Changed since": only an older version of the file is on the drive. Double-click a drive for its details. / Details... / Close	807x523
+096-tab-3-set-up-a-drive.png	dialog	Browse For Folder	Choose the drive (or a folder on it) to back up to. / &Make New Folder / OK / Cancel	320x376
+097-tab-4-change-its-size-limit.png	dialog	Size limit of an extra place	How much of your starred files OneDrive folder on this PC may hold in all, so a small free account does not fill up. Files that would go over it are not copied there; your drives still get them. / Most it may take (leave empty for no limit): / GB / Save / Cancel	475x213
+098-tab-4-description-and-details.png	dialog	Extra place details	Description (at least two words, like "Dropbox folder on the laptop"): / Where it is (optional): / It is gone... / Save / Cancel	702x549
+099-tab-4-mark-lost.png	task dialog	BRODALF	It is gone / It is broken / Cancel	387x303
+100-tab-4-back-up-to-it-question-1.png	task dialog	BRODALF	Show the changed files / Back up anyway: 41 files, 8.9 MB to OneDrive folder on this PC / Cancel	485x389
+101-tab-4-back-up-to-it-running-1.png	window	My backups.brodalf - BRODALF		1212x806
+102-tab-4-back-up-to-it-finished.png	window	My backups.brodalf - BRODALF		1212x806
+103-tab-4-add-an-extra-place.png	dialog	Browse For Folder	Choose the folder for a second copy of your starred files: your Dropbox, OneDrive or Google Drive folder on this PC, a network share, or a folder on another disk. / &Make New Folder / OK / Cancel	320x376
+104-tab-5-recovery-key.png	dialog	Enter the passphrase	Enter the passphrase to make a recovery key. / Show / OK / Cancel	457x205
+105-tab-5-recovery-sheet.png	task dialog	BRODALF	Put a new recovery key on it / Leave the recovery key off / Cancel	542x287
+106-tab-5-encrypt-the-database-file.png	dialog	Enter the passphrase	Enter the passphrase to encrypt the database file. / Show / OK / Cancel	457x205
+107-tab-5-set-up-an-encrypted-drive.png	dialog	Browse For Folder	Choose the drive (or a folder on it) to back up to. / &Make New Folder / OK / Cancel	320x376
+108-tab-5-encrypt-a-folder.png	dialog	Browse For Folder	Choose a folder in one of your backup roots. Its files are encrypted on every drive and extra place they are copied to. / &Make New Folder / OK / Cancel	320x376
+109-tab-5-wrong-passphrase.png	dialog	Change the passphrase	The new passphrase replaces the current one. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone. / Current passphrase: / ✕ That passphrase is not right. / New passphrase: / Show / Type it again: / ✓ At least 8 characters / ✓ Both match / Also encrypt the database file (asks for the passphrase when it opens) / Change it / Cancel	457x448
+110-tab-5-change-passphrase-enter-the-current-one.png	dialog	Change the passphrase	The new passphrase replaces the current one. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone. / Current passphrase: / New passphrase: / Show / Type it again: / • At least 8 characters / • Both match / Also encrypt the database file (asks for the passphrase when it opens) / Change it / Cancel	457x448
+111-tab-5-change-passphrase-too-short.png	dialog	Change the passphrase	The new passphrase replaces the current one. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone. / Current passphrase: / New passphrase: / Show / Type it again: / ✓ At least 8 characters / • Both match / Also encrypt the database file (asks for the passphrase when it opens) / Change it / Cancel	457x448
+112-tab-5-change-passphrase-ready.png	dialog	Change the passphrase	The new passphrase replaces the current one. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone. / Current passphrase: / New passphrase: / Show / Type it again: / ✓ At least 8 characters / ✓ Both match / Also encrypt the database file (asks for the passphrase when it opens) / Change it / Cancel	457x448
+113-tab-5-change-passphrase-shown.png	dialog	Change the passphrase	The new passphrase replaces the current one. Write it down somewhere safe: without it, encrypted copies cannot be read, by you or anyone. / Current passphrase: / New passphrase: / Show / Type it again: / ✓ At least 8 characters / ✓ Both match / Also encrypt the database file (asks for the passphrase when it opens) / Change it / Cancel	457x448
+114-tab-6-restore-everything.png	task dialog	BRODALF	Restore them too / Only the files there now	352x164
+115-tab-6-restore-everything-then-2.png	dialog	Browse For Folder	Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten. / &Make New Folder / OK / Cancel	320x376
+116-tab-6-restore-deleted-files.png	dialog	Deleted files	2 files deleted from your backup roots, most recently deleted first. 2 are new. Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them (BRODALF stops tracking them; nothing on the drives is deleted). / Restore selected files... / Restore their folders... / Keep tracking them / Forget selected... / Close	842x561
+117-red-drive-plugged-in.png	window	My backups.brodalf - BRODALF		1212x806
+118-tab-3-with-the-red-drive-plugged-in.png	window	My backups.brodalf - BRODALF		1212x806
+119-back-up-to-the-red-drive-passphrase.png	dialog	Enter the passphrase	1 file to back up is in a folder you chose to encrypt. Enter the passphrase to back it up too. Without it, everything else is backed up and it waits for the passphrase. / Show / OK / Cancel	457x205
+120-back-up-to-the-red-drive-2.png	task dialog	BRODALF	Show the changed files / Back up anyway: 44 files, 308.9 MB to Red / Cancel	418x383
+121-new-disk-plugged-in.png	task dialog	BRODALF	Set it up as a backup drive / Not now / Never ask about this drive	542x288
+122-new-disk-set-it-up.png	dialog	Name this drive	Give the drive a name you will recognise on its label, like "Blue WD 4TB". / Where it is kept (optional). Drives kept in the same place count as one place: / Encrypt the files on this drive (needs a passphrase) / Also hide the names of the files and folders on it / Neither choice can be changed later for this drive. / Set up drive / Cancel	422x340
+123-after-new-disk-question-1.png	task dialog	BRODALF	Set it up as a backup drive / Not now / Never ask about this drive	542x288
+124-switched-to-dark-while-open-tab-1.png	window	My backups.brodalf - BRODALF		1212x806
+125-switched-to-dark-while-open-tab-3.png	window	My backups.brodalf - BRODALF		1212x806
+126-switched-back-to-light-tab-3.png	window	My backups.brodalf - BRODALF		1212x806
+127-red-plugged-in-button-back-up.png	menu			1212x806
+128-red-plugged-in-button-check-drive.png	menu			1212x806
+129-tab-3-red-quick-check-finished.png	window	My backups.brodalf - BRODALF		1212x806
+130-check-the-red-drive-finished.png	window	My backups.brodalf - BRODALF		1212x806
+131-tab-3-after-checking-the-red-drive.png	window	My backups.brodalf - BRODALF		1212x806
+132-back-up-to-every-drive-question-1.png	task dialog	BRODALF	Show the changed files / Back up anyway / Cancel	440x428
+133-backup-running-1.png	window	My backups.brodalf - BRODALF		1212x806
+134-backup-running-2.png	window	My backups.brodalf - BRODALF		1212x806
+135-backup-finished.png	window	My backups.brodalf - BRODALF		1212x806
+136-backup-finished-tab-2-next-backup.png	window	My backups.brodalf - BRODALF		1212x806
+137-backup-finished-tab-3-local-backups.png	window	My backups.brodalf - BRODALF		1212x806
+138-full-check-of-red-finished.png	window	My backups.brodalf - BRODALF		1212x806
+139-check-of-blue-stopped-running.png	window	My backups.brodalf - BRODALF		1212x806
+140-red-pulled-out-during-a-check.png	window	My backups.brodalf - BRODALF		1212x806
+141-red-pulled-out-during-a-check-after.png	window	My backups.brodalf - BRODALF		1212x806
+142-tab-3-red-unplugged-again.png	window	My backups.brodalf - BRODALF		1212x806
+143-tab-3-red-unplugged-selected.png	window	My backups.brodalf - BRODALF		1212x806
+144-tab-2-next-backup-for-red-unplugged.png	window	My backups.brodalf - BRODALF		1212x806
+145-tab-1-with-red-unplugged.png	window	My backups.brodalf - BRODALF		1212x806
+146-restore-photos-where-to.png	dialog	Browse For Folder	Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten. / &Make New Folder / OK / Cancel	320x376
+147-restore-photos-question-2.png	task dialog	BRODALF	Leave them alone / Keep both / Cancel	508x324
+148-restore-photos-running-1.png	window	My backups.brodalf - BRODALF		1212x806
+149-restore-photos-running-2.png	window	My backups.brodalf - BRODALF		1212x806
+150-restore-photos-finished-restore-tab.png	window	My backups.brodalf - BRODALF		1212x806
+151-after-restore-files-left-alone.png	dialog	Left alone by the last restore	The last restore left these alone because another file was already where each would go: nothing was overwritten. Compare them, then pick one and press Restore it... to put it beside the one there, or in another folder. / Open in Explorer / Restore it... / Close	807x523
+152-restore-photos-again-where-to.png	dialog	Browse For Folder	Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten. / &Make New Folder / OK / Cancel	320x376
+153-restore-photos-again-question-2.png	task dialog	BRODALF	Leave them alone / Keep both / Cancel	508x324
+154-restore-photos-again-question-3.png	dialog	BRODALF	OK / Cancel / Restoring 1 file needs these drives: |  |     (none) |  | 57 files are restored there already: they were compared with their backups, and have not changed since. | 	404x198
+155-restore-photos-again-finished-restore-tab.png	window	My backups.brodalf - BRODALF		1212x806
+156-bit-rot-scan-question-1.png	task dialog	BRODALF	Start the scan / Cancel	352x194
+157-bit-rot-scan-running-1.png	window	My backups.brodalf - BRODALF		1212x806
+158-bit-rot-scan-finished.png	window	My backups.brodalf - BRODALF		1212x806
+159-error-a-backup-root-is-missing.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+160-error-a-backup-root-is-missing-over-the-window.png	window+dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	1226x813
+161-error-a-backup-root-is-missing-the-window-after.png	window	My backups.brodalf - BRODALF		1226x813
+162-no-local-data-on-opening.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+163-no-local-data-on-opening-then-2.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+164-no-local-data-on-opening-then-3.png	task dialog	BRODALF	It is somewhere else: choose where... / Restore it from my backup drives... / Leave it for now	464x333
+165-no-local-data-tab-1.png	window	My backups.brodalf - BRODALF		1226x813
+166-no-local-data-letters.png	window	My backups.brodalf - BRODALF		1226x813
+167-no-local-data-a-faded-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+168-no-local-data-holiday-photos.png	window	My backups.brodalf - BRODALF		1226x813
+169-no-local-data-right-click-a-faded-file.png	menu			1226x813
+170-no-local-data-a-backup-root-selected.png	window	My backups.brodalf - BRODALF		1226x813
+171-no-local-data-tab-3-local-backups.png	window	My backups.brodalf - BRODALF		1226x813
+172-no-local-data-help-what-the-file-list-shows.png	dialog	What the file list shows	Each file and folder shows its name, its state, the drives its copies are on (in grey when not plugged in), when it was changed, its type and its size. Point at a name for all of it in words; a file's versions are in its details. / Close	825x681
+173-no-local-data-red-plugged-in-letters.png	window	My backups.brodalf - BRODALF		1226x813
+174-no-local-data-red-plugged-in-a-file-selected.png	window	My backups.brodalf - BRODALF		1226x813
+175-no-local-data-red-plugged-in-holiday-photos.png	window	My backups.brodalf - BRODALF		1226x813

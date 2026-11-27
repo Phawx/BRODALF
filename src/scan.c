@@ -326,6 +326,332 @@ bd_status bd_source_add_ex(bd_catalog *cat, const char *folder, int64_t *out_id,
     return s;
 }
 
+/* ---- Making backup roots part of a new one -------------------------------- */
+
+typedef struct {
+    int64_t id;
+    char *path;
+    char *rel; /* its place in the new root: '/' between names, as its path writes them */
+} inner_root;
+
+static void inner_free(inner_root *r, int n)
+{
+    for (int i = 0; i < n; i++) {
+        free(r[i].path);
+        free(r[i].rel);
+    }
+    free(r);
+}
+
+/* folder as bd_source_add keeps it: a full path, no '/' at the end. */
+static char *root_path(const char *folder)
+{
+    char *path = bd_full_path(folder);
+    if (!path) return NULL;
+    size_t len = strlen(path);
+    while (len > 1 && (path[len - 1] == '/' || path[len - 1] == '\\') && !(len == 3 && path[1] == ':')) path[--len] = '\0';
+    return path;
+}
+
+/* The last n names of path, '/' between them; NULL if it has fewer, or a
+ * "." or ".." among them. */
+static char *last_names(const char *path, int n)
+{
+    size_t len = strlen(path);
+    char *out = malloc(len + 1);
+    if (!out) return NULL;
+    size_t end = len, used = 0;
+    char *r = out + len;
+    *r = '\0';
+    for (int k = 0; k < n; k++) {
+        while (end > 0 && (path[end - 1] == '/' || path[end - 1] == '\\')) end--;
+        size_t start = end;
+        while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\') start--;
+        size_t seg = end - start;
+        if (seg == 0 || (seg == 1 && path[start] == '.') || (seg == 2 && path[start] == '.' && path[start + 1] == '.')) {
+            free(out);
+            return NULL;
+        }
+        if (used) { *--r = '/'; used++; }
+        r -= seg;
+        memcpy(r, path + start, seg);
+        used += seg;
+        end = start;
+    }
+    memmove(out, r, used + 1);
+    return out;
+}
+
+/* The backup roots that are backed up (active) inside path, a full path
+ * as root_path gives it, with each one's place in it. *by_link (may be
+ * NULL) gets 1 when one is inside it only another way (a link or a mapped
+ * drive): its place cannot be told. */
+static bd_status roots_inside(bd_catalog *cat, const char *path, inner_root **out, int *count, int *by_link)
+{
+    *out = NULL;
+    *count = 0;
+    if (by_link) *by_link = 0;
+    root_keys k;
+    if (!keys_of(path, &k)) return BD_ERR_NOMEM;
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id, path FROM sources WHERE active<>0 ORDER BY id", -1, &q, NULL) != SQLITE_OK) {
+        keys_free(&k);
+        return bd_fail_db(cat, "source lookup");
+    }
+    bd_status s = BD_OK;
+    inner_root *list = NULL;
+    int n = 0;
+    while (s == BD_OK && sqlite3_step(q) == SQLITE_ROW) {
+        const char *other = (const char *)sqlite3_column_text(q, 1);
+        root_keys o;
+        if (!other || !keys_of(other, &o)) { s = BD_ERR_NOMEM; break; }
+        if (key_inside(o.key, k.key)) {
+            size_t lo = strlen(k.key);
+            const char *tail = o.key + lo + (o.key[lo] == '/');
+            int names = 1;
+            for (const char *c = tail; *c; c++) names += *c == '/';
+            inner_root *more = realloc(list, sizeof(inner_root) * (size_t)(n + 1));
+            if (!more) s = BD_ERR_NOMEM;
+            else {
+                list = more;
+                list[n].id = sqlite3_column_int64(q, 0);
+                list[n].path = bd_strdup(other);
+                list[n].rel = last_names(other, names);
+                if (!list[n].path || !list[n].rel) {
+                    s = list[n].path && !list[n].rel ? bd_fail(cat, BD_ERR_INVALID, "the path of the backup root %s cannot be read", other)
+                                                     : BD_ERR_NOMEM;
+                    free(list[n].path);
+                    free(list[n].rel);
+                } else {
+                    n++;
+                }
+            }
+        } else if (by_link && keys_inside(&o, &k)) {
+            *by_link = 1;
+        }
+        keys_free(&o);
+    }
+    sqlite3_finalize(q);
+    keys_free(&k);
+    if (s != BD_OK) { inner_free(list, n); return s; }
+    *out = list;
+    *count = n;
+    return BD_OK;
+}
+
+int bd_roots_inside(bd_catalog *cat, const char *folder, bd_root_fn fn, void *ctx)
+{
+    char *path = root_path(folder);
+    if (!path) return -1;
+    inner_root *in;
+    int n;
+    bd_status s = roots_inside(cat, path, &in, &n, NULL);
+    free(path);
+    if (s != BD_OK) return -1;
+    for (int i = 0; i < n; i++)
+        if (fn && fn(ctx, in[i].id, in[i].path)) break;
+    inner_free(in, n);
+    return n;
+}
+
+/* A root's own skip list for the root it is now part of, at rel in it: a
+ * path from the root's top gets rel in front, and a name anywhere in it
+ * becomes that name anywhere under rel. (A * in such a name may then also
+ * stand for a folder or more under rel, as * does in a path.) Comments
+ * stay. */
+static char *skip_moved(const char *list, const char *rel)
+{
+    size_t cap = strlen(list) * 2 + 64, used = 0;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    out[0] = '\0';
+    for (const char *p = list; *p;) {
+        const char *end = p;
+        while (*end && *end != '\n') end++;
+        const char *a = p, *b = end;
+        while (a < b && (*a == ' ' || *a == '\t')) a++;
+        while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\r')) b--;
+        p = *end ? end + 1 : end;
+        char *line;
+        if (a == b || *a == '#') {
+            line = bd_sprintf("%.*s\n", (int)(b - a), a);
+        } else {
+            int anchored = *a == '/' || *a == '\\';
+            while (a < b && (*a == '/' || *a == '\\')) a++;
+            const char *body_end = b;
+            if (body_end - a > 1 && (body_end[-1] == '/' || body_end[-1] == '\\')) body_end--; /* a folder only */
+            int has_slash = 0;
+            for (const char *c = a; c < body_end; c++) has_slash |= *c == '/' || *c == '\\';
+            if (a == b) line = bd_strdup("");
+            else if (anchored || has_slash) line = bd_sprintf("/%s/%.*s\n", rel, (int)(b - a), a);
+            else line = bd_sprintf("/%s/%.*s\n/%s/*/%.*s\n", rel, (int)(b - a), a, rel, (int)(b - a), a);
+        }
+        if (!line) { free(out); return NULL; }
+        size_t ln = strlen(line);
+        if (used + ln + 1 > cap) {
+            cap = (used + ln + 1) * 2;
+            char *more = realloc(out, cap);
+            if (!more) { free(line); free(out); return NULL; }
+            out = more;
+        }
+        memcpy(out + used, line, ln + 1);
+        used += ln;
+        free(line);
+    }
+    return out;
+}
+
+static int exec_ids(bd_catalog *cat, const char *sql, int64_t a, int64_t b)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int64(q, 1, a);
+    if (sqlite3_bind_parameter_count(q) >= 2) sqlite3_bind_int64(q, 2, b);
+    int rc = sqlite3_step(q);
+    sqlite3_finalize(q);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+/* The folder node at rel in the root (made, with the folders it is in, if
+ * the root has none); 0 on a database error. */
+static int64_t folder_node(bd_catalog *cat, int64_t source_id, const char *rel, int64_t seen_ms)
+{
+    int64_t parent = 0;
+    for (const char *e = rel;; e++) {
+        if (*e != '/' && *e != '\0') continue;
+        char *part = bd_sprintf("%.*s", (int)(e - rel), rel);
+        if (!part) return 0;
+        sqlite3_stmt *q;
+        int64_t id = 0;
+        if (sqlite3_prepare_v2(cat->db, "SELECT id FROM nodes WHERE source_id=? AND rel_path=?", -1, &q, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(q, 1, source_id);
+            sqlite3_bind_text(q, 2, part, -1, SQLITE_STATIC);
+            if (sqlite3_step(q) == SQLITE_ROW) id = sqlite3_column_int64(q, 0);
+            sqlite3_finalize(q);
+        }
+        if (!id && sqlite3_prepare_v2(cat->db, "INSERT INTO nodes(source_id,parent_id,rel_path,name,is_dir,last_seen_ms,rel_fold)"
+                                               " VALUES(?,?,?,?,1,?,?)", -1, &q, NULL) == SQLITE_OK) {
+            char *fold = bd_path_key(part);
+            sqlite3_bind_int64(q, 1, source_id);
+            if (parent) sqlite3_bind_int64(q, 2, parent);
+            else sqlite3_bind_null(q, 2);
+            sqlite3_bind_text(q, 3, part, -1, SQLITE_STATIC);
+            sqlite3_bind_text(q, 4, bd_rel_basename(part), -1, SQLITE_STATIC);
+            sqlite3_bind_int64(q, 5, seen_ms);
+            if (fold) sqlite3_bind_text(q, 6, fold, -1, SQLITE_STATIC);
+            else sqlite3_bind_null(q, 6);
+            if (sqlite3_step(q) == SQLITE_DONE) id = sqlite3_last_insert_rowid(cat->db);
+            sqlite3_finalize(q);
+            free(fold);
+        }
+        free(part);
+        if (!id) return 0;
+        parent = id;
+        if (*e == '\0') return id;
+    }
+}
+
+/* Root `in` becomes part of root `into`, in the catalog only: its files
+ * and folders (with their versions and copies, which keep their place on
+ * the drives), stars, encrypted folders and own skip list go to `into`
+ * at in->rel, and the root itself is gone. In the caller's transaction. */
+static bd_status take_in(bd_catalog *cat, int64_t into, const inner_root *in)
+{
+    int64_t now = bd_now_ms();
+    int64_t top = folder_node(cat, into, in->rel, now);
+    if (!top) return bd_fail_db(cat, "make the folder part of the new backup root");
+    char *fold = bd_path_key(in->rel);
+    sqlite3_stmt *q;
+    bd_status s = BD_OK;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE nodes SET source_id=?1, parent_id=COALESCE(parent_id,?2), rel_path=?3||'/'||rel_path,"
+                                    " rel_fold=CASE WHEN rel_fold IS NULL THEN NULL ELSE ?4||'/'||rel_fold END WHERE source_id=?5",
+                           -1, &q, NULL) != SQLITE_OK) {
+        s = bd_fail_db(cat, "make the folder part of the new backup root");
+    } else {
+        sqlite3_bind_int64(q, 1, into);
+        sqlite3_bind_int64(q, 2, top);
+        sqlite3_bind_text(q, 3, in->rel, -1, SQLITE_STATIC);
+        if (fold) sqlite3_bind_text(q, 4, fold, -1, SQLITE_STATIC);
+        else sqlite3_bind_null(q, 4);
+        sqlite3_bind_int64(q, 5, in->id);
+        if (sqlite3_step(q) != SQLITE_DONE) s = bd_fail_db(cat, "make the folder part of the new backup root");
+        sqlite3_finalize(q);
+    }
+    free(fold);
+    static const char *const marks[] = {
+        "UPDATE stars SET source_id=?1, rel_path=CASE WHEN rel_path='' THEN ?2 ELSE ?2||'/'||rel_path END WHERE source_id=?3",
+        "UPDATE encrypt_paths SET source_id=?1, rel_path=CASE WHEN rel_path='' THEN ?2 ELSE ?2||'/'||rel_path END WHERE source_id=?3",
+    };
+    for (size_t i = 0; s == BD_OK && i < sizeof(marks) / sizeof(marks[0]); i++) {
+        if (sqlite3_prepare_v2(cat->db, marks[i], -1, &q, NULL) != SQLITE_OK) { s = bd_fail_db(cat, "move the starred files"); break; }
+        sqlite3_bind_int64(q, 1, into);
+        sqlite3_bind_text(q, 2, in->rel, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(q, 3, in->id);
+        if (sqlite3_step(q) != SQLITE_DONE) s = bd_fail_db(cat, "move the starred files");
+        sqlite3_finalize(q);
+    }
+    if (s == BD_OK) {
+        char *own = bd_source_skip_get(cat, in->id), *have = bd_source_skip_get(cat, into);
+        char *moved = own && *own ? skip_moved(own, in->rel) : NULL;
+        if (!own || !have || (*own && !moved)) {
+            s = BD_ERR_NOMEM;
+        } else if (moved) {
+            size_t hl = strlen(have);
+            char *all = bd_sprintf("%s%s%s", have, hl && have[hl - 1] != '\n' ? "\n" : "", moved);
+            s = all ? bd_source_skip_set(cat, into, all) : BD_ERR_NOMEM;
+            free(all);
+        }
+        free(own);
+        free(have);
+        free(moved);
+    }
+    static const char *const keys[] = {"skip_list", "wait_disk", "moved_from", "scan_stopped"};
+    for (size_t i = 0; s == BD_OK && i < sizeof(keys) / sizeof(keys[0]); i++) {
+        char key[48];
+        snprintf(key, sizeof(key), "%s.%lld", keys[i], (long long)in->id);
+        if (bd_setting_del(cat, key) != 0) s = bd_fail_db(cat, "forget the folder's settings");
+    }
+    static const char *const gone[] = {
+        "DELETE FROM temp.missing_sources WHERE source_id=?", "DELETE FROM temp.accept_gone WHERE source_id=?",
+        "DELETE FROM temp.root_disks WHERE source_id=?",      "DELETE FROM temp.links WHERE source_id=?",
+        "DELETE FROM sources WHERE id=?",
+    };
+    for (size_t i = 0; s == BD_OK && i < sizeof(gone) / sizeof(gone[0]); i++)
+        if (exec_ids(cat, gone[i], in->id, 0) != 0) s = bd_fail_db(cat, "make the folder part of the new backup root");
+    return s;
+}
+
+bd_status bd_source_add_holding(bd_catalog *cat, const char *folder, int64_t *out_id)
+{
+    char *path = root_path(folder);
+    if (!path) return BD_ERR_NOMEM;
+    inner_root *in;
+    int n, by_link;
+    bd_status s = roots_inside(cat, path, &in, &n, &by_link);
+    free(path);
+    if (s != BD_OK) return s;
+    if (n == 0 || by_link) { /* nothing to take in, or not all of it can be: as bd_source_add */
+        inner_free(in, n);
+        return bd_source_add(cat, folder, out_id);
+    }
+    if (bd_exec(cat, "BEGIN") != 0) { inner_free(in, n); return bd_fail_db(cat, "add source"); }
+    for (int i = 0; s == BD_OK && i < n; i++)
+        if (exec_ids(cat, "UPDATE sources SET active=0 WHERE id=?", in[i].id, 0) != 0) s = bd_fail_db(cat, "add source");
+    int64_t id = 0;
+    int is_new = 0;
+    if (s == BD_OK) s = bd_source_add_ex(cat, folder, &id, &is_new);
+    if (s == BD_OK && !is_new) s = bd_fail(cat, BD_ERR_EXISTS, "%s is already a backup root", folder);
+    for (int i = 0; s == BD_OK && i < n; i++) s = take_in(cat, id, &in[i]);
+    inner_free(in, n);
+    if (s == BD_OK && bd_exec(cat, "COMMIT") != 0) s = bd_fail_db(cat, "add source");
+    if (s != BD_OK) {
+        bd_exec(cat, "ROLLBACK");
+        return s;
+    }
+    if (out_id) *out_id = id;
+    return BD_OK;
+}
+
 bd_status bd_sources_fix_names(bd_catalog *cat, bd_log_fn log, void *log_ctx)
 {
     sqlite3_stmt *q;

@@ -572,6 +572,82 @@ static void test_bad_name_named(void)
 }
 #endif
 
+typedef struct { int n; char paths[4][2048]; } inside_list;
+
+static int inside_cb(void *ctx, int64_t id, const char *path)
+{
+    inside_list *l = ctx;
+    (void)id;
+    if (l->n < 4) snprintf(l->paths[l->n], sizeof(l->paths[0]), "%s", path);
+    l->n++;
+    return 0;
+}
+
+/* C5: a new root that holds roots already backed up takes them in, in the
+ * catalog only: their files keep their copies, so nothing is copied again,
+ * and what the old roots left out is still left out there only. */
+static void test_roots_taken_in(void)
+{
+    make_files("take/home/Pictures", 3, "pic");
+    write_file(at("take/home/Pictures/old/a.txt"), "left out by its own list");
+    write_file(at("take/home/Pictures/sub/b.raw"), "left out by name");
+    make_files("take/home/Docs/Scans", 2, "scan");
+    write_file(at("take/home/top.txt"), "new in the bigger root");
+    write_file(at("take/home/z.raw"), "only Pictures left these out");
+    bd_mkdirs(at("take/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("take/db.brodalf"), &cat), NULL);
+    bd_target one = {1, 1};
+    REQUIRE_OK(bd_target_set(cat, &one), cat);
+    int64_t pics, scans, drive, home = 0;
+    REQUIRE_OK(bd_source_add(cat, at("take/home/Pictures"), &pics), cat);
+    REQUIRE_OK(bd_source_add(cat, at("take/home/Docs/Scans"), &scans), cat);
+    REQUIRE_OK(bd_source_skip_set(cat, pics, "# mine\n/old/\n*.raw\n"), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_star_set(cat, pics, "f001.txt", 1), cat);
+    REQUIRE_OK(bd_media_init(cat, at("take/drive"), "Take", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 5);
+    int64_t copies = count_rows(cat, "SELECT COUNT(*) FROM copies");
+
+    CHECK(bd_source_add(cat, at("take/home"), &home) == BD_ERR_EXISTS);
+    inside_list l = {0};
+    CHECK(bd_roots_inside(cat, at("take/home"), inside_cb, &l) == 2 && l.n == 2);
+    CHECK(bd_roots_inside(cat, at("take/home/Pictures"), NULL, NULL) == 0);
+    REQUIRE_OK(bd_source_add_holding(cat, at("take/home"), &home), cat);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM sources") == 1);
+    char sql[300];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes n JOIN versions v ON v.id=n.current_version_id JOIN copies c"
+                               " ON c.version_id=v.id WHERE n.source_id=%lld AND n.rel_path LIKE 'Pictures/f%%'", (long long)home);
+    CHECK(count_rows(cat, sql) == 3);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes WHERE source_id=%lld AND rel_path IN ('Docs','Docs/Scans','Pictures')"
+                               " AND is_dir=1", (long long)home);
+    CHECK(count_rows(cat, sql) == 3);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes n JOIN nodes p ON p.id=n.parent_id WHERE n.source_id=%lld"
+                               " AND n.rel_path='Docs/Scans/f000.txt' AND p.rel_path='Docs/Scans'", (long long)home);
+    CHECK(count_rows(cat, sql) == 1);
+    CHECK(bd_starred(cat, home, "Pictures/f001.txt") == 1);
+    char *own = bd_source_skip_get(cat, home);
+    CHECK(own && strstr(own, "/Pictures/old/\n") && strstr(own, "/Pictures/*.raw\n") && strstr(own, "/Pictures/*/*.raw\n"));
+    free(own);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM settings WHERE key LIKE 'skip_list.%'") == 1);
+    CHECK(root_of(cat, home).last_scan_ms == 0); /* not scanned yet */
+
+    /* The scan finds the files it knows where they were; only the new
+     * ones are copied, and Pictures' own skips still hold there only. */
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 2 && ss.files_changed == 0 && ss.files_deleted == 0 && ss.files_moved == 0);
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+    CHECK(bs.files_copied == 2);
+    CHECK(count_rows(cat, "SELECT COUNT(*) FROM copies") == copies + 2);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM nodes WHERE source_id=%lld AND (rel_path LIKE '%%.raw' OR rel_path LIKE '%%/old%%')",
+             (long long)home);
+    CHECK(count_rows(cat, sql) == 1); /* z.raw, outside Pictures */
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -589,6 +665,7 @@ int main(void)
     test_stopped_scan_kept();
     test_default_skips_profile_churn();
     test_skip_patterns_unicode();
+    test_roots_taken_in();
 #ifdef _WIN32
     test_bad_name_named();
 #endif

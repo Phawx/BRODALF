@@ -232,6 +232,21 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source
  * was a root already. */
 bd_status bd_source_add_ex(bd_catalog *cat, const char *folder, int64_t *out_source_id, int *is_new);
 
+/* The backup roots that are backed up inside folder (a folder bd_source_add
+ * refuses because it holds them): fn gets each one's id and path, and
+ * returns nonzero to stop. How many there are, or -1 on an error. */
+typedef int (*bd_root_fn)(void *ctx, int64_t source_id, const char *path);
+int bd_roots_inside(bd_catalog *cat, const char *folder, bd_root_fn fn, void *ctx);
+/* Add folder as a backup root, and make every backup root inside it
+ * (bd_roots_inside) part of it, in one step: their files and folders, with
+ * their versions and copies, their stars, encrypted folders and own skip
+ * lists, are the new root's, and those roots are no longer listed. In the
+ * catalog only: nothing on a drive moves, and a copy keeps its place there,
+ * so nothing is copied again. Otherwise as bd_source_add (a root inside it
+ * only through a link or a mapped drive: refused as bd_source_add refuses
+ * it). */
+bd_status bd_source_add_holding(bd_catalog *cat, const char *folder, int64_t *out_source_id);
+
 /* The active backup root that holds path (a file or folder), or NULL; free
  * it. A scan never backs up the open database or its side files, so a
  * database saved inside a root is not added to every backup again. */

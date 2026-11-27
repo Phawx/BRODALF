@@ -9720,6 +9720,67 @@ static void already_root_line(int64_t id, const char *folder, wchar_t *line, siz
     free(w);
 }
 
+typedef struct {
+    int n;
+    wchar_t text[MAX_PATH * 4 + 200];
+} inside_ctx;
+
+static int inside_cb(void *ctx, int64_t id, const char *path)
+{
+    inside_ctx *c = ctx;
+    (void)id;
+    if (c->n < 4) {
+        wchar_t *w = widen(path);
+        size_t len = wcslen(c->text);
+        swprintf(c->text + len, COUNT_OF(c->text) - len, L"\n%ls", w ? w : L"");
+        free(w);
+    }
+    c->n++;
+    return 0;
+}
+
+/* bd_source_add refused folder because it holds backup roots: offer to
+ * make them part of it (their copies stay where they are, so nothing is
+ * copied again). 1 when it was offered. */
+static int offer_take_in(const char *folder)
+{
+    inside_ctx c;
+    memset(&c, 0, sizeof(c));
+    if (bd_roots_inside(g_cat, folder, inside_cb, &c) <= 0) return 0;
+    if (c.n > 4) {
+        size_t len = wcslen(c.text);
+        swprintf(c.text + len, COUNT_OF(c.text) - len, TN(c.n - 4, L"\nand %d more", L"\nand %d more"), c.n - 4);
+    }
+    wchar_t *wf = widen(folder), q[MAX_PATH * 6 + 1200];
+    swprintf(q, COUNT_OF(q),
+             TN(c.n, L"Back up all of %ls, with the backup root inside it?\n\nA folder can be in only one backup root, and this "
+                     L"one is already backed up:%ls\n\nBRODALF can make it part of the new backup root. Its files keep their "
+                     L"copies on your drives, and nothing on a drive is moved, so only the files that are new are copied.",
+                 L"Back up all of %ls, with the backup roots inside it?\n\nA folder can be in only one backup root, and these "
+                 L"are already backed up:%ls\n\nBRODALF can make them part of the new backup root. Their files keep their "
+                 L"copies on your drives, and nothing on a drive is moved, so only the files that are new are copied."),
+             wf ? wf : L"", c.text);
+    if (ask_verbs(g_main, q, MB_YESNO | MB_ICONQUESTION, TN(c.n, L"Make it part of the new root", L"Make them part of the new root"),
+                  T(L"Cancel")) == IDYES) {
+        int64_t id;
+        if (bd_source_add_holding(g_cat, folder, &id) != BD_OK) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
+            free(e);
+        } else {
+            wchar_t line[MAX_PATH * 6 + 600];
+            swprintf(line, COUNT_OF(line), TN(c.n, L"New backup root: %ls. The backup root that was inside it is now part of it:%ls",
+                                              L"New backup root: %ls. The backup roots that were inside it are now part of it:%ls"),
+                     wf ? wf : L"", c.text);
+            log_append(line);
+            rebuild_tree();
+            enqueue(new_job(JOB_SCAN));
+        }
+    }
+    free(wf);
+    return 1;
+}
+
 static void cmd_add_folder(void)
 {
     char *folder = pick_folder(g_main, T(L"Choose a folder to back up. BRODALF will scan it and keep track of every file inside."));
@@ -9745,9 +9806,11 @@ static void cmd_add_folder(void)
     int is_new = 0;
     wchar_t line[MAX_PATH * 8 + 600];
     if (bd_source_add_ex(g_cat, folder, &id, &is_new) != BD_OK) {
-        wchar_t *e = widen(bd_catalog_error(g_cat));
-        MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
-        free(e);
+        if (!offer_take_in(folder)) {
+            wchar_t *e = widen(bd_catalog_error(g_cat));
+            MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
+            free(e);
+        }
     } else if (!is_new) {
         already_root_line(id, folder, line, COUNT_OF(line));
         log_append(line);

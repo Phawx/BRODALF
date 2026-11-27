@@ -1165,9 +1165,9 @@ limits of the new work:
 - A USB bridge that reports one serial for several disks makes them count
   as one copy (the safe side). Links whose target is inside a backup root
   are not listed, since what they lead to is backed up anyway.
-- A skip line starting with `/` is a path from the top of the root; 0.11.0
-  reads the same line as that name anywhere in the root, so it leaves out
-  more there.
+- A skip line starting with `/` is a path from the top of the root. A
+  line like `/huge.bin`, with no other `/`, is read by 0.11.0 and older
+  as that name anywhere in the root, so they leave out more with it.
 - "Bigger than every drive" compares with each drive's whole size, not
   its size less the space kept free.
 

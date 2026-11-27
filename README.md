@@ -19,7 +19,13 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design.
 
 ## Status
 
-Version **0.13.0** (2026-11-27) knows a backup root by its files, not by
+Version **0.14.0** (2026-11-27) takes any set of folders as backup roots.
+A folder typed from the current folder is kept as a full path, the command
+line takes any number of folders at once, and one folder reached two ways
+(a link, a mapped network drive and its network path, a `subst` drive)
+counts as one root.
+
+0.13.0 (2026-11-27) knew a backup root by its files, not by
 where it was. A root whose folder is not there is looked for by its files
 and carried on with where one folder holds them, and a folder at a root's
 path that holds other files is no longer taken for the root. Nothing ties
@@ -902,7 +908,7 @@ on a local machine needs to pick the work up without the chat history.
   more. No change to the database format: 0.10.2 and 0.11.0 open the files
   0.13.0 saves, and their command-line tools were seen reading and scanning
   one.
-- Not yet released (2026-11-27, on the `any-folders` branch): any set of
+- v0.14.0 (2026-11-27, built on the `any-folders` branch first): any set of
   folders as the backup roots. A folder typed from the current folder is
   kept as a full path (0.13.0 kept `Documents` as typed, so a scan run
   from elsewhere could not find it; such a root is now found by its files
@@ -911,7 +917,9 @@ on a local machine needs to pick the work up without the chat history.
   were already backed up. One folder reached two ways (a link, a mapped
   network drive and its network path, a `subst` drive) is one root, and a
   database kept inside a root reached another way is still left out of
-  it. No change to the database format.
+  it. No change to the database format: 0.10.2 and 0.11.0 open the files
+  0.14.0 saves, and their command-line tools were seen reading, scanning
+  and checking one.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -1067,7 +1075,7 @@ in 0.4.0 came from the code review of the same day and this test:
 
 ### Open items: what still needs trying on a real Windows PC
 
-Everything on the `any-folders` branch (built by CI, tested on Linux
+Everything new in 0.14.0 (built by CI, tested on Linux
 through links, and on the CI runner through a `subst` drive and, where it
 can be mapped, a drive mapped to the runner's own share): a real mapped
 network drive and its `\\server\share` path added as one root, with the

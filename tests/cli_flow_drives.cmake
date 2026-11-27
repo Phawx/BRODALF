@@ -111,6 +111,15 @@ has("mark A lost" "1 older version and 0 deleted files")
 has("mark A lost" "never backed up again")
 has("mark A lost" "What is left of them is on: \"B\" (1)")
 
+# ---- C9: a drive found again says when it was last checked -----------------
+run(0 "A found" drive-found "${cat}" A)
+has("A found" "never checked")
+has("A found" "check every copy on it")
+run(0 "check A" check "${cat}" "${WORK}/A")
+run(0 "mark A lost again" drive-lost "${cat}" A broken --yes)
+run(0 "A found again" drive-found "${cat}" A)
+has("A found again" "They were last checked 2")
+
 # ---- D10: a drive wiped and set up again ------------------------------------
 # (Which drives it may be is checked in test_flow_drives.c: here no drive can
 # be made to look 30 days away.)

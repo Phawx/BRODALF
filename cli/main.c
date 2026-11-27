@@ -72,7 +72,8 @@ static void usage(void)
          "                                             its copies stop counting; the current versions of what it\n"
          "                                             held are backed up again (it says what that leaves of\n"
          "                                             older versions and deleted files)\n"
-         "  drive-found    <catalog> <label>           it turned up again: its copies count again\n"
+         "  drive-found    <catalog> <label>           it turned up again: its copies count again (says when\n"
+         "                                             they were last checked; check it to be sure)\n"
          "\n"
          "Backup\n"
          "  preview  <catalog> <root>                  what a backup to the drive would do, doing none of it\n"
@@ -2348,8 +2349,18 @@ static int run(int argc, char **argv)
         int64_t id = media_id_by_label(cat, pos[0]);
         if (!id) { bd_catalog_close(cat); return 1; }
         if (bd_media_found(cat, id) != BD_OK) return die(cat, "cannot change the drive");
-        if (g_json) { J_OBJ(NULL); j_str("drive", pos[0]); j_str("lost", ""); J_END(); }
-        else printf("\"%s\" counts again; check it to be sure its copies are still good\n", pos[0]);
+        bd_media_status ms;
+        memset(&ms, 0, sizeof(ms));
+        if (bd_media_status_get(cat, id, &ms) != BD_OK) ms.last_check_ms = 0;
+        if (g_json) { J_OBJ(NULL); j_str("drive", pos[0]); j_str("lost", ""); j_int("last_check_ms", ms.last_check_ms); J_END(); }
+        else {
+            char when[32];
+            format_day(ms.last_check_ms, when, sizeof(when));
+            printf("\"%s\" counts again, its copies as they were when it went. %s%s%s\n"
+                   "To be sure they are still good, check every copy on it: brodalf-cli check \"%s\" <where it is plugged in>\n",
+                   pos[0], ms.last_check_ms > 0 ? "They were last checked " : "They were never checked", ms.last_check_ms > 0 ? when : "",
+                   ms.last_check_ms > 0 ? "." : " since they were written.", path);
+        }
         save = 1;
     } else if (strcmp(cmd, "passphrase") == 0) {
         if (connect_drives(cat, argc, argv) != 0) { bd_catalog_close(cat); return 1; }

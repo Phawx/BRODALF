@@ -8915,6 +8915,58 @@ static void offer_suspect_check(int64_t id)
     if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) && pressed == 4204) enqueue_check(id);
 }
 
+/* Drives marked found this time BRODALF runs while not plugged in: a check
+ * is offered when they are. */
+static int64_t g_found_check[16];
+static int g_n_found_check;
+
+/* A drive marked found counts its copies again, as they were when it went:
+ * offer a check of every one, and say when they were last checked. */
+static void offer_found_check(int64_t id)
+{
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    if (!o.found) return;
+    check_offered(id); /* the check due is asked about here */
+    bd_media_status ms;
+    memset(&ms, 0, sizeof(ms));
+    wchar_t name[600], main_text[800], when[96], last[600], content[1800];
+    drive_name(o.label, o.location, name, 600);
+    if (bd_media_status_get(g_cat, id, &ms) == BD_OK && ms.last_check_ms > 0) {
+        format_time_ms(ms.last_check_ms, when, 96);
+        swprintf(last, 600, T(L"Its copies were last checked %ls."), when);
+    } else if (o.info.oldest_check_ms > 0) {
+        format_time_ms(o.info.oldest_check_ms, when, 96);
+        swprintf(last, 600, T(L"Some of its copies were never checked since they were written, the oldest %ls."), when);
+    } else
+        swprintf(last, 600, L"%ls", T(L"It holds no copies yet."));
+    swprintf(main_text, 800, T(L"Check %ls now?"), name);
+    swprintf(content, 1800, T(L"Its copies count again, as they were when it went. %ls A check reads every copy on it and changes nothing "
+                              L"there: copies found missing or damaged stop counting, and the next backup writes them again."),
+             last);
+    TASKDIALOG_BUTTON b[2] = {
+        {4210, T(L"Check it now\nReads every copy on it and compares each one with its checksum.")},
+        {4211, T(L"Not now\nDrives... has Check for it.")},
+    };
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_INFORMATION_ICON;
+    tc.pszMainInstruction = main_text;
+    tc.pszContent = content;
+    tc.cButtons = 2;
+    tc.pButtons = b;
+    tc.nDefaultButton = 4210;
+    int pressed = 4211;
+    if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) && pressed == 4210) enqueue_check(id);
+}
+
 static void after_drives(job *j)
 {
     int64_t due[16];
@@ -8949,6 +9001,14 @@ static void after_drives(job *j)
         bd_list_media(g_cat, connected_drive_cb, &l);
         for (int i = 0; i < l.n; i++) offer_suspect_check(l.ids[i]);
     }
+    /* A drive marked found while it was not plugged in. */
+    for (int i = 0; i < j->n_new; i++)
+        for (int k = 0; k < g_n_found_check; k++)
+            if (g_found_check[k] == j->new_ids[i]) {
+                g_found_check[k] = g_found_check[--g_n_found_check];
+                offer_found_check(j->new_ids[i]);
+                break;
+            }
     for (int i = 0; i < n_due; i++) {
         if (check_offered(due[i])) continue;
         media_one o;
@@ -11350,10 +11410,19 @@ static void mark_found_ui(const drive_snap *d)
     drive_name(d->label, d->location, name, 600);
     if (bd_media_found(g_cat, d->id) == BD_OK && ui_save() == BD_OK) {
         if (d->secondary) swprintf(line, 800, T(L"%ls is back: BRODALF copies starred files there again."), name);
+        else if (d->connected)
+            swprintf(line, 800, T(L"%ls is back: its copies count again."), name);
         else
-            swprintf(line, 800, T(L"%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are "
-                                L"still good."), name);
+            swprintf(line, 800, T(L"%ls is back: its copies count again. BRODALF offers to check every copy on it when it is plugged in, "
+                                L"to be sure they are still good."), name);
         log_append(line);
+        if (d->secondary) return;
+        if (d->connected) offer_found_check(d->id);
+        else if (g_n_found_check < 16) {
+            int known = 0;
+            for (int k = 0; k < g_n_found_check; k++) known |= g_found_check[k] == d->id;
+            if (!known) g_found_check[g_n_found_check++] = d->id;
+        }
     }
 }
 
@@ -18418,6 +18487,7 @@ static void close_database(void)
     g_n_dbcopy_offered = 0;
     g_n_suspect_offered = 0;
     g_not_wiped_id = 0;
+    g_n_found_check = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");
     end_search();

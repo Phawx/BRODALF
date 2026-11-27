@@ -432,8 +432,8 @@ static void test_stopped_scan_kept(void)
     REQUIRE_OK(bd_catalog_create(at("stop/db.brodalf"), &cat), NULL);
     bd_target one = {1, 1};
     REQUIRE_OK(bd_target_set(cat, &one), cat);
-    int64_t big, small, drive;
-    REQUIRE_OK(bd_source_add(cat, at("stop/Small"), &small), cat);
+    int64_t big, little, drive;
+    REQUIRE_OK(bd_source_add(cat, at("stop/Small"), &little), cat);
     bd_scan_stats ss;
     REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
     REQUIRE_OK(bd_media_init(cat, at("stop/drive"), "Stop", 0, &drive), cat);

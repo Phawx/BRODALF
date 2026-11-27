@@ -8901,7 +8901,7 @@ static int offer_drive_database(int64_t id)
         swprintf(content, 2000, T(L"%ls holds two different copies of this database at revision %lld: two copies of it were used "
                                 L"separately, for example one on this PC and one recovered or carried elsewhere. Each holds backups "
                                 L"the other does not know of.\n\nBoth stay on the drive; nothing was overwritten. To see what the "
-                                L"other one holds, use File > Recover database... and choose that drive."),
+                                L"other one holds, use File > Recover the database from a backup drive... and choose that drive."),
                  name, (long long)dc.revision);
         log_append(content);
         MessageBoxW(g_main, content, APP_NAME, MB_ICONWARNING);

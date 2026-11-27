@@ -601,10 +601,37 @@ static void print_when(const char *what, int64_t ms)
     printf("%s%s", what, when);
 }
 
-/* Connect a drive by its root. Nothing on it is read but its BRODALF.media file. */
+/* What the drive's newest copy of the database says next to the open
+ * database: a later revision (the open one may be an older copy, for
+ * example recovered from a drive that missed the last backups), or two
+ * copies of it used separately. Said only; nothing changes. */
+static void note_drive_database(bd_catalog *cat, int64_t id, const char *target)
+{
+    bd_drive_catalog dc;
+    if (bd_media_catalog_compare(cat, id, &dc) != BD_OK) return;
+    char written[32], saved[32];
+    format_day(dc.written_ms, written, sizeof(written));
+    format_day(dc.open_saved_ms, saved, sizeof(saved));
+    if (dc.newer)
+        fprintf(msg_out(), "note: drive \"%s\" has a newer copy of this database: revision %lld, written %s; the open one is "
+                           "revision %lld, saved %s. If the open one is an older copy, recover from the drive instead: "
+                           "brodalf-cli recover %s <new catalog>\n",
+                label_of(cat, id), (long long)dc.revision, written, (long long)dc.open_revision, dc.open_saved_ms ? saved : "?",
+                target);
+    if (dc.separate)
+        fprintf(msg_out(), "note: drive \"%s\" holds two different copies of this database at revision %lld: two copies of it "
+                           "were used separately, and each holds backups the other does not know of. Both stay on the drive.\n",
+                label_of(cat, id), (long long)dc.revision);
+    free(dc.path);
+}
+
+/* Connect a drive by its root. Nothing on it is read but its BRODALF.media
+ * file and the names of the database copies beside it. */
 static bd_status connect_target(bd_catalog *cat, const char *target, int64_t *id)
 {
-    return bd_media_connect(cat, target, id, log_line, NULL);
+    bd_status s = bd_media_connect(cat, target, id, log_line, NULL);
+    if (s == BD_OK) note_drive_database(cat, *id, target);
+    return s;
 }
 
 static int connect_drives(bd_catalog *cat, int argc, char **argv)

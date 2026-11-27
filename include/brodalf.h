@@ -748,6 +748,28 @@ bd_status bd_list_changed_on_media(bd_catalog *cat, int64_t media_id, bd_changed
  * every backup and when a drive is set up. */
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id);
 
+/* The newest copy of the database on a connected drive, next to the open
+ * database. Read from the names and file times of the copies there; the
+ * copies themselves are not opened. When two copies of one database were
+ * used separately and both reached the same revision, the second goes
+ * beside the first as catalog-r<revision>-<8 letters and digits>.brodalf:
+ * nothing is overwritten, nothing is skipped. */
+typedef struct {
+    int64_t revision;     /* the newest copy's revision; -1 when the drive has none */
+    int64_t written_ms;   /* when that copy was written to the drive */
+    char *path;           /* that copy (free it); NULL when none */
+    int newer;            /* 1: a later revision than the open database: it may hold changes the open one lacks */
+    int separate;         /* 1: the drive holds two different copies of that revision: two copies of this
+                             database were changed separately */
+    int64_t open_revision;  /* the open database's revision, and when it was saved (0 if not known) */
+    int64_t open_saved_ms;
+} bd_drive_catalog;
+bd_status bd_media_catalog_compare(bd_catalog *cat, int64_t media_id, bd_drive_catalog *out);
+/* 1 if, this session, a copy of the database went beside another copy of
+ * the same revision on that drive (see bd_drive_catalog.separate);
+ * *revision is that revision. */
+int bd_media_copy_clash(bd_catalog *cat, int64_t media_id, int64_t *revision);
+
 /* A drive that is lost or broken (why: "lost" or "broken"). Its copies no
  * longer count toward the copies you want, so the progress toward N full
  * backups drops and the files it held are backed up again to other drives.

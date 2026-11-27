@@ -273,6 +273,17 @@ char *bd_substitute_for(bd_catalog *cat, const char *path);
 /* Save a copy of the catalog to dest, encrypted or not. */
 bd_status bd_catalog_save_to(bd_catalog *cat, const char *dest, int encrypt);
 
+/* Which save the open database is, and when it was made (catalog.c): set
+ * by every save, so two copies of one database used separately differ at
+ * the same revision. 0 / "" for a database last saved by an older BRODALF. */
+int bd_catalog_save_id(bd_catalog *cat, char *out, size_t cap);
+int64_t bd_catalog_saved_ms(bd_catalog *cat);
+
+/* A meta value (save_id, saved_ms, revision) of the catalog copy at path,
+ * read with the open database's key. BD_ERR_NOT_FOUND when the copy has
+ * no such value. */
+bd_status bd_catalog_copy_meta(bd_catalog *cat, const char *path, const char *key, char *out, size_t cap);
+
 /* Encrypted copies on a drive carry this suffix. */
 #define BD_SEALED_SUFFIX ".bdenc"
 

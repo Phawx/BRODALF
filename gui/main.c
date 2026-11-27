@@ -8232,8 +8232,11 @@ static void offer_too_big(void)
     free(l.names.p);
 }
 
+static int offer_drive_databases(void);
+
 static void after_backup(job *j)
 {
+    if (offer_drive_databases()) return; /* a copy put beside another of the same revision */
     if (j->bigger > 0) offer_too_big();
     if (j->no_room <= 0 || j->n_many) return;
     wchar_t name[600], size[64], msg[1600];
@@ -8675,6 +8678,90 @@ static int check_offered(int64_t id)
     return 0;
 }
 
+/* Drives whose copy of the database was offered or warned about this
+ * time BRODALF runs: once each. */
+static int64_t g_dbcopy_offered[64];
+static int g_n_dbcopy_offered;
+
+static int dbcopy_offered(int64_t id)
+{
+    for (int i = 0; i < g_n_dbcopy_offered; i++)
+        if (g_dbcopy_offered[i] == id) return 1;
+    return 0;
+}
+
+/* The newest copy of the database on a plugged-in drive, next to the open
+ * one: a later revision (the open database may be an older copy, recovered
+ * from a drive that missed the last backups), or two copies of the
+ * database used separately. BRODALF offers; it never switches by itself. */
+static int offer_drive_database(int64_t id)
+{
+    if (dbcopy_offered(id)) return 0;
+    bd_drive_catalog dc;
+    if (bd_media_catalog_compare(g_cat, id, &dc) != BD_OK) return 0;
+    if (!dc.newer && !dc.separate) {
+        free(dc.path);
+        return 0;
+    }
+    int recovered = 0;
+    if (g_n_dbcopy_offered < 64) g_dbcopy_offered[g_n_dbcopy_offered++] = id;
+    wchar_t name[600], written[64], saved[64], content[2000];
+    media_name(id, name, 600);
+    format_time_ms(dc.written_ms, written, 64);
+    format_time_ms(dc.open_saved_ms, saved, 64);
+    if (dc.newer) {
+        swprintf(content, 2000, T(L"%ls holds a newer copy of this database: revision %lld, written to the drive %ls. The open database "
+                                L"is revision %lld, saved %ls.\n\nThe open one may be an older copy, for example one recovered from a "
+                                L"drive that missed the last backups. Then backups made since are only in the drive's copy, and a "
+                                L"restore from the open one misses them."),
+                 name, (long long)dc.revision, written, (long long)dc.open_revision, saved);
+        if (dc.separate)
+            wcsncat(content, T(L"\n\nThe drive also holds two different copies of that revision: two copies of this database were used "
+                               L"separately."), 1999 - wcslen(content));
+        TASKDIALOG_BUTTON b[2] = {
+            {4200, T(L"Recover from this drive\nBRODALF copies its database to this PC and opens it in place of the one open now. "
+                     L"The open one stays on this PC as it is, and nothing on the drive is changed.")},
+            {4201, T(L"Keep the open database\nBRODALF does not ask again until it is opened again.")},
+        };
+        TASKDIALOGCONFIG tc;
+        memset(&tc, 0, sizeof(tc));
+        tc.cbSize = sizeof(tc);
+        tc.hwndParent = g_main;
+        tc.hInstance = g_inst;
+        tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+        tc.pszWindowTitle = APP_NAME;
+        tc.pszMainIcon = TD_WARNING_ICON;
+        tc.pszMainInstruction = T(L"This drive has a newer database: recover from it?");
+        tc.pszContent = content;
+        tc.cButtons = 2;
+        tc.pButtons = b;
+        tc.nDefaultButton = 4201;
+        int pressed = 4201;
+        if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) && pressed == 4200 && dc.path) recovered = recover_copy(dc.path);
+    } else {
+        swprintf(content, 2000, T(L"%ls holds two different copies of this database at revision %lld: two copies of it were used "
+                                L"separately, for example one on this PC and one recovered or carried elsewhere. Each holds backups "
+                                L"the other does not know of.\n\nBoth stay on the drive; nothing was overwritten. To see what the "
+                                L"other one holds, use File > Recover database... and choose that drive."),
+                 name, (long long)dc.revision);
+        log_append(content);
+        MessageBoxW(g_main, content, APP_NAME, MB_ICONWARNING);
+    }
+    free(dc.path);
+    return recovered;
+}
+
+/* Each plugged-in drive's copy of the database: see offer_drive_database.
+ * 1 if one was recovered in place of the open database. */
+static int offer_drive_databases(void)
+{
+    id_list l = {{0}, 0};
+    bd_list_media(g_cat, connected_drive_cb, &l);
+    for (int i = 0; i < l.n; i++)
+        if (offer_drive_database(l.ids[i])) return 1;
+    return 0;
+}
+
 /* Drives were found. BRODALF says so and may ask (a check that is due, a
  * new disk to set up): what to do with them is the user's choice. */
 static void after_drives(job *j)
@@ -8702,6 +8789,8 @@ static void after_drives(job *j)
     }
     advise_new_drives(j);
     update_drives_label();
+    for (int i = 0; i < j->n_new; i++)
+        if (offer_drive_database(j->new_ids[i])) return; /* recovered in its place: the rest was for the one closed */
     for (int i = 0; i < n_due; i++) {
         if (check_offered(due[i])) continue;
         media_one o;
@@ -17985,6 +18074,7 @@ static void close_database(void)
     g_last_restore[0] = 0;
     g_sb_state[0] = 0;
     g_n_check_offered = 0;
+    g_n_dbcopy_offered = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");
     end_search();

@@ -910,6 +910,97 @@ int bd_media_encrypted(bd_catalog *cat, int64_t media_id)
 /* The catalog's copy on an encrypted drive is always encrypted. */
 static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id);
 
+/* Whether the copy rel on the drive was made by this database: 1 the same
+ * save (its save id), or, saved by an older BRODALF, neither has one; 0
+ * another copy of this database saved it; -1 it cannot be read to tell. */
+static int copy_is_ours(bd_catalog *cat, int64_t media_id, const char *rel)
+{
+    char *root = bd_connected_root(cat, media_id);
+    char *dir = root ? bd_media_catalog_dir(cat, root) : NULL;
+    char *path = dir ? bd_path_join(dir, rel) : NULL;
+    char mine[40], theirs[40];
+    int have_mine = bd_catalog_save_id(cat, mine, sizeof(mine));
+    bd_status s = path ? bd_catalog_copy_meta(cat, path, "save_id", theirs, sizeof(theirs)) : BD_ERR_NOMEM;
+    int ours = s == BD_OK ? have_mine && strcmp(mine, theirs) == 0 : s == BD_ERR_NOT_FOUND ? !have_mine : -1;
+    free(path);
+    free(dir);
+    free(root);
+    return ours;
+}
+
+/* Copies this session put beside another copy of the same revision. */
+static void note_copy_clash(bd_catalog *cat, int64_t media_id, long long rev, const char *name)
+{
+    sqlite3_stmt *q;
+    bd_exec(cat, "CREATE TEMP TABLE IF NOT EXISTS copy_clash(media_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, name TEXT NOT NULL);");
+    if (sqlite3_prepare_v2(cat->db, "INSERT OR REPLACE INTO temp.copy_clash(media_id, revision, name) VALUES(?,?,?)", -1, &q, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int64(q, 2, rev);
+    sqlite3_bind_text(q, 3, name, -1, SQLITE_TRANSIENT);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+}
+
+typedef struct {
+    bd_drive_catalog *out;
+    int64_t at_newest;
+} compare_ctx;
+
+/* Newest first: the first one and how many share its revision. */
+static int compare_cb(void *ctx, const bd_catalog_copy_info *info)
+{
+    compare_ctx *c = ctx;
+    if (!c->out->path) {
+        c->out->path = bd_strdup(info->path);
+        c->out->revision = info->revision;
+        c->out->written_ms = info->saved_ms;
+    } else if (info->revision != c->out->revision) {
+        return 1;
+    }
+    c->at_newest++;
+    return 0;
+}
+
+bd_status bd_media_catalog_compare(bd_catalog *cat, int64_t media_id, bd_drive_catalog *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->revision = -1;
+    out->open_revision = bd_catalog_revision(cat);
+    out->open_saved_ms = bd_catalog_saved_ms(cat);
+    if (!out->open_saved_ms) {
+        bd_stat_t st;
+        if (bd_stat(cat->path, &st) == 0) out->open_saved_ms = st.mtime_ns / 1000000;
+    }
+    char *root = bd_connected_root(cat, media_id);
+    if (!root) return bd_fail(cat, BD_ERR_NOT_FOUND, "that drive is not connected");
+    char *dir = bd_media_catalog_dir(cat, root);
+    compare_ctx c = {out, 0};
+    if (dir) bd_find_catalog_revisions(dir, compare_cb, &c);
+    free(dir);
+    free(root);
+    if (out->path) {
+        out->newer = out->revision > out->open_revision;
+        out->separate = c.at_newest > 1;
+    }
+    return BD_OK;
+}
+
+int bd_media_copy_clash(bd_catalog *cat, int64_t media_id, int64_t *revision)
+{
+    sqlite3_stmt *q;
+    int found = 0;
+    if (revision) *revision = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT revision FROM temp.copy_clash WHERE media_id=?", -1, &q, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(q, 1, media_id);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+        found = 1;
+        if (revision) *revision = sqlite3_column_int64(q, 0);
+    }
+    sqlite3_finalize(q);
+    return found;
+}
+
 bd_status bd_catalog_copy_to_media(bd_catalog *cat, int64_t media_id)
 {
     bd_status s = bd_catalog_save(cat);
@@ -934,11 +1025,25 @@ static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
     /* A new name for every revision: older copies on the drive stay as
      * they are, never overwritten. */
     char rel[64], tmp[96];
-    snprintf(rel, sizeof(rel), "catalog-r%08lld.brodalf", (long long)bd_catalog_revision(cat));
-    snprintf(tmp, sizeof(tmp), "%s" BD_TMP_MARKER, rel);
+    long long rev = (long long)bd_catalog_revision(cat);
+    snprintf(rel, sizeof(rel), "catalog-r%08lld.brodalf", rev);
     bd_remote_stat st;
     int there = store->ops->stat(store, rel, &st);
-    if (there == 0) { bd_store_close(store); return BD_OK; } /* this revision is already on the drive */
+    if (there == 0) {
+        /* This revision is on the drive already: this database's own copy,
+         * or one from another copy of this database that was used apart
+         * from it and reached the same revision. That one stays; this one
+         * goes beside it, under a name of its own. */
+        int ours = copy_is_ours(cat, media_id, rel);
+        if (ours == 1) { bd_store_close(store); return BD_OK; }
+        char id[40];
+        if (!bd_catalog_save_id(cat, id, sizeof(id)) || strlen(id) < 8) bd_uuid_v4(id);
+        snprintf(rel, sizeof(rel), "catalog-r%08lld-%.8s.brodalf", rev, id);
+        if (ours == 0) note_copy_clash(cat, media_id, rev, rel);
+        there = store->ops->stat(store, rel, &st);
+        if (there == 0) { bd_store_close(store); return BD_OK; } /* put there at an earlier clash */
+    }
+    snprintf(tmp, sizeof(tmp), "%s" BD_TMP_MARKER, rel);
     char *staged = there < 0 ? NULL : store->ops->staging_path(store, tmp);
     if (!staged) s = bd_fail(cat, BD_ERR_IO, "cannot copy the catalog: %s", store->err);
     else if ((s = bd_catalog_save_to(cat, staged, encrypt)) == BD_OK &&
@@ -964,6 +1069,7 @@ static bd_status put_catalog_copy(bd_catalog *cat, int64_t media_id)
         free(dir);
         free(root);
     }
+    /* With s BD_OK the copy is on the drive, as rel, and reads back right. */
     return s;
 }
 

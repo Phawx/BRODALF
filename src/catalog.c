@@ -906,6 +906,13 @@ bd_status bd_catalog_save(bd_catalog *cat)
     char v[32];
     snprintf(v, sizeof(v), "%lld", (long long)(bd_catalog_revision(cat) + 1));
     if (meta_set(cat, "revision", v) != 0) return bd_fail_db(cat, "count the save");
+    /* Which save this is and when: two copies of one database used
+     * separately reach the same revision with different ids. Older
+     * BRODALFs leave both as they are. */
+    char id[37], when[32];
+    bd_uuid_v4(id);
+    snprintf(when, sizeof(when), "%lld", (long long)bd_now_ms());
+    if (meta_set(cat, "save_id", id) != 0 || meta_set(cat, "saved_ms", when) != 0) return bd_fail_db(cat, "count the save");
     /* What the snapshot will hold: a change made from here on (another
      * thread) keeps the catalog unsaved. */
     int64_t at = cat->changes;
@@ -1177,6 +1184,75 @@ bd_status bd_catalog_copy_readable(bd_catalog *cat, const char *path)
     if (s == BD_ERR_FORMAT) return bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
     if (s != BD_OK) return bd_fail(cat, s, "cannot read %s", path);
     return BD_OK;
+}
+
+int bd_catalog_save_id(bd_catalog *cat, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+    return cat && cat->db && meta_get(cat, "save_id", out, cap);
+}
+
+int64_t bd_catalog_saved_ms(bd_catalog *cat)
+{
+    char v[32];
+    return cat && cat->db && meta_get(cat, "saved_ms", v, sizeof(v)) ? atoll(v) : 0;
+}
+
+bd_status bd_catalog_copy_meta(bd_catalog *cat, const char *path, const char *key, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+    FILE *in = bd_fopen(path, "rb");
+    if (!in) return bd_fail(cat, BD_ERR_NOT_FOUND, "cannot open %s", path);
+    unsigned char header[16];
+    if (fread(header, 1, sizeof(header), in) != sizeof(header) || memcmp(header, BD_MAGIC, 8) != 0) {
+        fclose(in);
+        return bd_fail(cat, BD_ERR_FORMAT, "%s is not a BRODALF catalog", path);
+    }
+    uint32_t version = get_u32(header + 8), flags = get_u32(header + 12);
+    if (version > BD_FORMAT_VERSION || (flags & ~3u) || flags == 2u) {
+        fclose(in);
+        return bd_fail(cat, BD_ERR_FORMAT, "%s uses a newer format", path);
+    }
+    bd_source src = {in, NULL};
+    if (flags & 1u) {
+        uint8_t block[BD_KEY_BLOCK];
+        if (!cat->have_key) {
+            fclose(in);
+            return bd_fail(cat, BD_ERR_PASSPHRASE, "enter the passphrase to read the encrypted copy %s", path);
+        }
+        if (fread(block, 1, sizeof(block), in) != sizeof(block) || ((flags & 2u) && fread(block, 1, sizeof(block), in) != sizeof(block)) ||
+            !(src.opener = bd_open_begin(in, cat->key))) {
+            fclose(in);
+            return bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
+        }
+    }
+    /* Unpacked into memory and opened there, read only, apart from the
+     * open database. */
+    bd_image image = {NULL, 0, 0};
+    bd_status s = decompress_to(cat, &src, NULL, &image);
+    bd_open_end(src.opener);
+    fclose(in);
+    if (s != BD_OK) return s == BD_ERR_FORMAT ? bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path) : s;
+    image_not_wal(image.buf, image.len);
+    sqlite3 *db = NULL;
+    sqlite3_stmt *q = NULL;
+    int found = 0;
+    if (sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+        sqlite3_deserialize(db, "main", image.buf, image.len, image.cap, SQLITE_DESERIALIZE_READONLY) == SQLITE_OK &&
+        sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key=?", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(q, 1, key, -1, SQLITE_STATIC);
+        if (sqlite3_step(q) == SQLITE_ROW) {
+            snprintf(out, cap, "%s", sqlite3_column_text(q, 0) ? (const char *)sqlite3_column_text(q, 0) : "");
+            found = 1;
+        }
+    } else {
+        s = bd_fail(cat, BD_ERR_FORMAT, "%s is damaged", path);
+    }
+    sqlite3_finalize(q);
+    sqlite3_close(db);
+    image_free(&image);
+    if (s == BD_OK && !found) s = BD_ERR_NOT_FOUND;
+    return s;
 }
 
 bd_status bd_catalog_recover(const char *backup_path, const char *dest_path)

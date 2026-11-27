@@ -7854,8 +7854,8 @@ static int set_passphrase_ui(void)
         int failed = 0, done = copy_db_to_plugged(&failed);
         wchar_t msg[600];
         if (done) {
-            swprintf(msg, 600, TN(done, L"The drive plugged in now has a copy of the database that opens with the new passphrase.",
-                                  L"The %d drives plugged in now have a copy of the database that opens with the new passphrase."),
+            swprintf(msg, 600, TN(done, L"%d drive plugged in now has a copy of the database that opens with the new passphrase.",
+                                  L"%d drives plugged in now have a copy of the database that opens with the new passphrase."),
                      done);
             log_append(msg);
         }

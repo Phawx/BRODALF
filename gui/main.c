@@ -4064,6 +4064,7 @@ static void rebuild_tree(void)
     int64_t file_sel = fr ? fr->node_id : 0;
 
     g_tree_building++;
+    bd_applog("TREEDBG %lu rebuild-begin", GetTickCount());
     SendMessageW(g_tree, WM_SETREDRAW, FALSE, 0);
     TreeView_DeleteAllItems(g_tree);
     source_list l = {0};
@@ -4137,6 +4138,7 @@ static void rebuild_tree(void)
     g_tree_building--;
     SendMessageW(g_tree, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_tree, NULL, TRUE);
+    bd_applog("TREEDBG %lu rebuild-end", GetTickCount());
     fill_files(item_ref(TreeView_GetSelection(g_tree)), file_sel);
     if (!g_busy) show_detail();
 }
@@ -10978,6 +10980,11 @@ static LRESULT CALLBACK page_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
     case WM_ERASEBKGND:
+        if (hwnd == g_page[0]) {
+            RECT cb;
+            GetClipBox((HDC)wp, &cb);
+            bd_applog("TREEDBG %lu page-erase clip=%ld,%ld,%ld,%ld", GetTickCount(), cb.left, cb.top, cb.right, cb.bottom);
+        }
         if (g_dark) {
             RECT rc;
             GetClientRect(hwnd, &rc);
@@ -15937,7 +15944,7 @@ static LRESULT tree_custom_draw(NMTVCUSTOMDRAW *cd)
 {
     switch (cd->nmcd.dwDrawStage) {
     case CDDS_PREPAINT:
-        bd_applog("TREEDBG paint-begin rc=%ld,%ld,%ld,%ld", cd->nmcd.rc.left, cd->nmcd.rc.top, cd->nmcd.rc.right, cd->nmcd.rc.bottom);
+        bd_applog("TREEDBG %lu paint-begin rc=%ld,%ld,%ld,%ld", GetTickCount(), cd->nmcd.rc.left, cd->nmcd.rc.top, cd->nmcd.rc.right, cd->nmcd.rc.bottom);
         return CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT;
     case CDDS_POSTPAINT:
         bd_applog("TREEDBG paint-end");
@@ -16481,6 +16488,15 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     if (theme_menu_bar(hwnd, msg, wp, lp, &themed) || theme_ctlcolor(msg, wp, lp, &themed)) return themed;
     switch (msg) {
     case WM_ERASEBKGND:
+        if (g_tree) {
+            RECT cb, tw;
+            GetClipBox((HDC)wp, &cb);
+            GetWindowRect(g_tree, &tw);
+            MapWindowPoints(NULL, hwnd, (POINT *)&tw, 2);
+            RECT x;
+            bd_applog("TREEDBG %lu main-erase clip=%ld,%ld,%ld,%ld tree=%ld,%ld,%ld,%ld overlap=%d vis=%d", GetTickCount(), cb.left, cb.top, cb.right,
+                      cb.bottom, tw.left, tw.top, tw.right, tw.bottom, IntersectRect(&x, &cb, &tw), IsWindowVisible(g_tree));
+        }
         if (g_dark) {
             RECT rc;
             GetClientRect(hwnd, &rc);
@@ -17860,7 +17876,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     register_page_class();
 
     int made_at = g_dpi;
-    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_NAME, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, S(1240), S(820),
+    DWORD dbg_style = WS_OVERLAPPEDWINDOW;
+    {
+        char *e = getenv("BRODALF_DBG_CLIP");
+        if (e && *e == '1') dbg_style |= WS_CLIPCHILDREN;
+        bd_applog("TREEDBG main clipchildren=%d", (dbg_style & WS_CLIPCHILDREN) != 0);
+    }
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_NAME, dbg_style, CW_USEDEFAULT, CW_USEDEFAULT, S(1240), S(820),
                                 NULL, NULL, inst, NULL);
     if (!hwnd) { LocalFree(argv); return 1; }
     /* It opened on a monitor at another DPI (WM_CREATE took that on). */

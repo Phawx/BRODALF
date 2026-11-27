@@ -41,6 +41,7 @@ jobs:
         shell: pwsh
         env:
           SHOTS_ONLY_NO_LOCAL: "1"
+          BRODALF_DBG_CLIP: ${{ matrix.combo == 'en-dark' && '1' || '0' }}
         run: >-
           tools\ui-screenshots\run-all.ps1
           -Exe "$PWD\build\Release\brodalf.exe" -Cli "$PWD\build\Release\brodalf-cli.exe"

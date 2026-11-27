@@ -243,7 +243,8 @@ enum {
     WM_APP_DONE,              /* lParam: job* */
     WM_APP_KICK,              /* start the next job, once the command that asked for it is done */
     WM_APP_SETS,              /* lParam: malloc'd sets_msg, the full copies read during a backup */
-    WM_APP_FILESEL            /* what is selected in the file list changed: show its details once */
+    WM_APP_FILESEL,           /* what is selected in the file list changed: show its details once */
+    WM_APP_SEARCH             /* lParam: search_run*, a search made while a job had the database */
 };
 
 /* ---- Languages -----------------------------------------------------------
@@ -6305,6 +6306,8 @@ static int CALLBACK lv_compare(LPARAM pa, LPARAM pb, LPARAM ctx)
     return a < b ? -1 : a > b ? 1 : 0;
 }
 
+static int search_sort_key(HWND lv, int index, int col, double *out);
+
 /* Sort the table as its header says, and show the arrow on that column. */
 static void lv_sort(HWND lv)
 {
@@ -6343,7 +6346,9 @@ static void lv_sort(HWND lv)
             if (!SendMessageW(lv, LVM_GETITEMW, 0, (LPARAM)&it)) continue;
             if (it.lParam < 0 || it.lParam >= n || d.text[it.lParam]) continue;
             d.text[it.lParam] = _wcsdup(it.pszText ? it.pszText : L"");
-            if (d.text[it.lParam]) d.has_num[it.lParam] = (char)lv_number(d.text[it.lParam], &d.num[it.lParam]);
+            if (d.text[it.lParam])
+                d.has_num[it.lParam] = (char)(search_sort_key(lv, (int)it.lParam, col, &d.num[it.lParam]) ||
+                                              lv_number(d.text[it.lParam], &d.num[it.lParam]));
         }
         ListView_SortItems(lv, lv_compare, (LPARAM)&d);
         int focus = ListView_GetNextItem(lv, -1, LVNI_FOCUSED);
@@ -11941,7 +11946,7 @@ static void after_scan(job *j)
 
 #define ID_SEARCH_TIMER 1
 
-typedef struct { int64_t source_id; char *rel; } search_hit;
+typedef struct { int64_t source_id; char *rel; int64_t mtime_ns, size; int is_dir; } search_hit;
 static search_hit *g_hits;
 static int g_hit_n, g_hit_cap;
 
@@ -11965,6 +11970,16 @@ static const wchar_t *short_state(bd_node_state s)
     return L"";
 }
 
+/* The results' columns. */
+enum { HC_NAME, HC_FOLDER, HC_STATE, HC_DATE, HC_SIZE, HC_WHERE, HC_COUNT };
+
+/* A row of the results that is a message, not a file. */
+static void search_note(const wchar_t *text)
+{
+    const wchar_t *cells[HC_COUNT] = {text, L"", L"", L"", L"", L""};
+    lv_row(g_results, cells, HC_COUNT);
+}
+
 static int search_cb(void *ctx, const bd_search_info *r)
 {
     (void)ctx;
@@ -11977,10 +11992,13 @@ static int search_cb(void *ctx, const bd_search_info *r)
     }
     g_hits[g_hit_n].source_id = r->source_id;
     g_hits[g_hit_n].rel = xstrdup(r->rel_path);
+    g_hits[g_hit_n].mtime_ns = r->mtime_ns;
+    g_hits[g_hit_n].size = r->size;
+    g_hits[g_hit_n].is_dir = r->is_dir;
     g_hit_n++;
 
     wchar_t *name = widen(r->name), *src = widen(r->source_name), *rel = widen(r->rel_path), *where = widen(r->where);
-    wchar_t shown[600], folder[1200];
+    wchar_t shown[600], folder[1200], when[64] = L"", size[64] = L"";
     swprintf(shown, 600, L"%ls%ls", name ? name : L"", r->is_dir ? L"\\" : L"");
     /* The folder it is in: the source, then the path without the name. */
     swprintf(folder, 1200, L"%ls\\%ls", src ? src : L"", rel ? rel : L"");
@@ -11988,12 +12006,32 @@ static int search_cb(void *ctx, const bd_search_info *r)
     if (cut) *cut = 0;
     else if ((cut = wcschr(folder, L'\\')) != NULL) cut[0] = 0;
     for (wchar_t *c = folder; *c; c++) if (*c == L'/') *c = L'\\';
-    const wchar_t *cells[] = {shown, folder, short_state(r->state), where && *where ? where : T(L"(no copies)")};
-    lv_row(g_results, cells, 4);
+    /* When it was last changed, and how big, to sort by: a file is often
+     * remembered by when. */
+    if (r->mtime_ns > 0) format_ns(r->mtime_ns, when, 64);
+    if (!r->is_dir) format_bytes(r->size, size, 64);
+    const wchar_t *cells[HC_COUNT] = {shown, folder, short_state(r->state), when, size, where && *where ? where : T(L"(no copies)")};
+    lv_row(g_results, cells, HC_COUNT);
     free(name);
     free(src);
     free(rel);
     free(where);
+    return 0;
+}
+
+/* Sorting the results by date or size goes by the time and size
+ * themselves, not by how they are written (26.11.2026 is not a number). */
+static int search_sort_key(HWND lv, int index, int col, double *out)
+{
+    if (lv != g_results || index < 0 || index >= g_hit_n) return 0;
+    if (col == HC_DATE && g_hits[index].mtime_ns > 0) {
+        *out = (double)g_hits[index].mtime_ns;
+        return 1;
+    }
+    if (col == HC_SIZE && !g_hits[index].is_dir) {
+        *out = (double)g_hits[index].size;
+        return 1;
+    }
     return 0;
 }
 
@@ -12004,51 +12042,119 @@ static void search_fit_cols(void)
     RECT rc;
     GetClientRect(g_results, &rc);
     int w = rc.right;
-    static const int share[] = {38, 34, 20};
-    for (int c = 0; c < 3; c++) {
+    static const int share[HC_WHERE] = {30, 26, 16, 16, 10};
+    for (int c = 0; c < HC_WHERE; c++) {
         ListView_SetColumnWidth(g_results, c, LVSCW_AUTOSIZE_USEHEADER);
         int cap = w * share[c] / 100;
         if (ListView_GetColumnWidth(g_results, c) > cap) ListView_SetColumnWidth(g_results, c, cap);
     }
-    ListView_SetColumnWidth(g_results, 3, LVSCW_AUTOSIZE_USEHEADER);
+    ListView_SetColumnWidth(g_results, HC_WHERE, LVSCW_AUTOSIZE_USEHEADER);
 }
 
-static void run_search(void)
+/* While a job has the database (the scan when it opens, say), a search
+ * runs on a thread of its own: the database answers it between the job's
+ * own steps, as it stands then (bd_search), and the window does not wait.
+ * Its results come back as WM_APP_SEARCH. One runs at a time; typing more
+ * meanwhile runs the newest text once it is done. */
+typedef struct {
+    int64_t node_id, source_id, size, mtime_ns;
+    int is_dir;
+    bd_node_state state;
+    char *source_name, *rel, *name, *where;
+} found_row;
+
+typedef struct search_run {
+    LONG gen;
+    bd_catalog *cat;
+    char *text;
+    found_row *rows;
+    int n, cap;
+} search_run;
+
+static HANDLE g_search_thread;
+static volatile LONG g_search_gen; /* a newer search, or the database closed: older results are dropped */
+static int g_search_again;
+
+static void search_run_free(search_run *s)
 {
-    if (!g_cat) return;
-    wchar_t text[256];
-    GetWindowTextW(g_search, text, 256);
-    const wchar_t *p = text;
-    while (*p == L' ') p++;
-    SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
-    ListView_DeleteAllItems(g_results);
-    clear_hits();
-    if (!*p) {
-        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
-        ShowWindow(g_results, SW_HIDE);
-        ShowWindow(g_files, SW_SHOW);
-        ShowWindow(g_files_info, SW_SHOW);
-        show_detail(); /* what is selected again */
+    if (!s) return;
+    for (int i = 0; i < s->n; i++) {
+        free(s->rows[i].source_name);
+        free(s->rows[i].rel);
+        free(s->rows[i].name);
+        free(s->rows[i].where);
+    }
+    free(s->rows);
+    free(s->text);
+    free(s);
+}
+
+static int search_keep_cb(void *ctx, const bd_search_info *r)
+{
+    search_run *s = ctx;
+    if (s->gen != g_search_gen) return 1; /* no longer wanted */
+    if (s->n == s->cap) {
+        int cap = s->cap ? s->cap * 2 : 64;
+        found_row *g = realloc(s->rows, sizeof(found_row) * (size_t)cap);
+        if (!g) return 1;
+        s->rows = g;
+        s->cap = cap;
+    }
+    found_row *f = &s->rows[s->n];
+    f->node_id = r->node_id;
+    f->source_id = r->source_id;
+    f->size = r->size;
+    f->mtime_ns = r->mtime_ns;
+    f->is_dir = r->is_dir;
+    f->state = r->state;
+    f->source_name = xstrdup(r->source_name ? r->source_name : "");
+    f->rel = xstrdup(r->rel_path ? r->rel_path : "");
+    f->name = xstrdup(r->name ? r->name : "");
+    f->where = xstrdup(r->where ? r->where : "");
+    s->n++;
+    if (!f->source_name || !f->rel || !f->name || !f->where) return 1;
+    return 0;
+}
+
+static DWORD WINAPI search_thread(LPVOID arg)
+{
+    search_run *s = arg;
+    bd_search(s->cat, s->text, 500, search_keep_cb, s);
+    if (!PostMessageW(g_main, WM_APP_SEARCH, 0, (LPARAM)s)) search_run_free(s);
+    return 0;
+}
+
+/* Wait for the search on its thread to end (it does soon: it only waits
+ * for the database between a job's steps). Before the database closes. */
+static void search_join(void)
+{
+    InterlockedIncrement(&g_search_gen);
+    g_search_again = 0;
+    if (!g_search_thread) return;
+    WaitForSingleObject(g_search_thread, INFINITE);
+    CloseHandle(g_search_thread);
+    g_search_thread = NULL;
+}
+
+static void search_start(const char *text)
+{
+    search_run *s = calloc(1, sizeof(search_run));
+    if (s) s->text = xstrdup(text);
+    if (!s || !s->text) {
+        search_run_free(s);
         return;
     }
-    if (g_busy) {
-        /* The catalog belongs to the job; the search runs again when it ends. */
-        const wchar_t *cells[] = {T(L"Search is available when the current job finishes."), L"", L"", L""};
-        lv_row(g_results, cells, 4);
-        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(g_results, NULL, TRUE);
-        ShowWindow(g_files, SW_HIDE);
-        ShowWindow(g_files_info, SW_HIDE);
-        ShowWindow(g_results, SW_SHOW);
-        return;
-    }
-    char *u = narrow(text);
-    if (u) bd_search(g_cat, u, 500, search_cb, NULL);
-    free(u);
-    if (!g_hit_n) {
-        const wchar_t *cells[] = {T(L"No files or folders match."), L"", L"", L""};
-        lv_row(g_results, cells, 4);
-    }
+    s->gen = InterlockedIncrement(&g_search_gen);
+    s->cat = g_cat;
+    g_search_thread = CreateThread(NULL, 0, search_thread, s, 0, NULL);
+    if (!g_search_thread) search_run_free(s);
+}
+
+/* What was found, said in the details, and the results shown in place of
+ * the folder's files. */
+static void search_show(const wchar_t *p)
+{
+    if (!g_hit_n) search_note(T(L"No files or folders match."));
     /* Until a result is picked, the details say what was found, not what
      * was selected before the search. */
     {
@@ -12069,6 +12175,96 @@ static void run_search(void)
     ShowWindow(g_files, SW_HIDE);
     ShowWindow(g_files_info, SW_HIDE);
     ShowWindow(g_results, SW_SHOW);
+}
+
+static void run_search(void);
+
+/* A search made on its thread is done. */
+static void search_done(search_run *s)
+{
+    if (g_search_thread) {
+        WaitForSingleObject(g_search_thread, INFINITE);
+        CloseHandle(g_search_thread);
+        g_search_thread = NULL;
+    }
+    int wanted = s && s->gen == g_search_gen && g_cat && s->cat == g_cat;
+    if (wanted) {
+        wchar_t text[256];
+        GetWindowTextW(g_search, text, 256);
+        const wchar_t *p = text;
+        while (*p == L' ') p++;
+        SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
+        ListView_DeleteAllItems(g_results);
+        clear_hits();
+        for (int i = 0; i < s->n; i++) {
+            const found_row *f = &s->rows[i];
+            bd_search_info info;
+            memset(&info, 0, sizeof(info));
+            info.node_id = f->node_id;
+            info.source_id = f->source_id;
+            info.source_name = f->source_name;
+            info.rel_path = f->rel;
+            info.name = f->name;
+            info.is_dir = f->is_dir;
+            info.size = f->size;
+            info.state = f->state;
+            info.where = f->where;
+            info.mtime_ns = f->mtime_ns;
+            if (search_cb(NULL, &info)) break;
+        }
+        search_show(p);
+    }
+    search_run_free(s);
+    if (g_search_again) {
+        g_search_again = 0;
+        run_search();
+    }
+}
+
+static void run_search(void)
+{
+    if (!g_cat) return;
+    wchar_t text[256];
+    GetWindowTextW(g_search, text, 256);
+    const wchar_t *p = text;
+    while (*p == L' ') p++;
+    if (*p && g_busy && g_search_thread) {
+        /* One is still looking: it stops, and the newest text is
+         * searched for once it has. */
+        InterlockedIncrement(&g_search_gen);
+        g_search_again = 1;
+        return;
+    }
+    /* What a search on its thread finds now is not wanted any more. */
+    InterlockedIncrement(&g_search_gen);
+    g_search_again = 0;
+    SendMessageW(g_results, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(g_results);
+    clear_hits();
+    if (!*p) {
+        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+        ShowWindow(g_results, SW_HIDE);
+        ShowWindow(g_files, SW_SHOW);
+        ShowWindow(g_files_info, SW_SHOW);
+        show_detail(); /* what is selected again */
+        return;
+    }
+    char *u = narrow(text);
+    if (g_busy) {
+        /* The job has the database: search it on a thread of its own. */
+        search_note(T(L"Searching..."));
+        SendMessageW(g_results, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(g_results, NULL, TRUE);
+        ShowWindow(g_files, SW_HIDE);
+        ShowWindow(g_files_info, SW_HIDE);
+        ShowWindow(g_results, SW_SHOW);
+        if (u && !g_search_thread) search_start(u);
+        free(u);
+        return;
+    }
+    if (u) bd_search(g_cat, u, 500, search_cb, NULL);
+    free(u);
+    search_show(p);
 }
 
 /* Open the tree down to a folder and select it; a file, in the folder it
@@ -17388,9 +17584,9 @@ static void create_children(HWND hwnd)
                                 10, 10, g_page[TAB_DB], (HMENU)ID_RESULTS, g_inst, NULL);
     SendMessageW(g_results, WM_SETFONT, (WPARAM)g_font, TRUE);
     {
-        static const wchar_t *cols[] = {N_(L"Name"), N_(L"Folder"), N_(L"State"), N_(L"Where it is")};
-        static const int widths[] = {150, 130, 120, 320};
-        lv_columns(g_results, cols, widths, 4);
+        static const wchar_t *cols[] = {N_(L"Name"), N_(L"Folder"), N_(L"State"), N_(L"Modified"), N_(L"Size"), N_(L"Where it is")};
+        static const int widths[] = {150, 130, 120, 110, 70, 320};
+        lv_columns(g_results, cols, widths, 6);
     }
 
     /* What is selected, as a form: a label and its value on each row. */
@@ -18076,6 +18272,9 @@ static LRESULT CALLBACK main_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         free(m);
         return 0;
     }
+    case WM_APP_SEARCH:
+        search_done((search_run *)lp);
+        return 0;
     case WM_APP_DONE: {
         job *j = (job *)lp;
         if (g_session_end) { /* the database is closed (end_session) */
@@ -18454,6 +18653,7 @@ static void show_open_error(bd_status s, const wchar_t *fallback)
 static void close_database(void)
 {
     if (!g_cat) return;
+    search_join();
     bd_catalog_save(g_cat);
     bd_catalog_close(g_cat);
     g_cat = NULL;
@@ -19212,6 +19412,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (g_accel) DestroyAcceleratorTable(g_accel);
 
     if (g_cat) {
+        search_join();
         bd_catalog_save(g_cat);
         bd_catalog_close(g_cat);
     }

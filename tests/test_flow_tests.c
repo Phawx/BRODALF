@@ -393,6 +393,7 @@ int main(int argc, char **argv)
     char tmp[512], id[37];
     bd_temp_dir(tmp, sizeof(tmp));
     bd_uuid_v4(id);
+    setvbuf(stdout, NULL, _IONBF, 0); /* what it prints, in order with the failed checks */
     snprintf(top, sizeof(top), "%s/brodalf-flow-tests-%.8s", tmp, id);
     for (char *p = top; *p; p++) if (*p == '\\') *p = '/';
     bd_mkdirs(top);

@@ -15,7 +15,8 @@
  *
  * On each volume: the file system BRODALF reads; free space as Windows
  * gives it, and the allocation unit; a backup to it and a restore from it
- * with modified times kept (to two seconds on FAT32, as it stores them),
+ * with modified times kept (to two seconds, as Windows stores them on
+ * FAT32 and exFAT),
  * and a backup root on it. A file of 4 GiB planned out of a FAT32 drive,
  * never written, but not out of an exFAT one. A path near 260 characters
  * whose copy on the drive and restore are longer. A backup root on the
@@ -577,6 +578,7 @@ int main(void)
     char tmp[512], id[37];
     bd_temp_dir(tmp, sizeof(tmp));
     bd_uuid_v4(id);
+    setvbuf(stdout, NULL, _IONBF, 0); /* what it prints, in order with the failed checks */
     snprintf(top, sizeof(top), "%s/brodalf-volumes-%.8s", tmp, id);
     for (char *p = top; *p; p++) if (*p == '\\') *p = '/';
     bd_mkdirs(top);
@@ -586,7 +588,10 @@ int main(void)
     const char *share = getenv("BRODALF_TEST_SHARE"), *share_dir = getenv("BRODALF_TEST_SHARE_DIR");
     if (fat) test_volume("FAT32", fat, "FAT32", "BRODALF_TEST_FAT32_UNIT", 2000000000LL);
     else not_tried("a FAT32 volume", "BRODALF_TEST_FAT32 does not name one (\"F:\\\")");
-    if (exfat) test_volume("exFAT", exfat, "exFAT", "BRODALF_TEST_EXFAT_UNIT", 10000000LL);
+    /* exFAT has a field for modified times to 10 ms, but Windows leaves it
+     * empty: on CI its copies' times came out in steps of 2 seconds, as on
+     * FAT32 (and BRODALF's check and rescan took them as they were). */
+    if (exfat) test_volume("exFAT", exfat, "exFAT", "BRODALF_TEST_EXFAT_UNIT", 2000000000LL);
     else not_tried("an exFAT volume", "BRODALF_TEST_EXFAT does not name one");
     if (fat && exfat) {
         test_too_big(fat, exfat);

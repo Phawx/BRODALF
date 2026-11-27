@@ -491,6 +491,136 @@ static void test_destination_check(void)
     bd_catalog_close(cat);
 }
 
+/* ---- C14 and R11: search -------------------------------------------------- */
+
+typedef struct {
+    int n, first_is_dir;
+    char first[512], where[512];
+    int64_t mtime_ns;
+} hits;
+
+static int hit_cb(void *ctx, const bd_search_info *h)
+{
+    hits *x = ctx;
+    if (x->n++ == 0) {
+        snprintf(x->first, sizeof(x->first), "%s", h->rel_path);
+        snprintf(x->where, sizeof(x->where), "%s", h->where);
+        x->first_is_dir = h->is_dir;
+        x->mtime_ns = h->mtime_ns;
+    }
+    return 0;
+}
+
+static hits search(bd_catalog *cat, const char *text)
+{
+    hits x;
+    memset(&x, 0, sizeof(x));
+    REQUIRE_OK(bd_search(cat, text, 0, hit_cb, &x), cat);
+    return x;
+}
+
+static void test_search(void)
+{
+    write_file(at("c14/Docs/\xc3\x9c" "berweisungen/Jan.pdf"), "a pdf");
+    write_file(at("c14/Docs/Steuern/2024/report-a.pdf"), "a report");
+    write_file(at("c14/Docs/Steuern/2024/notes.txt"), "notes");
+    write_file(at("c14/Docs/x_y.txt"), "underscore");
+    write_file(at("c14/Docs/a%b.txt"), "percent");
+    write_file(at("c14/Docs/\xd0\x9f\xd0\xb8\xd1\x81\xd1\x8c\xd0\xbc\xd0\xbe.txt"), "a letter"); /* Письмо */
+    bd_mkdirs(at("c14/drive"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("c14/db.brodalf"), &cat), NULL);
+    int64_t src, drive;
+    REQUIRE_OK(bd_source_add(cat, at("c14/Docs"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("c14/drive"), "Red", 0, &drive), cat);
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_backup(cat, drive, 0, &bs, quiet, NULL), cat);
+
+    /* Letters past ASCII, either case (0.14.0: none found). */
+    hits h = search(cat, "\xc3\xbc" "berweisungen"); /* überweisungen */
+    CHECK(h.n == 2 && h.first_is_dir);
+    CHECK(search(cat, "\xd0\xbf\xd0\x98\xd0\xa1\xd0\xac\xd0\x9c\xd0\x9e").n == 1); /* пИСЬМО */
+    /* Patterns (0.14.0: "*" and "?" taken as they are, so nothing). */
+    CHECK(search(cat, "*.pdf").n == 2);
+    CHECK(search(cat, "*.PDF").n == 2);
+    CHECK(search(cat, "report-?.pdf").n == 1);
+    CHECK(search(cat, "?berweisungen").n == 1); /* "?" is one letter, not one byte */
+    CHECK(search(cat, "2024/*.pdf").n == 1);
+    CHECK(search(cat, "Steuern/2024/*").n == 2);
+    CHECK(search(cat, "steuern *.txt").n == 1);
+    /* Other characters are still themselves. */
+    CHECK(search(cat, "x_y").n == 1 && search(cat, "xay").n == 0);
+    CHECK(search(cat, "a%b").n == 1);
+    /* A name that matches comes first; files have their date. */
+    h = search(cat, "2024");
+    CHECK(h.n == 3 && h.first_is_dir && strcmp(h.first, "Steuern/2024") == 0);
+    h = search(cat, "notes");
+    CHECK(h.n == 1 && h.mtime_ns > 0 && strstr(h.where, "Red") != NULL);
+
+    /* Changed since its backup: the drive holding what a restore brings
+     * back is named (0.14.0: "", as if it had no copy). */
+    write_file(at("c14/Docs/Steuern/2024/notes.txt"), "notes, changed since");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    h = search(cat, "notes");
+    CHECK(h.n == 1 && strstr(h.where, "Red") != NULL);
+    bd_catalog_close(cat);
+}
+
+/* Search while a scan and the save after it run on another thread: it
+ * sees the database as it stands, and neither gets in the other's way. */
+typedef struct {
+    bd_catalog *cat;
+    bd_status scan, save;
+    volatile int done;
+} scan_job;
+
+static void scan_thread(void *arg)
+{
+    scan_job *j = arg;
+    bd_scan_stats ss;
+    j->scan = bd_scan(j->cat, &ss, quiet, NULL);
+    j->save = bd_catalog_save(j->cat);
+    j->done = 1;
+}
+
+static void test_search_during_scan(void)
+{
+    char rel[256], text[64];
+    for (int i = 0; i < 400; i++) {
+        snprintf(rel, sizeof(rel), "c14b/Data/d%02d/file %03d.txt", i % 20, i);
+        snprintf(text, sizeof(text), "file %d", i);
+        write_file(at(rel), text);
+    }
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("c14b/db.brodalf"), &cat), NULL);
+    int64_t src;
+    REQUIRE_OK(bd_source_add(cat, at("c14b/Data"), &src), cat);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    for (int i = 0; i < 400; i += 3) {
+        snprintf(rel, sizeof(rel), "c14b/Data/d%02d/file %03d.txt", i % 20, i);
+        write_file(at(rel), "changed, so it is read again");
+    }
+    scan_job j;
+    memset(&j, 0, sizeof(j));
+    j.cat = cat;
+    bd_thread *t = bd_thread_start(scan_thread, &j);
+    CHECK(t != NULL);
+    int searches = 0, bad = 0;
+    while (t && !j.done) {
+        hits x;
+        memset(&x, 0, sizeof(x));
+        if (bd_search(cat, "*.txt", 0, hit_cb, &x) != BD_OK || x.n != 400) bad++;
+        searches++;
+    }
+    if (t) bd_thread_join(t);
+    CHECK(j.scan == BD_OK && j.save == BD_OK && bad == 0 && searches > 0);
+    CHECK(search(cat, "file*.txt").n == 400);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -508,6 +638,8 @@ int main(void)
     test_keep_both();
     test_between_passes();
     test_destination_check();
+    test_search();
+    test_search_during_scan();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

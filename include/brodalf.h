@@ -1315,17 +1315,25 @@ typedef struct {
     int is_dir;
     int64_t size;            /* files only */
     bd_node_state state;     /* as in the ghost tree */
-    /* Drives holding a good copy of the current version (for
-     * a folder: of any file inside), as "Label (kept in)" joined by "; ".
-     * "" if none. Drives marked lost or broken are left out. */
+    /* Drives holding a good copy of the version a restore brings back
+     * (bd_restore: the latest backed-up state, an older version when the
+     * newest was never backed up; for a folder: of any file inside), as
+     * "Label (kept in)" joined by "; ". "" if none. Drives marked lost or
+     * broken are left out, unless plugged in. */
     const char *where;
+    int64_t mtime_ns;        /* modified, as last seen */
 } bd_search_info;
 
 typedef int (*bd_search_fn)(void *ctx, const bd_search_info *info);
 
 /* Files and folders whose path (within their source) contains every word
- * of text, ignoring case. Names that match come first. Deleted files are
- * included. At most limit results (0: 500). */
+ * of text, ignoring letter case the way Windows compares names (also for
+ * letters such as "Ü" and "ü"). A word with "*" or "?" is a pattern for
+ * the whole name ("*.pdf"; "?" is one letter), or with a "/" in it for
+ * the end of the path ("Taxes/2024/report*.pdf"). Names that match come
+ * first. Deleted files are included. At most limit results (0: 500). It
+ * can run while a job (a scan) runs on another thread: it sees the
+ * database as it stands, and that job waits for it between its own steps. */
 bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn fn, void *ctx);
 
 /* ---- Backup sets and files at risk --------------------------------------- */

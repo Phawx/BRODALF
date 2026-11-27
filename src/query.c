@@ -447,81 +447,300 @@ bd_status bd_list_media(bd_catalog *cat, bd_media_fn fn, void *ctx)
 
 #define MAX_WORDS 8
 
-/* %word% with LIKE's wildcards escaped by '\'. */
-static char *like_pattern(const char *word, size_t n)
+/* One code point's upper case, for the letters of the European scripts
+ * (Latin, Greek, Cyrillic, Armenian); others are left as they are. The
+ * same mapping as Windows' own for these, which bd_path_key uses. */
+static uint32_t upper_cp(uint32_t c)
 {
-    char *p = malloc(n * 2 + 3);
-    if (!p) return NULL;
-    size_t j = 0;
-    p[j++] = '%';
-    for (size_t i = 0; i < n; i++) {
-        if (word[i] == '%' || word[i] == '_' || word[i] == '\\') p[j++] = '\\';
-        p[j++] = word[i];
+    if (c < 0x80) return c >= 'a' && c <= 'z' ? c - 32 : c;
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7) return c - 32;
+    if (c == 0xFF) return 0x178;
+    if (c == 0x131) return 'I';
+    if ((c >= 0x100 && c <= 0x12F) || (c >= 0x132 && c <= 0x137) || (c >= 0x14A && c <= 0x177) ||
+        (c >= 0x1DE && c <= 0x1EF) || (c >= 0x1F8 && c <= 0x21F) || (c >= 0x222 && c <= 0x233) ||
+        (c >= 0x460 && c <= 0x481) || (c >= 0x48A && c <= 0x4BF) || (c >= 0x4D0 && c <= 0x52F) ||
+        (c >= 0x1E00 && c <= 0x1E95) || (c >= 0x1EA0 && c <= 0x1EFF))
+        return c & ~1u;
+    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E) || (c >= 0x1CD && c <= 0x1DC) ||
+        (c >= 0x4C1 && c <= 0x4CE))
+        return c & 1u ? c : c - 1;
+    if (c >= 0x3B1 && c <= 0x3CB && c != 0x3C2) return c - 32;
+    if (c == 0x3C2) return 0x3A3;
+    if (c == 0x3AC) return 0x386;
+    if (c >= 0x3AD && c <= 0x3AF) return c - 37;
+    if (c == 0x3CC) return 0x38C;
+    if (c == 0x3CD || c == 0x3CE) return c - 63;
+    if (c >= 0x430 && c <= 0x44F) return c - 32;
+    if (c >= 0x450 && c <= 0x45F) return c - 80;
+    if (c == 0x4CF) return 0x4C0;
+    if (c >= 0x561 && c <= 0x586) return c - 48;
+    if (c >= 0xFF41 && c <= 0xFF5A) return c - 32;
+    return c;
+}
+
+/* The code point at *p (UTF-8), moving *p past it; a byte that does not
+ * start one is taken as itself. */
+static uint32_t next_cp(const unsigned char **p)
+{
+    const unsigned char *s = *p;
+    uint32_t c = s[0];
+    int n = c >= 0xF0 && c < 0xF8 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    if (c >= 0xF8) n = 0;
+    for (int i = 1; i <= n; i++)
+        if ((s[i] & 0xC0) != 0x80) n = 0;
+    if (n == 0) {
+        *p = s + 1;
+        return c;
     }
-    p[j++] = '%';
-    p[j] = '\0';
-    return p;
+    c &= 0x3F >> n;
+    for (int i = 1; i <= n; i++) c = (c << 6) | (s[i] & 0x3F);
+    *p = s + n + 1;
+    return c;
+}
+
+static size_t put_cp(char *out, uint32_t c)
+{
+    if (c < 0x80) { out[0] = (char)c; return 1; }
+    if (c < 0x800) { out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); return 2; }
+    if (c < 0x10000) {
+        out[0] = (char)(0xE0 | (c >> 12));
+        out[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (c & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (c >> 18));
+    out[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (c & 0x3F));
+    return 4;
+}
+
+/* s with letter case folded (to upper case) and '\' as '/', into buf when
+ * it fits (else malloc'd: *heap set). On Windows a name with letters past
+ * ASCII is folded by Windows itself, as paths are (bd_path_key). */
+static char *fold_text(const char *s, char *buf, size_t cap, int *heap)
+{
+    *heap = 0;
+    size_t len = strlen(s);
+    int ascii = 1;
+    for (size_t i = 0; i < len && ascii; i++) ascii = (unsigned char)s[i] < 0x80;
+    char *out = NULL;
+#ifdef _WIN32
+    if (!ascii) {
+        out = bd_fold_case(s);
+        if (out) {
+            *heap = 1;
+            for (char *p = out; *p; p++) if (*p == '\\') *p = '/';
+            return out;
+        }
+    }
+#endif
+    /* Upper case is at most one byte longer per code point here (U+0131
+     * to 'I' is shorter, U+00FF to U+0178 the same). */
+    size_t need = len * 2 + 1;
+    out = need <= cap ? buf : malloc(need);
+    if (!out) return NULL;
+    if (out != buf) *heap = 1;
+    size_t j = 0;
+    if (ascii) {
+        for (size_t i = 0; i < len; i++) {
+            char c = s[i];
+            out[j++] = c == '\\' ? '/' : c >= 'a' && c <= 'z' ? (char)(c - 32) : c;
+        }
+    } else {
+        const unsigned char *p = (const unsigned char *)s;
+        while (*p) {
+            uint32_t c = next_cp(&p);
+            j += put_cp(out + j, c == '\\' ? '/' : upper_cp(c));
+        }
+    }
+    out[j] = '\0';
+    return out;
+}
+
+/* Does the folded text t match the folded pattern g, where '*' is any
+ * run of characters and '?' one character (not one byte)? */
+static int glob_match(const char *g, const char *t)
+{
+    const char *star = NULL, *resume = NULL;
+    while (*t) {
+        if (*g == '*') {
+            star = ++g;
+            resume = t;
+        } else if (*g == '?' || (*g && *g == *t)) {
+            if (*g == '?') {
+                const unsigned char *u = (const unsigned char *)t;
+                next_cp(&u);
+                t = (const char *)u;
+            } else {
+                t++;
+            }
+            g++;
+        } else if (star) {
+            g = star;
+            const unsigned char *u = (const unsigned char *)resume;
+            next_cp(&u);
+            resume = (const char *)u;
+            t = resume;
+        } else {
+            return 0;
+        }
+    }
+    while (*g == '*') g++;
+    return *g == '\0';
+}
+
+/* The words searched for, folded; parsed once per search (auxdata). */
+typedef struct {
+    int n;
+    char *word[MAX_WORDS];
+    int wild[MAX_WORDS]; /* has '*' or '?' */
+    int path[MAX_WORDS]; /* a wildcard word with '/': matched against the end of the path */
+} search_words;
+
+static void words_free(void *p)
+{
+    search_words *w = p;
+    if (!w) return;
+    for (int i = 0; i < w->n; i++) free(w->word[i]);
+    free(w);
+}
+
+static search_words *words_parse(const char *text)
+{
+    search_words *w = calloc(1, sizeof(*w));
+    if (!w) return NULL;
+    for (const char *p = text ? text : ""; *p && w->n < MAX_WORDS;) {
+        while (*p == ' ' || *p == '\t') p++;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (p == start) continue;
+        char word[256];
+        size_t n = (size_t)(p - start) < sizeof(word) - 1 ? (size_t)(p - start) : sizeof(word) - 1;
+        memcpy(word, start, n);
+        word[n] = '\0';
+        int heap = 0;
+        char fb[512];
+        char *f = fold_text(word, fb, sizeof(fb), &heap);
+        char *keep = f ? bd_strdup(f) : NULL;
+        if (heap) free(f);
+        if (!keep) { words_free(w); return NULL; }
+        int i = w->n++;
+        w->word[i] = keep;
+        w->wild[i] = strchr(keep, '*') || strchr(keep, '?');
+        w->path[i] = w->wild[i] && strchr(keep, '/');
+        /* "Taxes/report*.pdf" matches the end of a path, after a '/'. */
+        if (w->path[i] && keep[0] == '/') memmove(keep, keep + 1, strlen(keep));
+    }
+    return w;
+}
+
+/* bd_match(rel_path, name, text): 0 when a word of text is not found, 1
+ * when every word is in the path, 2 when every word is in the name. A word
+ * with '*' or '?' matches the whole name (or, with a '/', the end of the
+ * path); any other word is found anywhere in it. Letter case is folded as
+ * fold_text does. */
+static void match_fn(sqlite3_context *ctx, int argc, sqlite3_value **argv)
+{
+    (void)argc;
+    search_words *w = sqlite3_get_auxdata(ctx, 2);
+    if (!w) {
+        w = words_parse((const char *)sqlite3_value_text(argv[2]));
+        if (!w) { sqlite3_result_error_nomem(ctx); return; }
+        sqlite3_set_auxdata(ctx, 2, w, words_free);
+        w = sqlite3_get_auxdata(ctx, 2);
+        if (!w) { sqlite3_result_int(ctx, 0); return; } /* SQLite let go of it: no words */
+    }
+    const char *rel = (const char *)sqlite3_value_text(argv[0]);
+    const char *name = (const char *)sqlite3_value_text(argv[1]);
+    if (!rel || !name || w->n == 0) { sqlite3_result_int(ctx, 0); return; }
+    char pb[1024], nb[512];
+    int ph = 0, nh = 0;
+    char *fp = fold_text(rel, pb, sizeof(pb), &ph);
+    char *fname = fold_text(name, nb, sizeof(nb), &nh);
+    int in_path = fp && fname, in_name = in_path;
+    for (int i = 0; in_path && i < w->n; i++) {
+        const char *g = w->word[i];
+        int p, n;
+        if (!w->wild[i]) {
+            p = strstr(fp, g) != NULL;
+            n = p && strstr(fname, g) != NULL;
+        } else if (!w->path[i]) {
+            n = p = glob_match(g, fname);
+        } else {
+            n = 0;
+            p = glob_match(g, fp);
+            for (const char *s = fp; !p && (s = strchr(s, '/')) != NULL;) p = glob_match(g, ++s);
+        }
+        in_path = p;
+        in_name = in_name && n;
+    }
+    if (ph) free(fp);
+    if (nh) free(fname);
+    sqlite3_result_int(ctx, !in_path ? 0 : in_name ? 2 : 1);
+}
+
+/* Made once on each database connection; SQLite keeps the mark. */
+static int match_ready(bd_catalog *cat)
+{
+    static const char mark[] = "bd_match";
+    if (sqlite3_get_clientdata(cat->db, mark)) return 1;
+    if (sqlite3_create_function_v2(cat->db, "bd_match", 3, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, match_fn, NULL, NULL,
+                                   NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_set_clientdata(cat->db, mark, (void *)mark, NULL);
+    return 1;
 }
 
 bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn fn, void *ctx)
 {
-    char *pat[MAX_WORDS];
-    int nw = 0;
-    for (const char *p = text ? text : ""; *p && nw < MAX_WORDS;) {
-        while (*p == ' ' || *p == '\t') p++;
-        const char *start = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (p > start) {
-            /* Paths are stored with '/'; let people type either. */
-            char word[256];
-            size_t n = (size_t)(p - start) < sizeof(word) - 1 ? (size_t)(p - start) : sizeof(word) - 1;
-            memcpy(word, start, n);
-            word[n] = '\0';
-            for (char *c = word; *c; c++) if (*c == '\\') *c = '/';
-            char *w = like_pattern(word, n);
-            if (!w) break;
-            pat[nw++] = w;
-        }
-    }
-    if (nw == 0) return BD_OK;
+    int any = 0;
+    for (const char *p = text ? text : ""; *p && !any; p++) any = *p != ' ' && *p != '\t';
+    if (!any) return BD_OK;
     if (limit <= 0) limit = 500;
 
-    char path_where[MAX_WORDS * 48], name_match[MAX_WORDS * 48];
-    path_where[0] = name_match[0] = '\0';
-    for (int i = 0; i < nw; i++) {
-        size_t a = strlen(path_where), b = strlen(name_match);
-        snprintf(path_where + a, sizeof(path_where) - a, "%sn.rel_path LIKE ?%d ESCAPE '\\'", i ? " AND " : "", i + 1);
-        snprintf(name_match + b, sizeof(name_match) - b, "%sn.name LIKE ?%d ESCAPE '\\'", i ? " AND " : "", i + 1);
-    }
-    char *sql = bd_sprintf(
-        "SELECT n.id, n.source_id, s.name, n.rel_path, n.name, n.is_dir, n.size, n.deleted,"
-        " " CUR_AVAILABLE ", " ANY_AVAILABLE ", " BAD_CONNECTED ", " ANY_COPY ","
-        " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w FROM copies c JOIN media m ON m.id=c.media_id"
-        "   WHERE c.version_id=n.current_version_id AND c.state='ok' AND m.retired_ms IS NULL ORDER BY 1)),"
-        " (%s) AS nm"
-        " FROM nodes n JOIN sources s ON s.id=n.source_id WHERE %s"
-        " ORDER BY nm DESC, n.deleted, n.is_dir DESC, s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE LIMIT %d",
-        name_match, path_where, limit);
+    /* The whole search runs as one step of the database: a job on another
+     * thread (a scan) waits for it between its own steps, so it sees the
+     * database as it stands and a save cannot start halfway. */
+    sqlite3_mutex *mx = sqlite3_db_mutex(cat->db);
+    if (mx) sqlite3_mutex_enter(mx);
     sqlite3_stmt *q = NULL, *dir = NULL;
     bd_status st = BD_OK;
-    if (!sql || sqlite3_prepare_v2(cat->db, sql, -1, &q, NULL) != SQLITE_OK) {
-        st = sql ? bd_fail_db(cat, "search") : BD_ERR_NOMEM;
+    if (!match_ready(cat)) {
+        st = bd_fail_db(cat, "search");
+        goto done;
+    }
+    /* The drives named are those of the version a restore brings back. */
+    if (sqlite3_prepare_v2(
+            cat->db,
+            "SELECT n.id, n.source_id, s.name, n.rel_path, n.name, n.is_dir, n.size, n.deleted,"
+            " " CUR_AVAILABLE ", " ANY_AVAILABLE ", " BAD_CONNECTED ", " ANY_COPY ","
+            " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w FROM copies c JOIN media m ON m.id=c.media_id"
+            "   WHERE c.version_id=" BD_SQL_RESTORE_VERSION("n") " AND c.state='ok' AND " NAMED_DRIVE " ORDER BY 1)),"
+            " bd_match(n.rel_path, n.name, ?1) AS mt, n.mtime_ns"
+            " FROM nodes n JOIN sources s ON s.id=n.source_id WHERE mt>0"
+            " ORDER BY mt DESC, n.deleted, n.is_dir DESC, s.name COLLATE NOCASE, n.rel_path COLLATE NOCASE LIMIT ?2",
+            -1, &q, NULL) != SQLITE_OK) {
+        st = bd_fail_db(cat, "search");
         goto done;
     }
     if (sqlite3_prepare_v2(cat->db,
                            "SELECT COUNT(*), COALESCE(SUM(" CUR_AVAILABLE "),0), COALESCE(SUM(" ANY_COPY "),0),"
                            " (SELECT group_concat(w, '; ') FROM (SELECT DISTINCT " WHERE_TEXT " AS w"
-                           "   FROM nodes n2 JOIN copies c ON c.version_id=n2.current_version_id JOIN media m ON m.id=c.media_id"
-                           "   WHERE n2.source_id=?1 AND n2.is_dir=0 AND n2.deleted=0 AND c.state='ok' AND m.retired_ms IS NULL"
-                           "   AND substr(n2.rel_path,1,length(?2)+1)=?2||'/' ORDER BY 1))"
+                           "   FROM nodes n JOIN copies c ON c.version_id=" BD_SQL_RESTORE_VERSION("n")
+                           "   JOIN media m ON m.id=c.media_id"
+                           "   WHERE n.source_id=?1 AND n.is_dir=0 AND n.deleted=0 AND c.state='ok' AND " NAMED_DRIVE
+                           "   AND substr(n.rel_path,1,length(?2)+1)=?2||'/' ORDER BY 1))"
                            " FROM nodes n WHERE n.source_id=?1 AND n.is_dir=0 AND n.deleted=0"
                            " AND substr(n.rel_path,1,length(?2)+1)=?2||'/'",
                            -1, &dir, NULL) != SQLITE_OK) {
         st = bd_fail_db(cat, "search");
         goto done;
     }
-    for (int i = 0; i < nw; i++) sqlite3_bind_text(q, i + 1, pat[i], -1, SQLITE_STATIC);
-    while (sqlite3_step(q) == SQLITE_ROW) {
+    sqlite3_bind_text(q, 1, text, -1, SQLITE_STATIC);
+    sqlite3_bind_int(q, 2, limit);
+    int rc;
+    while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
         bd_search_info info;
         memset(&info, 0, sizeof(info));
         info.node_id = sqlite3_column_int64(q, 0);
@@ -530,6 +749,7 @@ bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn f
         info.rel_path = (const char *)sqlite3_column_text(q, 3);
         info.name = (const char *)sqlite3_column_text(q, 4);
         info.is_dir = sqlite3_column_int(q, 5);
+        info.mtime_ns = sqlite3_column_int64(q, 14);
         int deleted = sqlite3_column_int(q, 7);
         char *where = NULL;
         if (!info.is_dir) {
@@ -554,11 +774,11 @@ bd_status bd_search(bd_catalog *cat, const char *text, int limit, bd_search_fn f
         free(where);
         if (stop) break;
     }
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) st = bd_fail_db(cat, "search");
 done:
     sqlite3_finalize(q);
     sqlite3_finalize(dir);
-    free(sql);
-    for (int i = 0; i < nw; i++) free(pat[i]);
+    if (mx) sqlite3_mutex_leave(mx);
     return st;
 }
 

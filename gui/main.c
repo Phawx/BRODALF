@@ -3649,7 +3649,7 @@ typedef struct {
     /* What the tree paints beside the name (tree_custom_draw). */
     int root;              /* a backup root's own item */
     int missing, inactive; /* roots: not found at the last scan; no longer backed up */
-    int emptied, waiting;  /* roots, missing: the folder is there but almost empty; its disk is not plugged in */
+    int emptied, waiting;  /* roots, missing: the folder is there but holds other files, or none; its disk is not plugged in */
     int64_t size;          /* files: the current version; roots: every live file */
     int64_t files_total, files_available; /* folders */
     int damaged;           /* how many files a bit-rot scan found damaged: in it, or it */
@@ -4203,7 +4203,7 @@ static void rebuild_tree(void)
         wchar_t bytes[64];
         format_bytes(l.items[i].bytes_total, bytes, 64);
         swprintf(text, COUNT_OF(text), L"%ls   %ls   [%ls]%ls", counts, bytes, wp,
-                 l.items[i].missing && l.items[i].files_gone > 0 ? T(L"   - almost empty: a new PC, or a reinstalled Windows?")
+                 l.items[i].missing && l.items[i].files_gone > 0 ? T(L"   - its folder holds other files, or none")
                  : l.items[i].missing && l.items[i].wait_for_disk ? T(L"   - waits for its disk to be plugged in")
                  : l.items[i].missing ? T(L"   - not found: unplugged, moved or renamed?")
                  : !l.items[i].active ? T(L"   - no longer backed up") : L"");
@@ -9279,7 +9279,7 @@ static void cmd_sheet(int with_key)
                             L"backups."), APP_NAME, MB_ICONINFORMATION);
 }
 
-/* ---- A protected folder that is somewhere else (a new PC) ---------------- */
+/* ---- A backup root that is somewhere else ---------------------------------- */
 
 static int is_folder(const wchar_t *p)
 {
@@ -15948,7 +15948,7 @@ static void jp_result(const job *j, const wchar_t *headline, int stopped, int dr
     } else if (j->kind == JOB_SCAN && j->roots_missing && g_figs && g_figs->n_missing > 0) {
         g_jp_state = JP_PROBLEM;
         if (g_figs->n_missing == 1 && g_figs->missing_gone[0] > 0)
-            swprintf(g_jp_title, 600, T(L"Scan finished, but %ls is almost empty"), g_figs->missing_name[0]);
+            swprintf(g_jp_title, 600, T(L"Scan finished, but %ls does not hold its files"), g_figs->missing_name[0]);
         else if (g_figs->n_missing == 1) swprintf(g_jp_title, 600, T(L"Scan finished, but %ls cannot be found"), g_figs->missing_name[0]);
         else swprintf(g_jp_title, 600, TN(g_figs->n_missing, L"Scan finished, but %d backup root cannot be found",
                                           L"Scan finished, but %d backup roots cannot be found"), g_figs->n_missing);
@@ -17857,7 +17857,7 @@ static int ask_database_choice(const wchar_t *last, const wchar_t *missing)
     buttons[n].nButtonID = CHOICE_NEW;
     buttons[n++].pszButtonText = T(L"Create a new database...\nChoose the folders to back up, then where to keep the database file");
     buttons[n].nButtonID = CHOICE_RECOVER;
-    buttons[n++].pszButtonText = T(L"Recover the database from a backup drive...\nOn a new PC, or after losing the database file: "
+    buttons[n++].pszButtonText = T(L"Recover the database from a backup drive...\nWhen you do not have the database file here: "
                                  L"start from the newest copy on your drives");
 
     TASKDIALOGCONFIG tc;
@@ -18208,7 +18208,7 @@ static int new_database_ui(void)
     return ok;
 }
 
-/* ---- Recover the database from a backup drive (a new PC) --------------- */
+/* ---- Recover the database from a backup drive ---------------------------- */
 
 /* Every backup writes the newest revision of the database to the drive,
  * so the newest copy of each database is the highest revision on any

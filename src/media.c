@@ -386,9 +386,47 @@ bd_status bd_media_set_location(bd_catalog *cat, int64_t media_id, const char *l
     return set_text(cat, "UPDATE media SET location=? WHERE id=?", media_id, location);
 }
 
+int64_t bd_media_named(bd_catalog *cat, const char *label, int64_t except_id)
+{
+    sqlite3_stmt *q;
+    int64_t id = 0;
+    if (!label) return 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT id FROM media WHERE lower(trim(label))=lower(trim(?1)) AND id<>?2 ORDER BY id LIMIT 1", -1, &q,
+                           NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_bind_text(q, 1, label, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(q, 2, except_id);
+    if (sqlite3_step(q) == SQLITE_ROW) id = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    return id;
+}
+
+/* BD_ERR_EXISTS when another drive or place already has the name. */
+static bd_status name_free(bd_catalog *cat, const char *label, int64_t except_id)
+{
+    int64_t other = bd_media_named(cat, label, except_id);
+    if (!other) return BD_OK;
+    sqlite3_stmt *q;
+    char name[256] = "";
+    int lost = 0, place = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT label, retired_ms IS NOT NULL, secondary FROM media WHERE id=?", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, other);
+        if (sqlite3_step(q) == SQLITE_ROW) {
+            snprintf(name, sizeof(name), "%s", (const char *)sqlite3_column_text(q, 0));
+            lost = sqlite3_column_int(q, 1);
+            place = sqlite3_column_int(q, 2);
+        }
+        sqlite3_finalize(q);
+    }
+    return bd_fail(cat, BD_ERR_EXISTS, "%s is already called \"%s\"%s: give this one another name, or rename that one first",
+                   place ? "an extra place" : "another drive", name, lost ? " (marked lost or broken)" : "");
+}
+
 bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label)
 {
     if (!label || !*label) return bd_fail(cat, BD_ERR_INVALID, "give the drive a label");
+    bd_status s = name_free(cat, label, media_id);
+    if (s != BD_OK) return s;
     return set_text(cat, "UPDATE media SET label=? WHERE id=?", media_id, label);
 }
 
@@ -403,6 +441,8 @@ bd_status bd_media_init(bd_catalog *cat, const char *root, const char *label, un
     bd_stat_t st;
     if (bd_stat(root, &st) != 0 || !st.is_dir) return bd_fail(cat, BD_ERR_NOT_FOUND, "%s is not a drive or folder", root);
     if (!label || !*label) return bd_fail(cat, BD_ERR_INVALID, "give the drive a label");
+    bd_status taken = name_free(cat, label, 0);
+    if (taken != BD_OK) return taken;
 
     char *path;
     if (bd_media_file_path(cat, root, &path) != BD_OK) return BD_ERR_NOMEM;

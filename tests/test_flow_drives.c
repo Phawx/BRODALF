@@ -927,6 +927,42 @@ static void test_drive_found_elsewhere(void)
     bd_catalog_close(cat);
 }
 
+/* ---- C6: two drives cannot share a name ---------------------------------- */
+
+static void test_drive_names_not_shared(void)
+{
+    bd_catalog *cat;
+    bd_mkdirs(at("c6/blue"));
+    bd_mkdirs(at("c6/red"));
+    bd_mkdirs(at("c6/other"));
+    bd_mkdirs(at("c6/dropbox"));
+    REQUIRE_OK(bd_catalog_create(at("c6/db.brodalf"), &cat), NULL);
+    int64_t blue, red, place, other = 0, id;
+    REQUIRE_OK(bd_media_init(cat, at("c6/blue"), "Blue", 0, &blue), cat);
+    CHECK(bd_media_init(cat, at("c6/other"), " blue ", 0, &other) == BD_ERR_EXISTS);
+    CHECK(strstr(bd_catalog_error(cat), "already called \"Blue\""));
+    CHECK(bd_media_named(cat, "BLUE", 0) == blue);
+    CHECK(bd_media_named(cat, "BLUE", blue) == 0);
+    REQUIRE_OK(bd_media_init(cat, at("c6/red"), "Red", 0, &red), cat);
+    CHECK(bd_media_rename(cat, red, "BLUE") == BD_ERR_EXISTS);
+    REQUIRE_OK(bd_media_rename(cat, blue, "blue"), cat); /* its own name, another case */
+    REQUIRE_OK(bd_place_add(cat, at("c6/dropbox"), "Dropbox folder", 0, 0, &place), cat);
+    CHECK(bd_media_init(cat, at("c6/other"), "dropbox folder", 0, &other) == BD_ERR_EXISTS);
+    /* Two drives that shared a name before keep working. */
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "UPDATE media SET label='blue' WHERE id=?", -1, &q, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(q, 1, red);
+        CHECK(sqlite3_step(q) == SQLITE_DONE);
+        sqlite3_finalize(q);
+    }
+    bd_media_disconnect(cat, red);
+    REQUIRE_OK(bd_media_connect(cat, at("c6/red"), &id, quiet, NULL), cat);
+    CHECK(id == red);
+    REQUIRE_OK(bd_media_rename(cat, red, "Red again"), cat);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -948,6 +984,7 @@ int main(void)
     test_wiped_drive_set_up_again();
     test_long_paths_counted();
     test_drive_found_elsewhere();
+    test_drive_names_not_shared();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

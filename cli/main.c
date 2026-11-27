@@ -580,20 +580,24 @@ static const char *label_of(bd_catalog *cat, int64_t id)
     return l.label;
 }
 
-typedef struct { const char *label; int64_t id; } find_media_ctx;
+typedef struct { const char *label; int64_t id; int n; } find_media_ctx;
 
 static int find_any_media_cb(void *ctx, const bd_media_info *info)
 {
     find_media_ctx *f = ctx;
-    if (strcmp(info->label, f->label) == 0) { f->id = info->media_id; return 1; }
+    if (strcmp(info->label, f->label) == 0 && f->n++ == 0) f->id = info->media_id;
     return 0;
 }
 
 static int64_t media_id_by_label(bd_catalog *cat, const char *label)
 {
-    find_media_ctx f = {label, 0};
+    find_media_ctx f = {label, 0, 0};
     bd_list_media(cat, find_any_media_cb, &f);
     if (!f.id) fprintf(stderr, "brodalf: no drive named \"%s\" (drives lists them)\n", label);
+    /* Names are no longer shared, but two drives may share one from before. */
+    else if (f.n > 1)
+        fprintf(stderr, "brodalf: %d drives are called \"%s\": this is about the first one that drives lists. To tell them\n"
+                        "apart, rename that one (drive-rename) or another one in the window.\n", f.n, label);
     return f.id;
 }
 
@@ -2199,6 +2203,12 @@ static int run(int argc, char **argv)
             save = 1;
             goto drive_done;
         }
+        if (bd_media_named(cat, pos[1], 0)) {
+            char m[700];
+            snprintf(m, sizeof(m), "a drive or place is already called \"%s\": give this one another name (drives lists them)",
+                     label_of(cat, bd_media_named(cat, pos[1], 0)));
+            return refuse(cat, m);
+        }
         if (encrypt && !bd_catalog_has_passphrase(cat)) {
             char pass[512];
             if (get_new_passphrase(pass, sizeof(pass)) != 0) { bd_catalog_close(cat); return 1; }
@@ -2310,6 +2320,7 @@ static int run(int argc, char **argv)
         int64_t id = media_id_by_label(cat, pos[0]);
         if (!id) { bd_catalog_close(cat); return 1; }
         bd_status s = rename ? bd_media_rename(cat, id, pos[1]) : bd_media_set_location(cat, id, npos > 1 ? pos[1] : NULL);
+        if (s == BD_ERR_EXISTS || s == BD_ERR_INVALID) return refuse(cat, bd_catalog_error(cat));
         if (s != BD_OK) return die(cat, "cannot change the drive");
         if (g_json) { J_OBJ(NULL); j_bool("changed", 1); J_END(); }
         else if (rename) printf("renamed \"%s\" to \"%s\"\n", pos[0], pos[1]);
@@ -2731,7 +2742,7 @@ static int run(int argc, char **argv)
             return 1;
         }
         bd_status s = bd_place_add(cat, pos[0], pos[1], limit, (encrypt ? BD_MEDIA_ENCRYPTED : 0) | (hide ? BD_MEDIA_HIDE_NAMES : 0), &id);
-        if (s == BD_ERR_INVALID) return refuse(cat, bd_catalog_error(cat));
+        if (s == BD_ERR_INVALID || s == BD_ERR_EXISTS) return refuse(cat, bd_catalog_error(cat));
         if (s != BD_OK) return die(cat, "cannot set up the place");
         if (g_json) { J_OBJ(NULL); j_int("id", id); j_str("label", pos[1]); j_int("limit_bytes", limit); J_END(); }
         else {

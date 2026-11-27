@@ -139,6 +139,16 @@ lacks("the drives after" "Spare")
 run(0 "back up to C again" backup "${cat}" "${WORK}/C2")
 has("back up to C again" "2 copied")
 
+# ---- C6: two drives cannot share a name -------------------------------------
+file(MAKE_DIRECTORY "${WORK}/D")
+run(1 "a drive named as another" drive "${cat}" "${WORK}/D" " b " --new)
+has("a drive named as another" "already called \"B\"")
+lacks("a drive named as another" "error report")
+run(0 "set up drive D" drive "${cat}" "${WORK}/D" D --new)
+run(1 "D renamed as another" drive-rename "${cat}" D b)
+has("D renamed as another" "already called \"B\"")
+lacks("D renamed as another" "error report")
+
 file(REMOVE_RECURSE "${WORK}")
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} check(s) failed")

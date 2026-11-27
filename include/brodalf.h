@@ -538,8 +538,14 @@ void bd_media_disconnect(bd_catalog *cat, int64_t media_id);
 bd_status bd_media_set_location(bd_catalog *cat, int64_t media_id, const char *location);
 
 /* Rename a drive. The new name is also written to its BRODALF.media file
- * the next time the drive is plugged in. */
+ * the next time the drive is plugged in. Two drives or places cannot share
+ * a name (whatever the case, and the spaces around it): bd_media_init and
+ * bd_media_rename give BD_ERR_EXISTS for one already taken. Drives that
+ * shared a name before this was checked keep it. */
 bd_status bd_media_rename(bd_catalog *cat, int64_t media_id, const char *label);
+/* The drive or place other than except_id already called label (compared
+ * as bd_media_rename does), or 0. */
+int64_t bd_media_named(bd_catalog *cat, const char *label, int64_t except_id);
 
 /* Check every copy on a connected drive: that it is there, with the right
  * size, and that its checksum is right (every copy is read back). A copy

@@ -10236,19 +10236,28 @@ static void add_disk_at(char *root)
             wcsncpy(g_label_buf, whole ? (vname[0] ? vname : T(L"Backup drive")) : slash + 1, 255);
             g_label_buf[255] = 0;
             free(w);
-            if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }
-            j->label = narrow(g_label_buf);
-            j->location = narrow(g_label_location);
-            int64_t wiped = offer_maybe_erased(j->root, j->label);
-            if (wiped < 0) { job_free(j); return; }
-            if (wiped > 0) {
-                /* That drive again: it keeps its own name, place and encryption. */
+            for (int pass = 0;; pass++) {
+                if (DialogBoxW(g_inst, MAKEINTRESOURCEW(IDD_LABEL), g_main, label_proc) != IDOK) { job_free(j); return; }
                 free(j->label);
                 free(j->location);
-                j->label = j->location = NULL;
-                j->erased_id = wiped;
-                enqueue(j);
-                return;
+                j->label = narrow(g_label_buf);
+                j->location = narrow(g_label_location);
+                int64_t wiped = pass == 0 ? offer_maybe_erased(j->root, j->label) : 0;
+                if (wiped < 0) { job_free(j); return; }
+                if (wiped > 0) {
+                    /* That drive again: it keeps its own name, place and encryption. */
+                    free(j->label);
+                    free(j->location);
+                    j->label = j->location = NULL;
+                    j->erased_id = wiped;
+                    enqueue(j);
+                    return;
+                }
+                if (!j->label || !bd_media_named(g_cat, j->label, 0)) break;
+                /* Two drives cannot share a name: the name is asked again. */
+                wchar_t msg[900];
+                swprintf(msg, 900, T(L"Another drive or extra place is already called \"%ls\". Give this one another name."), g_label_buf);
+                MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
             }
             if (g_label_encrypt) {
                 int ok = bd_catalog_has_passphrase(g_cat) ? unlock_ui(T(L"Enter the passphrase to set up an encrypted drive."))
@@ -11470,7 +11479,12 @@ static void edit_drive(int64_t id)
             if (d->secondary && !good_description(g_edit_name))
                 MessageBoxW(g_main, T(L"An extra place keeps its old description: describe it in at least two words, saying what it is and "
                                     L"where it lives, like \"Dropbox folder on the laptop\"."), APP_NAME, MB_ICONINFORMATION);
-            else
+            else if (bd_media_named(g_cat, name, id)) {
+                wchar_t msg[900];
+                swprintf(msg, 900, T(L"Another drive or extra place is already called \"%ls\", so %ls keeps its old name."), g_edit_name,
+                         d->secondary ? T(L"this place") : T(L"this drive"));
+                MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+            } else
                 st = bd_media_rename(g_cat, id, name);
         }
         if (st == BD_OK && loc && strcmp(loc, d->location) != 0) st = bd_media_set_location(g_cat, id, loc);
@@ -14655,6 +14669,15 @@ static void cmd_add_place(void)
     }
     char *label = narrow(g_place_label);
     int64_t id = 0;
+    if (label && bd_media_named(g_cat, label, 0)) {
+        wchar_t msg[900];
+        swprintf(msg, 900, T(L"Another drive or extra place is already called \"%ls\". Add the place again with another description."),
+                 g_place_label);
+        MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+        free(label);
+        free(folder);
+        return;
+    }
     bd_status s = label ? bd_place_add(g_cat, folder, label, g_place_limit, flags, &id) : BD_ERR_NOMEM;
     free(label);
     int ok = save_or_say(s, T(L"Could not add the extra place."));

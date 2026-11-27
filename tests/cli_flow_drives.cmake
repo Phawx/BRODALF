@@ -102,6 +102,15 @@ set(OUT "${sheet}")
 has("the sheet" "its database copy has this key")
 has("the sheet" "does not have this key yet")
 
+# ---- D9: a drive marked lost says what it takes from older versions ---------
+file(WRITE "${WORK}/src/a.txt" "alpha alpha, changed and longer")
+run(0 "scan the change" scan "${cat}")
+run(0 "back it up to A only" backup "${cat}" "${WORK}/A")
+run(0 "mark A lost" drive-lost "${cat}" A lost --yes)
+has("mark A lost" "1 older version and 0 deleted files")
+has("mark A lost" "never backed up again")
+has("mark A lost" "What is left of them is on: \"B\" (1)")
+
 file(REMOVE_RECURSE "${WORK}")
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} check(s) failed")

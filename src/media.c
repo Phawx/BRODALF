@@ -198,6 +198,91 @@ static void num_or_null(sqlite3_stmt *st, int col, int64_t v)
     else sqlite3_bind_null(st, col);
 }
 
+/* A serial number that tells one disk from another (as BD_SQL_HW_KEY). */
+static int serial_tells(const char *s)
+{
+    if (!s) return 0;
+    while (*s == ' ') s++;
+    size_t n = strlen(s);
+    while (n && s[n - 1] == ' ') n--;
+    if (n < 4) return 0;
+    for (size_t i = 0; i < n; i++)
+        if (s[i] != '0' && s[i] != ' ') return 1;
+    return 0;
+}
+
+static int same_serial(const char *a, const char *b)
+{
+    while (*a == ' ') a++;
+    while (*b == ' ') b++;
+    size_t na = strlen(a), nb = strlen(b);
+    while (na && a[na - 1] == ' ') na--;
+    while (nb && b[nb - 1] == ' ') nb--;
+    if (na != nb) return 0;
+    for (size_t i = 0; i < na; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'a' && x <= 'z') x = (char)(x - 32);
+        if (y >= 'a' && y <= 'z') y = (char)(y - 32);
+        if (x != y) return 0;
+    }
+    return 1;
+}
+
+/* The drive's ID turned up where it should not (media_suspect): why 1 on
+ * two disks at once, 2 on a disk with another serial number than last
+ * time, as when it is cloned. Its copies stop counting until a check of
+ * every copy on it (bd_media_check). */
+static void note_suspect(bd_catalog *cat, int64_t media_id, int why, const char *root, const char *other_root)
+{
+    sqlite3_stmt *q;
+    /* Two disks at once says more than a new serial number: it is kept. */
+    if (sqlite3_prepare_v2(cat->db,
+                           why == 1 ? "INSERT OR REPLACE INTO media_suspect(media_id, why, found_ms, root, other_root) VALUES(?,?,?,?,?)"
+                                    : "INSERT OR IGNORE INTO media_suspect(media_id, why, found_ms, root, other_root) VALUES(?,?,?,?,?)",
+                           -1, &q, NULL) != SQLITE_OK)
+        return;
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int(q, 2, why);
+    sqlite3_bind_int64(q, 3, bd_now_ms());
+    text_or_null(q, 4, root);
+    text_or_null(q, 5, other_root);
+    sqlite3_step(q);
+    sqlite3_finalize(q);
+    bd_refresh_uncounted(cat);
+}
+
+static int same_root(const char *a, const char *b);
+static int holds_media_id(bd_catalog *cat, const char *root, const char *uuid);
+
+static void clear_suspect(bd_catalog *cat, int64_t media_id)
+{
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db, "DELETE FROM media_suspect WHERE media_id=?", -1, &q, NULL) != SQLITE_OK) return;
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_step(q);
+    int gone = sqlite3_changes(cat->db) > 0;
+    sqlite3_finalize(q);
+    if (gone) bd_refresh_uncounted(cat);
+}
+
+int bd_media_suspect(bd_catalog *cat, int64_t media_id, char **root, char **other_root)
+{
+    sqlite3_stmt *q;
+    int why = 0;
+    if (root) *root = NULL;
+    if (other_root) *other_root = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT why, root, other_root FROM media_suspect WHERE media_id=?", -1, &q, NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_bind_int64(q, 1, media_id);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+        why = sqlite3_column_int(q, 0);
+        if (root && sqlite3_column_text(q, 1)) *root = bd_strdup((const char *)sqlite3_column_text(q, 1));
+        if (other_root && sqlite3_column_text(q, 2)) *other_root = bd_strdup((const char *)sqlite3_column_text(q, 2));
+    }
+    sqlite3_finalize(q);
+    return why;
+}
+
 void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw, bd_log_fn log, void *log_ctx)
 {
     sqlite3_stmt *q;
@@ -205,13 +290,25 @@ void bd_media_store_hw(bd_catalog *cat, int64_t media_id, const bd_drive_hw *hw,
         sqlite3_prepare_v2(cat->db, "SELECT h.serial, h.model, m.label FROM media_hardware h JOIN media m ON m.id=h.media_id WHERE h.media_id=?",
                            -1, &q, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(q, 1, media_id);
+        int other = 0;
         if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 0) &&
-            strcmp((const char *)sqlite3_column_text(q, 0), hw->serial) != 0)
+            strcmp((const char *)sqlite3_column_text(q, 0), hw->serial) != 0) {
             bd_logf(log, log_ctx, "\"%s\" is on a different disk than last time (serial %s, was %s %s)",
                     (const char *)sqlite3_column_text(q, 2), hw->serial,
                     sqlite3_column_text(q, 1) ? (const char *)sqlite3_column_text(q, 1) : "",
                     (const char *)sqlite3_column_text(q, 0));
+            other = serial_tells((const char *)sqlite3_column_text(q, 0)) && serial_tells(hw->serial) &&
+                    !same_serial((const char *)sqlite3_column_text(q, 0), hw->serial);
+            if (other)
+                bd_logf(log, log_ctx, "\"%s\" may be a copy of the drive made by cloning it: its copies do not count until a "
+                                      "check of every copy on it", (const char *)sqlite3_column_text(q, 2));
+        }
         sqlite3_finalize(q);
+        if (other) {
+            char *root = bd_connected_root(cat, media_id);
+            note_suspect(cat, media_id, 2, root, NULL);
+            free(root);
+        }
     }
     if (sqlite3_prepare_v2(cat->db,
                            "INSERT OR REPLACE INTO media_hardware(media_id, read_ms, vendor, model, serial, firmware, bus, disk_bytes,"
@@ -254,7 +351,8 @@ void bd_refresh_uncounted(bd_catalog *cat)
                  "INSERT OR IGNORE INTO temp.uncounted(media_id, why) SELECT m.id, 1 FROM media m WHERE m.kind='drive'"
                  " AND EXISTS(SELECT 1 FROM temp.root_disks rd WHERE " BD_SQL_HW_KEY("rd") "=" BD_SQL_DISK("m.id") ");"
                  "INSERT OR IGNORE INTO temp.uncounted(media_id, why) SELECT h.media_id, 2 FROM media_hardware h"
-                 " WHERE h.health='failing';");
+                 " WHERE h.health='failing';"
+                 "INSERT OR IGNORE INTO temp.uncounted(media_id, why) SELECT media_id, 3 FROM media_suspect;");
 }
 
 static void read_hardware(bd_catalog *cat, int64_t media_id, const char *root, bd_log_fn log, void *log_ctx)
@@ -393,6 +491,53 @@ bd_status bd_media_found(bd_catalog *cat, int64_t media_id)
     return BD_OK;
 }
 
+/* The older versions and deleted files with a good copy on the drive, and
+ * what is left of them elsewhere (?1 the drive). */
+#define IMPACT_CTE                                                                                                     \
+    "WITH k AS (SELECT DISTINCT v.id AS vid, n.deleted AS del, v.id IS NOT n.current_version_id AS old,"             \
+    "  (SELECT " BD_SQL_COPIES("c") " FROM copies c WHERE c.version_id=v.id AND c.state='ok' AND c.media_id<>?1"       \
+    "   AND " BD_SQL_COUNTS("c") ") AS cp"                                                                              \
+    "  FROM copies h JOIN versions v ON v.id=h.version_id JOIN nodes n ON n.id=v.node_id"                              \
+    "  WHERE h.media_id=?1 AND h.state='ok' AND n.is_dir=0 AND (v.id IS NOT n.current_version_id OR n.deleted=1))"
+
+bd_status bd_media_lost_impact(bd_catalog *cat, int64_t media_id, bd_lost_impact *out, bd_impact_drive_fn fn, void *ctx)
+{
+    memset(out, 0, sizeof(*out));
+    bd_target t;
+    bd_target_get(cat, &t);
+    sqlite3_stmt *q;
+    if (sqlite3_prepare_v2(cat->db,
+                           IMPACT_CTE " SELECT COALESCE(SUM(old),0), COALESCE(SUM(del AND NOT old),0),"
+                                      " COALESCE(SUM(old AND cp<?2),0), COALESCE(SUM(del AND NOT old AND cp<?2),0),"
+                                      " COALESCE(SUM(old AND cp=0),0), COALESCE(SUM(del AND NOT old AND cp=0),0) FROM k",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "count what the drive holds");
+    sqlite3_bind_int64(q, 1, media_id);
+    sqlite3_bind_int(q, 2, t.copies);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+        out->old_versions = sqlite3_column_int64(q, 0);
+        out->deleted = sqlite3_column_int64(q, 1);
+        out->old_versions_short = sqlite3_column_int64(q, 2);
+        out->deleted_short = sqlite3_column_int64(q, 3);
+        out->old_versions_none = sqlite3_column_int64(q, 4);
+        out->deleted_none = sqlite3_column_int64(q, 5);
+    }
+    sqlite3_finalize(q);
+    out->copies_wanted = t.copies;
+    if (!fn || !(out->old_versions + out->deleted)) return BD_OK;
+    if (sqlite3_prepare_v2(cat->db,
+                           IMPACT_CTE " SELECT m.id, m.label, COUNT(DISTINCT c.version_id) FROM copies c JOIN media m ON m.id=c.media_id"
+                                      " WHERE c.state='ok' AND c.media_id<>?1 AND " BD_SQL_COUNTS("c")
+                                      " AND c.version_id IN (SELECT vid FROM k) GROUP BY m.id ORDER BY 3 DESC, m.label",
+                           -1, &q, NULL) != SQLITE_OK)
+        return bd_fail_db(cat, "find the other drives");
+    sqlite3_bind_int64(q, 1, media_id);
+    while (sqlite3_step(q) == SQLITE_ROW)
+        if (fn(ctx, sqlite3_column_int64(q, 0), (const char *)sqlite3_column_text(q, 1), sqlite3_column_int64(q, 2))) break;
+    sqlite3_finalize(q);
+    return BD_OK;
+}
+
 bd_status bd_media_match_disk(bd_catalog *cat, const char *root, int64_t *media_id)
 {
     *media_id = 0;
@@ -485,7 +630,45 @@ bd_status bd_media_erased(bd_catalog *cat, int64_t media_id, const char *root)
     if (rc != SQLITE_DONE) return bd_fail_db(cat, "mark the copies missing");
     bd_status s = bd_media_record_connected(cat, media_id, root);
     if (s == BD_OK) read_hardware(cat, media_id, root, NULL, NULL);
+    /* Every copy on it is marked missing: nothing recorded on it counts
+     * that a backup has not put there again. */
+    if (s == BD_OK) clear_suspect(cat, media_id);
     return s;
+}
+
+/* The same folder, reached by the same full path. */
+static int same_root(const char *a, const char *b)
+{
+    char *fa = bd_full_path(a), *fb = bd_full_path(b);
+    const char *x = fa ? fa : a, *y = fb ? fb : b;
+    size_t nx = strlen(x), ny = strlen(y);
+    while (nx > 1 && (x[nx - 1] == '/' || x[nx - 1] == '\\')) nx--;
+    while (ny > 1 && (y[ny - 1] == '/' || y[ny - 1] == '\\')) ny--;
+    int same = nx == ny;
+    for (size_t i = 0; same && i < nx; i++) {
+        char p = x[i], q = y[i];
+        if (p == '\\') p = '/';
+        if (q == '\\') q = '/';
+#ifdef _WIN32
+        if (p >= 'A' && p <= 'Z') p = (char)(p + 32);
+        if (q >= 'A' && q <= 'Z') q = (char)(q + 32);
+#endif
+        same = p == q;
+    }
+    free(fa);
+    free(fb);
+    return same;
+}
+
+/* 1 if the ID file at root names the drive uuid. */
+static int holds_media_id(bd_catalog *cat, const char *root, const char *uuid)
+{
+    char *path = NULL;
+    bd_media_file mf;
+    int yes = bd_media_file_path(cat, root, &path) == BD_OK && bd_media_file_read(path, &mf) == 0 &&
+              strcmp(mf.catalog_uuid, cat->uuid) == 0 && strcmp(mf.media_uuid, uuid) == 0;
+    free(path);
+    return yes;
 }
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx)
@@ -509,6 +692,16 @@ bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media
         if (mf.hide_names) media_set_hide_names(cat, id);
         bd_logf(log, log_ctx, "re-registered drive \"%s\"", mf.label);
     }
+    /* Plugged in somewhere else too, with the same ID file there: two disks
+     * at once, one most likely a clone of the other. */
+    char *was = bd_connected_root(cat, id);
+    if (was && !same_root(was, root) && holds_media_id(cat, was, mf.media_uuid)) {
+        bd_logf(log, log_ctx, "\"%s\" is plugged in at %s and at %s at once: one of the two disks is most likely a copy of the "
+                              "other. Its copies do not count until a check of every copy on it, with the other one unplugged",
+                mf.label, was, root);
+        note_suspect(cat, id, 1, root, was);
+    }
+    free(was);
     bd_status s = bd_media_record_connected(cat, id, root);
     if (s != BD_OK) return s;
     /* A rename in the app reaches the drive's ID file here. */
@@ -683,6 +876,33 @@ bd_status bd_media_check(bd_catalog *cat, int64_t media_id, bd_check_stats *stat
     bd_cancel_reset(cat);
     bd_status s = check_copies(cat, media_id, CHECK_EVERY, 0, stats, log, log_ctx);
     if (s != BD_OK) return s;
+    /* Every copy on the disk plugged in now was read: what it holds is
+     * known, so a drive whose ID turned up on another disk counts again,
+     * unless that other disk is still plugged in with the same ID. */
+    char *other = NULL;
+    int why = bd_media_suspect(cat, media_id, NULL, &other);
+    if (why) {
+        char *now = bd_connected_root(cat, media_id);
+        char uuid[64] = "";
+        sqlite3_stmt *u;
+        if (sqlite3_prepare_v2(cat->db, "SELECT uuid FROM media WHERE id=?", -1, &u, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(u, 1, media_id);
+            if (sqlite3_step(u) == SQLITE_ROW) snprintf(uuid, sizeof(uuid), "%s", (const char *)sqlite3_column_text(u, 0));
+            sqlite3_finalize(u);
+        }
+        int both = why == 1 && other && now && !same_root(other, now) && holds_media_id(cat, other, uuid);
+        if (stats->skipped)
+            bd_logf(log, log_ctx, "its copies count again once every copy on it is checked: enter the passphrase and check it again");
+        else if (both)
+            bd_logf(log, log_ctx, "the drive is still plugged in at %s too: unplug the one you do not keep as this drive, then check "
+                                  "this one again", other);
+        else {
+            clear_suspect(cat, media_id);
+            bd_logf(log, log_ctx, "every copy on the drive was checked, so what it holds is known: its copies count again");
+        }
+        free(now);
+    }
+    free(other);
     /* The newest copy of the catalog on the drive: the one Recover takes. */
     char *root = bd_connected_root(cat, media_id);
     char *dir = root ? bd_media_catalog_dir(cat, root) : NULL;

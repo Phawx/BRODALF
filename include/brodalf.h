@@ -784,13 +784,39 @@ int bd_media_copy_clash(bd_catalog *cat, int64_t media_id, int64_t *revision);
  * bd_catalog_copy_to_media. */
 int bd_media_copy_has_key(bd_catalog *cat, int64_t media_id, int recovery);
 
+/* Whether the drive's ID turned up where it should not, as when a drive is
+ * cloned to another disk: 1 on two disks at once (*root where it is now,
+ * *other_root the other; free them), 2 on a disk with another serial
+ * number than last time, 0 neither. Until bd_media_check reads every copy
+ * on it, its copies do not count (bd_media_info.uncounted 3). */
+int bd_media_suspect(bd_catalog *cat, int64_t media_id, char **root, char **other_root);
+
 /* A drive that is lost or broken (why: "lost" or "broken"). Its copies no
  * longer count toward the copies you want, so the progress toward N full
- * backups drops and the files it held are backed up again to other drives.
+ * backups drops and the current versions of the files it held are backed
+ * up again to other drives; its older versions and deleted files are not
+ * (bd_media_lost_impact).
  * Nothing is backed up to it. Its records stay, so it can be found again. */
 bd_status bd_media_mark_lost(bd_catalog *cat, int64_t media_id, const char *why);
 /* It turned up again (or was marked by mistake): its copies count again. */
 bd_status bd_media_found(bd_catalog *cat, int64_t media_id);
+
+/* What a drive marked lost or broken takes from the older versions and
+ * deleted files. A backup copies only the current versions of files still
+ * in their folders, so these are never backed up again: answered the same
+ * before and after the drive is marked. Of those with a good copy on the
+ * drive: how many, how many have fewer good copies elsewhere than the
+ * copies you want, and how many have none elsewhere. fn gets each other
+ * drive whose copies count and that holds some of them, with how many
+ * (most first); return non-zero to stop. */
+typedef struct {
+    int64_t old_versions, deleted;
+    int64_t old_versions_short, deleted_short;
+    int64_t old_versions_none, deleted_none;
+    int copies_wanted;
+} bd_lost_impact;
+typedef int (*bd_impact_drive_fn)(void *ctx, int64_t media_id, const char *label, int64_t items);
+bd_status bd_media_lost_impact(bd_catalog *cat, int64_t media_id, bd_lost_impact *out, bd_impact_drive_fn fn, void *ctx);
 
 /* A disk at root that is not set up for this catalog, but whose model,
  * serial number and size match a known drive that is not plugged in now
@@ -1053,9 +1079,10 @@ typedef struct {
     /* Its copies do not count toward the copies you want: 1 it is on the
      * same physical disk as a backup root (a partition of the PC's own
      * disk), so one disk failure would lose both; 2 its health data says
-     * the disk is failing. 0 they count. As last read: a drive's disk when
-     * it was last plugged in, a root's disk at the first scan since the
-     * catalog was opened. */
+     * the disk is failing; 3 its ID turned up on another disk too, as when
+     * it is cloned (bd_media_suspect), until a check of every copy on it.
+     * 0 they count. As last read: a drive's disk when it was last plugged
+     * in, a root's disk at the first scan since the catalog was opened. */
     int uncounted;
     /* Another drive on the same physical disk (two partitions of one disk):
      * its label, "" if none. Copies on both count as one. */

@@ -485,6 +485,225 @@ static void test_key_reaches_drives(void)
     bd_catalog_close(cat);
 }
 
+/* ---- D8: a cloned drive ---------------------------------------------------- */
+
+/* Stands in for reading the disk: a folder's name says which disk it is on. */
+static int fake_hw(const char *root, bd_drive_hw *hw)
+{
+    memset(hw, 0, sizeof(*hw));
+    hw->disk_bytes = -1;
+    static const struct { const char *mark, *model, *serial; int64_t bytes; } disks[] = {
+        {"disk-ORIG", "WD Elements", "WX51A2345", 2000398934016},
+        {"disk-CLONE", "WD Elements", "WX77B9876", 2000398934016},
+        {"disk-NEW", "Seagate Expansion", "NAB1C2D3", 4000787030016},
+        {"disk-SHARED", "USB Bridge", "000000001234", 1000204886016},
+        {"disk-BLANK", "Card Reader", "", 64021856256},
+    };
+    for (size_t i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
+        if (!strstr(root, disks[i].mark)) continue;
+        snprintf(hw->model, sizeof(hw->model), "%s", disks[i].model);
+        snprintf(hw->serial, sizeof(hw->serial), "%s", disks[i].serial);
+        snprintf(hw->health, sizeof(hw->health), "good");
+        hw->disk_bytes = disks[i].bytes;
+        return 0;
+    }
+    return -1;
+}
+
+typedef struct { int64_t id; int uncounted; int found; } uncounted_find;
+
+static int uncounted_cb(void *ctx, const bd_media_info *m)
+{
+    uncounted_find *f = ctx;
+    if (m->media_id != f->id) return 0;
+    f->uncounted = m->uncounted;
+    f->found = 1;
+    return 1;
+}
+
+static int uncounted_of(bd_catalog *cat, int64_t id)
+{
+    uncounted_find f = {id, -1, 0};
+    bd_list_media(cat, uncounted_cb, &f);
+    return f.uncounted;
+}
+
+static int64_t no_copy(bd_catalog *cat)
+{
+    bd_risk_stats rs;
+    memset(&rs, 0, sizeof(rs));
+    if (bd_list_at_risk(cat, 0, NULL, NULL, &rs) != BD_OK) return -1;
+    return rs.files_no_copy;
+}
+
+/* Copy a whole drive folder, as a clone of the disk would be. */
+typedef struct { const char *from, *to; } tree_copy;
+
+static int tree_copy_cb(void *ctx, const char *rel, const bd_stat_t *st)
+{
+    tree_copy *t = ctx;
+    char *src = bd_path_join(t->from, rel), *dst = bd_path_join(t->to, rel);
+    if (st->is_dir) bd_mkdirs(dst);
+    else {
+        char *dir = bd_strdup(dst);
+        char *slash = strrchr(dir, '/');
+        char *bslash = strrchr(dir, '\\');
+        if (bslash && (!slash || bslash > slash)) slash = bslash;
+        if (slash) { *slash = '\0'; bd_mkdirs(dir); }
+        free(dir);
+        copy_file(src, dst);
+    }
+    free(src);
+    free(dst);
+    return 0;
+}
+
+static void test_cloned_drive(void)
+{
+    bd_catalog *cat;
+    bd_mkdirs(at("d8/disk-ORIG"));
+    REQUIRE_OK(bd_catalog_create(at("d8/db.brodalf"), &cat), NULL);
+    make_files("d8-src/Docs", 4, "d8");
+    int64_t src, a, id;
+    bd_scan_stats ss;
+    bd_backup_stats bs;
+    bd_check_stats cs;
+    REQUIRE_OK(bd_source_add(cat, at("d8-src/Docs"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("d8/disk-ORIG"), "A", 0, &a), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(no_copy(cat) == 0);
+    CHECK(uncounted_of(cat, a) == 0);
+
+    /* The disk is cloned, and both are plugged in at once. */
+    tree_copy tc = {at("d8/disk-ORIG"), at("d8/disk-CLONE")};
+    bd_mkdirs(tc.to);
+    CHECK(bd_walk(tc.from, tree_copy_cb, NULL, &tc) == 0);
+    log_count lc = {"at once", 0};
+    REQUIRE_OK(bd_media_connect(cat, at("d8/disk-CLONE"), &id, count_log, &lc), cat);
+    CHECK(id == a);
+    CHECK(lc.n == 1);
+    char *root = NULL, *other = NULL;
+    CHECK(bd_media_suspect(cat, a, &root, &other) == 1);
+    CHECK(root && strstr(root, "disk-CLONE"));
+    CHECK(other && strstr(other, "disk-ORIG"));
+    free(root);
+    free(other);
+    CHECK(uncounted_of(cat, a) == 3);
+    CHECK(no_copy(cat) == 4);
+    /* A check with the other one still plugged in does not settle it. */
+    REQUIRE_OK(bd_media_check(cat, a, &cs, quiet, NULL), cat);
+    CHECK(bd_media_suspect(cat, a, NULL, NULL) == 1);
+    /* The clone alone gets a new file, then the original comes back. */
+    char *gone = bd_sprintf("%s-away", at("d8/disk-ORIG"));
+    CHECK(rename(at("d8/disk-ORIG"), gone) == 0);
+    REQUIRE_OK(bd_media_check(cat, a, &cs, quiet, NULL), cat);
+    CHECK(cs.missing == 0 && cs.ok == 4);
+    CHECK(bd_media_suspect(cat, a, NULL, NULL) == 0);
+    CHECK(uncounted_of(cat, a) == 0);
+    CHECK(no_copy(cat) == 0);
+    write_file(at("d8-src/Docs/later.txt"), "backed up to the clone only");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(no_copy(cat) == 0);
+    bd_media_disconnect(cat, a);
+    CHECK(rename(at("d8/disk-CLONE"), at("d8/clone-away")) == 0);
+    CHECK(rename(gone, at("d8/disk-ORIG")) == 0);
+    free(gone);
+    /* On the original, the serial number is not the one last seen. */
+    REQUIRE_OK(bd_media_connect(cat, at("d8/disk-ORIG"), &id, quiet, NULL), cat);
+    CHECK(id == a);
+    CHECK(bd_media_suspect(cat, a, NULL, NULL) == 2);
+    CHECK(no_copy(cat) == 5);
+    /* Remembered when the database is opened again. */
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+    REQUIRE_OK(bd_catalog_open(at("d8/db.brodalf"), &cat), NULL);
+    REQUIRE_OK(bd_media_connect(cat, at("d8/disk-ORIG"), &id, quiet, NULL), cat);
+    CHECK(bd_media_suspect(cat, a, NULL, NULL) == 2);
+    CHECK(uncounted_of(cat, a) == 3);
+    /* The check finds the file the original never got, and settles it. */
+    REQUIRE_OK(bd_media_check(cat, a, &cs, quiet, NULL), cat);
+    CHECK(cs.missing == 1);
+    CHECK(bd_media_suspect(cat, a, NULL, NULL) == 0);
+    CHECK(no_copy(cat) == 1);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    CHECK(no_copy(cat) == 0);
+    bd_catalog_close(cat);
+}
+
+/* ---- D9: a drive marked lost takes older versions and deleted files ------- */
+
+typedef struct { int64_t id[8]; int64_t items[8]; int n; } impact_seen;
+
+static int impact_cb(void *ctx, int64_t media_id, const char *label, int64_t items)
+{
+    (void)label;
+    impact_seen *s = ctx;
+    if (s->n < 8) {
+        s->id[s->n] = media_id;
+        s->items[s->n++] = items;
+    }
+    return 0;
+}
+
+static void test_lost_drive_takes_old_versions(void)
+{
+    bd_catalog *cat;
+    bd_mkdirs(at("d9/A"));
+    bd_mkdirs(at("d9/B"));
+    REQUIRE_OK(bd_catalog_create(at("d9/db.brodalf"), &cat), NULL);
+    make_files("d9-src/Docs", 3, "d9");
+    int64_t src, a, b;
+    bd_scan_stats ss;
+    bd_backup_stats bs;
+    REQUIRE_OK(bd_source_add(cat, at("d9-src/Docs"), &src), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_media_init(cat, at("d9/A"), "A", 0, &a), cat);
+    REQUIRE_OK(bd_media_init(cat, at("d9/B"), "B", 0, &b), cat);
+    bd_target tg;
+    bd_target_get(cat, &tg);
+    tg.copies = 2;
+    REQUIRE_OK(bd_target_set(cat, &tg), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, b, 0, &bs, quiet, NULL), cat);
+    /* f000 changes twice, backed up to A only: A holds its two older
+     * versions, B the first. f001 is deleted (on A and B); f003 is new,
+     * backed up to A only, then deleted. */
+    write_file(at("d9-src/Docs/f000.txt"), "d9 second contents");
+    set_old(at("d9-src/Docs/f000.txt"), 3);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    write_file(at("d9-src/Docs/f000.txt"), "d9 third contents, longer");
+    write_file(at("d9-src/Docs/f003.txt"), "d9 only on A");
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    REQUIRE_OK(bd_backup(cat, a, 0, &bs, quiet, NULL), cat);
+    bd_remove(at("d9-src/Docs/f001.txt"));
+    bd_remove(at("d9-src/Docs/f003.txt"));
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+
+    bd_lost_impact li;
+    impact_seen seen;
+    memset(&seen, 0, sizeof(seen));
+    REQUIRE_OK(bd_media_lost_impact(cat, a, &li, impact_cb, &seen), cat);
+    CHECK(li.old_versions == 2 && li.deleted == 2);
+    CHECK(li.old_versions_short == 2 && li.deleted_short == 2);
+    CHECK(li.old_versions_none == 1 && li.deleted_none == 1);
+    CHECK(li.copies_wanted == 2);
+    CHECK(seen.n == 1 && seen.id[0] == b && seen.items[0] == 2);
+    /* The same once it is marked. */
+    REQUIRE_OK(bd_media_mark_lost(cat, a, "lost"), cat);
+    bd_lost_impact after;
+    memset(&seen, 0, sizeof(seen));
+    REQUIRE_OK(bd_media_lost_impact(cat, a, &after, impact_cb, &seen), cat);
+    CHECK(after.old_versions == 2 && after.deleted == 2 && after.old_versions_none == 1 && after.deleted_none == 1);
+    CHECK(seen.n == 1 && seen.id[0] == b);
+    /* B holds what is left; marked lost too, nothing is left of them. */
+    REQUIRE_OK(bd_media_lost_impact(cat, b, &li, impact_cb, &seen), cat);
+    CHECK(li.old_versions == 1 && li.deleted == 1 && li.old_versions_none == 1 && li.deleted_none == 1);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -494,11 +713,15 @@ int main(void)
     for (char *p = base; *p; p++) if (*p == '\\') *p = '/';
     bd_mkdirs(base);
     printf("working in %s\n", base);
+    /* The same on every system: no real disk is read. */
+    bd_test_hw_read = fake_hw;
 
     test_two_copies_same_revision();
     test_backup_stops_early();
     test_room_and_failed_catalog_copy();
     test_key_reaches_drives();
+    test_cloned_drive();
+    test_lost_drive_takes_old_versions();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

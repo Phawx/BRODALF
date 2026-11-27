@@ -65,7 +65,9 @@ static void usage(void)
          "  drive-location <catalog> <label> [text]    say where a drive is kept (no text clears it)\n"
          "  drive-rename   <catalog> <label> <new label>\n"
          "  drive-lost     <catalog> <label> lost|broken [--yes]\n"
-         "                                             its copies stop counting; what it held is backed up again\n"
+         "                                             its copies stop counting; the current versions of what it\n"
+         "                                             held are backed up again (it says what that leaves of\n"
+         "                                             older versions and deleted files)\n"
          "  drive-found    <catalog> <label>           it turned up again: its copies count again\n"
          "\n"
          "Backup\n"
@@ -629,10 +631,30 @@ static void note_drive_database(bd_catalog *cat, int64_t id, const char *target)
 
 /* Connect a drive by its root. Nothing on it is read but its BRODALF.media
  * file and the names of the database copies beside it. */
+/* A drive whose ID turned up on another disk: is it a clone? Its copies
+ * count again once a check reads every copy on it. */
+static void note_drive_suspect(bd_catalog *cat, int64_t id, const char *target)
+{
+    char *other = NULL;
+    int why = bd_media_suspect(cat, id, NULL, &other);
+    if (why == 1)
+        fprintf(msg_out(), "note: drive \"%s\" is also plugged in at %s: one of the two disks is most likely a copy of the "
+                           "other, made by cloning it. Its copies do not count until a check reads every copy on it: unplug the "
+                           "one you do not keep as \"%s\", then run brodalf-cli check <catalog> %s\n",
+                label_of(cat, id), other ? other : "?", label_of(cat, id), target);
+    else if (why == 2)
+        fprintf(msg_out(), "note: drive \"%s\" is on a different disk than before: is it a copy made by cloning it, or the "
+                           "same disk in another case? Its copies do not count until a check reads every copy on it: "
+                           "brodalf-cli check <catalog> %s\n",
+                label_of(cat, id), target);
+    free(other);
+}
+
 static bd_status connect_target(bd_catalog *cat, const char *target, int64_t *id)
 {
     bd_status s = bd_media_connect(cat, target, id, log_line, NULL);
     if (s == BD_OK) note_drive_database(cat, *id, target);
+    if (s == BD_OK) note_drive_suspect(cat, *id, target);
     return s;
 }
 
@@ -680,6 +702,35 @@ static int copy_db_to_drives(bd_catalog *cat, const char *with, int *copied)
         }
     }
     return failed;
+}
+
+/* What a drive marked lost or broken takes from the older versions and
+ * deleted files it held, which no backup copies again; "" when none. */
+typedef struct { char *out; size_t cap; int n; } impact_names;
+
+static int impact_drive_cb(void *ctx, int64_t media_id, const char *label, int64_t items)
+{
+    (void)media_id;
+    impact_names *in = ctx;
+    size_t len = strlen(in->out);
+    snprintf(in->out + len, in->cap - len, "%s\"%s\" (%lld)", in->n++ ? ", " : "", label, (long long)items);
+    return in->n >= 8;
+}
+
+static void lost_impact_line(bd_catalog *cat, int64_t id, bd_lost_impact *li, char *out, size_t cap)
+{
+    char names[600] = "";
+    impact_names in = {names, sizeof(names), 0};
+    out[0] = '\0';
+    if (bd_media_lost_impact(cat, id, li, impact_drive_cb, &in) != BD_OK || !(li->old_versions + li->deleted)) return;
+    int64_t shrt = li->old_versions_short + li->deleted_short, none = li->old_versions_none + li->deleted_none;
+    snprintf(out, cap, "It also holds %lld older version%s and %lld deleted file%s. A backup copies only the current versions\n"
+                       "of files still in their folders, so these are never backed up again: without it, each has one copy\n"
+                       "fewer; %lld %s then short of the %d copies you want, and %lld %s no copy left. %s%s",
+             (long long)li->old_versions, li->old_versions == 1 ? "" : "s", (long long)li->deleted, li->deleted == 1 ? "" : "s",
+             (long long)shrt, shrt == 1 ? "is" : "are", li->copies_wanted, (long long)none, none == 1 ? "has" : "have",
+             in.n ? "What is left of them is on: " : "No other drive holds any of them.", names);
+    if (in.n && strlen(out) + 2 < cap) strcat(out, ".");
 }
 
 /* Ctrl+C asks the running job to stop between files. */
@@ -902,6 +953,7 @@ static int print_drive(void *ctx, const bd_media_info *m)
         j_bool("check_due", m->check_due);
         j_str("lost", m->lost_ms ? m->lost_why : "");
         j_int("lost_ms", m->lost_ms);
+        j_int("uncounted", m->uncounted);
         if (m->hw) hw_json(m->hw);
         J_END();
         return 0;
@@ -910,6 +962,7 @@ static int print_drive(void *ctx, const bd_media_info *m)
            m->hide_names ? "  [encrypted, names hidden]" : m->encrypted ? "  [encrypted]" : "");
     if (m->secondary) printf("  [extra place: starred files only; its copies do not count]");
     if (m->lost_ms) printf("  [marked %s: its copies do not count]", m->lost_why);
+    else if (m->uncounted == 3) printf("  [its ID is on another disk too: its copies do not count until it is checked]");
     printf("\n");
     if (m->location && *m->location) printf("  kept in:   %s\n", m->location);
     printf("  last seen: at %s\n", m->last_root && m->last_root[0] ? m->last_root : "?");
@@ -1180,6 +1233,7 @@ static int print_status(void *ctx, const bd_media_info *m)
         j_int("catalog_revision", st.catalog_revision);
         j_int("catalog_written_ms", st.catalog_written_ms);
         j_int("catalog_failed_ms", st.catalog_failed_ms);
+        j_int("uncounted", m->uncounted);
         J_END();
         return 0;
     }
@@ -1225,6 +1279,9 @@ static int print_status(void *ctx, const bd_media_info *m)
         print_when("  problems:      the database could not be copied to it ", st.catalog_failed_ms);
         printf(", so no copy there knows what that backup copied\n");
     }
+    if (m->uncounted == 3 && !m->lost_ms)
+        printf("  problems:      its ID turned up on another disk too, as when a drive is cloned: its copies do not count\n"
+               "                 until check reads every copy on it\n");
     if (st.copies_bad) printf("  problems:      %lld copies missing or damaged when last checked\n", (long long)st.copies_bad);
     if (st.copies_never_read) printf("  never read back: %lld copies\n", (long long)st.copies_never_read);
     putchar('\n');
@@ -2155,13 +2212,29 @@ static int run(int argc, char **argv)
         if (npos < 2 || (strcmp(pos[1], "lost") != 0 && strcmp(pos[1], "broken") != 0)) { usage(); bd_catalog_close(cat); return 1; }
         int64_t id = media_id_by_label(cat, pos[0]);
         if (!id) { bd_catalog_close(cat); return 1; }
-        char q[600];
-        snprintf(q, sizeof(q), "Mark \"%s\" as %s? Its copies will stop counting, and what it held will be backed up\n"
-                               "again to your other drives. Nothing is deleted; drive-found undoes this.", pos[0], pos[1]);
+        char impact[1600], q[2400];
+        bd_lost_impact li;
+        lost_impact_line(cat, id, &li, impact, sizeof(impact));
+        snprintf(q, sizeof(q), "Mark \"%s\" as %s? Its copies will stop counting, and the current versions of what it held\n"
+                               "will be backed up again to your other drives.%s%s Nothing is deleted; drive-found undoes this.",
+                 pos[0], pos[1], impact[0] ? "\n" : "", impact);
         if (!confirm_typed(argc, argv, q, pos[0])) { bd_catalog_close(cat); return 1; }
         if (bd_media_mark_lost(cat, id, pos[1]) != BD_OK) return die(cat, "cannot mark the drive");
-        if (g_json) { J_OBJ(NULL); j_str("drive", pos[0]); j_str("lost", pos[1]); J_END(); }
-        else printf("\"%s\" is marked %s; sets shows what needs backing up again\n", pos[0], pos[1]);
+        if (g_json) {
+            J_OBJ(NULL);
+            j_str("drive", pos[0]);
+            j_str("lost", pos[1]);
+            j_int("old_versions", li.old_versions);
+            j_int("deleted", li.deleted);
+            j_int("old_versions_short", li.old_versions_short);
+            j_int("deleted_short", li.deleted_short);
+            j_int("old_versions_none", li.old_versions_none);
+            j_int("deleted_none", li.deleted_none);
+            J_END();
+        } else {
+            printf("\"%s\" is marked %s; sets shows what needs backing up again\n", pos[0], pos[1]);
+            if (impact[0]) printf("%s\n", impact);
+        }
         save = 1;
     } else if (strcmp(cmd, "drive-found") == 0) {
         if (npos < 1) { usage(); bd_catalog_close(cat); return 1; }

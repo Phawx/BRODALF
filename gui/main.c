@@ -5123,6 +5123,9 @@ static const wchar_t *count_note(const drive_snap *d, wchar_t *buf, size_t n)
 {
     if (d->lost_ms || strcmp(d->kind, "drive") != 0) return NULL;
     if (d->uncounted == 1) return T(L"Its copies do not count: it is on the same disk as your files, so one disk failure would lose both.");
+    if (d->uncounted == 3)
+        return T(L"Its copies do not count: its drive ID turned up on another disk too, as when a drive is cloned. A check of "
+                 L"every copy on it makes them count again.");
     if (*d->same_disk) {
         wchar_t *other = widen(d->same_disk);
         swprintf(buf, n, T(L"It is on the same disk as %ls, so copies on the two count as one."), other);
@@ -8838,6 +8841,70 @@ static int offer_drive_databases(void)
 
 /* Drives were found. BRODALF says so and may ask (a check that is due, a
  * new disk to set up): what to do with them is the user's choice. */
+/* A drive whose ID turned up on another disk too, as when a drive is
+ * cloned (bd_media_suspect): ask whether it is a copy, and offer the check
+ * that makes its copies count again. Once a session for each drive. */
+static int64_t g_suspect_offered[64];
+static int g_n_suspect_offered;
+
+static void offer_suspect_check(int64_t id)
+{
+    char *root = NULL, *other = NULL;
+    int why = bd_media_suspect(g_cat, id, &root, &other);
+    int asked = 0;
+    for (int i = 0; i < g_n_suspect_offered; i++)
+        if (g_suspect_offered[i] == id) asked = 1;
+    if (!why || asked) {
+        free(root);
+        free(other);
+        return;
+    }
+    if (g_n_suspect_offered < 64) g_suspect_offered[g_n_suspect_offered++] = id;
+    check_offered(id); /* this asks about a check already */
+    media_one o;
+    memset(&o, 0, sizeof(o));
+    o.id = id;
+    bd_list_media(g_cat, media_one_cb, &o);
+    wchar_t name[600], main_text[800], content[2400];
+    drive_name(o.label, o.location, name, 600);
+    wchar_t *r = widen(root), *w = widen(other);
+    swprintf(main_text, 800, T(L"Is %ls a copy of another disk?"), name);
+    if (why == 1)
+        swprintf(content, 2400,
+                 T(L"It is plugged in twice, at %ls and at %ls. One of the two disks is most likely a copy of the other, made by "
+                   L"cloning it, and what BRODALF copies to one is not on the other. So its copies do not count until a check reads "
+                   L"every copy on it.\n\nUnplug the disk you do not keep as this drive first. BRODALF cannot tell two disks "
+                   L"with the same drive ID apart."),
+                 w ? w : L"", r ? r : L"");
+    else
+        swprintf(content, 2400,
+                 T(L"It is on a different disk than last time. That happens when a drive is cloned to a new disk, and also when a "
+                   L"disk is put in another case or adapter. A clone does not hold what BRODALF copied to the other disk since, "
+                   L"so its copies do not count until a check reads every copy on it."));
+    free(r);
+    free(w);
+    free(root);
+    free(other);
+    TASKDIALOG_BUTTON b[2] = {
+        {4204, T(L"Check it now\nReads every copy on it and changes nothing there. Its copies count again once that is done.")},
+        {4205, T(L"Not now\nIts copies do not count until it is checked. Drives... has Check for it.")},
+    };
+    TASKDIALOGCONFIG tc;
+    memset(&tc, 0, sizeof(tc));
+    tc.cbSize = sizeof(tc);
+    tc.hwndParent = g_main;
+    tc.hInstance = g_inst;
+    tc.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION;
+    tc.pszWindowTitle = APP_NAME;
+    tc.pszMainIcon = TD_WARNING_ICON;
+    tc.pszMainInstruction = main_text;
+    tc.pszContent = content;
+    tc.cButtons = 2;
+    tc.pButtons = b;
+    int pressed = 4205;
+    if (SUCCEEDED(TaskDialogIndirect(&tc, &pressed, NULL, NULL)) && pressed == 4204) enqueue_check(id);
+}
+
 static void after_drives(job *j)
 {
     int64_t due[16];
@@ -8865,6 +8932,13 @@ static void after_drives(job *j)
     update_drives_label();
     for (int i = 0; i < j->n_new; i++)
         if (offer_drive_database(j->new_ids[i])) return; /* recovered in its place: the rest was for the one closed */
+    /* Every drive plugged in, not only the new ones: a clone plugged in
+     * beside its drive is no new drive. */
+    {
+        id_list l = {{0}, 0};
+        bd_list_media(g_cat, connected_drive_cb, &l);
+        for (int i = 0; i < l.n; i++) offer_suspect_check(l.ids[i]);
+    }
     for (int i = 0; i < n_due; i++) {
         if (check_offered(due[i])) continue;
         media_one o;
@@ -11013,6 +11087,47 @@ static int confirm_checked(const wchar_t *question, const wchar_t *content, cons
 /* Mark a drive lost or broken, after showing what it does to the full
  * copies: its copies stop counting, so the files it held need backing up
  * again to other drives. */
+/* What the drive held of older versions and deleted files, which no backup
+ * copies again (bd_media_lost_impact), and the drives holding what is left
+ * of them. Nothing when it held none. */
+typedef struct { wtext *t; int n; } impact_names;
+
+static int impact_drive_cb(void *ctx, int64_t media_id, const char *label, int64_t items)
+{
+    (void)media_id;
+    impact_names *in = ctx;
+    wchar_t *l = widen(label);
+    wadd(in->t, L"%ls%ls (%lld)", in->n++ ? L", " : L"", l ? l : L"", (long long)items);
+    free(l);
+    return in->n >= 8;
+}
+
+static void lost_impact_text(int64_t id, wtext *t)
+{
+    bd_lost_impact li;
+    wtext names = {NULL, 0, 0};
+    impact_names in = {&names, 0};
+    if (bd_media_lost_impact(g_cat, id, &li, impact_drive_cb, &in) != BD_OK || !(li.old_versions + li.deleted)) {
+        free(names.p);
+        return;
+    }
+    wadd(t, TN(li.old_versions, L"It also holds %lld older version", L"It also holds %lld older versions"), (long long)li.old_versions);
+    wadd(t, TN(li.deleted, L" and %lld deleted file.", L" and %lld deleted files."), (long long)li.deleted);
+    wadd(t, L" %ls", T(L"A backup copies only the current versions of files still in their folders, so these are never backed up "
+                       L"again: without it, each has one copy fewer."));
+    int64_t shrt = li.old_versions_short + li.deleted_short, none = li.old_versions_none + li.deleted_none;
+    if (shrt)
+        wadd(t, TN(shrt, L" %lld of them is then short of the %d copies you want", L" %lld of them are then short of the %d copies you want"),
+             (long long)shrt, li.copies_wanted);
+    if (shrt && none) wadd(t, TN(none, L", and %lld has no copy left.", L", and %lld have no copy left."), (long long)none);
+    else if (shrt) wadd(t, L".");
+    wadd(t, L" ");
+    if (in.n) wadd(t, T(L"What is left of them is on: %ls."), names.p ? names.p : L"");
+    else wadd(t, T(L"No other drive holds any of them."));
+    wadd(t, L"\n");
+    free(names.p);
+}
+
 static void mark_lost_ui(const drive_snap *d)
 {
     wchar_t name[600], head[700];
@@ -11053,8 +11168,9 @@ static void mark_lost_ui(const drive_snap *d)
         return;
     }
     wchar_t first[1200];
-    swprintf(first, 1200, T(L"BRODALF stops counting its copies, so your full copies show what you really have, and backs up its files "
-                          L"again to your other drives. Nothing on any drive is deleted, and you can undo this with Found it."));
+    swprintf(first, 1200, T(L"BRODALF stops counting its copies, so your full copies show what you really have, and backs up the current "
+                          L"versions of its files again to your other drives. Nothing on any drive is deleted, and you can undo this "
+                          L"with Found it."));
     TASKDIALOG_BUTTON b[2] = {
         {650, T(L"It is lost\nYou do not know where it is.")},
         {651, T(L"It is broken\nIt no longer works, or its files cannot be read.")},
@@ -11101,6 +11217,7 @@ static void mark_lost_ui(const drive_snap *d)
                     L"%lld files will need to be backed up again, to another drive.\n"), (long long)again);
     else
         wadd(&t, L"%ls\n", T(L"No full copy changes: every file it held has enough good copies elsewhere."));
+    lost_impact_text(d->id, &t);
     wadd(&t, T(L"\nNothing on %ls is deleted. If you find it, choose Found it and its copies count again."), name);
     wchar_t q[800], yes[700];
     swprintf(q, 800, T(L"Stop counting the copies on %ls?"), name);
@@ -11115,6 +11232,14 @@ static void mark_lost_ui(const drive_snap *d)
         wchar_t line[800];
         swprintf(line, 800, T(L"%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it."), name, wwhy);
         log_append(line);
+        wtext it = {NULL, 0, 0};
+        lost_impact_text(d->id, &it);
+        if (it.p) {
+            size_t n = wcslen(it.p);
+            if (n && it.p[n - 1] == L'\n') it.p[n - 1] = 0;
+            log_append(it.p);
+        }
+        free(it.p);
     }
 }
 
@@ -18190,6 +18315,7 @@ static void close_database(void)
     g_sb_state[0] = 0;
     g_n_check_offered = 0;
     g_n_dbcopy_offered = 0;
+    g_n_suspect_offered = 0;
     g_gone_new = 0;
     SetWindowTextW(g_search, L"");
     end_search();

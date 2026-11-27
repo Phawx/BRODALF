@@ -79,6 +79,24 @@ expect(2 "scan with a root not found" scan "${cat}")
 file(RENAME "${WORK}/src-away" "${WORK}/src")
 expect(0 "scan with it back" scan "${cat}")
 
+# Folders typed from the current folder, more than twenty in one command:
+# every one is added, as a full path, so a scan run from another folder
+# finds them all.
+set(many "")
+foreach(i RANGE 1 25)
+    file(WRITE "${WORK}/many/r${i}/x.txt" "root ${i}")
+    list(APPEND many "many/r${i}")
+endforeach()
+expect(0 "add 25 folders typed from here" add "${cat}" ${many})
+execute_process(COMMAND "${CLI}" scan "${cat}" WORKING_DIRECTORY "${WORK}/tmp"
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT rc STREQUAL "0" OR NOT out MATCHES " 25 new" OR out MATCHES "not found")
+    message(SEND_ERROR "scan from another folder after adding 25 folders: exit ${rc}\n${out}${err}")
+    math(EXPR failures "${failures} + 1")
+else()
+    message(STATUS "scan from another folder found all 25 folders")
+endif()
+
 file(REMOVE_RECURSE "${WORK}")
 if(failures GREATER 0)
     message(FATAL_ERROR "${failures} exit code check(s) failed")

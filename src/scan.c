@@ -141,43 +141,82 @@ static int key_inside(const char *inner, const char *outer)
     return inner[lo] == '/' || (lo > 0 && outer[lo - 1] == '/'); /* outer is "/" or "c:/" */
 }
 
+/* A folder's key as it is written, and as the folder it names: links on
+ * the way followed, a mapped network drive as its network path
+ * (bd_real_path). One folder reached two ways has two written keys and one
+ * real one. When the real folder cannot be told, both are the written
+ * key. */
+typedef struct {
+    char *key, *real;
+} root_keys;
+
+static int keys_of(const char *path, root_keys *k)
+{
+    k->key = root_key(path);
+    char *r = k->key ? bd_real_path(path) : NULL;
+    k->real = root_key(r ? r : path);
+    free(r);
+    if (k->key && k->real) return 1;
+    free(k->key);
+    free(k->real);
+    k->key = k->real = NULL;
+    return 0;
+}
+
+static void keys_free(root_keys *k)
+{
+    free(k->key);
+    free(k->real);
+}
+
+static int keys_same(const root_keys *a, const root_keys *b) { return !strcmp(a->key, b->key) || !strcmp(a->real, b->real); }
+static int keys_inside(const root_keys *in, const root_keys *out)
+{
+    return key_inside(in->key, out->key) || key_inside(in->real, out->real);
+}
+
 /* Two backup roots never overlap: a folder inside a root, or holding one,
- * would have its files scanned and backed up twice, under two names. Roots
- * that are stopped (active 0) are not scanned and do not count. *same gets
- * the id of a root that is this very folder, spelled another way (any
- * root, stopped or not), or 0. BD_OK, or BD_ERR_EXISTS with a message
- * naming the root in the way. */
-static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except_id, int64_t *same)
+ * would have its files scanned and backed up twice, under two names. That
+ * holds however the folder is reached: by another spelling, through a
+ * link, or by a mapped drive letter and its network path. Roots that are
+ * stopped (active 0) are not scanned and do not count, and with nesting 0
+ * (for a stopped root) only another root that is this folder does. *same
+ * gets the id of a root that is this very folder (any root, stopped or
+ * not), or 0. BD_OK, or BD_ERR_EXISTS with a message naming the root in
+ * the way. */
+bd_status bd_root_check(bd_catalog *cat, const char *path, int64_t except_id, int nesting, int64_t *same)
 {
     *same = 0;
-    char *key = root_key(path);
-    if (!key) return BD_ERR_NOMEM;
+    root_keys k;
+    if (!keys_of(path, &k)) return BD_ERR_NOMEM;
     sqlite3_stmt *q;
     if (sqlite3_prepare_v2(cat->db, "SELECT id, path, active FROM sources WHERE id<>? ORDER BY id", -1, &q, NULL) != SQLITE_OK) {
-        free(key);
+        keys_free(&k);
         return bd_fail_db(cat, "source lookup");
     }
     sqlite3_bind_int64(q, 1, except_id);
     bd_status s = BD_OK;
     while (s == BD_OK && sqlite3_step(q) == SQLITE_ROW) {
         const char *other = (const char *)sqlite3_column_text(q, 1);
-        char *okey = other ? root_key(other) : NULL;
-        if (!okey) { s = BD_ERR_NOMEM; break; }
-        if (strcmp(key, okey) == 0) {
+        root_keys o;
+        if (!other || !keys_of(other, &o)) { s = BD_ERR_NOMEM; break; }
+        int written = !strcmp(k.key, o.key) || key_inside(k.key, o.key) || key_inside(o.key, k.key);
+        const char *how = written ? "" : ", though by another path (a link or a mapped drive)";
+        if (keys_same(&k, &o)) {
             if (!*same) *same = sqlite3_column_int64(q, 0);
-        } else if (sqlite3_column_int(q, 2) && key_inside(key, okey)) {
-            s = bd_fail(cat, BD_ERR_EXISTS, "%s is inside %s, which is already a backup root: its files are backed up with it",
-                        path, other);
-        } else if (sqlite3_column_int(q, 2) && key_inside(okey, key)) {
+        } else if (nesting && sqlite3_column_int(q, 2) && keys_inside(&k, &o)) {
+            s = bd_fail(cat, BD_ERR_EXISTS, "%s is inside %s, which is already a backup root%s: its files are backed up with it",
+                        path, other, how);
+        } else if (nesting && sqlite3_column_int(q, 2) && keys_inside(&o, &k)) {
             s = bd_fail(cat, BD_ERR_EXISTS,
-                        "%s holds %s, which is already a backup root: a folder can be in only one backup root."
+                        "%s holds %s, which is already a backup root%s: a folder can be in only one backup root."
                         " Stop backing up %s first, or choose another folder",
-                        path, other, other);
+                        path, other, how, other);
         }
-        free(okey);
+        keys_free(&o);
     }
     sqlite3_finalize(q);
-    free(key);
+    keys_free(&k);
     return s;
 }
 
@@ -185,29 +224,35 @@ static bd_status check_overlap(bd_catalog *cat, const char *path, int64_t except
  * except_id (stopped or not), is inside an active one or holds one. */
 int bd_root_overlaps(bd_catalog *cat, const char *path, int64_t except_id)
 {
-    char *key = root_key(path);
-    if (!key) return 1;
+    root_keys k;
+    if (!keys_of(path, &k)) return 1;
     sqlite3_stmt *q;
     int in = 0;
     if (sqlite3_prepare_v2(cat->db, "SELECT path, active FROM sources WHERE id<>?", -1, &q, NULL) != SQLITE_OK) {
-        free(key);
+        keys_free(&k);
         return 1;
     }
     sqlite3_bind_int64(q, 1, except_id);
     while (!in && sqlite3_step(q) == SQLITE_ROW) {
         const char *other = (const char *)sqlite3_column_text(q, 0);
-        char *okey = other ? root_key(other) : NULL;
-        in = !okey || strcmp(key, okey) == 0 ||
-             (sqlite3_column_int(q, 1) && (key_inside(key, okey) || key_inside(okey, key)));
-        free(okey);
+        root_keys o;
+        if (!other || !keys_of(other, &o)) { in = 1; break; }
+        in = keys_same(&k, &o) || (sqlite3_column_int(q, 1) && (keys_inside(&k, &o) || keys_inside(&o, &k)));
+        keys_free(&o);
     }
     sqlite3_finalize(q);
-    free(key);
+    keys_free(&k);
     return in;
 }
 
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
 {
+    return bd_source_add_ex(cat, folder, out_id, NULL);
+}
+
+bd_status bd_source_add_ex(bd_catalog *cat, const char *folder, int64_t *out_id, int *is_new)
+{
+    if (is_new) *is_new = 0;
     bd_stat_t st;
     if (bd_stat(folder, &st) == 0 && st.is_link) {
         char *target = bd_link_target(folder, NULL);
@@ -219,7 +264,9 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
     }
     if (bd_stat(folder, &st) != 0 || !st.is_dir) return bd_fail(cat, BD_ERR_NOT_FOUND, "%s is not a folder", folder);
 
-    char *path = bd_strdup(folder);
+    /* Kept as a full path, so a folder typed from the current folder is
+     * found again from any other. */
+    char *path = bd_full_path(folder);
     if (!path) return BD_ERR_NOMEM;
     size_t len = strlen(path);
     while (len > 1 && (path[len - 1] == '/' || path[len - 1] == '\\') && !(len == 3 && path[1] == ':')) path[--len] = '\0';
@@ -236,7 +283,7 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
     sqlite3_finalize(q);
 
     int64_t same = 0;
-    bd_status overlap = check_overlap(cat, path, 0, &same);
+    bd_status overlap = bd_root_check(cat, path, 0, 1, &same);
     if (overlap == BD_OK && same) {
         if (out_id) *out_id = same;
         free(path);
@@ -266,8 +313,12 @@ bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_id)
         sqlite3_bind_text(ins, 1, path, -1, SQLITE_STATIC);
         sqlite3_bind_text(ins, 2, name, -1, SQLITE_STATIC);
         sqlite3_bind_int64(ins, 3, bd_now_ms());
-        if (sqlite3_step(ins) != SQLITE_DONE) s = bd_fail_db(cat, "add source");
-        else if (out_id) *out_id = sqlite3_last_insert_rowid(cat->db);
+        if (sqlite3_step(ins) != SQLITE_DONE) {
+            s = bd_fail_db(cat, "add source");
+        } else {
+            if (out_id) *out_id = sqlite3_last_insert_rowid(cat->db);
+            if (is_new) *is_new = 1;
+        }
         sqlite3_finalize(ins);
     }
     free(name);
@@ -428,7 +479,7 @@ bd_status bd_source_set_active(bd_catalog *cat, int64_t source_id, int active)
         sqlite3_finalize(u);
         if (path) {
             int64_t same = 0;
-            bd_status s = check_overlap(cat, path, source_id, &same);
+            bd_status s = bd_root_check(cat, path, source_id, 1, &same);
             free(path);
             if (s != BD_OK) return s;
         }
@@ -938,7 +989,27 @@ static int is_own_store(const scan_ctx *c, const char *rel)
 
 /* The open database and the files kept beside it (its lock, a save or a
  * recovery under way, the working copy): a backup root that holds them
- * never backs them up, or every backup would add the whole database again. */
+ * never backs them up, or every backup would add the whole database again.
+ * That holds when the database was opened by another way to the same
+ * folder (a mapped drive letter, a link): the key is then the one the file
+ * has in the root as the scan writes it. */
+static char *own_key(const char *rk, const root_keys *root, const char *file)
+{
+    char *k = root_key(file);
+    if (k && key_inside(k, rk)) return k;
+    free(k);
+    root_keys f;
+    if (!root->real || !keys_of(file, &f)) return NULL;
+    char *out = NULL;
+    if (key_inside(f.real, root->real)) {
+        const char *rest = f.real + strlen(root->real);
+        if (*rest == '/') rest++;
+        out = bd_sprintf("%s%s%s", rk, rk[0] && rk[strlen(rk) - 1] == '/' ? "" : "/", rest);
+    }
+    keys_free(&f);
+    return out;
+}
+
 static void find_own_files(scan_ctx *c)
 {
     const bd_catalog *cat = c->cat;
@@ -951,14 +1022,17 @@ static void find_own_files(scan_ctx *c)
     for (size_t i = 0; cat->path && i < sizeof(side) / sizeof(side[0]); i++) cand[n++] = bd_sprintf("%s%s", cat->path, side[i]);
     for (size_t i = 0; cat->work_path && i < sizeof(work) / sizeof(work[0]); i++) cand[n++] = bd_sprintf("%s%s", cat->work_path, work[i]);
     if (cat->owner_path) cand[n++] = bd_sprintf("%s", cat->owner_path);
+    root_keys root = {NULL, NULL};
+    if (!keys_of(c->root, &root)) root.key = root.real = NULL;
     for (int i = 0; i < n; i++) {
-        char *k = cand[i] ? root_key(cand[i]) : NULL;
-        if (k && key_inside(k, rk) && c->n_own_keys < (int)(sizeof(c->own_keys) / sizeof(c->own_keys[0])))
+        char *k = cand[i] ? own_key(rk, &root, cand[i]) : NULL;
+        if (k && c->n_own_keys < (int)(sizeof(c->own_keys) / sizeof(c->own_keys[0])))
             c->own_keys[c->n_own_keys++] = k;
         else
             free(k);
         free(cand[i]);
     }
+    keys_free(&root);
     free(rk);
 }
 
@@ -1848,10 +1922,12 @@ bd_status bd_scan_ex(bd_catalog *cat, const bd_scan_opts *opts, bd_scan_stats *s
     bd_progress_begin(cat, bitrot ? "bit-rot scan" : "scan", expect, bitrot ? expect_bytes : 0);
     bd_exec(cat, "DELETE FROM temp.in_use; DELETE FROM temp.scan_new; DELETE FROM temp.scan_gone;");
     /* A root's folder is where it was last; a root that is not there is
-     * looked for by its files, and pointed at the one place holding them. */
+     * looked for by its files, and pointed at the one place holding them.
+     * So is a root kept as it was typed from the current folder (by 0.13.0
+     * and older), which then gets its full path. */
     for (size_t i = 0; i < len; i++) {
         bd_stat_t rst;
-        if (!list[i].path || (bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
+        if (!list[i].path || (bd_path_is_full(list[i].path) && bd_stat(list[i].path, &rst) == 0 && rst.is_dir)) continue;
         int64_t found = 0, checked = 0;
         int places = 0;
         char *p = bd_source_find(cat, list[i].id, &found, &checked, &places);

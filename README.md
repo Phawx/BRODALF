@@ -452,7 +452,14 @@ offer.
 
 ### Backup roots
 
-Add as many backup roots as you like. A root can be **stopped** (right-click
+Add as many backup roots as you like, from any drive or network share, in
+one command or one at a time. Each is kept as a full path, even when typed
+from the current folder (`Documents`, `../Photos`). One folder reached two
+ways counts as one root: through a link, a mapped network drive letter and
+its `\\server\share` path, or a `subst` drive letter and the folder it
+stands for. Adding it the other way says it is already backed up, and a
+folder inside a root (or holding one) is refused whichever way it is
+reached. A root can be **stopped** (right-click
 it): it is not scanned or backed up any more, but its files stay in the
 database and their copies still restore. **Back up this root again** resumes
 it. If a root moves somewhere BRODALF does not find it by its files,
@@ -895,6 +902,16 @@ on a local machine needs to pick the work up without the chat history.
   more. No change to the database format: 0.10.2 and 0.11.0 open the files
   0.13.0 saves, and their command-line tools were seen reading and scanning
   one.
+- Not yet released (2026-11-27, on the `any-folders` branch): any set of
+  folders as the backup roots. A folder typed from the current folder is
+  kept as a full path (0.13.0 kept `Documents` as typed, so a scan run
+  from elsewhere could not find it; such a root is now found by its files
+  and given its full path). `brodalf-cli new` and `add` take any number of
+  folders (0.13.0 silently dropped those past the 20th) and say which ones
+  were already backed up. One folder reached two ways (a link, a mapped
+  network drive and its network path, a `subst` drive) is one root, and a
+  database kept inside a root reached another way is still left out of
+  it. No change to the database format.
 
 ### Design decisions (agreed 2026-09-28, still binding)
 
@@ -1049,6 +1066,13 @@ in 0.4.0 came from the code review of the same day and this test:
    whose newest version was already backed up (`src/risk.c`).
 
 ### Open items: what still needs trying on a real Windows PC
+
+Everything on the `any-folders` branch (built by CI, tested on Linux
+through links, and on the CI runner through a `subst` drive and, where it
+can be mapped, a drive mapped to the runner's own share): a real mapped
+network drive and its `\\server\share` path added as one root, with the
+network up and down; a `subst` drive; a folder typed from the current
+folder in the command line.
 
 Everything new in 0.13.0 (built by CI, tested on Linux
 only): a root found by its files on another drive letter and under another
@@ -1209,6 +1233,10 @@ limits of the new work:
   as that name anywhere in the root, so they leave out more with it.
 - "Bigger than every drive" compares with each drive's whole size, not
   its size less the space kept free.
+- One folder reached two ways is known as one root only where Windows or
+  the link says so without asking the network: `\\localhost\C$` and
+  `C:\`, or two names for one server, still count as two folders. A
+  backup root inside another stays refused, whichever way it is reached.
 
 ### Backlog: suggested but not yet asked for
 

@@ -81,7 +81,10 @@ bd_status bd_media_record_connected(bd_catalog *cat, int64_t media_id, const cha
                            " free_bytes=COALESCE(?,free_bytes) WHERE id=?",
                            -1, &u, NULL) != SQLITE_OK)
         return bd_fail_db(cat, "update drive");
-    sqlite3_bind_text(u, 1, root, -1, SQLITE_STATIC);
+    /* Where it was last, as a full path: found again from any folder. */
+    char *full = bd_full_path(root);
+    sqlite3_bind_text(u, 1, full ? full : root, -1, SQLITE_TRANSIENT);
+    free(full);
     sqlite3_bind_int64(u, 2, bd_now_ms());
     if (have_space) { sqlite3_bind_int64(u, 3, total); sqlite3_bind_int64(u, 4, freeb); }
     else { sqlite3_bind_null(u, 3); sqlite3_bind_null(u, 4); }

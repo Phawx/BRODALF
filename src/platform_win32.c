@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <winioctl.h>
+#include <winnetwk.h>
 #include <werapi.h>
 #include <bcrypt.h>
 #include "blake3.h"
@@ -141,6 +142,91 @@ char *bd_link_target(const char *path, int *hidden_system)
     if (_wcsnicmp(p, L"\\\\?\\UNC\\", 8) == 0) unprefix_unc(p);
     else if (wcsncmp(p, L"\\\\?\\", 4) == 0) p += 4;
     return to_utf8(p);
+}
+
+static int is_sep_w(char c) { return c == '/' || c == '\\'; }
+
+int bd_path_is_full(const char *path)
+{
+    if (!path || !path[0]) return 0;
+    if (is_sep_w(path[0]) && is_sep_w(path[1])) return 1;
+    return path[1] == ':' && is_sep_w(path[2]);
+}
+
+char *bd_full_path(const char *path)
+{
+    if (is_sep_w(path[0]) && is_sep_w(path[1]) && (path[2] == '?' || path[2] == '.') && is_sep_w(path[3]))
+        return _strdup(path); /* \\?\ and \\.\ paths are taken as they are */
+    size_t len = strlen(path);
+    char *tmp = malloc(len + 1);
+    if (!tmp) return NULL;
+    for (size_t i = 0; i <= len; i++) tmp[i] = path[i] == '/' ? '\\' : path[i];
+    int n = MultiByteToWideChar(CP_UTF8, 0, tmp, -1, NULL, 0);
+    wchar_t *w = n > 0 ? malloc(sizeof(wchar_t) * (size_t)n) : NULL;
+    if (w) MultiByteToWideChar(CP_UTF8, 0, tmp, -1, w, n);
+    free(tmp);
+    if (!w) return NULL;
+    DWORD need = GetFullPathNameW(w, 0, NULL, NULL);
+    wchar_t *full = need ? malloc(sizeof(wchar_t) * need) : NULL;
+    DWORD got = full ? GetFullPathNameW(w, need, full, NULL) : 0;
+    free(w);
+    char *out = got && got < need ? to_utf8(full) : NULL;
+    free(full);
+    return out ? out : _strdup(path);
+}
+
+char *bd_real_path(const char *path)
+{
+    if (!path || !path[0]) return NULL;
+    if (path[1] == ':' && (is_sep_w(path[2]) || path[2] == '\0')) {
+        wchar_t root[4] = {(wchar_t)path[0], L':', L'\\', 0};
+        if (GetDriveTypeW(root) == DRIVE_REMOTE) {
+            /* A mapped network drive: the network path Windows keeps for it,
+             * also while it is not connected. */
+            wchar_t dev[3] = {(wchar_t)path[0], L':', 0};
+            wchar_t remote[MAX_PATH * 2];
+            DWORD cap = MAX_PATH * 2;
+            DWORD r = WNetGetConnectionW(dev, remote, &cap);
+            if (r != NO_ERROR && r != ERROR_CONNECTION_UNAVAIL) return NULL;
+            char *share = to_utf8(remote);
+            if (!share) return NULL;
+            size_t sl = strlen(share), rl = strlen(path + 2);
+            char *out = malloc(sl + rl + 1);
+            if (out) {
+                memcpy(out, share, sl);
+                memcpy(out + sl, path + 2, rl + 1);
+            }
+            free(share);
+            return out;
+        }
+        /* A subst drive letter: the folder it stands for ("\\??\\C:\\x", or
+         * "\\??\\UNC\\server\\share" for a network one). */
+        wchar_t dev[3] = {(wchar_t)path[0], L':', 0}, target[MAX_PATH * 2];
+        DWORD tn = QueryDosDeviceW(dev, target, MAX_PATH * 2);
+        if (tn && wcsncmp(target, L"\\??\\", 4) == 0) {
+            const wchar_t *t = target + 4;
+            int unc = _wcsnicmp(t, L"UNC\\", 4) == 0;
+            char *folder = to_utf8(unc ? t + 3 : t);
+            if (!folder) return NULL;
+            size_t fl = strlen(folder), rl = strlen(path + 2);
+            char *joined = malloc(fl + rl + 2);
+            if (joined) {
+                size_t o = 0;
+                if (unc) joined[o++] = '\\';
+                memcpy(joined + o, folder, fl);
+                memcpy(joined + o + fl, path + 2, rl + 1);
+            }
+            free(folder);
+            if (!joined) return NULL;
+            char *real = bd_real_path(joined);
+            if (!real) return joined; /* a network folder, or one not there: as the subst says */
+            free(joined);
+            return real;
+        }
+    }
+    if (is_sep_w(path[0]) && is_sep_w(path[1]) && !(path[2] == '?' && is_sep_w(path[3]) && path[4] && path[5] == ':'))
+        return NULL; /* a network path: asking would go over the network */
+    return bd_link_target(path, NULL);
 }
 
 static int64_t filetime_to_ns(FILETIME ft)

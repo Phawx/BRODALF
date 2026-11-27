@@ -27,7 +27,7 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
     if (!new_path || bd_stat(new_path, &st) != 0 || !st.is_dir)
         return bd_fail(cat, BD_ERR_NOT_FOUND, "%s is not a folder", new_path ? new_path : "");
 
-    char *path = bd_strdup(new_path);
+    char *path = bd_full_path(new_path);
     if (!path) return BD_ERR_NOMEM;
     size_t len = strlen(path);
     while (len > 1 && (path[len - 1] == '/' || path[len - 1] == '\\') && !(len == 3 && path[1] == ':')) path[--len] = '\0';
@@ -35,18 +35,23 @@ bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new
     bd_status s = BD_OK;
     sqlite3_stmt *q;
     int found = 0;
-    if (sqlite3_prepare_v2(cat->db, "SELECT id FROM sources WHERE id=? OR path=?", -1, &q, NULL) != SQLITE_OK) {
+    int active = 0;
+    if (sqlite3_prepare_v2(cat->db, "SELECT active FROM sources WHERE id=?", -1, &q, NULL) != SQLITE_OK) {
         free(path);
         return bd_fail_db(cat, "source lookup");
     }
     sqlite3_bind_int64(q, 1, source_id);
-    sqlite3_bind_text(q, 2, path, -1, SQLITE_STATIC);
-    while (s == BD_OK && sqlite3_step(q) == SQLITE_ROW) {
-        if (sqlite3_column_int64(q, 0) == source_id) found = 1;
-        else s = bd_fail(cat, BD_ERR_EXISTS, "%s is already a backup root", path);
+    if (sqlite3_step(q) == SQLITE_ROW) {
+        found = 1;
+        active = sqlite3_column_int(q, 0);
     }
     sqlite3_finalize(q);
-    if (s == BD_OK && !found) s = bd_fail(cat, BD_ERR_NOT_FOUND, "no such backup root");
+    if (!found) s = bd_fail(cat, BD_ERR_NOT_FOUND, "no such backup root");
+    /* No other root may be this folder, however it is reached, and a root
+     * that is backed up may not end up inside another or holding one. */
+    int64_t same = 0;
+    if (s == BD_OK) s = bd_root_check(cat, path, source_id, active, &same);
+    if (s == BD_OK && same) s = bd_fail(cat, BD_ERR_EXISTS, "%s is already a backup root", path);
 
     if (s == BD_OK) {
         sqlite3_stmt *u;
@@ -241,26 +246,54 @@ char *bd_source_find(bd_catalog *cat, int64_t source_id, int64_t *found, int64_t
     }
     char *home = path ? home_folder() : NULL;
 #ifdef _WIN32
+    const int win = 1;
     char **cand = path ? bd_root_candidates(path, home, bd_drive_letters(), 1) : NULL;
 #else
+    const int win = 0;
     char **cand = path ? bd_root_candidates(path, home, 0, 0) : NULL;
 #endif
-    for (size_t i = 0; cand && cand[i]; i++) {
+    /* A root kept as it was typed, from the current folder (by 0.13.0 and
+     * older): from the database's folder, and from the current one. */
+    char *rel[2] = {NULL, NULL};
+    if (path && !bd_path_is_full(path)) {
+        char *db = cat->path ? bd_full_path(cat->path) : NULL;
+        size_t dl = db ? strlen(db) : 0;
+        while (dl > 0 && !is_sep(db[dl - 1])) dl--;
+        if (db && dl > 0) {
+            db[dl] = '\0';
+            char *j = bd_path_join(db, path);
+            rel[0] = j ? bd_full_path(j) : NULL;
+            free(j);
+        }
+        free(db);
+        rel[1] = bd_full_path(path);
+        if (rel[0] && rel[1] && same_path(rel[0], rel[1], win)) {
+            free(rel[1]);
+            rel[1] = NULL;
+        }
+    }
+    size_t nc = 0;
+    while (cand && cand[nc]) nc++;
+    for (size_t i = 0; i < nc + 2; i++) {
+        const char *c = i < nc ? cand[i] : rel[i - nc];
+        if (!c) continue;
         bd_stat_t st;
-        if (bd_stat(cand[i], &st) != 0 || !st.is_dir || st.is_link) continue;
-        if (bd_root_overlaps(cat, cand[i], source_id)) continue;
-        int64_t ck = 0, th = files_there(cat, source_id, cand[i], &ck);
+        if (bd_stat(c, &st) != 0 || !st.is_dir || st.is_link) continue;
+        if (bd_root_overlaps(cat, c, source_id)) continue;
+        int64_t ck = 0, th = files_there(cat, source_id, c, &ck);
         if (ck == 0 || th == 0 || th * 2 < ck) continue;
         n_places++;
         if (!best || th > best_found) {
             free(best);
-            best = bd_strdup(cand[i]);
+            best = bd_strdup(c);
             best_found = th;
             best_checked = ck;
         }
     }
-    for (size_t i = 0; cand && cand[i]; i++) free(cand[i]);
+    for (size_t i = 0; i < nc; i++) free(cand[i]);
     free(cand);
+    free(rel[0]);
+    free(rel[1]);
     free(home);
     free(path);
     if (!best) n_places = 0;

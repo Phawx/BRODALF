@@ -9,6 +9,9 @@
 #include <unistd.h>
 #else
 #include <windows.h>
+#include <direct.h>
+#define chdir _chdir
+#define getcwd _getcwd
 #endif
 
 static int failures = 0;
@@ -75,7 +78,7 @@ static void count_log(void *ctx, const char *msg)
     if (strstr(msg, c->want)) c->n++;
 }
 
-typedef struct { int64_t id; int missing, waiting; int64_t gone, total; } root_info;
+typedef struct { int64_t id; int missing, waiting; int64_t gone, total; char path[2048]; } root_info;
 
 static int root_cb(void *ctx, const bd_source_info *s)
 {
@@ -85,6 +88,7 @@ static int root_cb(void *ctx, const bd_source_info *s)
     r->gone = s->files_gone;
     r->total = s->files_total;
     r->waiting = s->wait_for_disk;
+    snprintf(r->path, sizeof(r->path), "%s", s->path ? s->path : "");
     return 1;
 }
 
@@ -1118,6 +1122,163 @@ static void test_restore_room(void)
     bd_catalog_close(cat);
 }
 
+/* ---- Any folders: kept as full paths ----------------------------------- */
+
+static void test_full_paths(void)
+{
+    write_file(at("full/work/docs/a.txt"), "alpha");
+    bd_mkdirs(at("full/work/other"));
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("full/db.brodalf"), &cat), NULL);
+    char was[4096];
+    CHECK(getcwd(was, sizeof(was)) != NULL);
+    CHECK(chdir(at("full/work")) == 0);
+    int64_t id = 0, again = 0, other = 0;
+    int is_new = 0;
+    REQUIRE_OK(bd_source_add_ex(cat, "docs", &id, &is_new), cat); /* 0.13.0: kept as "docs" */
+    CHECK(is_new == 1);
+    is_new = 1;
+    REQUIRE_OK(bd_source_add_ex(cat, "./other/../docs/", &again, &is_new), cat);
+    CHECK(again == id && is_new == 0);
+    REQUIRE_OK(bd_source_add(cat, "other", &other), cat);
+    CHECK(chdir(was) == 0);
+    root_info r = root_of(cat, id);
+    CHECK(bd_path_is_full(r.path) && strstr(r.path, "docs") && !strstr(r.path, ".."));
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat); /* from another folder */
+    CHECK(ss.files_new == 1 && ss.roots_missing == 0);
+
+    /* A root moved to a folder typed from the current folder. */
+    CHECK(chdir(at("full")) == 0);
+    REQUIRE_OK(bd_source_relocate(cat, other, "work/other"), cat);
+    CHECK(chdir(was) == 0);
+    CHECK(bd_path_is_full(root_of(cat, other).path));
+
+    /* A root kept as typed by 0.13.0 and older ("work/docs", typed in the
+     * database's folder): found from there by its files and given its full
+     * path, nothing marked deleted. */
+    sqlite3_stmt *u;
+    CHECK(sqlite3_prepare_v2(cat->db, "UPDATE sources SET path='work/docs' WHERE id=?", -1, &u, NULL) == SQLITE_OK);
+    sqlite3_bind_int64(u, 1, id);
+    CHECK(sqlite3_step(u) == SQLITE_DONE);
+    sqlite3_finalize(u);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.roots_found == 1 && ss.roots_missing == 0 && ss.files_deleted == 0);
+    r = root_of(cat, id);
+    CHECK(bd_path_is_full(r.path) && strstr(r.path, "docs"));
+    bd_catalog_close(cat);
+}
+
+/* ---- Any folders: one folder reached two ways --------------------------- */
+
+#ifdef _WIN32
+/* A drive letter that is not in use, from Z: down; 0 if none. */
+static wchar_t free_letter(void)
+{
+    DWORD used = GetLogicalDrives();
+    for (int i = 25; i >= 4; i--)
+        if (!(used & (1u << i))) return (wchar_t)(L'A' + i);
+    return 0;
+}
+
+static wchar_t *wide_of(const char *s)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t *w = malloc(sizeof(wchar_t) * (size_t)(n > 0 ? n : 1));
+    if (w) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    for (wchar_t *p = w; p && *p; p++) if (*p == L'/') *p = L'\\';
+    return w;
+}
+#endif
+
+static void test_same_folder_two_ways(void)
+{
+    make_files("ways/real/Photos", 3, "photo");
+    bd_mkdirs(at("ways/real/Photos/sub"));
+    make_files("ways/Music", 2, "music");
+    /* The folder holding everything, reached another way: through a link
+     * to it, or on Windows a subst drive letter standing for it. */
+    char *other = NULL;
+#ifndef _WIN32
+    if (symlink(at("ways"), at("ways-link")) == 0) other = bd_strdup(at("ways-link"));
+#else
+    wchar_t letter = free_letter(), dev[3] = {letter, L':', 0};
+    wchar_t *target = wide_of(at("ways"));
+    if (letter && target && DefineDosDeviceW(0, dev, target)) other = bd_sprintf("%c:", (char)letter);
+    free(target);
+#endif
+    if (!other) {
+        printf("one folder reached two ways: not tried, no second way could be made\n");
+        return;
+    }
+    char *holder = bd_sprintf("%s/real", other), *photos = bd_sprintf("%s/real/Photos", other),
+         *sub = bd_sprintf("%s/real/Photos/sub", other);
+    bd_catalog *cat;
+    REQUIRE_OK(bd_catalog_create(at("ways/db.brodalf"), &cat), NULL);
+    int64_t id = 0, again = 0, music = 0, x = 0;
+    int is_new = 0;
+    REQUIRE_OK(bd_source_add(cat, at("ways/real/Photos"), &id), cat);
+    REQUIRE_OK(bd_source_add_ex(cat, photos, &again, &is_new), cat); /* 0.13.0: a second root */
+    CHECK(again == id && is_new == 0);
+    CHECK(bd_source_add(cat, sub, &x) == BD_ERR_EXISTS);
+    CHECK(strstr(bd_catalog_error(cat), "another path") != NULL);
+    CHECK(bd_source_add(cat, holder, &x) == BD_ERR_EXISTS); /* holds Photos */
+    REQUIRE_OK(bd_source_add(cat, at("ways/Music"), &music), cat);
+    CHECK(bd_source_relocate(cat, music, photos) == BD_ERR_EXISTS);
+    bd_scan_stats ss;
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 5);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    bd_catalog_close(cat);
+
+    /* The database opened the other way, kept inside the root: its files
+     * are not backed up as the root's. */
+    char *db2 = bd_sprintf("%s/real/Photos/inside.brodalf", other);
+    REQUIRE_OK(bd_catalog_create(db2, &cat), NULL);
+    REQUIRE_OK(bd_source_add(cat, at("ways/real/Photos"), &id), cat);
+    REQUIRE_OK(bd_catalog_save(cat), cat);
+    REQUIRE_OK(bd_scan(cat, &ss, quiet, NULL), cat);
+    CHECK(ss.files_new == 3); /* 0.13.0: the database file too */
+    bd_catalog_close(cat);
+    free(db2);
+
+#ifdef _WIN32
+    DefineDosDeviceW(DDD_REMOVE_DEFINITION, dev, NULL);
+    /* A mapped network drive and its network path: tried where Windows
+     * lets a drive letter be mapped to this PC's own share of the drive. */
+    wchar_t share[64], net[3] = {free_letter(), L':', 0};
+    swprintf(share, 64, L"\\\\localhost\\%c$", base[0]);
+    NETRESOURCEW nr;
+    memset(&nr, 0, sizeof(nr));
+    nr.dwType = RESOURCETYPE_DISK;
+    nr.lpLocalName = net;
+    nr.lpRemoteName = share;
+    DWORD rc = net[0] ? WNetAddConnection2W(&nr, NULL, NULL, 0) : ERROR_NO_MORE_ITEMS;
+    if (rc != NO_ERROR) {
+        printf("mapped network drive: not tried, mapping %ls failed (%lu)\n", share, (unsigned long)rc);
+    } else {
+        make_files("ways/net/Docs", 2, "net");
+        char *unc = bd_sprintf("\\\\localhost\\%c$%s", base[0], at("ways/net/Docs") + 2);
+        char *mapped = bd_sprintf("%c:%s", (char)net[0], at("ways/net/Docs") + 2);
+        REQUIRE_OK(bd_catalog_create(at("ways/net.brodalf"), &cat), NULL);
+        int64_t a = 0, b = 0;
+        REQUIRE_OK(bd_source_add(cat, unc, &a), cat);
+        is_new = 1;
+        REQUIRE_OK(bd_source_add_ex(cat, mapped, &b, &is_new), cat);
+        CHECK(a == b && is_new == 0);
+        printf("mapped network drive: %s and %s are one root\n", mapped, unc);
+        bd_catalog_close(cat);
+        free(unc);
+        free(mapped);
+        WNetCancelConnection2W(net, 0, TRUE);
+    }
+#endif
+    free(holder);
+    free(photos);
+    free(sub);
+    free(other);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -1133,6 +1294,8 @@ int main(void)
     test_root_candidates();
     test_same_path_other_files();
     test_root_found_by_its_files();
+    test_full_paths();
+    test_same_folder_two_ways();
     test_root_waits_for_disk();
     test_cloud_files();
     test_links();

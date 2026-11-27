@@ -68,6 +68,57 @@ char *bd_link_target(const char *path, int *hidden_system)
     return realpath(path, NULL);
 }
 
+int bd_path_is_full(const char *path) { return path && path[0] == '/'; }
+
+char *bd_full_path(const char *path)
+{
+    char *cwd = NULL;
+    if (!bd_path_is_full(path)) {
+        size_t cap = 256;
+        for (;;) {
+            char *b = realloc(cwd, cap);
+            if (!b) { free(cwd); return NULL; }
+            cwd = b;
+            if (getcwd(cwd, cap)) break;
+            if (errno != ERANGE || cap > 65536) { free(cwd); cwd = NULL; break; }
+            cap *= 2;
+        }
+    }
+    size_t cl = cwd ? strlen(cwd) : 0, pl = strlen(path);
+    char *in = malloc(cl + pl + 2);
+    char *out = malloc(cl + pl + 2);
+    if (!in || !out) { free(cwd); free(in); free(out); return NULL; }
+    if (cwd) { memcpy(in, cwd, cl); in[cl] = '/'; memcpy(in + cl + 1, path, pl + 1); }
+    else memcpy(in, path, pl + 1);
+    free(cwd);
+    if (in[0] != '/') { free(out); return in; } /* no current folder: as typed */
+    /* Names one by one: "." dropped, ".." takes the name before it off. */
+    size_t n = 0;
+    const char *p = in;
+    while (*p) {
+        while (*p == '/') p++;
+        const char *e = p;
+        while (*e && *e != '/') e++;
+        size_t seg = (size_t)(e - p);
+        if (seg == 0 || (seg == 1 && p[0] == '.')) {
+        } else if (seg == 2 && p[0] == '.' && p[1] == '.') {
+            while (n > 0 && out[n - 1] != '/') n--;
+            if (n > 0) n--;
+        } else {
+            out[n++] = '/';
+            memcpy(out + n, p, seg);
+            n += seg;
+        }
+        p = e;
+    }
+    if (n == 0) out[n++] = '/';
+    out[n] = '\0';
+    free(in);
+    return out;
+}
+
+char *bd_real_path(const char *path) { return path ? realpath(path, NULL) : NULL; }
+
 int bd_stat(const char *path, bd_stat_t *st)
 {
     return bd_stat_ex(path, st) == 0 ? 0 : -1;

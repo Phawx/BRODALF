@@ -495,6 +495,52 @@ static int64_t source_id_by_name(bd_catalog *cat, const char *name)
     return f.id;
 }
 
+/* A root's name and folder by its id. */
+typedef struct { int64_t id; int found; char name[512]; char path[4096]; } root_by_id;
+
+static int root_by_id_cb(void *ctx, const bd_source_info *info)
+{
+    root_by_id *r = ctx;
+    if (info->source_id != r->id) return 0;
+    r->found = 1;
+    snprintf(r->name, sizeof(r->name), "%s", info->name ? info->name : "");
+    snprintf(r->path, sizeof(r->path), "%s", info->path ? info->path : "");
+    return 1;
+}
+
+/* Add each folder as a backup root and say where it is kept (always as a
+ * full path), or that it is a root already: the same folder, reached any
+ * way. 0, or the exit code. */
+static int add_roots(bd_catalog *cat, const char **folders, int n)
+{
+    for (int i = 0; i < n; i++) {
+        int64_t id;
+        int is_new = 0;
+        bd_status s = bd_source_add_ex(cat, folders[i], &id, &is_new);
+        if (s == BD_ERR_EXISTS || s == BD_ERR_NOT_FOUND || s == BD_ERR_INVALID) {
+            /* Not a fault: this folder cannot be a root (it is not a
+             * folder, a link, or inside a root or holding one). */
+            const char *why = bd_catalog_error(cat);
+            char *msg = malloc(strlen(why) + 32);
+            if (msg) sprintf(msg, "cannot add the folder: %s", why);
+            int rc = refuse(cat, msg ? msg : why);
+            free(msg);
+            return rc;
+        }
+        if (s != BD_OK) return die(cat, "cannot add the folder");
+        root_by_id r = {0};
+        r.id = id;
+        bd_list_sources(cat, root_by_id_cb, &r);
+        if (!r.found)
+            fprintf(msg_out(), "backing up %s\n", folders[i]);
+        else if (is_new)
+            fprintf(msg_out(), "backing up %s\n", r.path);
+        else
+            fprintf(msg_out(), "%s is already backed up, as the backup root %s (%s)\n", folders[i], r.name, r.path);
+    }
+    return 0;
+}
+
 /* --root NAME (or the older --source NAME): 0 for every root, -1 if unknown. */
 static int64_t root_opt(bd_catalog *cat, int argc, char **argv)
 {
@@ -1405,11 +1451,14 @@ static int missing_root_cb(void *ctx, const bd_source_info *s)
     return 0;
 }
 
+/* Every argument that is not an option: as many as were given. */
+static const char **g_pos;
+
 static int cmd_recover(int argc, char **argv)
 {
     const char *from = argv[2];
-    const char *pos[16];
-    int npos = positional(argc, argv, pos, 16);
+    const char **pos = g_pos;
+    int npos = positional(argc, argv, pos, argc);
     if (npos < 1)
         return refuse(NULL, "recover needs the drive (or the catalog copy) and where to keep the new catalog");
     const char *dest = pos[npos - 1];
@@ -1697,18 +1746,15 @@ static int run(int argc, char **argv)
     bd_applog_open(log_path);
     free(log_path);
     bd_applog("brodalf-cli %s: %s %s", bd_version(), cmd, path);
-    const char *pos[20];
-    int npos = positional(argc, argv, pos, 20);
+    const char **pos = g_pos;
+    int npos = positional(argc, argv, pos, argc);
 
     if (strcmp(cmd, "recover") == 0) return cmd_recover(argc, argv);
 
     if (strcmp(cmd, "new") == 0) {
         if (bd_catalog_create(path, &cat) != BD_OK) return die(NULL, "cannot create catalog");
-        for (int i = 0; i < npos; i++) {
-            int64_t id;
-            if (bd_source_add(cat, pos[i], &id) != BD_OK) return die(cat, "cannot add the folder");
-            fprintf(msg_out(), "backing up %s\n", pos[i]);
-        }
+        int rc = add_roots(cat, pos, npos);
+        if (rc) return rc;
         if (bd_catalog_save(cat) != BD_OK) return die(cat, "cannot save catalog");
         if (g_json) { J_OBJ(NULL); j_str("catalog", path); j_str("id", bd_catalog_uuid(cat)); J_END(); }
         else printf("created %s (catalog %s); %s\n", path, bd_catalog_uuid(cat), npos ? "scan it next" : "add folders to back up next");
@@ -1734,11 +1780,8 @@ static int run(int argc, char **argv)
 
     if (strcmp(cmd, "add") == 0) {
         if (!npos) { usage(); bd_catalog_close(cat); return 1; }
-        for (int i = 0; i < npos; i++) {
-            int64_t id;
-            if (bd_source_add(cat, pos[i], &id) != BD_OK) return die(cat, "cannot add the folder");
-            fprintf(msg_out(), "backing up %s\n", pos[i]);
-        }
+        int rc = add_roots(cat, pos, npos);
+        if (rc) return rc;
         if (g_json) { J_OBJ(NULL); j_int("added", npos); J_END(); }
         save = 1;
     } else if (strcmp(cmd, "roots") == 0 || strcmp(cmd, "sources") == 0) {
@@ -2593,11 +2636,19 @@ int main(void)
         WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, argv[i], n, NULL, NULL);
     }
     LocalFree(wargv);
-    return run(argc, argv);
+    g_pos = calloc((size_t)argc + 1, sizeof(*g_pos));
+    if (!argv || !g_pos) return 1;
+    int rc = run(argc, argv);
+    free(g_pos);
+    return rc;
 }
 #else
 int main(int argc, char **argv)
 {
-    return run(argc, argv);
+    g_pos = calloc((size_t)argc + 1, sizeof(*g_pos));
+    if (!g_pos) return 1;
+    int rc = run(argc, argv);
+    free(g_pos);
+    return rc;
 }
 #endif

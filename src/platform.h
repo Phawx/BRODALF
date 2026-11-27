@@ -28,6 +28,25 @@ int bd_stat(const char *path, bd_stat_t *st);
  * (NULL to leave out). */
 char *bd_link_target(const char *path, int *hidden_system);
 
+/* 1 if path is a full path: from the top of a drive or network share, not
+ * from the current folder (on Windows "C:\x" and "\\server\share\x", not
+ * "x", "C:x" or "\x"). */
+int bd_path_is_full(const char *path);
+
+/* A path typed from the current folder (on Windows also from the current
+ * folder of a drive) as a full path, with "." and ".." names worked out
+ * by name; no link is followed and nothing need be there. A full path
+ * comes back with only that done. malloc'd; NULL when out of memory. */
+char *bd_full_path(const char *path);
+
+/* The folder a path names, however it was reached: every link on the way
+ * followed, and on Windows a mapped network drive letter given as the
+ * network path it stands for (Z:\x as \\server\share\x, read from
+ * Windows' own list without asking the network) and a subst drive letter
+ * as the folder it stands for. A network path is not asked about and
+ * gives NULL, as does a path that is not there. malloc'd. */
+char *bd_real_path(const char *path);
+
 /* The same, telling a path that is not there from one that could not be
  * looked at: 0 found, 1 not there (POSIX ENOENT or ENOTDIR; Windows
  * ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND), -1 could not look (a

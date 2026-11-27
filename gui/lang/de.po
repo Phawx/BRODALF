@@ -35,7 +35,7 @@ msgstr "TB"
 msgid "%lld bytes"
 msgstr "%lld Bytes"
 
-#: gui/main.c:644 gui/main.c:9640 gui/main.c:14468
+#: gui/main.c:644 gui/main.c:9672 gui/main.c:14505
 msgid "never"
 msgstr "nie"
 
@@ -83,7 +83,7 @@ msgstr "Speicherplatz"
 msgid "Health"
 msgstr "Zustand"
 
-#: gui/main.c:767 gui/main.c:16914
+#: gui/main.c:767 gui/main.c:16951
 msgid "Last checked"
 msgstr "Zuletzt geprüft"
 
@@ -99,11 +99,11 @@ msgstr "Umschalt"
 msgid "BRODALF shows the new language the next time you open it."
 msgstr "BRODALF zeigt die neue Sprache beim nächsten Öffnen an."
 
-#: gui/main.c:1774 gui/main.c:6746 gui/main.c:12347 gui/main.c:13237 ...
+#: gui/main.c:1774 gui/main.c:6746 gui/main.c:12384 gui/main.c:13274 ...
 msgid "Yes"
 msgstr "Ja"
 
-#: gui/main.c:1774 gui/main.c:6746 gui/main.c:13237 gui/main.c:13238
+#: gui/main.c:1774 gui/main.c:6746 gui/main.c:13274 gui/main.c:13275
 msgid "No"
 msgstr "Nein"
 
@@ -1236,7 +1236,7 @@ msgstr "BRODALF-Laufwerke werden gesucht..."
 msgid "Scanning your backup roots..."
 msgstr "Ihre Quellordner werden gescannt..."
 
-#: gui/main.c:3272 gui/main.c:15052
+#: gui/main.c:3272 gui/main.c:15089
 msgid "Backing up..."
 msgstr "Wird gesichert..."
 
@@ -1291,7 +1291,7 @@ msgid "%ls Shutting down now stops it; what was done until then is kept."
 msgstr ""
 "%ls Wenn Sie jetzt herunterfahren, wird der Vorgang abgebrochen; was bis dahin erledigt war, bleibt erhalten."
 
-#: gui/main.c:3350 gui/main.c:15915
+#: gui/main.c:3350 gui/main.c:15952
 msgid "Stopping..."
 msgstr "Wird abgebrochen..."
 
@@ -1532,7 +1532,7 @@ msgstr "   - nicht gefunden: nicht angeschlossen, verschoben oder umbenannt?"
 msgid "   - no longer backed up"
 msgstr "   - wird nicht mehr gesichert"
 
-#: gui/main.c:4358 gui/main.c:16306
+#: gui/main.c:4358 gui/main.c:16343
 msgid "Not on this PC"
 msgstr "Nicht auf diesem PC"
 
@@ -1541,27 +1541,27 @@ msgstr "Nicht auf diesem PC"
 msgid "%ls, not on this PC"
 msgstr "%ls, nicht auf diesem PC"
 
-#: gui/main.c:4445 gui/main.c:11474 gui/main.c:16273
+#: gui/main.c:4445 gui/main.c:11511 gui/main.c:16310
 msgid "Changed since backup"
 msgstr "Seit Sicherung geändert"
 
-#: gui/main.c:4445 gui/main.c:11476 gui/main.c:16274 gui/main.c:16288
+#: gui/main.c:4445 gui/main.c:11513 gui/main.c:16311 gui/main.c:16325
 msgid "Not backed up"
 msgstr "Nicht gesichert"
 
-#: gui/main.c:4445 gui/main.c:5578 gui/main.c:11477 gui/main.c:16264
+#: gui/main.c:4445 gui/main.c:5578 gui/main.c:11514 gui/main.c:16301
 msgid "Copy damaged"
 msgstr "Kopie beschädigt"
 
-#: gui/main.c:4445 gui/main.c:16267
+#: gui/main.c:4445 gui/main.c:16304
 msgid "May be damaged"
 msgstr "Möglicherweise beschädigt"
 
-#: gui/main.c:4446 gui/main.c:11475 gui/main.c:16271 gui/main.c:16277
+#: gui/main.c:4446 gui/main.c:11512 gui/main.c:16308 gui/main.c:16314
 msgid "Drive not plugged in"
 msgstr "Laufwerk nicht angeschlossen"
 
-#: gui/main.c:4446 gui/main.c:11478 gui/main.c:16275
+#: gui/main.c:4446 gui/main.c:11515 gui/main.c:16312
 msgid "Deleted"
 msgstr "Gelöscht"
 
@@ -1823,11 +1823,11 @@ msgid ""
 msgstr ""
 "%ls    Als %ls markiert am %ls: Seine Kopien zählen nicht mehr, und es wird nichts mehr darauf gesichert\r\n"
 
-#: gui/main.c:5139 gui/main.c:8081 gui/main.c:10560 gui/main.c:10841
+#: gui/main.c:5139 gui/main.c:8081 gui/main.c:10592 gui/main.c:10873
 msgid "broken"
 msgstr "defekt"
 
-#: gui/main.c:5139 gui/main.c:8081 gui/main.c:10560 gui/main.c:10841
+#: gui/main.c:5139 gui/main.c:8081 gui/main.c:10592 gui/main.c:10873
 msgid "lost"
 msgstr "verloren"
 
@@ -1856,11 +1856,11 @@ msgid ""
 msgstr ""
 "Sie erhalten Version %d, wie sie am %ls war (%ls). Die neueste Version, %d (%ls), hat noch keine Kopie: Sichern Sie sie zuerst, um sie zu behalten."
 
-#: gui/main.c:5461 gui/main.c:9635
+#: gui/main.c:5461 gui/main.c:9667
 msgid "marked broken"
 msgstr "als defekt gemeldet"
 
-#: gui/main.c:5461 gui/main.c:9635
+#: gui/main.c:5461 gui/main.c:9667
 msgid "marked lost"
 msgstr "als verloren gemeldet"
 
@@ -1891,7 +1891,7 @@ msgid ""
 msgstr ""
 "Wählen Sie eine Datei oder einen Ordner, um die Versionen zu sehen und welche Laufwerke sie enthalten. Hilfe > Was die Dateiliste zeigt stellt dar, was jeder Name und jeder Zustand bedeutet."
 
-#: gui/main.c:5501 gui/main.c:12219 gui/main.c:16889
+#: gui/main.c:5501 gui/main.c:12256 gui/main.c:16926
 msgid "Folder"
 msgstr "Ordner"
 
@@ -1913,11 +1913,11 @@ msgstr "Nein: Es wurde aus seinem Ordner gelöscht"
 msgid "No: its backup root is not on this PC now"
 msgstr "Nein: Sein Quellordner ist gerade nicht auf diesem PC"
 
-#: gui/main.c:5514 gui/main.c:12207 gui/main.c:12244
+#: gui/main.c:5514 gui/main.c:12244 gui/main.c:12281
 msgid "Files"
 msgstr "Dateien"
 
-#: gui/main.c:5514 gui/main.c:16294
+#: gui/main.c:5514 gui/main.c:16331
 #, c-format
 msgid "%lld of %lld available"
 msgstr "%lld von %lld verfügbar"
@@ -1933,11 +1933,11 @@ msgid_plural "%lld of %lld files have a copy of their newest version"
 msgstr[0] "%lld von %lld Datei hat eine Kopie der neuesten Version"
 msgstr[1] "%lld von %lld Dateien haben eine Kopie ihrer neuesten Version"
 
-#: gui/main.c:5520 gui/main.c:16857
+#: gui/main.c:5520 gui/main.c:16894
 msgid "Copies on"
 msgstr "Kopien auf"
 
-#: gui/main.c:5521 gui/main.c:6684 gui/main.c:14559
+#: gui/main.c:5521 gui/main.c:6684 gui/main.c:14596
 msgid "Plugged in"
 msgstr "Angeschlossen"
 
@@ -1964,7 +1964,7 @@ msgstr "Schließen Sie %ls an, um eine ältere Version wiederherzustellen"
 msgid "No drive has a copy of it"
 msgstr "Kein Laufwerk hat eine Kopie davon"
 
-#: gui/main.c:5536 gui/main.c:12207 gui/main.c:12450
+#: gui/main.c:5536 gui/main.c:12244 gui/main.c:12487
 msgid "Starred"
 msgstr "Markiert"
 
@@ -1976,7 +1976,7 @@ msgstr "Wird auch an Ihren Zusatzorten gesichert"
 msgid "With its folder: also backed up to your extra places"
 msgstr "Über den Ordner: wird auch an Ihren Zusatzorten gesichert"
 
-#: gui/main.c:5539 gui/main.c:5717 gui/main.c:12220 gui/main.c:12244 ...
+#: gui/main.c:5539 gui/main.c:5717 gui/main.c:12257 gui/main.c:12281 ...
 msgid "Encrypted"
 msgstr "Verschlüsselt"
 
@@ -1997,7 +1997,7 @@ msgstr "Größe"
 msgid "Modified"
 msgstr "Geändert"
 
-#: gui/main.c:5561 gui/main.c:16914
+#: gui/main.c:5561 gui/main.c:16951
 msgid "Version"
 msgstr "Version"
 
@@ -2022,7 +2022,7 @@ msgstr "Intakte Kopie"
 msgid "Copy missing"
 msgstr "Kopie fehlt"
 
-#: gui/main.c:5582 gui/main.c:13379
+#: gui/main.c:5582 gui/main.c:13416
 msgid "None yet"
 msgstr "Noch keiner"
 
@@ -2190,11 +2190,11 @@ msgstr "Nicht angeschlossen. Zuletzt gesehen: %ls unter %ls"
 msgid "Not plugged in. Last seen %ls"
 msgstr "Nicht angeschlossen. Zuletzt gesehen: %ls"
 
-#: gui/main.c:5717 gui/main.c:13397
+#: gui/main.c:5717 gui/main.c:13434
 msgid "Encrypted, names hidden"
 msgstr "Verschlüsselt, Namen verborgen"
 
-#: gui/main.c:5717 gui/main.c:13385 gui/main.c:13397
+#: gui/main.c:5717 gui/main.c:13422 gui/main.c:13434
 msgid "Not encrypted"
 msgstr "Nicht verschlüsselt"
 
@@ -2383,7 +2383,7 @@ msgstr "%lld neu zugewiesen, %lld warten auf Neuzuweisung, %lld unlesbar"
 msgid "Temperature"
 msgstr "Temperatur"
 
-#: gui/main.c:5829 gui/main.c:6519 gui/main.c:12207
+#: gui/main.c:5829 gui/main.c:6519 gui/main.c:12244
 msgid "Note"
 msgstr "Hinweis"
 
@@ -2391,7 +2391,7 @@ msgstr "Hinweis"
 msgid "Free space"
 msgstr "Freier Platz"
 
-#: gui/main.c:5833 gui/main.c:14579
+#: gui/main.c:5833 gui/main.c:14616
 #, c-format
 msgid "%ls free of %ls when last seen"
 msgstr "%ls von %ls frei beim letzten Anschluss"
@@ -2412,15 +2412,15 @@ msgid ""
 msgstr ""
 "Seine Kopien lassen sich weiterhin wiederherstellen, falls es wieder auftaucht, zählen aber nicht mehr zu Ihren vollständigen Kopien. Deshalb werden die Dateien darauf erneut auf Ihre anderen Laufwerke gesichert. Wenn Sie es finden, wählen Sie „Wiedergefunden“."
 
-#: gui/main.c:5883 gui/main.c:13630 gui/main.c:13644
+#: gui/main.c:5883 gui/main.c:13667 gui/main.c:13681
 msgid "Found it"
 msgstr "Wiedergefunden"
 
-#: gui/main.c:5883 gui/main.c:12217 gui/main.c:13644
+#: gui/main.c:5883 gui/main.c:12254 gui/main.c:13681
 msgid "It is gone..."
 msgstr "Er ist weg..."
 
-#: gui/main.c:5883 gui/main.c:12184 gui/main.c:13630 gui/brodalf.rc:88
+#: gui/main.c:5883 gui/main.c:12221 gui/main.c:13667 gui/brodalf.rc:88
 msgid "Mark lost or broken..."
 msgstr "Verloren/defekt melden..."
 
@@ -2448,7 +2448,7 @@ msgid ""
 msgstr ""
 "Sie haben noch keine Sicherungslaufwerke. Richten Sie eines über Lokale Sicherungen > Laufwerk einrichten... ein, oder über Sichern > Externes Laufwerk oder Wechsellaufwerk einrichten..."
 
-#: gui/main.c:5957 gui/main.c:10575
+#: gui/main.c:5957 gui/main.c:10607
 msgid "  - extra place for starred files"
 msgstr "  - Zusatzort für Dateien mit Stern"
 
@@ -2458,7 +2458,7 @@ msgid ""
 msgstr ""
 "  - Cloudkonto aus einer früheren Version (in dieser Version nicht unterstützt)"
 
-#: gui/main.c:5959 gui/main.c:10576
+#: gui/main.c:5959 gui/main.c:10608
 msgid "  - plugged in"
 msgstr "  - angeschlossen"
 
@@ -2599,7 +2599,7 @@ msgstr[0] ""
 msgstr[1] ""
 "Ein Bit-Rot-Scan hat festgestellt, dass sie sich geändert haben, ohne dass sich Größe oder Zeit geändert haben. Sie können sie von einem Sicherungslaufwerk wiederherstellen."
 
-#: gui/main.c:6090 gui/main.c:11436
+#: gui/main.c:6090 gui/main.c:11473
 msgid "Show it"
 msgid_plural "Show them"
 msgstr[0] "Anzeigen"
@@ -2667,7 +2667,7 @@ msgstr ""
 msgid "Where is it now?..."
 msgstr "Neuen Ort angeben..."
 
-#: gui/main.c:6141 gui/main.c:16833
+#: gui/main.c:6141 gui/main.c:16870
 msgid "Files at ris&k..."
 msgstr "&Gefährdete Dateien..."
 
@@ -2704,7 +2704,7 @@ msgstr "Seit der letzten Sicherung geändert. "
 msgid "On a drive with no place set."
 msgstr "Auf einem Laufwerk ohne festgelegten Ort."
 
-#: gui/main.c:6410 gui/main.c:9921
+#: gui/main.c:6410 gui/main.c:9953
 msgid "  (plugged in)"
 msgstr "  (angeschlossen)"
 
@@ -2736,7 +2736,7 @@ msgstr "(nicht festgelegt)"
 msgid " (kept in "
 msgstr " (Ort: "
 
-#: gui/main.c:6445 gui/main.c:13613 gui/main.c:14744
+#: gui/main.c:6445 gui/main.c:13650 gui/main.c:14781
 #, c-format
 msgid "Back up to %ls"
 msgstr "Auf %ls sichern"
@@ -2745,7 +2745,7 @@ msgstr "Auf %ls sichern"
 msgid "Plug it in to back up"
 msgstr "Zum Sichern anschließen"
 
-#: gui/main.c:6448 gui/main.c:12176 gui/brodalf.rc:107
+#: gui/main.c:6448 gui/main.c:12213 gui/brodalf.rc:107
 msgid "Back up to it"
 msgstr "Darauf sichern"
 
@@ -2808,11 +2808,11 @@ msgstr "Würde beheben"
 msgid "File"
 msgstr "Datei"
 
-#: gui/main.c:6519 gui/main.c:12442 gui/brodalf.rc:35
+#: gui/main.c:6519 gui/main.c:12479 gui/brodalf.rc:35
 msgid "Copies"
 msgstr "Kopien"
 
-#: gui/main.c:6519 gui/main.c:6781 gui/main.c:12443
+#: gui/main.c:6519 gui/main.c:6781 gui/main.c:12480
 msgid "Places"
 msgstr "Orte"
 
@@ -2845,7 +2845,7 @@ msgstr "Aktuell"
 msgid "Not on it"
 msgstr "Nicht darauf"
 
-#: gui/main.c:6701 gui/main.c:9111 gui/main.c:12793
+#: gui/main.c:6701 gui/main.c:9111 gui/main.c:12830
 msgid "Never"
 msgstr "Nie"
 
@@ -2901,7 +2901,7 @@ msgstr "als defekt gemeldet: Seine Kopien zählen nicht mehr"
 msgid "marked lost: its copies no longer count"
 msgstr "als verloren gemeldet: Seine Kopien zählen nicht mehr"
 
-#: gui/main.c:6736 gui/main.c:12735
+#: gui/main.c:6736 gui/main.c:12772
 #, c-format
 msgid "%lld missing or damaged"
 msgstr "%lld fehlend oder beschädigt"
@@ -3038,7 +3038,7 @@ msgstr "In der Sicherung"
 msgid "Already there"
 msgstr "Schon vorhanden"
 
-#: gui/main.c:6932 gui/main.c:13569
+#: gui/main.c:6932 gui/main.c:13606
 msgid "a folder"
 msgstr "ein Ordner"
 
@@ -3179,7 +3179,7 @@ msgstr "Auslassen..."
 msgid "Keep as it is now"
 msgstr "So behalten"
 
-#: gui/main.c:7042 gui/main.c:10569 gui/main.c:11236 gui/main.c:12180 ...
+#: gui/main.c:7042 gui/main.c:10601 gui/main.c:11268 gui/main.c:12217 ...
 msgid "Open in Explorer"
 msgstr "Im Explorer öffnen"
 
@@ -3262,7 +3262,7 @@ msgid_plural "Finished with %lld problems."
 msgstr[0] "Mit %lld Problem abgeschlossen."
 msgstr[1] "Mit %lld Problemen abgeschlossen."
 
-#: gui/main.c:7292 gui/main.c:15956 gui/main.c:15961
+#: gui/main.c:7292 gui/main.c:15993 gui/main.c:15998
 msgid "Show what went wrong"
 msgstr "Anzeigen, was schiefgegangen ist"
 
@@ -3274,7 +3274,7 @@ msgstr "BRODALF-Dateien.csv"
 msgid "CSV file (*.csv)"
 msgstr "CSV-Datei (*.csv)"
 
-#: gui/main.c:7324 gui/main.c:17804
+#: gui/main.c:7324 gui/main.c:17841
 msgid "All files"
 msgstr "Alle Dateien"
 
@@ -3410,7 +3410,7 @@ msgstr ""
 "\n"
 "Ihre Dateien sind mit einem Schlüssel verschlüsselt, der sich nicht ändert, und jede Kopie der Datenbank, die BRODALF auf ein Laufwerk gelegt hat, hält ihn mit der Passphrase verschlossen, die damals galt. BRODALF ändert oder löscht nie etwas auf einem Laufwerk. Wer also die alte Passphrase und eines dieser Laufwerke hat, kann Ihre verschlüsselten Sicherungen weiterhin lesen, auch neue. Wenn jemand die alte Passphrase kennen könnte, bewahren Sie Ihre Laufwerke so auf, dass nur Sie sie erreichen."
 
-#: gui/main.c:7844 gui/main.c:8262 gui/main.c:11002
+#: gui/main.c:7844 gui/main.c:8262 gui/main.c:11034
 msgid "This drive is encrypted. Enter the passphrase to back up to it."
 msgstr ""
 "Dieses Laufwerk ist verschlüsselt. Geben Sie die Passphrase ein, um darauf zu sichern."
@@ -3585,7 +3585,7 @@ msgstr ""
 "\n"
 "Das Sichern überschreibt nichts: Die Kopien auf dem Laufwerk bleiben, wie sie sind, und die geänderten Dateien werden daneben abgelegt. Wenn Sie diese Dateien nicht geändert haben, sehen Sie sie sich zuerst an und stellen Sie sie stattdessen von diesem Laufwerk wieder her."
 
-#: gui/main.c:8125 gui/main.c:14204
+#: gui/main.c:8125 gui/main.c:14241
 msgid "Show the changed files"
 msgstr "Geänderte Dateien anzeigen"
 
@@ -3682,7 +3682,7 @@ msgstr[1] ""
 "\n"
 "Jetzt auf %ls sichern?"
 
-#: gui/main.c:8261 gui/main.c:14085
+#: gui/main.c:8261 gui/main.c:14122
 msgid "Back up now"
 msgstr "Jetzt sichern"
 
@@ -3702,14 +3702,14 @@ msgid ""
 msgstr ""
 "Schließen Sie ein anderes Sicherungslaufwerk an (oder richten Sie mit „Sichern... > Anderes Laufwerk oder Ordner“ ein neues ein) und sichern Sie darauf. Jedes Laufwerk bekommt, was ihm fehlt."
 
-#: gui/main.c:8290 gui/main.c:10190
+#: gui/main.c:8290 gui/main.c:10222
 #, c-format
 msgid "    %d. %ls: %lld file (%ls)%ls\n"
 msgid_plural "    %d. %ls: %lld files (%ls)%ls\n"
 msgstr[0] "    %d. %ls: %lld Datei (%ls)%ls\n"
 msgstr[1] "    %d. %ls: %lld Dateien (%ls)%ls\n"
 
-#: gui/main.c:8291 gui/main.c:10191
+#: gui/main.c:8291 gui/main.c:10223
 msgid ", plugged in"
 msgstr ", angeschlossen"
 
@@ -3759,7 +3759,7 @@ msgstr ""
 msgid "Restore anyway"
 msgstr "Trotzdem wiederherstellen"
 
-#: gui/main.c:8407 gui/main.c:9800 gui/main.c:10158 gui/main.c:10241
+#: gui/main.c:8407 gui/main.c:9832 gui/main.c:10190 gui/main.c:10273
 msgid ""
 "Some copies are on an encrypted drive. Enter the passphrase to restore them."
 msgstr ""
@@ -4127,11 +4127,11 @@ msgid "This database has a passphrase. BRODALF asks for it when it needs it."
 msgstr ""
 "Diese Datenbank hat eine Passphrase. BRODALF fragt danach, wenn es sie braucht."
 
-#: gui/main.c:8956 gui/main.c:13647
+#: gui/main.c:8956 gui/main.c:13684
 msgid "Change the passphrase..."
 msgstr "Passphrase ändern..."
 
-#: gui/main.c:8956 gui/main.c:12225 gui/main.c:13647 gui/brodalf.rc:60
+#: gui/main.c:8956 gui/main.c:12262 gui/main.c:13684 gui/brodalf.rc:60
 msgid "Set a passphrase..."
 msgstr "Passphrase festlegen..."
 
@@ -4479,13 +4479,18 @@ msgstr "Dieser Ordner kann nicht verwendet werden."
 msgid "Select the backup root in the list first."
 msgstr "Wählen Sie zuerst den Quellordner in der Liste aus."
 
-#: gui/main.c:9581
+#: gui/main.c:9601
+#, c-format
+msgid "%ls is already backed up, as the backup root %ls."
+msgstr "%ls wird schon gesichert, als Quellordner %ls."
+
+#: gui/main.c:9607
 msgid ""
 "Choose a folder to back up. BRODALF will scan it and keep track of every file inside."
 msgstr ""
 "Wählen Sie einen Ordner zum Sichern. BRODALF scannt ihn und verfolgt jede Datei darin."
 
-#: gui/main.c:9587
+#: gui/main.c:9613
 #, c-format
 msgid ""
 "Back up %ls instead?\n"
@@ -4496,65 +4501,65 @@ msgstr ""
 "\n"
 "%ls ist eine Verknüpfung zu %ls. BRODALF folgt keinen Verknüpfungen, daher würde darüber nichts gesichert."
 
-#: gui/main.c:9592 gui/main.c:11399
+#: gui/main.c:9618 gui/main.c:11431
 msgid "Back it up"
 msgid_plural "Back them up"
 msgstr[0] "Sichern"
 msgstr[1] "Sichern"
 
-#: gui/main.c:9607 gui/main.c:11405
+#: gui/main.c:9639 gui/main.c:11439
 #, c-format
 msgid "New backup root: %ls"
 msgstr "Neuer Quellordner: %ls"
 
-#: gui/main.c:9639
+#: gui/main.c:9671
 #, c-format
 msgid "%lld copy, last checked %ls"
 msgid_plural "%lld copies, last checked %ls"
 msgstr[0] "%lld Kopie, zuletzt geprüft %ls"
 msgstr[1] "%lld Kopien, zuletzt geprüft %ls"
 
-#: gui/main.c:9645
+#: gui/main.c:9677
 #, c-format
 msgid "extra place, %lld starred file to copy (%ls)"
 msgid_plural "extra place, %lld starred files to copy (%ls)"
 msgstr[0] "Zusatzort, %lld Datei mit Stern zu kopieren (%ls)"
 msgstr[1] "Zusatzort, %lld Dateien mit Stern zu kopieren (%ls)"
 
-#: gui/main.c:9649
+#: gui/main.c:9681
 msgid "extra place, its starred files are up to date"
 msgstr "Zusatzort, die Dateien mit Stern sind aktuell"
 
-#: gui/main.c:9654
+#: gui/main.c:9686
 #, c-format
 msgid "%lld file to copy, %ls (%ls free)"
 msgid_plural "%lld files to copy, %ls (%ls free)"
 msgstr[0] "%lld Datei zu kopieren, %ls (%ls frei)"
 msgstr[1] "%lld Dateien zu kopieren, %ls (%ls frei)"
 
-#: gui/main.c:9658
+#: gui/main.c:9690
 #, c-format
 msgid "up to date (%ls free)"
 msgstr "aktuell (%ls frei)"
 
-#: gui/main.c:9660
+#: gui/main.c:9692
 #, c-format
 msgid "%ls free"
 msgstr "%ls frei"
 
-#: gui/main.c:9662
+#: gui/main.c:9694
 msgid ", encrypted, names hidden"
 msgstr ", verschlüsselt, Namen verborgen"
 
-#: gui/main.c:9662
+#: gui/main.c:9694
 msgid ", encrypted"
 msgstr ", verschlüsselt"
 
-#: gui/main.c:9668
+#: gui/main.c:9700
 msgid ", then "
 msgstr ", dann "
 
-#: gui/main.c:9690
+#: gui/main.c:9722
 #, c-format
 msgid "Every plugged-in drive at once (%ls): %lld file to copy"
 msgid_plural "Every plugged-in drive at once (%ls): %lld files to copy"
@@ -4563,7 +4568,7 @@ msgstr[0] ""
 msgstr[1] ""
 "Alle angeschlossenen Laufwerke gleichzeitig (%ls): %lld Dateien zu kopieren"
 
-#: gui/main.c:9693
+#: gui/main.c:9725
 #, c-format
 msgid "Every plugged-in drive, one after another (%ls): %lld file to copy"
 msgid_plural "Every plugged-in drive, one after another (%ls): %lld files to copy"
@@ -4572,46 +4577,46 @@ msgstr[0] ""
 msgstr[1] ""
 "Alle angeschlossenen Laufwerke nacheinander (%ls): %lld Dateien zu kopieren"
 
-#: gui/main.c:9701
+#: gui/main.c:9733
 msgid "Another drive or folder..."
 msgstr "Anderes Laufwerk oder Ordner..."
 
-#: gui/main.c:9726
+#: gui/main.c:9758
 msgid "Choose the drive (or a folder on it) to back up to."
 msgstr ""
 "Wählen Sie das Laufwerk (oder einen Ordner darauf), auf das gesichert werden soll."
 
-#: gui/main.c:9749
+#: gui/main.c:9781
 msgid "Backup drive"
 msgstr "Sicherungslaufwerk"
 
-#: gui/main.c:9756
+#: gui/main.c:9788
 msgid "Enter the passphrase to set up an encrypted drive."
 msgstr ""
 "Geben Sie die Passphrase ein, um ein verschlüsseltes Laufwerk einzurichten."
 
-#: gui/main.c:9797
+#: gui/main.c:9829
 msgid "Select a backup root, a folder inside it, or a file to restore."
 msgstr ""
 "Wählen Sie einen Quellordner, einen Ordner darin oder eine Datei zum Wiederherstellen aus."
 
-#: gui/main.c:9805 gui/main.c:10163
+#: gui/main.c:9837 gui/main.c:10195
 msgid ""
 "Choose where to put the restored files. Folders inside keep their structure; nothing there is overwritten."
 msgstr ""
 "Wählen Sie, wohin die wiederhergestellten Dateien sollen. Ordner darin behalten ihre Struktur; dort wird nichts überschrieben."
 
-#: gui/main.c:9806 gui/main.c:10162
+#: gui/main.c:9838 gui/main.c:10194
 msgid ""
 "Choose where to put the restored files. Each backup root gets a folder named after it; nothing there is overwritten."
 msgstr ""
 "Wählen Sie, wohin die wiederhergestellten Dateien sollen. Jeder Quellordner erhält einen nach ihm benannten Ordner; dort wird nichts überschrieben."
 
-#: gui/main.c:9817
+#: gui/main.c:9849
 msgid "Everything here is already restored in that folder."
 msgstr "Alles hier ist in diesem Ordner bereits wiederhergestellt."
 
-#: gui/main.c:9824
+#: gui/main.c:9856
 #, c-format
 msgid ""
 "Restoring %lld file needs these drives:\n"
@@ -4630,11 +4635,11 @@ msgstr[1] ""
 "\n"
 "%ls"
 
-#: gui/main.c:9825
+#: gui/main.c:9857
 msgid "    (none)\n"
 msgstr "    (keine)\n"
 
-#: gui/main.c:9827
+#: gui/main.c:9859
 #, c-format
 msgid ""
 "\n"
@@ -4649,7 +4654,7 @@ msgstr[1] ""
 "\n"
 "%lld Dateien haben auf keinem Laufwerk eine Kopie.\n"
 
-#: gui/main.c:9829
+#: gui/main.c:9861
 msgid ""
 "\n"
 "BRODALF restores what the plugged-in drives hold now. Then plug in each other drive and press Restore... again to continue with its files.\n"
@@ -4657,7 +4662,7 @@ msgstr ""
 "\n"
 "BRODALF stellt wieder her, was die angeschlossenen Laufwerke jetzt enthalten. Schließen Sie danach jedes weitere Laufwerk an und klicken Sie erneut auf „Wiederherstellen...“, um mit seinen Dateien fortzufahren.\n"
 
-#: gui/main.c:9854
+#: gui/main.c:9886
 #, c-format
 msgid ""
 "A restore into %ls is waiting for these drives:\n"
@@ -4668,11 +4673,11 @@ msgstr ""
 "\n"
 "%ls"
 
-#: gui/main.c:9855
+#: gui/main.c:9887
 msgid "    (none: it can finish now)\n"
 msgstr "    (keine, sie kann jetzt abgeschlossen werden)\n"
 
-#: gui/main.c:9859
+#: gui/main.c:9891
 msgid ""
 "Continue the restore\n"
 "Restores what the drives plugged in now hold."
@@ -4680,7 +4685,7 @@ msgstr ""
 "Wiederherstellung fortsetzen\n"
 "Stellt wieder her, was die jetzt angeschlossenen Laufwerke enthalten."
 
-#: gui/main.c:9860
+#: gui/main.c:9892
 msgid ""
 "Restore something else\n"
 "The waiting restore is forgotten."
@@ -4688,25 +4693,25 @@ msgstr ""
 "Etwas anderes wiederherstellen\n"
 "Die wartende Wiederherstellung wird verworfen."
 
-#: gui/main.c:9870
+#: gui/main.c:9902
 msgid "Continue the restore that is waiting?"
 msgstr "Die wartende Wiederherstellung fortsetzen?"
 
-#: gui/main.c:9922
+#: gui/main.c:9954
 msgid "Never backed up"
 msgstr "Nie gesichert"
 
-#: gui/main.c:9923
+#: gui/main.c:9955
 msgid "New"
 msgstr "Neu"
 
-#: gui/main.c:9996
+#: gui/main.c:10028
 msgid ""
 "No files have been deleted from your backup roots. When one is, it shows here with the drives that still hold it, until you choose what to do with it."
 msgstr ""
 "Aus Ihren Quellordnern wurden keine Dateien gelöscht. Wenn eine gelöscht wird, erscheint sie hier mit den Laufwerken, die sie noch enthalten, bis Sie entscheiden, was damit geschehen soll."
 
-#: gui/main.c:10000
+#: gui/main.c:10032
 #, c-format
 msgid "%lld file deleted from your backup roots%ls."
 msgid_plural ""
@@ -4715,44 +4720,44 @@ msgstr[0] "%lld Datei aus Ihren Quellordnern gelöscht%ls."
 msgstr[1] ""
 "%lld Dateien aus Ihren Quellordnern gelöscht, zuletzt gelöschte zuerst%ls."
 
-#: gui/main.c:10002
+#: gui/main.c:10034
 msgid " (only the first ones are listed)"
 msgstr " (nur die ersten sind aufgeführt)"
 
-#: gui/main.c:10003
+#: gui/main.c:10035
 #, c-format
 msgid "%lld is new."
 msgid_plural "%lld are new."
 msgstr[0] "%lld ist neu."
 msgstr[1] "%lld sind neu."
 
-#: gui/main.c:10005
+#: gui/main.c:10037
 msgid ""
 "Select files to restore them, keep tracking them (they stay in the database and on your drives), or forget them (BRODALF stops tracking them; nothing on the drives is deleted)."
 msgstr ""
 "Wählen Sie Dateien aus, um sie wiederherzustellen, weiter zu verfolgen (sie bleiben in der Datenbank und auf Ihren Laufwerken) oder zu vergessen (BRODALF verfolgt sie nicht mehr; auf den Laufwerken wird nichts gelöscht)."
 
-#: gui/main.c:10021
+#: gui/main.c:10053
 msgid "Last seen"
 msgstr "Zuletzt gesehen"
 
-#: gui/main.c:10021
+#: gui/main.c:10053
 msgid "On drives"
 msgstr "Auf Laufwerken"
 
-#: gui/main.c:10033
+#: gui/main.c:10065
 msgid "Select one or more files in the list first."
 msgstr "Wählen Sie zuerst eine oder mehrere Dateien in der Liste aus."
 
-#: gui/main.c:10052
+#: gui/main.c:10084
 msgid "Could not record that."
 msgstr "Das konnte nicht erfasst werden."
 
-#: gui/main.c:10062
+#: gui/main.c:10094
 msgid "Select the files to forget first."
 msgstr "Wählen Sie zuerst die Dateien aus, die vergessen werden sollen."
 
-#: gui/main.c:10066
+#: gui/main.c:10098
 #, c-format
 msgid ""
 "Forget %d deleted file?\n"
@@ -4771,15 +4776,15 @@ msgstr[1] ""
 "\n"
 "BRODALF verfolgt die Dateien und ihre Kopien nicht mehr und kann sie daher nicht mehr wiederherstellen. Die Kopien bleiben auf Ihren Laufwerken: BRODALF löscht dort nie etwas. Dies kann nicht rückgängig gemacht werden."
 
-#: gui/main.c:10071
+#: gui/main.c:10103
 msgid "Forget"
 msgstr "Vergessen"
 
-#: gui/main.c:10084
+#: gui/main.c:10116
 msgid "Could not forget them."
 msgstr "Die Dateien konnten nicht vergessen werden."
 
-#: gui/main.c:10088
+#: gui/main.c:10120
 #, c-format
 msgid "Forgot %lld deleted file. Its copies stay on the drives."
 msgid_plural "Forgot %lld deleted files. Their copies stay on the drives."
@@ -4788,13 +4793,13 @@ msgstr[0] ""
 msgstr[1] ""
 "%lld gelöschte Dateien vergessen. Die Kopien bleiben auf den Laufwerken."
 
-#: gui/main.c:10178
+#: gui/main.c:10210
 msgid ""
 "Everything selected is already restored in that folder, or has no copy on any drive."
 msgstr ""
 "Alles Ausgewählte ist in diesem Ordner bereits wiederhergestellt oder hat auf keinem Laufwerk eine Kopie."
 
-#: gui/main.c:10185
+#: gui/main.c:10217
 #, c-format
 msgid ""
 "Restoring %lld deleted file needs these drives:\n"
@@ -4809,7 +4814,7 @@ msgstr[1] ""
 "Zum Wiederherstellen von %lld gelöschten Dateien werden diese Laufwerke benötigt:\n"
 "\n"
 
-#: gui/main.c:10194
+#: gui/main.c:10226
 msgid ""
 "\n"
 "BRODALF restores what the plugged-in drives hold now. For the rest, plug in another drive and restore them again from Deleted files.\n"
@@ -4817,68 +4822,68 @@ msgstr ""
 "\n"
 "BRODALF stellt wieder her, was die angeschlossenen Laufwerke jetzt enthalten. Für den Rest schließen Sie ein anderes Laufwerk an und stellen die Dateien erneut über „Gelöschte Dateien“ wieder her.\n"
 
-#: gui/main.c:10229
+#: gui/main.c:10261
 msgid "Restoring deleted files."
 msgstr "Gelöschte Dateien werden wiederhergestellt."
 
-#: gui/main.c:10243
+#: gui/main.c:10275
 msgid ""
 "Choose the folder to put this version in. It keeps the file's own name; nothing there is overwritten."
 msgstr ""
 "Wählen Sie den Ordner, in den diese Version soll. Die Version behält den Namen der Datei; dort wird nichts überschrieben."
 
-#: gui/main.c:10377
+#: gui/main.c:10409
 msgid "No files are in use any more."
 msgstr "Keine Datei wird mehr verwendet."
 
-#: gui/main.c:10399
+#: gui/main.c:10431
 msgid "Could not write the list of files in use."
 msgstr "Die Liste der verwendeten Dateien konnte nicht geschrieben werden."
 
-#: gui/main.c:10406
+#: gui/main.c:10438
 msgid "Asking Windows for administrator permission to take a shadow copy..."
 msgstr "Windows wird um Administratorrechte für eine Schattenkopie gebeten..."
 
-#: gui/main.c:10419
+#: gui/main.c:10451
 msgid ""
 "Without administrator permission the files in use stay as they were last backed up."
 msgstr ""
 "Ohne Administratorrechte bleiben die verwendeten Dateien so, wie sie zuletzt gesichert wurden."
 
-#: gui/main.c:10422
+#: gui/main.c:10454
 #, c-format
 msgid "Could not start the shadow copy helper (Windows error %lu)."
 msgstr ""
 "Das Hilfsprogramm für Schattenkopien konnte nicht gestartet werden (Windows-Fehler %lu)."
 
-#: gui/main.c:10452
+#: gui/main.c:10484
 #, c-format
 msgid "%d file outside your backup roots was left alone."
 msgid_plural "%d files outside your backup roots were left alone."
 msgstr[0] "%d Datei außerhalb Ihrer Quellordner wurde übersprungen."
 msgstr[1] "%d Dateien außerhalb Ihrer Quellordner wurden übersprungen."
 
-#: gui/main.c:10458
+#: gui/main.c:10490
 #, c-format
 msgid "The shadow copy did not work: %ls"
 msgstr "Die Schattenkopie hat nicht funktioniert: %ls"
 
-#: gui/main.c:10458
+#: gui/main.c:10490
 msgid "no reason was given (see the app log)"
 msgstr "es wurde kein Grund angegeben (siehe App-Protokoll)"
 
-#: gui/main.c:10463
+#: gui/main.c:10495
 #, c-format
 msgid "Read %d of %d files in use from a shadow copy. Scanning them now."
 msgstr ""
 "%d von %d verwendeten Dateien aus einer Schattenkopie gelesen. Diese werden jetzt gescannt."
 
-#: gui/main.c:10495
+#: gui/main.c:10527
 msgid "No files were in use by another program at the last scan or backup."
 msgstr ""
 "Beim letzten Scan oder bei der letzten Sicherung wurden keine Dateien von einem anderen Programm verwendet."
 
-#: gui/main.c:10501
+#: gui/main.c:10533
 #, c-format
 msgid ""
 "%d file (%ls) is in use by another program, so BRODALF could not read it:\n"
@@ -4893,12 +4898,12 @@ msgstr[1] ""
 "%d Dateien (%ls) werden von einem anderen Programm verwendet, daher konnte BRODALF sie nicht lesen:\n"
 "\n"
 
-#: gui/main.c:10509
+#: gui/main.c:10541
 #, c-format
 msgid "    ... and %d more\n"
 msgstr "    ... und %d weitere\n"
 
-#: gui/main.c:10513
+#: gui/main.c:10545
 msgid ""
 "\n"
 "You can close the program that has it open (an email program often keeps its mail files open) and scan again. Or Windows can take a shadow copy of the drive, a snapshot no program holds open, and BRODALF can read it from that. Windows will ask for administrator permission.\n"
@@ -4920,7 +4925,7 @@ msgstr[1] ""
 "\n"
 "Die Dateien jetzt aus einer Schattenkopie lesen?"
 
-#: gui/main.c:10521
+#: gui/main.c:10553
 msgid ""
 "\n"
 "The shadow copy could not read it either. Close the program that has it open, then press Scan now, and Back up if you were backing up."
@@ -4934,311 +4939,311 @@ msgstr[1] ""
 "\n"
 "Auch die Schattenkopie konnte die Dateien nicht lesen. Schließen Sie das Programm, das sie geöffnet hat, und klicken Sie dann auf „Jetzt scannen“ und, falls Sie gerade gesichert haben, auf „Sichern“."
 
-#: gui/main.c:10560
+#: gui/main.c:10592
 #, c-format
 msgid "Marked %ls: its copies do not count"
 msgstr "Als %ls markiert: Kopien zählen nicht"
 
-#: gui/main.c:10561
+#: gui/main.c:10593
 #, c-format
 msgid "Plugged in now at %ls, %ls free"
 msgstr "Jetzt angeschlossen unter %ls, %ls frei"
 
-#: gui/main.c:10562
+#: gui/main.c:10594
 #, c-format
 msgid "Not plugged in. %ls free when last seen (%ls)"
 msgstr "Nicht angeschlossen. Zuletzt %ls frei (%ls)"
 
-#: gui/main.c:10563 gui/main.c:14543
+#: gui/main.c:10595 gui/main.c:14580
 msgid "Not plugged in"
 msgstr "Nicht angeschlossen"
 
-#: gui/main.c:10566
+#: gui/main.c:10598
 msgid "Back up to it now"
 msgstr "Jetzt darauf sichern"
 
-#: gui/main.c:10567
+#: gui/main.c:10599
 msgid "Check every copy on it"
 msgstr "Alle Kopien darauf prüfen"
 
-#: gui/main.c:10568 gui/main.c:12179
+#: gui/main.c:10600 gui/main.c:12216
 msgid "Check copies not checked lately"
 msgstr "Länger nicht geprüfte Kopien prüfen"
 
-#: gui/main.c:10570
+#: gui/main.c:10602
 msgid "Compress the copies on it..."
 msgstr "Kopien darauf komprimieren..."
 
-#: gui/main.c:10572
+#: gui/main.c:10604
 msgid "Where it stands, name, where it is kept, hardware details..."
 msgstr "Stand, Name, Aufbewahrungsort, Hardwaredetails..."
 
-#: gui/main.c:10573
+#: gui/main.c:10605
 msgid "Found it: count its copies again"
 msgstr "Wiedergefunden: Kopien wieder zählen"
 
-#: gui/main.c:10573
+#: gui/main.c:10605
 msgid "Mark it lost or broken..."
 msgstr "Als verloren oder defekt melden..."
 
-#: gui/main.c:10576
+#: gui/main.c:10608
 msgid "  - marked lost or broken"
 msgstr "  - als verloren oder defekt gemeldet"
 
-#: gui/main.c:10576
+#: gui/main.c:10608
 msgid "  - found"
 msgstr "  - gefunden"
 
-#: gui/main.c:10590
+#: gui/main.c:10622
 msgid "No backup drives yet"
 msgstr "Noch keine Sicherungslaufwerke"
 
-#: gui/main.c:10592
+#: gui/main.c:10624
 msgid "Set up an external or removable drive..."
 msgstr "Externes Laufwerk oder Wechsellaufwerk einrichten..."
 
-#: gui/main.c:10593
+#: gui/main.c:10625
 msgid "Add an extra place for starred files..."
 msgstr "Zusatzort für Dateien mit Stern hinzufügen..."
 
-#: gui/main.c:10594 gui/main.c:12169 gui/main.c:12177 gui/main.c:14225
+#: gui/main.c:10626 gui/main.c:12206 gui/main.c:12214 gui/main.c:14262
 msgid "Back up to every plugged-in drive"
 msgstr "Auf alle angeschlossenen Laufwerke sichern"
 
-#: gui/main.c:10595
+#: gui/main.c:10627
 msgid "All drives..."
 msgstr "Alle Laufwerke..."
 
-#: gui/main.c:10596 gui/main.c:12185
+#: gui/main.c:10628 gui/main.c:12222
 msgid "Status of every drive..."
 msgstr "Stand aller Laufwerke..."
 
-#: gui/main.c:10597
+#: gui/main.c:10629
 msgid "Files at risk, and which drive to plug in..."
 msgstr "Gefährdete Dateien und welches Laufwerk anzuschließen ist..."
 
-#: gui/main.c:10605 gui/main.c:16065
+#: gui/main.c:10637 gui/main.c:16102
 msgid "&New database..."
 msgstr "&Neue Datenbank..."
 
-#: gui/main.c:10606
+#: gui/main.c:10638
 msgid "&Open database..."
 msgstr "Datenbank ö&ffnen..."
 
-#: gui/main.c:10607
+#: gui/main.c:10639
 msgid "&Recover the database from a backup drive..."
 msgstr "Datenbank von einem Sicherungslaufwerk &wiederherstellen..."
 
-#: gui/main.c:10609
+#: gui/main.c:10641
 msgid "&Print a recovery sheet..."
 msgstr "Wiederherstellungsblatt &drucken..."
 
-#: gui/main.c:10610
+#: gui/main.c:10642
 msgid "&Export the file list (CSV)..."
 msgstr "Dateiliste &exportieren (CSV)..."
 
-#: gui/main.c:10612
+#: gui/main.c:10644
 msgid "E&xit"
 msgstr "&Beenden"
 
-#: gui/main.c:10613
+#: gui/main.c:10645
 msgid "&File"
 msgstr "&Datei"
 
-#: gui/main.c:10616
+#: gui/main.c:10648
 msgid "&Primary Database"
 msgstr "&Hauptdatenbank"
 
-#: gui/main.c:10616
+#: gui/main.c:10648
 msgid "&Next backup"
 msgstr "&Nächste Sicherung"
 
-#: gui/main.c:10616
+#: gui/main.c:10648
 msgid "L&ocal backups"
 msgstr "&Lokale Sicherungen"
 
-#: gui/main.c:10617
+#: gui/main.c:10649
 msgid "&Starred files and extra places"
 msgstr "&Dateien mit Stern und Zusatzorte"
 
-#: gui/main.c:10617
+#: gui/main.c:10649
 msgid "&Encryption"
 msgstr "&Verschlüsselung"
 
-#: gui/main.c:10617
+#: gui/main.c:10649
 msgid "Res&tore"
 msgstr "&Wiederherstellung"
 
-#: gui/main.c:10623
+#: gui/main.c:10655
 msgid "Ne&xt tab"
 msgstr "Nächste Regis&terkarte"
 
-#: gui/main.c:10624
+#: gui/main.c:10656
 msgid "Pre&vious tab"
 msgstr "Vorherige Reg&isterkarte"
 
-#: gui/main.c:10626
+#: gui/main.c:10658
 msgid "&Find a file or folder"
 msgstr "Datei oder &Ordner suchen"
 
-#: gui/main.c:10627
+#: gui/main.c:10659
 msgid "Status of every &drive..."
 msgstr "Stat&us aller Laufwerke..."
 
-#: gui/main.c:10628
+#: gui/main.c:10660
 msgid "Files at ris&k, and which drive to plug in..."
 msgstr "&Gefährdete Dateien und welches Laufwerk anzuschließen ist..."
 
-#: gui/main.c:10629
+#: gui/main.c:10661
 msgid "Lar&gest files..."
 msgstr "&Größte Dateien..."
 
-#: gui/main.c:10630
+#: gui/main.c:10662
 msgid "Older &versions using the most space..."
 msgstr "Ältere &Versionen mit dem meisten Platzbedarf..."
 
-#: gui/main.c:10631
+#: gui/main.c:10663
 msgid "Deleted f&iles..."
 msgstr "Gelös&chte Dateien..."
 
-#: gui/main.c:10632
+#: gui/main.c:10664
 msgid "Da&maged files (found by a bit-rot scan)..."
 msgstr "&Beschädigte Dateien (vom Bit-Rot-Scan gefunden)..."
 
-#: gui/main.c:10633
+#: gui/main.c:10665
 msgid "Files that were in &use at the last scan..."
 msgstr "B&eim letzten Scan verwendete Dateien..."
 
-#: gui/main.c:10634
+#: gui/main.c:10666
 msgid "Files t&he last restore left alone..."
 msgstr "Bei der letzten Wiederherstellung übersp&rungene Dateien..."
 
-#: gui/main.c:10636
+#: gui/main.c:10668
 msgid "&Refresh"
 msgstr "&Aktualisieren"
 
-#: gui/main.c:10639
+#: gui/main.c:10671
 msgid "Like Windows (its app mode, light or dark)"
 msgstr "Wie Windows (App-Modus, hell oder dunkel)"
 
-#: gui/main.c:10640
+#: gui/main.c:10672
 msgid "Light"
 msgstr "Hell"
 
-#: gui/main.c:10641
+#: gui/main.c:10673
 msgid "Dark"
 msgstr "Dunkel"
 
-#: gui/main.c:10643
+#: gui/main.c:10675
 msgid "&Appearance"
 msgstr "&Darstellung"
 
-#: gui/main.c:10645
+#: gui/main.c:10677
 msgid "Like Windows (its display language)"
 msgstr "Wie Windows (Anzeigesprache)"
 
-#: gui/main.c:10649
+#: gui/main.c:10681
 msgid "&Language"
 msgstr "&Sprache"
 
-#: gui/main.c:10650
+#: gui/main.c:10682
 msgid "&View"
 msgstr "&Ansicht"
 
-#: gui/main.c:10653
+#: gui/main.c:10685
 msgid "&Add a backup root..."
 msgstr "&Quellordner hinzufügen..."
 
-#: gui/main.c:10654
+#: gui/main.c:10686
 msgid "S&can the backup roots for changes now"
 msgstr "Quellordner jetzt auf Änderungen s&cannen"
 
-#: gui/main.c:10655
+#: gui/main.c:10687
 msgid "&Bit-rot scan: read every file again..."
 msgstr "&Bit-Rot-Scan: alle Dateien erneut lesen..."
 
-#: gui/main.c:10656
+#: gui/main.c:10688
 msgid "Change &where a backup root is..."
 msgstr "Speicher&ort eines Quellordners ändern..."
 
-#: gui/main.c:10658
+#: gui/main.c:10690
 msgid "Back &up..."
 msgstr "&Sichern..."
 
-#: gui/main.c:10659
+#: gui/main.c:10691
 msgid "Back up to &every plugged-in drive"
 msgstr "&Auf alle angeschlossenen Laufwerke sichern"
 
-#: gui/main.c:10660
+#: gui/main.c:10692
 msgid "Chec&k a drive..."
 msgstr "Laufwerk &prüfen..."
 
-#: gui/main.c:10662
+#: gui/main.c:10694
 msgid "&Restore what is selected..."
 msgstr "Auswahl &wiederherstellen..."
 
-#: gui/main.c:10663
+#: gui/main.c:10695
 msgid "Restore &deleted files..."
 msgstr "&Gelöschte Dateien wiederherstellen..."
 
-#: gui/main.c:10665
+#: gui/main.c:10697
 msgid "Set up an e&xternal or removable drive..."
 msgstr "E&xternes Laufwerk oder Wechsellaufwerk einrichten..."
 
-#: gui/main.c:10666
+#: gui/main.c:10698
 msgid "Add an extra &place for starred files..."
 msgstr "&Zusatzort für Dateien mit Stern hinzufügen..."
 
-#: gui/main.c:10667
+#: gui/main.c:10699
 msgid "S&tar or unstar what is selected"
 msgstr "Auswahl mit S&tern markieren oder Stern entfernen"
 
-#: gui/main.c:10668
+#: gui/main.c:10700
 msgid "E&ncrypt what is selected, or stop..."
 msgstr "Auswahl &verschlüsseln oder Verschlüsselung beenden..."
 
-#: gui/main.c:10670
+#: gui/main.c:10702
 msgid "Backup dr&ives and extra places"
 msgstr "Sicherungs&laufwerke und Zusatzorte"
 
-#: gui/main.c:10672
+#: gui/main.c:10704
 msgid "Stop the running &job"
 msgstr "Laufenden Vorgang stoppe&n"
 
-#: gui/main.c:10674
+#: gui/main.c:10706
 msgid "&Settings..."
 msgstr "&Einstellungen..."
 
-#: gui/main.c:10675
+#: gui/main.c:10707
 msgid "&Tools"
 msgstr "E&xtras"
 
-#: gui/main.c:10678
+#: gui/main.c:10710
 msgid "Show the app &log"
 msgstr "App-&Protokoll anzeigen"
 
-#: gui/main.c:10679
+#: gui/main.c:10711
 msgid "Show saved error &reports"
 msgstr "Gespeicherte &Fehlerberichte anzeigen"
 
-#: gui/main.c:10680
+#: gui/main.c:10712
 msgid "What the file list &shows"
 msgstr "Was die Datei&liste zeigt"
 
-#: gui/main.c:10681
+#: gui/main.c:10713
 msgid "&About BRODALF"
 msgstr "Ü&ber BRODALF"
 
-#: gui/main.c:10682
+#: gui/main.c:10714
 msgid "&Help"
 msgstr "&Hilfe"
 
-#: gui/main.c:10784
+#: gui/main.c:10816
 #, c-format
 msgid "What happened to %ls?"
 msgstr "Was ist mit %ls passiert?"
 
-#: gui/main.c:10787
+#: gui/main.c:10819
 msgid ""
 "It is gone\n"
 "The folder or the account is no longer there."
@@ -5246,7 +5251,7 @@ msgstr ""
 "Er ist weg\n"
 "Der Ordner oder das Konto existiert nicht mehr."
 
-#: gui/main.c:10788
+#: gui/main.c:10820
 msgid ""
 "It is broken\n"
 "Its files cannot be read."
@@ -5254,35 +5259,35 @@ msgstr ""
 "Er ist defekt\n"
 "Seine Dateien lassen sich nicht lesen."
 
-#: gui/main.c:10799
+#: gui/main.c:10831
 msgid ""
 "BRODALF stops copying starred files there. Your full copies do not change: extra places never count toward them. Nothing there is deleted, and Found it undoes this."
 msgstr ""
 "BRODALF kopiert keine Dateien mit Stern mehr dorthin. Ihre vollständigen Kopien ändern sich nicht: Zusatzorte zählen nie dazu. Dort wird nichts gelöscht, und „Wiedergefunden“ macht das rückgängig."
 
-#: gui/main.c:10807 gui/main.c:10846
+#: gui/main.c:10839 gui/main.c:10878
 msgid "The drive could not be marked."
 msgstr "Das Laufwerk konnte nicht markiert werden."
 
-#: gui/main.c:10813
+#: gui/main.c:10845
 #, c-format
 msgid "%ls is marked broken. BRODALF no longer copies starred files there."
 msgstr ""
 "%ls ist als defekt gemeldet. BRODALF kopiert keine Dateien mit Stern mehr dorthin."
 
-#: gui/main.c:10814
+#: gui/main.c:10846
 #, c-format
 msgid "%ls is marked gone. BRODALF no longer copies starred files there."
 msgstr ""
 "%ls ist als verschwunden gemeldet. BRODALF kopiert keine Dateien mit Stern mehr dorthin."
 
-#: gui/main.c:10820
+#: gui/main.c:10852
 msgid ""
 "BRODALF stops counting its copies, so your full copies show what you really have, and backs up its files again to your other drives. Nothing on any drive is deleted, and you can undo this with Found it."
 msgstr ""
 "BRODALF zählt seine Kopien nicht mehr, damit Ihre vollständigen Kopien zeigen, was Sie wirklich haben, und sichert seine Dateien erneut auf Ihre anderen Laufwerke. Auf keinem Laufwerk wird etwas gelöscht, und Sie können das mit „Wiedergefunden“ rückgängig machen."
 
-#: gui/main.c:10823
+#: gui/main.c:10855
 msgid ""
 "It is lost\n"
 "You do not know where it is."
@@ -5290,7 +5295,7 @@ msgstr ""
 "Verloren gegangen\n"
 "Der Verbleib ist unbekannt."
 
-#: gui/main.c:10824
+#: gui/main.c:10856
 msgid ""
 "It is broken\n"
 "It no longer works, or its files cannot be read."
@@ -5298,13 +5303,13 @@ msgstr ""
 "Defekt\n"
 "Funktioniert nicht mehr, oder die Dateien darauf lassen sich nicht lesen."
 
-#: gui/main.c:10860
+#: gui/main.c:10892
 #, c-format
 msgid "Full copy %d goes from %lld of %lld files to %lld of %lld.\n"
 msgstr ""
 "Vollständige Kopie %d geht von %lld von %lld Dateien auf %lld von %lld.\n"
 
-#: gui/main.c:10864
+#: gui/main.c:10896
 #, c-format
 msgid "%lld file will need to be backed up again, to another drive.\n"
 msgid_plural "%lld files will need to be backed up again, to another drive.\n"
@@ -5312,13 +5317,13 @@ msgstr[0] "%lld Datei muss erneut gesichert werden, auf ein anderes Laufwerk.\n"
 msgstr[1] ""
 "%lld Dateien müssen erneut gesichert werden, auf ein anderes Laufwerk.\n"
 
-#: gui/main.c:10867
+#: gui/main.c:10899
 msgid ""
 "No full copy changes: every file it held has enough good copies elsewhere."
 msgstr ""
 "Keine vollständige Kopie ändert sich: Jede Datei darauf hat anderswo genug gute Kopien."
 
-#: gui/main.c:10868
+#: gui/main.c:10900
 #, c-format
 msgid ""
 "\n"
@@ -5327,59 +5332,59 @@ msgstr ""
 "\n"
 "Auf %ls wird nichts gelöscht. Wenn Sie es wiederfinden, wählen Sie „Wiedergefunden“, und seine Kopien zählen wieder."
 
-#: gui/main.c:10870
+#: gui/main.c:10902
 #, c-format
 msgid "Stop counting the copies on %ls?"
 msgstr "Die Kopien auf %ls nicht mehr zählen?"
 
-#: gui/main.c:10871
+#: gui/main.c:10903
 #, c-format
 msgid "Mark %ls as broken"
 msgstr "%ls als defekt melden"
 
-#: gui/main.c:10871
+#: gui/main.c:10903
 #, c-format
 msgid "Mark %ls as lost"
 msgstr "%ls als verloren melden"
 
-#: gui/main.c:10872
+#: gui/main.c:10904
 msgid "I understand what this does"
 msgstr "Ich verstehe, was das bewirkt"
 
-#: gui/main.c:10880
+#: gui/main.c:10912
 #, c-format
 msgid ""
 "%ls is marked %ls. Its copies no longer count; back up to your other drives to make up for it."
 msgstr ""
 "%ls ist als %ls markiert. Die Kopien darauf zählen nicht mehr; sichern Sie auf Ihre anderen Laufwerke, um das auszugleichen."
 
-#: gui/main.c:10890
+#: gui/main.c:10922
 #, c-format
 msgid "%ls is back: BRODALF copies starred files there again."
 msgstr "%ls ist wieder da: BRODALF kopiert wieder Dateien mit Stern dorthin."
 
-#: gui/main.c:10892
+#: gui/main.c:10924
 #, c-format
 msgid ""
 "%ls is back: its copies count again. Check every copy on it next time it is plugged in, to be sure they are still good."
 msgstr ""
 "%ls ist wieder da: Die Kopien darauf zählen wieder. Prüfen Sie alle Kopien darauf, wenn das Laufwerk das nächste Mal angeschlossen ist, um sicherzugehen, dass sie noch gut sind."
 
-#: gui/main.c:10912
+#: gui/main.c:10944
 msgid ""
 "An extra place keeps its old description: describe it in at least two words, saying what it is and where it lives, like \"Dropbox folder on the laptop\"."
 msgstr ""
 "Der Zusatzort behält seine alte Beschreibung. Beschreiben Sie ihn in mindestens zwei Wörtern: was er ist und wo er sich befindet, etwa „Dropbox-Ordner auf dem Laptop“."
 
-#: gui/main.c:10928
+#: gui/main.c:10960
 msgid "The drive could not be changed."
 msgstr "Das Laufwerk konnte nicht geändert werden."
 
-#: gui/main.c:10960
+#: gui/main.c:10992
 msgid "Plug the drive in first."
 msgstr "Schließen Sie zuerst das Laufwerk an."
 
-#: gui/main.c:10968
+#: gui/main.c:11000
 #, c-format
 msgid ""
 "Compression is on for %ls: Windows keeps BRODALF's copies there smaller, and makes them whole again as they are read.\n"
@@ -5390,20 +5395,20 @@ msgstr ""
 "\n"
 "Ausschalten? Alle Kopien auf dem Laufwerk werden dann dekomprimiert. Dafür muss Platz sein, damit sie wieder auf ihre volle Größe anwachsen können, und es dauert etwa so lange, wie alle Kopien dort zu lesen und zu schreiben."
 
-#: gui/main.c:10971
+#: gui/main.c:11003
 msgid "Turn it off"
 msgstr "Ausschalten"
 
-#: gui/main.c:10971
+#: gui/main.c:11003
 msgid "Leave it on"
 msgstr "Eingeschaltet lassen"
 
-#: gui/main.c:10974
+#: gui/main.c:11006
 #, c-format
 msgid "%ls cannot be compressed. %ls"
 msgstr "%ls kann nicht komprimiert werden. %ls"
 
-#: gui/main.c:10979
+#: gui/main.c:11011
 #, c-format
 msgid ""
 "Windows can compress the copies on %ls with its own file compression. They stay ordinary files that any Windows PC reads without BRODALF; they just take less room on the drive.\n"
@@ -5422,11 +5427,11 @@ msgstr ""
 "\n"
 "Die Kopien auf diesem Laufwerk jetzt komprimieren?"
 
-#: gui/main.c:10985
+#: gui/main.c:11017
 msgid "Compress"
 msgstr "Komprimieren"
 
-#: gui/main.c:11070
+#: gui/main.c:11102
 #, c-format
 msgid ""
 "BRODALF %ls\n"
@@ -5441,7 +5446,7 @@ msgstr ""
 "\n"
 "https://github.com/Phawx/BRODALF"
 
-#: gui/main.c:11114
+#: gui/main.c:11146
 msgid ""
 "Look for damaged files on this PC?\n"
 "\n"
@@ -5451,55 +5456,55 @@ msgstr ""
 "\n"
 "Ein Bit-Rot-Scan liest jede Datei in Ihren Quellordnern erneut und vergleicht sie mit ihrer Prüfsumme, um Dateien zu finden, die sich geändert haben, obwohl Größe und Zeit gleich geblieben sind. Er dauert so lange wie der erste Scan. Nichts wird geändert oder gesichert."
 
-#: gui/main.c:11117
+#: gui/main.c:11149
 msgid "Start the scan"
 msgstr "Scan starten"
 
-#: gui/main.c:11237
+#: gui/main.c:11269
 msgid "Restore..."
 msgstr "Wiederherstellen..."
 
-#: gui/main.c:11243 gui/main.c:12204
+#: gui/main.c:11275 gui/main.c:12241
 msgid "Unstar it"
 msgstr "Stern entfernen"
 
-#: gui/main.c:11243
+#: gui/main.c:11275
 msgid "Starred with its folder"
 msgstr "Mit dem Ordner markiert"
 
-#: gui/main.c:11243
+#: gui/main.c:11275
 msgid "Star it: also back it up to the extra places"
 msgstr "Mit Stern markieren: auch an den Zusatzorten sichern"
 
-#: gui/main.c:11245 gui/main.c:12241
+#: gui/main.c:11277 gui/main.c:12278
 msgid "Stop encrypting it..."
 msgstr "Verschlüsselung beenden..."
 
-#: gui/main.c:11245
+#: gui/main.c:11277
 msgid "Encrypted with its folder"
 msgstr "Mit dem Ordner verschlüsselt"
 
-#: gui/main.c:11245
+#: gui/main.c:11277
 msgid "Encrypt it on every drive..."
 msgstr "Auf allen Laufwerken verschlüsseln..."
 
-#: gui/main.c:11250
+#: gui/main.c:11282
 msgid "Stop backing up this root..."
 msgstr "Diesen Quellordner nicht mehr sichern..."
 
-#: gui/main.c:11250
+#: gui/main.c:11282
 msgid "Back up this root again"
 msgstr "Diesen Quellordner wieder sichern"
 
-#: gui/main.c:11251
+#: gui/main.c:11283
 msgid "What to leave out in this root..."
 msgstr "Was in diesem Quellordner ausgelassen wird..."
 
-#: gui/main.c:11252
+#: gui/main.c:11284
 msgid "Change where it is..."
 msgstr "Neuen Ort eines Quellordners angeben..."
 
-#: gui/main.c:11278
+#: gui/main.c:11310
 #, c-format
 msgid ""
 "Stop backing up %ls?\n"
@@ -5510,29 +5515,29 @@ msgstr ""
 "\n"
 "Scans lassen den Ordner aus, und nichts Neues daraus wird gesichert. Alles, was BRODALF darüber weiß, bleibt erhalten, und seine Kopien auf Ihren Laufwerken bleiben und lassen sich weiterhin wiederherstellen. Sie können ihn jederzeit wieder sichern."
 
-#: gui/main.c:11281
+#: gui/main.c:11313
 msgid "Stop backing it up"
 msgstr "Nicht mehr sichern"
 
-#: gui/main.c:11284
+#: gui/main.c:11316
 #, c-format
 msgid "%ls is no longer backed up."
 msgstr "%ls wird nicht mehr gesichert."
 
-#: gui/main.c:11292
+#: gui/main.c:11324
 #, c-format
 msgid "%ls is backed up again. Scanning it."
 msgstr "%ls wird wieder gesichert und jetzt gescannt."
 
-#: gui/main.c:11325
+#: gui/main.c:11357
 msgid "Restore this version..."
 msgstr "Diese Version wiederherstellen..."
 
-#: gui/main.c:11326
+#: gui/main.c:11358
 msgid "Open in Explorer (on its drive)"
 msgstr "Im Explorer öffnen (auf dem Laufwerk)"
 
-#: gui/main.c:11365
+#: gui/main.c:11397
 #, c-format
 msgid ""
 "\n"
@@ -5541,7 +5546,7 @@ msgstr ""
 "\n"
 "%ls\\%ls führt zu %ls"
 
-#: gui/main.c:11389
+#: gui/main.c:11421
 #, c-format
 msgid ""
 "Back up the folder this link leads to?\n"
@@ -5564,7 +5569,7 @@ msgstr[1] ""
 "BRODALF folgt keinen Verknüpfungen, daher wird nicht gesichert, was dahinter liegt:\n"
 "%ls"
 
-#: gui/main.c:11396
+#: gui/main.c:11428
 #, c-format
 msgid ""
 "\n"
@@ -5579,7 +5584,7 @@ msgstr[1] ""
 "\n"
 "und %d weitere (das Protokoll nennt alle)."
 
-#: gui/main.c:11429
+#: gui/main.c:11466
 #, c-format
 msgid ""
 "%lld file changed although its size and time did not. That usually means damage on this PC's disk (bit rot), and the copies on your drives are the good ones.\n"
@@ -5598,40 +5603,40 @@ msgstr[1] ""
 "\n"
 "Jetzt anzeigen? Sie können sie wiederherstellen oder so akzeptieren, wie sie sind."
 
-#: gui/main.c:11473
+#: gui/main.c:11510
 msgid "Available"
 msgstr "Verfügbar"
 
-#: gui/main.c:11479
+#: gui/main.c:11516
 msgid "Partly available"
 msgstr "Teilweise verfügbar"
 
-#: gui/main.c:11507
+#: gui/main.c:11544
 msgid "(no copies)"
 msgstr "(keine Kopien)"
 
-#: gui/main.c:11552
+#: gui/main.c:11589
 msgid "Search is available when the current job finishes."
 msgstr ""
 "Die Suche ist verfügbar, sobald der aktuelle Vorgang abgeschlossen ist."
 
-#: gui/main.c:11565
+#: gui/main.c:11602
 msgid "No files or folders match."
 msgstr "Keine passenden Dateien oder Ordner."
 
-#: gui/main.c:11572
+#: gui/main.c:11609
 #, c-format
 msgid "Nothing matches \"%ls\". Esc goes back to the folders."
 msgstr "Nichts passt zu „%ls“. Mit Esc geht es zurück zu den Ordnern."
 
-#: gui/main.c:11574
+#: gui/main.c:11611
 #, c-format
 msgid ""
 "The first %d files and folders that match \"%ls\". Type more of the name to find fewer."
 msgstr ""
 "Die ersten %d Dateien und Ordner, die zu „%ls“ passen. Geben Sie mehr vom Namen ein, um weniger zu finden."
 
-#: gui/main.c:11576
+#: gui/main.c:11613
 #, c-format
 msgid ""
 "%d file or folder matches \"%ls\". Select it to see where its copies are."
@@ -5642,401 +5647,401 @@ msgstr[0] ""
 msgstr[1] ""
 "%d Dateien und Ordner passen zu „%ls“. Wählen Sie einen Treffer aus, um zu sehen, wo seine Kopien sind."
 
-#: gui/main.c:11858
+#: gui/main.c:11895
 msgid "under a second"
 msgstr "unter einer Sekunde"
 
-#: gui/main.c:11861
+#: gui/main.c:11898
 #, c-format
 msgid "%d second"
 msgid_plural "%d seconds"
 msgstr[0] "%d Sekunde"
 msgstr[1] "%d Sekunden"
 
-#: gui/main.c:11864
+#: gui/main.c:11901
 #, c-format
 msgid "%d minute"
 msgid_plural "%d minutes"
 msgstr[0] "%d Minute"
 msgstr[1] "%d Minuten"
 
-#: gui/main.c:11865
+#: gui/main.c:11902
 #, c-format
 msgid "%.1f hours"
 msgstr "%.1f Stunden"
 
-#: gui/main.c:11866
+#: gui/main.c:11903
 #, c-format
 msgid "%.1f days"
 msgstr "%.1f Tage"
 
-#: gui/main.c:11877
+#: gui/main.c:11914
 msgid ""
 "Encrypting takes some extra time while each copy is written, and checking or restoring an encrypted copy takes the same again. Encrypted copies need the passphrase to restore."
 msgstr ""
 "Das Verschlüsseln kostet beim Schreiben jeder Kopie etwas zusätzliche Zeit, und das Prüfen oder Wiederherstellen einer verschlüsselten Kopie noch einmal so viel. Verschlüsselte Kopien brauchen zum Wiederherstellen die Passphrase."
 
-#: gui/main.c:11891
+#: gui/main.c:11928
 #, c-format
 msgid ""
 "This PC encrypts about %ls a second. Encrypting runs while each copy is written, so on a USB hard drive a backup takes about as long as before. Checking and restoring an encrypted copy decrypt it at about the same speed. Encrypted copies take about 0.1%% more space and need the passphrase to restore."
 msgstr ""
 "Dieser PC verschlüsselt etwa %ls pro Sekunde. Verschlüsselt wird, während jede Kopie geschrieben wird, daher dauert eine Sicherung auf eine USB-Festplatte etwa so lange wie bisher. Beim Prüfen und Wiederherstellen wird eine verschlüsselte Kopie etwa genauso schnell entschlüsselt. Verschlüsselte Kopien brauchen etwa 0,1 %% mehr Platz und zum Wiederherstellen die Passphrase."
 
-#: gui/main.c:11896
+#: gui/main.c:11933
 #, c-format
 msgid ""
 "This PC encrypts about %ls a second, so the %ls you picked take about %ls of extra work, done while each copy is written. On a USB hard drive a backup takes about as long as before; on a fast SSD it can take up to %ls longer. Checking and restoring them decrypt at about the same speed. Encrypted copies take about 0.1%% more space and need the passphrase to restore."
 msgstr ""
 "Dieser PC verschlüsselt etwa %ls pro Sekunde, daher kosten die gewählten %ls etwa %ls zusätzliche Arbeit, die beim Schreiben jeder Kopie erledigt wird. Bei einer USB-Festplatte dauert eine Sicherung etwa so lange wie bisher; bei einer schnellen SSD kann sie bis zu %ls länger dauern. Beim Prüfen und Wiederherstellen werden sie etwa genauso schnell entschlüsselt. Verschlüsselte Kopien brauchen etwa 0,1 %% mehr Platz und zum Wiederherstellen die Passphrase."
 
-#: gui/main.c:11903
+#: gui/main.c:11940
 #, c-format
 msgid ""
 "This PC encrypts about %ls a second, slower than a USB hard drive writes, so the %ls you picked add about %ls to a full backup of them (%ls of work in all). Checking and restoring them decrypt at about the same speed. Encrypted copies take about 0.1%% more space and need the passphrase to restore."
 msgstr ""
 "Dieser PC verschlüsselt etwa %ls pro Sekunde, langsamer, als eine USB-Festplatte schreibt, daher verlängern die gewählten %ls eine vollständige Sicherung davon um etwa %ls (insgesamt %ls Arbeit). Beim Prüfen und Wiederherstellen werden sie etwa genauso schnell entschlüsselt. Verschlüsselte Kopien brauchen etwa 0,1 %% mehr Platz und zum Wiederherstellen die Passphrase."
 
-#: gui/main.c:12151
+#: gui/main.c:12188
 msgid "Add backup root..."
 msgstr "Quellordner hinzufügen..."
 
-#: gui/main.c:12152
+#: gui/main.c:12189
 msgid "Star it"
 msgstr "Mit Stern markieren"
 
-#: gui/main.c:12153
+#: gui/main.c:12190
 msgid "Encrypt it..."
 msgstr "Verschlüsseln..."
 
-#: gui/main.c:12154
+#: gui/main.c:12191
 msgid "Bit-rot scan..."
 msgstr "Bit-Rot-Scan..."
 
-#: gui/main.c:12155
+#: gui/main.c:12192
 msgid "Change where a root is..."
 msgstr "Neuen Ort eines Quellordners angeben..."
 
-#: gui/main.c:12156
+#: gui/main.c:12193
 msgid "What to leave out..."
 msgstr "Was ausgelassen wird..."
 
-#: gui/main.c:12157
+#: gui/main.c:12194
 msgid "Deleted files..."
 msgstr "Gelöschte Dateien..."
 
-#: gui/main.c:12158 gui/main.c:13607
+#: gui/main.c:12195 gui/main.c:13644
 msgid "Damaged files..."
 msgstr "Beschädigte Dateien..."
 
-#: gui/main.c:12159
+#: gui/main.c:12196
 msgid "In use at the last scan..."
 msgstr "Beim letzten Scan geöffnet..."
 
-#: gui/main.c:12160
+#: gui/main.c:12197
 msgid "Largest files..."
 msgstr "Größte Dateien..."
 
-#: gui/main.c:12161
+#: gui/main.c:12198
 msgid "Older versions..."
 msgstr "Ältere Versionen..."
 
-#: gui/main.c:12162
+#: gui/main.c:12199
 msgid "Export the list (CSV)..."
 msgstr "Liste exportieren (CSV)..."
 
-#: gui/main.c:12164
+#: gui/main.c:12201
 msgid "What the next backup copies to:"
 msgstr "Ziel der nächsten Sicherung:"
 
-#: gui/main.c:12168 gui/main.c:13614
+#: gui/main.c:12205 gui/main.c:13651
 msgid "Back up..."
 msgstr "Sichern..."
 
-#: gui/main.c:12170 gui/main.c:12182
+#: gui/main.c:12207 gui/main.c:12219
 msgid "Changed since its last backup..."
 msgstr "Seit der letzten Sicherung geändert..."
 
-#: gui/main.c:12171 gui/main.c:12186
+#: gui/main.c:12208 gui/main.c:12223
 msgid "Files at risk..."
 msgstr "Gefährdete Dateien..."
 
-#: gui/main.c:12172
+#: gui/main.c:12209
 msgid "Refresh"
 msgstr "Aktualisieren"
 
-#: gui/main.c:12175 gui/main.c:14704
+#: gui/main.c:12212 gui/main.c:14741
 msgid "Set up a drive..."
 msgstr "Laufwerk einrichten..."
 
-#: gui/main.c:12178
+#: gui/main.c:12215
 msgid "Check every copy"
 msgstr "Alle Kopien prüfen"
 
-#: gui/main.c:12181
+#: gui/main.c:12218
 msgid "Compress copies..."
 msgstr "Kopien komprimieren..."
 
-#: gui/main.c:12183
+#: gui/main.c:12220
 msgid "Name and where it is kept..."
 msgstr "Name und Aufbewahrungsort..."
 
-#: gui/main.c:12187
+#: gui/main.c:12224
 msgid "Back up to several drives at once"
 msgstr "Auf mehrere Laufwerke gleichzeitig sichern"
 
-#: gui/main.c:12199
+#: gui/main.c:12236
 msgid ""
 "Starred files are backed up to your drives like every file, and also to the extra places below: a second, secondary backup of the files that matter most, such as your Dropbox, OneDrive or Google Drive folder on this PC, a network share or a folder on another disk. BRODALF only copies files into the folder; that folder's own app does any syncing. Copies in extra places never count toward your full copies."
 msgstr ""
 "Dateien mit Stern werden wie jede Datei auf Ihre Laufwerke gesichert und zusätzlich an die Zusatzorte unten: eine zweite, nachrangige Sicherung der wichtigsten Dateien, etwa in Ihrem Dropbox-, OneDrive- oder Google Drive-Ordner auf diesem PC, auf einer Netzwerkfreigabe oder in einem Ordner auf einem anderen Datenträger. BRODALF kopiert nur Dateien in den Ordner; das Synchronisieren übernimmt die App dieses Ordners. Kopien an Zusatzorten zählen nie zu Ihren vollständigen Kopien."
 
-#: gui/main.c:12203
+#: gui/main.c:12240
 msgid "Star what is selected in Primary Database"
 msgstr "Auswahl in der Hauptdatenbank mit Stern markieren"
 
-#: gui/main.c:12205 gui/main.c:12242
+#: gui/main.c:12242 gui/main.c:12279
 msgid "Show it in Primary Database"
 msgstr "In der Hauptdatenbank anzeigen"
 
-#: gui/main.c:12207 gui/main.c:12244
+#: gui/main.c:12244 gui/main.c:12281
 msgid "Backup root"
 msgstr "Quellordner"
 
-#: gui/main.c:12207
+#: gui/main.c:12244
 msgid "Starred on"
 msgstr "Markiert am"
 
-#: gui/main.c:12211
+#: gui/main.c:12248
 msgid "Extra places"
 msgstr "Zusatzorte"
 
-#: gui/main.c:12212
+#: gui/main.c:12249
 msgid "Add an extra place..."
 msgstr "Zusatzort hinzufügen..."
 
-#: gui/main.c:12213
+#: gui/main.c:12250
 msgid "Back up starred files to it"
 msgstr "Dateien mit Stern dorthin sichern"
 
-#: gui/main.c:12214
+#: gui/main.c:12251
 msgid "Change its size limit..."
 msgstr "Größenlimit ändern..."
 
-#: gui/main.c:12216
+#: gui/main.c:12253
 msgid "Description and details..."
 msgstr "Beschreibung und Details..."
 
-#: gui/main.c:12219
+#: gui/main.c:12256
 msgid "Extra place"
 msgstr "Zusatzort"
 
-#: gui/main.c:12219
+#: gui/main.c:12256
 msgid "Found now"
 msgstr "Gefunden"
 
-#: gui/main.c:12219
+#: gui/main.c:12256
 msgid "Size limit"
 msgstr "Größenlimit"
 
-#: gui/main.c:12219
+#: gui/main.c:12256
 msgid "Starred files there"
 msgstr "Dateien mit Stern dort"
 
-#: gui/main.c:12220
+#: gui/main.c:12257
 msgid "Waiting"
 msgstr "Ausstehend"
 
-#: gui/main.c:12220
+#: gui/main.c:12257
 msgid "Over the limit"
 msgstr "Über dem Limit"
 
-#: gui/main.c:12220
+#: gui/main.c:12257
 msgid "Space used"
 msgstr "Belegt"
 
-#: gui/main.c:12226 gui/brodalf.rc:62
+#: gui/main.c:12263 gui/brodalf.rc:62
 msgid "Forget the passphrase until it is needed"
 msgstr "Passphrase vergessen, bis sie gebraucht wird"
 
-#: gui/main.c:12227
+#: gui/main.c:12264
 msgid "Make a new recovery key..."
 msgstr "Neuen Wiederherstellungsschlüssel erstellen..."
 
-#: gui/main.c:12228
+#: gui/main.c:12265
 msgid "Print the recovery sheet..."
 msgstr "Wiederherstellungsblatt drucken..."
 
-#: gui/main.c:12229
+#: gui/main.c:12266
 msgid "Set up an encrypted drive..."
 msgstr "Verschlüsseltes Laufwerk einrichten..."
 
-#: gui/main.c:12230 gui/brodalf.rc:61
+#: gui/main.c:12267 gui/brodalf.rc:61
 msgid "Encrypt the database file"
 msgstr "Datenbankdatei verschlüsseln"
 
-#: gui/main.c:12233
+#: gui/main.c:12270
 msgid "What"
 msgstr "Was"
 
-#: gui/main.c:12233
+#: gui/main.c:12270
 msgid "What it means"
 msgstr "Was das bedeutet"
 
-#: gui/main.c:12238 gui/main.c:13423
+#: gui/main.c:12275 gui/main.c:13460
 msgid "Folders encrypted on every drive and extra place they are copied to:"
 msgstr ""
 "Ordner, die auf allen Laufwerken und an allen Zusatzorten verschlüsselt werden:"
 
-#: gui/main.c:12239
+#: gui/main.c:12276
 msgid "Encrypt what is selected in Primary Database"
 msgstr "Auswahl in der Hauptdatenbank verschlüsseln"
 
-#: gui/main.c:12240
+#: gui/main.c:12277
 msgid "Choose a folder to encrypt..."
 msgstr "Ordner zum Verschlüsseln wählen..."
 
-#: gui/main.c:12244
+#: gui/main.c:12281
 msgid "Encrypting them takes"
 msgstr "Verschlüsseln dauert"
 
-#: gui/main.c:12244
+#: gui/main.c:12281
 msgid "Chosen on"
 msgstr "Gewählt am"
 
-#: gui/main.c:12250
+#: gui/main.c:12287
 msgid ""
 "Restoring copies files from your drives into a folder you choose. Nothing there is overwritten: a file already where one would go is left alone and listed below, so you can compare the two."
 msgstr ""
 "Beim Wiederherstellen werden Dateien von Ihren Laufwerken in einen Ordner Ihrer Wahl kopiert. Dort wird nichts überschrieben: Liegt am Ziel schon eine Datei, bleibt sie unberührt und wird unten aufgeführt, damit Sie beide vergleichen können."
 
-#: gui/main.c:12252
+#: gui/main.c:12289
 msgid "Restore what is selected in Primary Database..."
 msgstr "Auswahl in der Hauptdatenbank wiederherstellen..."
 
-#: gui/main.c:12253
+#: gui/main.c:12290
 msgid "Restore everything..."
 msgstr "Alles wiederherstellen..."
 
-#: gui/main.c:12254
+#: gui/main.c:12291
 msgid "Restore deleted files..."
 msgstr "Gelöschte Dateien wiederherstellen..."
 
-#: gui/main.c:12255
+#: gui/main.c:12292
 msgid "Continue the restore that waits for drives"
 msgstr "Auf Laufwerke wartende Wiederherstellung fortsetzen"
 
-#: gui/main.c:12257
+#: gui/main.c:12294
 msgid "Files the last restore left alone"
 msgstr "Bei der letzten Wiederherstellung übersprungene Dateien"
 
-#: gui/main.c:12259
+#: gui/main.c:12296
 msgid "Show them in a window..."
 msgstr "In einem Fenster anzeigen..."
 
-#: gui/main.c:12261
+#: gui/main.c:12298
 msgid "Where it would go"
 msgstr "Zielpfad"
 
-#: gui/main.c:12261
+#: gui/main.c:12298
 msgid "Backed-up size"
 msgstr "Größe (gesichert)"
 
-#: gui/main.c:12261
+#: gui/main.c:12298
 msgid "Backed-up modified"
 msgstr "Geändert (gesichert)"
 
-#: gui/main.c:12261
+#: gui/main.c:12298
 msgid "Size there"
 msgstr "Größe dort"
 
-#: gui/main.c:12262
+#: gui/main.c:12299
 msgid "Modified there"
 msgstr "Geändert dort"
 
-#: gui/main.c:12262
+#: gui/main.c:12299
 msgid "Newer"
 msgstr "Neuer"
 
-#: gui/main.c:12317
+#: gui/main.c:12354
 msgid "(the whole backup root)"
 msgstr "(der ganze Quellordner)"
 
-#: gui/main.c:12341
+#: gui/main.c:12378
 msgid "Too big for this drive (FAT32)"
 msgstr "Zu groß für dieses Laufwerk (FAT32)"
 
-#: gui/main.c:12341
+#: gui/main.c:12378
 msgid "Not there yet"
 msgstr "Noch nicht vorhanden"
 
-#: gui/main.c:12341
+#: gui/main.c:12378
 msgid "An older version"
 msgstr "Ältere Version"
 
-#: gui/main.c:12387
+#: gui/main.c:12424
 #, c-format
 msgid "Any drive: every file short of %d copies in %d places"
 msgstr "Beliebiges Laufwerk: jede Datei mit weniger als %d Kopien an %d Orten"
 
-#: gui/main.c:12401
+#: gui/main.c:12438
 #, c-format
 msgid "%ls (extra place)"
 msgstr "%ls (Zusatzort)"
 
-#: gui/main.c:12403
+#: gui/main.c:12440
 msgid "starred files only"
 msgstr "nur Dateien mit Stern"
 
-#: gui/main.c:12406
+#: gui/main.c:12443
 msgid "not found now"
 msgstr "derzeit nicht gefunden"
 
-#: gui/main.c:12410
+#: gui/main.c:12447
 msgid "plugged in"
 msgstr "angeschlossen"
 
-#: gui/main.c:12410
+#: gui/main.c:12447
 msgid "not plugged in"
 msgstr "nicht angeschlossen"
 
-#: gui/main.c:12441
+#: gui/main.c:12478
 msgid "In this extra place"
 msgstr "An diesem Zusatzort"
 
-#: gui/main.c:12441
+#: gui/main.c:12478
 msgid "On this drive"
 msgstr "Auf diesem Laufwerk"
 
-#: gui/main.c:12447
+#: gui/main.c:12484
 #, c-format
 msgid "Copy %d"
 msgstr "Kopie %d"
 
-#: gui/main.c:12474
+#: gui/main.c:12511
 msgid "Nothing to back up yet. Add a backup root first."
 msgstr "Noch nichts zu sichern. Fügen Sie zuerst einen Quellordner hinzu."
 
-#: gui/main.c:12476
+#: gui/main.c:12513
 #, c-format
 msgid ""
 "Every file has the %d copies in %d places you want. Nothing waits for a backup."
 msgstr ""
 "Jede Datei hat die gewünschten %d Kopien an %d Orten. Nichts wartet auf eine Sicherung."
 
-#: gui/main.c:12478
+#: gui/main.c:12515
 #, c-format
 msgid ""
 "%lld of your %lld files (%ls) do not have the %d copies in %d places you want yet"
 msgstr ""
 "%lld Ihrer %lld Dateien (%ls) haben noch nicht die gewünschten %d Kopien an %d Orten"
 
-#: gui/main.c:12480
+#: gui/main.c:12517
 #, c-format
 msgid ", and %lld of them have no copy anywhere"
 msgstr ", und %lld davon haben nirgends eine Kopie"
 
-#: gui/main.c:12484
+#: gui/main.c:12521
 msgid ""
 "\r\n"
 "Each Copy column is one full copy: ✓ means the file is in it, – that it is not."
@@ -6044,17 +6049,17 @@ msgstr ""
 "\r\n"
 "Jede Kopie-Spalte ist eine vollständige Kopie: ✓ heißt, die Datei ist darin, – heißt, sie fehlt."
 
-#: gui/main.c:12492
+#: gui/main.c:12529
 #, c-format
 msgid "Plug in %ls to back up to it.\r\n"
 msgstr "Schließen Sie %ls an, um darauf zu sichern.\r\n"
 
-#: gui/main.c:12494
+#: gui/main.c:12531
 msgid "This drive is up to date: the next backup to it copies nothing."
 msgstr ""
 "Dieses Laufwerk ist aktuell: Die nächste Sicherung darauf kopiert nichts."
 
-#: gui/main.c:12496
+#: gui/main.c:12533
 #, c-format
 msgid ""
 "The next backup to this drive copies %lld file (%ls): %lld new, %lld changed. A changed file goes alongside its older copy; nothing on the drive is overwritten."
@@ -6065,7 +6070,7 @@ msgstr[0] ""
 msgstr[1] ""
 "Die nächste Sicherung auf dieses Laufwerk kopiert %lld Dateien (%ls): %lld neu, %lld geändert. Eine geänderte Datei wird neben ihrer älteren Kopie abgelegt; auf dem Laufwerk wird nichts überschrieben."
 
-#: gui/main.c:12503
+#: gui/main.c:12540
 #, c-format
 msgid ""
 "\r\n"
@@ -6074,20 +6079,20 @@ msgstr ""
 "\r\n"
 "Frei darauf: %ls%ls."
 
-#: gui/main.c:12503
+#: gui/main.c:12540
 msgid " (read just now)"
 msgstr " (gerade gelesen)"
 
-#: gui/main.c:12503
+#: gui/main.c:12540
 msgid " (when it was last plugged in)"
 msgstr " (beim letzten Anschließen)"
 
-#: gui/main.c:12507
+#: gui/main.c:12544
 #, c-format
 msgid " About %ls will not fit and waits for another drive."
 msgstr " Etwa %ls passen nicht darauf und warten auf ein anderes Laufwerk."
 
-#: gui/main.c:12510
+#: gui/main.c:12547
 #, c-format
 msgid ""
 " %lld file is 4 GB or more and cannot go on this drive, because it is FAT32; reformat it as exFAT or NTFS to back it up here."
@@ -6098,7 +6103,7 @@ msgstr[0] ""
 msgstr[1] ""
 " %lld Dateien sind 4 GB oder größer und passen nicht auf dieses Laufwerk, weil es FAT32 ist; formatieren Sie es als exFAT oder NTFS, um sie hier zu sichern."
 
-#: gui/main.c:12517
+#: gui/main.c:12554
 #, c-format
 msgid ""
 "\r\n"
@@ -6107,7 +6112,7 @@ msgstr ""
 "\r\n"
 "Kopiert wird, was die Scans gefunden haben; ältester Scan Ihrer Quellordner: %ls."
 
-#: gui/main.c:12519
+#: gui/main.c:12556
 msgid ""
 "\r\n"
 "Your backup roots have not been scanned yet, so there is nothing to copy. Press Scan now."
@@ -6115,7 +6120,7 @@ msgstr ""
 "\r\n"
 "Ihre Quellordner wurden noch nicht gescannt, daher gibt es nichts zu kopieren. Klicken Sie auf „Jetzt scannen“."
 
-#: gui/main.c:12521
+#: gui/main.c:12558
 #, c-format
 msgid ""
 "\r\n"
@@ -6124,7 +6129,7 @@ msgstr ""
 "\r\n"
 "Warnung: %lld der %lld Dateien, deren Kopien auf Ihren Laufwerken aktuell waren, haben sich auf einmal geändert oder wurden gelöscht, und dieses Laufwerk enthält zu wenige davon, um sie zu unterscheiden. Das kann auf Ransomware hindeuten. Sehen Sie sich vor dem Sichern „Seit der letzten Sicherung geändert...“ an."
 
-#: gui/main.c:12526
+#: gui/main.c:12563
 #, c-format
 msgid ""
 "\r\n"
@@ -6139,7 +6144,7 @@ msgstr[1] ""
 "\r\n"
 "Warnung: Von den %lld Dateien, deren Kopien auf diesem Laufwerk aktuell waren, haben sich auf einmal %lld geändert, und %lld wurden gelöscht. Das kann auf Ransomware hindeuten. Sehen Sie sich vor dem Sichern „Seit der letzten Sicherung geändert...“ an."
 
-#: gui/main.c:12532
+#: gui/main.c:12569
 #, c-format
 msgid ""
 "\r\n"
@@ -6148,13 +6153,13 @@ msgstr ""
 "\r\n"
 "Warnung: %lld der %lld Dateien, deren Kopien auf diesem Laufwerk aktuell waren, haben sich auf einmal geändert. Das kann auf Ransomware hindeuten. Sehen Sie sich vor dem Sichern „Seit der letzten Sicherung geändert...“ an."
 
-#: gui/main.c:12544
+#: gui/main.c:12581
 msgid ""
 "An extra place takes only starred files, as a second, secondary backup; its copies do not count toward your full copies."
 msgstr ""
 "Ein Zusatzort nimmt nur Dateien mit Stern auf, als zweite, nachrangige Sicherung; seine Kopien zählen nicht zu Ihren vollständigen Kopien."
 
-#: gui/main.c:12546
+#: gui/main.c:12583
 #, c-format
 msgid "%lld starred file (%ls) in all; %lld of them is there as it is now."
 msgid_plural ""
@@ -6164,7 +6169,7 @@ msgstr[0] ""
 msgstr[1] ""
 "Insgesamt %lld Dateien mit Stern (%ls); %lld davon liegen dort auf dem aktuellen Stand."
 
-#: gui/main.c:12551
+#: gui/main.c:12588
 #, c-format
 msgid ""
 "\r\n"
@@ -6173,12 +6178,12 @@ msgstr ""
 "\r\n"
 "Die nächste Sicherung dorthin kopiert %lld (%ls)."
 
-#: gui/main.c:12555
+#: gui/main.c:12592
 #, c-format
 msgid " It may take at most %ls of starred files."
 msgstr " Dieser Zusatzort darf höchstens %ls an Dateien mit Stern aufnehmen."
 
-#: gui/main.c:12558
+#: gui/main.c:12595
 #, c-format
 msgid " %lld file (%ls) would go over that and is not copied there."
 msgid_plural " %lld files (%ls) would go over that and are not copied there."
@@ -6187,7 +6192,7 @@ msgstr[0] ""
 msgstr[1] ""
 " %lld Dateien (%ls) würden das überschreiten und werden nicht dorthin kopiert."
 
-#: gui/main.c:12563
+#: gui/main.c:12600
 msgid ""
 "\r\n"
 "Nothing is starred yet: star files or folders on the Primary Database tab."
@@ -6195,7 +6200,7 @@ msgstr ""
 "\r\n"
 "Noch ist nichts markiert: Markieren Sie Dateien oder Ordner auf der Registerkarte „Hauptdatenbank“ mit einem Stern."
 
-#: gui/main.c:12564
+#: gui/main.c:12601
 msgid ""
 "\r\n"
 "The folder was not found the last time BRODALF looked."
@@ -6203,7 +6208,7 @@ msgstr ""
 "\r\n"
 "Beim letzten Nachsehen hat BRODALF den Ordner nicht gefunden."
 
-#: gui/main.c:12572
+#: gui/main.c:12609
 #, c-format
 msgid ""
 "\r\n"
@@ -6212,109 +6217,109 @@ msgstr ""
 "\r\n"
 "Die Liste zeigt die ersten %d von %lld Dateien, nach Quellordner und Pfad."
 
-#: gui/main.c:12678
+#: gui/main.c:12715
 #, c-format
 msgid "Plugged in (%d)"
 msgstr "Angeschlossen (%d)"
 
-#: gui/main.c:12678
+#: gui/main.c:12715
 #, c-format
 msgid "Not plugged in (%d)"
 msgstr "Nicht angeschlossen (%d)"
 
-#: gui/main.c:12679
+#: gui/main.c:12716
 #, c-format
 msgid "Lost or broken, copies not counted (%d)"
 msgstr "Verloren oder defekt, Kopien zählen nicht (%d)"
 
-#: gui/main.c:12718
+#: gui/main.c:12755
 msgid "Where it is kept: not set"
 msgstr "Aufbewahrungsort: nicht festgelegt"
 
-#: gui/main.c:12724 gui/main.c:14571
+#: gui/main.c:12761 gui/main.c:14608
 #, c-format
 msgid "Plugged in at %ls"
 msgstr "Angeschlossen unter %ls"
 
-#: gui/main.c:12727
+#: gui/main.c:12764
 #, c-format
 msgid "Last seen %ls"
 msgstr "Zuletzt gesehen %ls"
 
-#: gui/main.c:12729
+#: gui/main.c:12766
 msgid "Not seen yet"
 msgstr "Noch nicht gesehen"
 
-#: gui/main.c:12732
+#: gui/main.c:12769
 #, c-format
 msgid "%lld copy"
 msgid_plural "%lld copies"
 msgstr[0] "%lld Kopie"
 msgstr[1] "%lld Kopien"
 
-#: gui/main.c:12748 gui/main.c:14579
+#: gui/main.c:12785 gui/main.c:14616
 #, c-format
 msgid "%ls free of %ls"
 msgstr "%ls von %ls frei"
 
-#: gui/main.c:12752
+#: gui/main.c:12789
 msgid "Size not known yet"
 msgstr "Größe noch unbekannt"
 
-#: gui/main.c:12756
+#: gui/main.c:12793
 msgid "Not read yet"
 msgstr "Noch nicht gelesen"
 
-#: gui/main.c:12757
+#: gui/main.c:12794
 msgid "Not reported"
 msgstr "Nicht gemeldet"
 
-#: gui/main.c:12759
+#: gui/main.c:12796
 msgid "Failing"
 msgstr "Fällt aus"
 
-#: gui/main.c:12762
+#: gui/main.c:12799
 msgid "Warning"
 msgstr "Warnung"
 
-#: gui/main.c:12765
+#: gui/main.c:12802
 msgid "Good"
 msgstr "Gut"
 
-#: gui/main.c:12775
+#: gui/main.c:12812
 #, c-format
 msgid "%ls h"
 msgstr "%ls Std."
 
-#: gui/main.c:12779
+#: gui/main.c:12816
 #, c-format
 msgid "%d%% worn"
 msgstr "%d %% abgenutzt"
 
-#: gui/main.c:12785
+#: gui/main.c:12822
 msgid "No copies yet"
 msgstr "Noch keine Kopien"
 
-#: gui/main.c:12795
+#: gui/main.c:12832
 msgid "Some copies never checked"
 msgstr "Einige Kopien nie geprüft"
 
-#: gui/main.c:12798 gui/main.c:14552
+#: gui/main.c:12835 gui/main.c:14589
 msgid "Due for a check"
 msgstr "Prüfung fällig"
 
-#: gui/main.c:13066
+#: gui/main.c:13103
 msgid "Select a drive to see where it stands, its space and its health."
 msgstr ""
 "Wählen Sie ein Laufwerk, um Stand, Speicherplatz und Zustand zu sehen."
 
-#: gui/main.c:13067
+#: gui/main.c:13104
 msgid ""
 "No backup drives yet. Set up a drive... makes one: an external or removable drive, or a folder on one."
 msgstr ""
 "Noch keine Sicherungslaufwerke. „Laufwerk einrichten...“ richtet eines ein: ein externes Laufwerk, ein Wechsellaufwerk oder einen Ordner darauf."
 
-#: gui/main.c:13078
+#: gui/main.c:13115
 #, c-format
 msgid ""
 "    Set up %ls, %lld copies recorded\r\n"
@@ -6323,28 +6328,28 @@ msgstr ""
 "    Eingerichtet: %ls, %lld Kopien erfasst\r\n"
 "\r\n"
 
-#: gui/main.c:13174
+#: gui/main.c:13211
 msgid "Not in the last scan: renamed, moved or deleted?"
 msgstr "Nicht im letzten Scan: umbenannt, verschoben oder gelöscht?"
 
-#: gui/main.c:13224
+#: gui/main.c:13261
 msgid "No limit"
 msgstr "Kein Limit"
 
-#: gui/main.c:13226
+#: gui/main.c:13263
 #, c-format
 msgid "%lld of %lld (%ls)"
 msgstr "%lld von %lld (%ls)"
 
-#: gui/main.c:13236
+#: gui/main.c:13273
 msgid "Marked broken"
 msgstr "Als defekt gemeldet"
 
-#: gui/main.c:13236
+#: gui/main.c:13273
 msgid "Marked lost"
 msgstr "Als verloren gemeldet"
 
-#: gui/main.c:13250
+#: gui/main.c:13287
 #, c-format
 msgid ""
 "Extra places: a second, secondary backup of your %lld starred file (%ls)%ls"
@@ -6355,130 +6360,130 @@ msgstr[0] ""
 msgstr[1] ""
 "Zusatzorte: eine zweite, nachrangige Sicherung Ihrer %lld Dateien mit Stern (%ls)%ls"
 
-#: gui/main.c:13252
+#: gui/main.c:13289
 msgid ". None yet: Add an extra place... sets one up."
 msgstr ". Noch keiner: „Zusatzort hinzufügen...“ richtet einen ein."
 
-#: gui/main.c:13333
+#: gui/main.c:13370
 msgid "not measured yet"
 msgstr "noch nicht gemessen"
 
-#: gui/main.c:13372 gui/main.c:13374 gui/brodalf.rc:58
+#: gui/main.c:13409 gui/main.c:13411 gui/brodalf.rc:58
 msgid "Passphrase"
 msgstr "Passphrase"
 
-#: gui/main.c:13372
+#: gui/main.c:13409
 msgid "Not set"
 msgstr "Nicht festgelegt"
 
-#: gui/main.c:13372
+#: gui/main.c:13409
 msgid "Each kind of encryption needs one: Set a passphrase... above."
 msgstr ""
 "Jede Art der Verschlüsselung braucht eine: „Passphrase festlegen...“ oben."
 
-#: gui/main.c:13374
+#: gui/main.c:13411
 msgid "Set, entered for now"
 msgstr "Festgelegt, gerade eingegeben"
 
-#: gui/main.c:13374
+#: gui/main.c:13411
 msgid "Set"
 msgstr "Festgelegt"
 
-#: gui/main.c:13375
+#: gui/main.c:13412
 msgid ""
 "BRODALF can encrypt, and read encrypted copies, until you press Forget the passphrase or close it."
 msgstr ""
 "BRODALF kann verschlüsseln und verschlüsselte Kopien lesen, bis Sie „Passphrase vergessen“ drücken oder BRODALF schließen."
 
-#: gui/main.c:13376
+#: gui/main.c:13413
 msgid "Not entered now: BRODALF asks for it when a job needs it."
 msgstr ""
 "Derzeit nicht eingegeben: BRODALF fragt danach, wenn ein Vorgang sie braucht."
 
-#: gui/main.c:13379
+#: gui/main.c:13416
 msgid "Recovery key"
 msgstr "Wiederherstellungsschlüssel"
 
-#: gui/main.c:13379
+#: gui/main.c:13416
 msgid "Made"
 msgstr "Erstellt"
 
-#: gui/main.c:13380
+#: gui/main.c:13417
 msgid ""
 "It is on the recovery sheet, and opens your encrypted backups if the passphrase is ever forgotten."
 msgstr ""
 "Er steht auf dem Wiederherstellungsblatt und öffnet Ihre verschlüsselten Sicherungen, falls die Passphrase einmal vergessen wird."
 
-#: gui/main.c:13381
+#: gui/main.c:13418
 msgid "Make a new recovery key... puts one on a recovery sheet to print."
 msgstr ""
 "„Neuen Wiederherstellungsschlüssel erstellen...“ setzt einen auf ein Wiederherstellungsblatt zum Drucken."
 
-#: gui/main.c:13385
+#: gui/main.c:13422
 msgid "This database file"
 msgstr "Diese Datenbankdatei"
 
-#: gui/main.c:13386
+#: gui/main.c:13423
 msgid ""
 "The list of your files and where their copies are. BRODALF asks for the passphrase when it opens it."
 msgstr ""
 "Die Liste Ihrer Dateien und wo ihre Kopien sind. BRODALF fragt beim Öffnen nach der Passphrase."
 
-#: gui/main.c:13387
+#: gui/main.c:13424
 msgid ""
 "The list of your files and where their copies are. Tick Encrypt the database file above to encrypt it."
 msgstr ""
 "Die Liste Ihrer Dateien und wo ihre Kopien sind. Haken Sie oben „Datenbankdatei verschlüsseln“ an, um sie zu verschlüsseln."
 
-#: gui/main.c:13396
+#: gui/main.c:13433
 msgid " (extra place)"
 msgstr " (Zusatzort)"
 
-#: gui/main.c:13399
+#: gui/main.c:13436
 msgid ""
 "Plain copies, except the folders you chose below. It stays as it was set up."
 msgstr ""
 "Unverschlüsselte Kopien, außer in den unten gewählten Ordnern. Es bleibt, wie es eingerichtet wurde."
 
-#: gui/main.c:13400
+#: gui/main.c:13437
 msgid ""
 "Every copy on it is encrypted, and the names of its files and folders are hidden."
 msgstr ""
 "Jede Kopie darauf ist verschlüsselt, und die Namen seiner Dateien und Ordner sind verborgen."
 
-#: gui/main.c:13401
+#: gui/main.c:13438
 msgid ""
 "Every copy on it is encrypted. Its file and folder names stay readable."
 msgstr ""
 "Jede Kopie darauf ist verschlüsselt. Die Namen der Dateien und Ordner bleiben lesbar."
 
-#: gui/main.c:13407
+#: gui/main.c:13444
 msgid "Drives and extra places"
 msgstr "Laufwerke und Zusatzorte"
 
-#: gui/main.c:13407
+#: gui/main.c:13444
 msgid "No drives yet"
 msgstr "Noch keine Laufwerke"
 
-#: gui/main.c:13408
+#: gui/main.c:13445
 msgid ""
 "Set up an encrypted drive... above sets up a drive with every copy on it encrypted."
 msgstr ""
 "„Verschlüsseltes Laufwerk einrichten...“ oben richtet ein Laufwerk ein, auf dem jede Kopie verschlüsselt ist."
 
-#: gui/main.c:13415
+#: gui/main.c:13452
 msgid ""
 "Nothing is encrypted unless you choose it, and every kind is optional: use none, any one of them, or all of them together."
 msgstr ""
 "Nichts wird verschlüsselt, wenn Sie es nicht wählen, und jede Art ist freiwillig: keine, eine davon oder alle zusammen."
 
-#: gui/main.c:13425
+#: gui/main.c:13462
 msgid ""
 "none yet. Choose a folder to encrypt just it, also on drives that are not encrypted. Everything else stays plain, which is quicker to back up and to restore."
 msgstr ""
 "noch keine. Wählen Sie einen Ordner, um nur ihn zu verschlüsseln, auch auf Laufwerken, die nicht verschlüsselt sind. Alles andere bleibt unverschlüsselt, was schneller zu sichern und wiederherzustellen ist."
 
-#: gui/main.c:13430
+#: gui/main.c:13467
 #, c-format
 msgid ""
 "%lld file (%ls), encrypted wherever it is copied. Its name stays readable, with .bdenc after it."
@@ -6489,14 +6494,14 @@ msgstr[0] ""
 msgstr[1] ""
 "%lld Dateien (%ls), verschlüsselt, wohin sie auch kopiert werden. Ihre Namen bleiben lesbar, mit .bdenc dahinter."
 
-#: gui/main.c:13434
+#: gui/main.c:13471
 #, c-format
 msgid "%lld encrypted copy so far"
 msgid_plural "%lld encrypted copies so far"
 msgstr[0] "Bisher %lld verschlüsselte Kopie"
 msgstr[1] "Bisher %lld verschlüsselte Kopien"
 
-#: gui/main.c:13438
+#: gui/main.c:13475
 #, c-format
 msgid ""
 "%lld file still waits for a first encrypted copy, which the next backups make."
@@ -6507,7 +6512,7 @@ msgstr[0] ""
 msgstr[1] ""
 "%lld Dateien warten noch auf eine erste verschlüsselte Kopie, die die nächsten Sicherungen anlegen."
 
-#: gui/main.c:13445
+#: gui/main.c:13482
 #, c-format
 msgid ""
 "%lld plain copy was made before you chose to encrypt them. It stays as it is, since BRODALF never overwrites or deletes anything on a drive."
@@ -6518,22 +6523,22 @@ msgstr[0] ""
 msgstr[1] ""
 "%lld unverschlüsselte Kopien wurden gemacht, bevor Sie sie verschlüsseln ließen. Sie bleiben, wie sie sind, da BRODALF auf einem Laufwerk nie etwas überschreibt oder löscht."
 
-#: gui/main.c:13516
+#: gui/main.c:13553
 msgid ""
 "Select a backup root, a folder or a file on the Primary Database tab to see which drives restoring it needs.\n"
 msgstr ""
 "Wählen Sie auf der Registerkarte „Hauptdatenbank“ einen Quellordner, einen Ordner oder eine Datei, um zu sehen, welche Laufwerke für die Wiederherstellung nötig sind.\n"
 
-#: gui/main.c:13519
+#: gui/main.c:13556
 #, c-format
 msgid "Selected on the Primary Database tab: %ls\n"
 msgstr "Ausgewählt auf der Registerkarte „Hauptdatenbank“: %ls\n"
 
-#: gui/main.c:13528
+#: gui/main.c:13565
 msgid "    There is nothing in it to restore.\n"
 msgstr "    Darin gibt es nichts wiederherzustellen.\n"
 
-#: gui/main.c:13530
+#: gui/main.c:13567
 #, c-format
 msgid ""
 "Restoring it takes these drives, in this order:\n"
@@ -6542,20 +6547,20 @@ msgstr ""
 "Für die Wiederherstellung sind diese Laufwerke nötig, in dieser Reihenfolge:\n"
 "%ls"
 
-#: gui/main.c:13531
+#: gui/main.c:13568
 #, c-format
 msgid "%lld file has no copy on any drive.\n"
 msgid_plural "%lld files have no copy on any drive.\n"
 msgstr[0] "%lld Datei hat auf keinem Laufwerk eine Kopie.\n"
 msgstr[1] "%lld Dateien haben auf keinem Laufwerk eine Kopie.\n"
 
-#: gui/main.c:13533
+#: gui/main.c:13570
 msgid ""
 "BRODALF restores what the plugged-in drives hold first; then plug in each other drive and press Continue.\n"
 msgstr ""
 "BRODALF stellt zuerst wieder her, was die angeschlossenen Laufwerke enthalten; schließen Sie dann jedes weitere Laufwerk an und klicken Sie auf „Fortsetzen“.\n"
 
-#: gui/main.c:13540
+#: gui/main.c:13577
 #, c-format
 msgid ""
 "\n"
@@ -6564,7 +6569,7 @@ msgstr ""
 "\n"
 "Letzte Wiederherstellung, %ls: %ls\n"
 
-#: gui/main.c:13547
+#: gui/main.c:13584
 #, c-format
 msgid ""
 "\n"
@@ -6575,96 +6580,96 @@ msgstr ""
 "Eine Wiederherstellung nach %ls wartet auf diese Laufwerke:\n"
 "%ls"
 
-#: gui/main.c:13548
+#: gui/main.c:13585
 msgid "    (none: it can finish now; press Continue)\n"
 msgstr ""
 "    (keine: Die Wiederherstellung kann jetzt abgeschlossen werden; klicken Sie auf „Fortsetzen“)\n"
 
-#: gui/main.c:13557
+#: gui/main.c:13594
 #, c-format
 msgid ""
 "Files the last restore left alone (%d), because another file was already where each would go. Nothing was overwritten:"
 msgstr ""
 "Bei der letzten Wiederherstellung übersprungene Dateien (%d), weil am Ziel jeweils schon eine andere Datei lag. Nichts wurde überschrieben:"
 
-#: gui/main.c:13560
+#: gui/main.c:13597
 msgid "Files the last restore left alone: none."
 msgstr "Bei der letzten Wiederherstellung übersprungene Dateien: keine."
 
-#: gui/main.c:13572
+#: gui/main.c:13609
 msgid "The backed-up copy"
 msgstr "Die gesicherte Kopie"
 
-#: gui/main.c:13573
+#: gui/main.c:13610
 msgid "The file there"
 msgstr "Die Datei dort"
 
-#: gui/main.c:13574
+#: gui/main.c:13611
 msgid "Same time, other size"
 msgstr "Gleiche Zeit, andere Größe"
 
-#: gui/main.c:13574
+#: gui/main.c:13611
 msgid "Same time and size"
 msgstr "Gleiche Zeit und Größe"
 
-#: gui/main.c:13606
+#: gui/main.c:13643
 #, c-format
 msgid "Damaged files (%lld)..."
 msgstr "Beschädigte Dateien (%lld)..."
 
-#: gui/main.c:13764
+#: gui/main.c:13801
 msgid "Could not star it."
 msgstr "Konnte nicht mit Stern markiert werden."
 
-#: gui/main.c:13764
+#: gui/main.c:13801
 msgid "Could not unstar it."
 msgstr "Stern konnte nicht entfernt werden."
 
-#: gui/main.c:13768
+#: gui/main.c:13805
 #, c-format
 msgid "Starred %ls. %ls"
 msgstr "Mit Stern markiert: %ls. %ls"
 
-#: gui/main.c:13769
+#: gui/main.c:13806
 msgid "The next backup to each extra place copies it there."
 msgstr "Die nächste Sicherung an jeden Zusatzort kopiert es dorthin."
 
-#: gui/main.c:13770
+#: gui/main.c:13807
 msgid ""
 "Add an extra place on the Starred files tab to give it a second, secondary copy there."
 msgstr ""
 "Fügen Sie auf der Registerkarte „Dateien mit Stern und Zusatzorte“ einen Zusatzort hinzu, um dort eine zweite, nachrangige Kopie anzulegen."
 
-#: gui/main.c:13772
+#: gui/main.c:13809
 #, c-format
 msgid ""
 "Unstarred %ls. Its copies in extra places stay there; nothing new of it goes there."
 msgstr ""
 "Stern entfernt: %ls. Die Kopien an Zusatzorten bleiben dort; Neues davon kommt nicht mehr hinzu."
 
-#: gui/main.c:13779
+#: gui/main.c:13816
 msgid ""
 "Starred files are copied to your extra places as a second, secondary backup, and you have none yet. Add one now, like your Dropbox or OneDrive folder on this PC?"
 msgstr ""
 "Dateien mit Stern werden als zweite, nachrangige Sicherung an Ihre Zusatzorte kopiert, und Sie haben noch keinen. Jetzt einen hinzufügen, etwa Ihren Dropbox- oder OneDrive-Ordner auf diesem PC?"
 
-#: gui/main.c:13780
+#: gui/main.c:13817
 msgid "Add an extra place"
 msgstr "Zusatzort hinzufügen"
 
-#: gui/main.c:13788 gui/main.c:13885
+#: gui/main.c:13825 gui/main.c:13922
 msgid ""
 "Select a backup root, a folder or a file on the Primary Database tab first."
 msgstr ""
 "Wählen Sie zuerst auf der Registerkarte „Hauptdatenbank“ einen Quellordner, einen Ordner oder eine Datei."
 
-#: gui/main.c:13794
+#: gui/main.c:13831
 msgid ""
 "It is already starred, with a folder above it. Unstar that folder on the Starred files tab to change it."
 msgstr ""
 "Es ist bereits über einen übergeordneten Ordner markiert. Entfernen Sie auf der Registerkarte „Dateien mit Stern und Zusatzorte“ den Stern dieses Ordners, um das zu ändern."
 
-#: gui/main.c:13823
+#: gui/main.c:13860
 #, c-format
 msgid ""
 "Stop encrypting %ls?\n"
@@ -6675,20 +6680,20 @@ msgstr ""
 "\n"
 "Neue Kopien davon sind dann unverschlüsselt. Die verschlüsselten Kopien auf Ihren Laufwerken bleiben, wie sie sind, und lassen sich weiterhin mit der Passphrase wiederherstellen."
 
-#: gui/main.c:13825
+#: gui/main.c:13862
 msgid "Stop encrypting"
 msgstr "Nicht mehr verschlüsseln"
 
-#: gui/main.c:13826
+#: gui/main.c:13863
 msgid "Could not change the encryption."
 msgstr "Die Verschlüsselung konnte nicht geändert werden."
 
-#: gui/main.c:13827
+#: gui/main.c:13864
 #, c-format
 msgid "New copies of %ls are plain from now on."
 msgstr "Neue Kopien von %ls sind ab jetzt unverschlüsselt."
 
-#: gui/main.c:13837
+#: gui/main.c:13874
 msgid ""
 "Encrypting needs a passphrase, and none is set yet. Without it, encrypted copies cannot be read, by you or anyone.\n"
 "\n"
@@ -6698,15 +6703,15 @@ msgstr ""
 "\n"
 "Jetzt eine festlegen?"
 
-#: gui/main.c:13838 gui/brodalf.rc:181
+#: gui/main.c:13875 gui/brodalf.rc:181
 msgid "Set a passphrase"
 msgstr "Passphrase festlegen"
 
-#: gui/main.c:13846 gui/main.c:13869
+#: gui/main.c:13883 gui/main.c:13906
 msgid "Could not encrypt it."
 msgstr "Konnte nicht verschlüsselt werden."
 
-#: gui/main.c:13856
+#: gui/main.c:13893
 #, c-format
 msgid ""
 "Encrypt %ls?\n"
@@ -6729,7 +6734,7 @@ msgstr[1] ""
 "Die %lld Dateien (%ls) darin und alle später hinzugefügten werden dann auf jedem Laufwerk und an jedem Zusatzort verschlüsselt, wohin sie kopiert werden, auch auf nicht verschlüsselten Laufwerken. Alles andere bleibt, wie es ist. Namen bleiben lesbar: Eine Kopie trägt den Dateinamen mit angehängtem .bdenc.\n"
 "\n"
 
-#: gui/main.c:13863
+#: gui/main.c:13900
 #, c-format
 msgid ""
 "What it means for time: %ls\n"
@@ -6738,168 +6743,168 @@ msgstr ""
 "Was das zeitlich bedeutet: %ls\n"
 "\n"
 
-#: gui/main.c:13864
+#: gui/main.c:13901
 msgid ""
 "Copies already on your drives stay as they are, since BRODALF never overwrites or deletes anything there: new copies and new versions are encrypted. Backing up, checking and restoring them need the passphrase entered."
 msgstr ""
 "Kopien, die schon auf Ihren Laufwerken liegen, bleiben, wie sie sind, da BRODALF dort nie etwas überschreibt oder löscht: Neue Kopien und neue Versionen werden verschlüsselt. Zum Sichern, Prüfen und Wiederherstellen muss die Passphrase eingegeben sein."
 
-#: gui/main.c:13866
+#: gui/main.c:13903
 msgid "Encrypt"
 msgstr "Verschlüsseln"
 
-#: gui/main.c:13871
+#: gui/main.c:13908
 #, c-format
 msgid ""
 "%ls is encrypted on every drive and extra place from now on (%lld files, %ls)."
 msgstr ""
 "%ls wird ab jetzt auf jedem Laufwerk und an jedem Zusatzort verschlüsselt (%lld Dateien, %ls)."
 
-#: gui/main.c:13891
+#: gui/main.c:13928
 msgid ""
 "It is already encrypted, with a folder above it. Change that folder on the Encryption tab."
 msgstr ""
 "Es ist bereits über einen übergeordneten Ordner verschlüsselt. Ändern Sie diesen Ordner auf der Registerkarte „Verschlüsselung“."
 
-#: gui/main.c:13903
+#: gui/main.c:13940
 msgid ""
 "Choose a folder in one of your backup roots. Its files are encrypted on every drive and extra place they are copied to."
 msgstr ""
 "Wählen Sie einen Ordner in einem Ihrer Quellordner. Seine Dateien werden auf jedem Laufwerk und an jedem Zusatzort verschlüsselt, wohin sie kopiert werden."
 
-#: gui/main.c:13909
+#: gui/main.c:13946
 msgid ""
 "That folder is not in any of your backup roots, so BRODALF does not back it up. Choose a folder inside a backup root, or add it as a backup root first."
 msgstr ""
 "Dieser Ordner liegt in keinem Ihrer Quellordner, daher sichert BRODALF ihn nicht. Wählen Sie einen Ordner innerhalb eines Quellordners, oder fügen Sie ihn zuerst als Quellordner hinzu."
 
-#: gui/main.c:13912
+#: gui/main.c:13949
 msgid "It is already encrypted, or a folder above it is."
 msgstr "Er ist bereits verschlüsselt, oder ein übergeordneter Ordner ist es."
 
-#: gui/main.c:13972
+#: gui/main.c:14009
 msgid "Size limit of an extra place"
 msgstr "Größenlimit eines Zusatzorts"
 
-#: gui/main.c:13974
+#: gui/main.c:14011
 msgid "Most it may take (leave empty for no limit):"
 msgstr "Höchstmenge (leer lassen für kein Limit):"
 
-#: gui/main.c:13978 gui/brodalf.rc:89
+#: gui/main.c:14015 gui/brodalf.rc:89
 msgid "Save"
 msgstr "Speichern"
 
-#: gui/main.c:14001
+#: gui/main.c:14038
 msgid ""
 "Describe it in at least two words, saying what it is and where it lives, like \"Dropbox folder on the laptop\" or \"NAS share in the office\". It is how you tell your extra places apart later."
 msgstr ""
 "Beschreiben Sie ihn in mindestens zwei Wörtern: was er ist und wo er sich befindet, etwa „Dropbox-Ordner auf dem Laptop“ oder „NAS-Freigabe im Büro“. Daran können Sie Ihre Zusatzorte später unterscheiden."
 
-#: gui/main.c:14008
+#: gui/main.c:14045
 msgid ""
 "Type the most it may take in GB, like 2 or 15.5, or leave it empty for no limit."
 msgstr ""
 "Geben Sie in GB ein, wie viel er höchstens aufnehmen darf, etwa 2 oder 15,5, oder lassen Sie das Feld leer für kein Limit."
 
-#: gui/main.c:14031
+#: gui/main.c:14068
 msgid ""
 "Choose the folder for a second copy of your starred files: your Dropbox, OneDrive or Google Drive folder on this PC, a network share, or a folder on another disk."
 msgstr ""
 "Wählen Sie den Ordner für eine zweite Kopie Ihrer Dateien mit Stern: Ihren Dropbox-, OneDrive- oder Google Drive-Ordner auf diesem PC, eine Netzwerkfreigabe oder einen Ordner auf einem anderen Datenträger."
 
-#: gui/main.c:14035
+#: gui/main.c:14072
 msgid "That folder is already one of your backup drives or extra places."
 msgstr ""
 "Dieser Ordner ist bereits eines Ihrer Sicherungslaufwerke oder einer Ihrer Zusatzorte."
 
-#: gui/main.c:14041
+#: gui/main.c:14078
 msgid "this PC"
 msgstr "diesem PC"
 
-#: gui/main.c:14043
+#: gui/main.c:14080
 #, c-format
 msgid "%ls folder on %ls"
 msgstr "Ordner „%ls“ auf %ls"
 
-#: gui/main.c:14043
+#: gui/main.c:14080
 msgid "Backup"
 msgstr "Sicherung"
 
-#: gui/main.c:14045
+#: gui/main.c:14082
 #, c-format
 msgid ""
 "Your starred files get a second, secondary copy in %ls. It is not one of your backup drives: its copies never count toward the full copies you want. BRODALF only copies files into it, in a BRODALF folder; that folder's own app does any syncing, and BRODALF talks to no cloud service. Nothing is copied until you back up to it."
 msgstr ""
 "Ihre Dateien mit Stern erhalten eine zweite, nachrangige Kopie in %ls. Dies ist keines Ihrer Sicherungslaufwerke: Die Kopien dort zählen nie zu den gewünschten vollständigen Kopien. BRODALF kopiert nur Dateien hinein, in einen BRODALF-Ordner; das Synchronisieren übernimmt die App dieses Ordners, und BRODALF kommuniziert mit keinem Cloud-Dienst. Kopiert wird erst, wenn Sie dorthin sichern."
 
-#: gui/main.c:14059
+#: gui/main.c:14096
 msgid "Enter the passphrase to encrypt the copies in the extra place."
 msgstr ""
 "Geben Sie die Passphrase ein, um die Kopien am Zusatzort zu verschlüsseln."
 
-#: gui/main.c:14068
+#: gui/main.c:14105
 msgid "Could not add the extra place."
 msgstr "Der Zusatzort konnte nicht hinzugefügt werden."
 
-#: gui/main.c:14071
+#: gui/main.c:14108
 #, c-format
 msgid "Extra place added: %ls, at %ls. Only starred files go there."
 msgstr ""
 "Zusatzort hinzugefügt: %ls, unter %ls. Nur Dateien mit Stern kommen dorthin."
 
-#: gui/main.c:14083
+#: gui/main.c:14120
 #, c-format
 msgid "Back up your %lld starred file (%ls) to it now?"
 msgid_plural "Back up your %lld starred files (%ls) to it now?"
 msgstr[0] "Ihre %lld Datei mit Stern (%ls) jetzt dorthin sichern?"
 msgstr[1] "Ihre %lld Dateien mit Stern (%ls) jetzt dorthin sichern?"
 
-#: gui/main.c:14087
+#: gui/main.c:14124
 msgid ""
 "Nothing is starred yet. Star files or folders on the Primary Database tab (Star it, or right-click), then back up to the extra place."
 msgstr ""
 "Noch ist nichts markiert. Markieren Sie Dateien oder Ordner auf der Registerkarte „Hauptdatenbank“ mit einem Stern („Mit Stern markieren“ oder Rechtsklick) und sichern Sie dann an den Zusatzort."
 
-#: gui/main.c:14101
+#: gui/main.c:14138
 #, c-format
 msgid ""
 "How much of your starred files %ls may hold in all, so a small free account does not fill up. Files that would go over it are not copied there; your drives still get them."
 msgstr ""
 "Wie viel von Ihren Dateien mit Stern der Ort „%ls“ insgesamt aufnehmen darf, damit ein kleines kostenloses Konto nicht vollläuft. Dateien, die das überschreiten würden, werden nicht dorthin kopiert; Ihre Laufwerke erhalten sie trotzdem."
 
-#: gui/main.c:14106
+#: gui/main.c:14143
 msgid "Could not change the size limit."
 msgstr "Das Größenlimit konnte nicht geändert werden."
 
-#: gui/main.c:14109
+#: gui/main.c:14146
 #, c-format
 msgid "%ls may now take at most %ls of starred files."
 msgstr "%ls darf jetzt höchstens %ls an Dateien mit Stern aufnehmen."
 
-#: gui/main.c:14110
+#: gui/main.c:14147
 #, c-format
 msgid "%ls now takes every starred file (no limit)."
 msgstr "%ls nimmt jetzt alle Dateien mit Stern auf (kein Limit)."
 
-#: gui/main.c:14150
+#: gui/main.c:14187
 msgid ""
 "Some of what this backs up is encrypted. Enter the passphrase to back up."
 msgstr ""
 "Ein Teil dessen, was hier gesichert wird, ist verschlüsselt. Geben Sie die Passphrase ein, um zu sichern."
 
-#: gui/main.c:14172
+#: gui/main.c:14209
 #, c-format
 msgid "    %ls: of %lld files, %lld changed and %lld was deleted\n"
 msgid_plural "    %ls: of %lld files, %lld changed and %lld were deleted\n"
 msgstr[0] "    %ls: von %lld Dateien %lld geändert und %lld gelöscht\n"
 msgstr[1] "    %ls: von %lld Dateien %lld geändert und %lld gelöscht\n"
 
-#: gui/main.c:14176
+#: gui/main.c:14213
 #, c-format
 msgid "    %ls: %lld of %lld files changed\n"
 msgstr "    %ls: %lld von %lld Dateien geändert\n"
 
-#: gui/main.c:14180
+#: gui/main.c:14217
 msgid ""
 "Your backup roots have not been scanned yet, so BRODALF does not know of any files to back up.\n"
 "\n"
@@ -6909,7 +6914,7 @@ msgstr ""
 "\n"
 "Zuerst scannen und dann auf alle angeschlossenen Laufwerke sichern?"
 
-#: gui/main.c:14198
+#: gui/main.c:14235
 #, c-format
 msgid ""
 "Since their copies were made:\n"
@@ -6922,7 +6927,7 @@ msgstr ""
 "%ls\n"
 "So viele auf einmal können bedeuten, dass Ransomware Ihre Dateien verschlüsselt hat. Das Sichern überschreibt nichts: Die Kopien auf den Laufwerken bleiben, wie sie sind, und die geänderten Dateien kommen daneben. Wenn Sie diese Dateien nicht geändert haben, sehen Sie sie sich zuerst an und stellen Sie stattdessen von einem Laufwerk wieder her."
 
-#: gui/main.c:14206
+#: gui/main.c:14243
 msgid ""
 "Back up anyway\n"
 "The copies already on the drives are kept."
@@ -6930,12 +6935,12 @@ msgstr ""
 "Trotzdem sichern\n"
 "Die Kopien auf den Laufwerken bleiben erhalten."
 
-#: gui/main.c:14216
+#: gui/main.c:14253
 msgid "Many files changed at once. Back up to every plugged-in drive?"
 msgstr ""
 "Viele Dateien haben sich auf einmal geändert. Auf jedes angeschlossene Laufwerk sichern?"
 
-#: gui/main.c:14242
+#: gui/main.c:14279
 #, c-format
 msgid ""
 "%d more plugged-in drive is left for the next backup: at most 16 at a time."
@@ -6946,7 +6951,7 @@ msgstr[0] ""
 msgstr[1] ""
 "%d weitere angeschlossene Laufwerke bleiben für die nächste Sicherung: höchstens 16 auf einmal."
 
-#: gui/main.c:14371
+#: gui/main.c:14408
 msgid ""
 "A restore is waiting for more drives. Restoring everything forgets it (what it restored stays).\n"
 "\n"
@@ -6956,213 +6961,213 @@ msgstr ""
 "\n"
 "Stattdessen alles wiederherstellen?"
 
-#: gui/main.c:14480
+#: gui/main.c:14517
 #, c-format
 msgid "today at %ls"
 msgstr "heute um %ls"
 
-#: gui/main.c:14481
+#: gui/main.c:14518
 #, c-format
 msgid "yesterday at %ls"
 msgstr "gestern um %ls"
 
-#: gui/main.c:14485
+#: gui/main.c:14522
 #, c-format
 msgid "%ls at %ls"
 msgstr "%ls um %ls"
 
-#: gui/main.c:14512
+#: gui/main.c:14549
 msgid "Broken: not counted"
 msgstr "Defekt: zählt nicht"
 
-#: gui/main.c:14512
+#: gui/main.c:14549
 msgid "Lost: not counted"
 msgstr "Verloren: zählt nicht"
 
-#: gui/main.c:14517
+#: gui/main.c:14554
 msgid "Not found now"
 msgstr "Derzeit nicht gefunden"
 
-#: gui/main.c:14522
+#: gui/main.c:14559
 #, c-format
 msgid "%lld starred file to copy"
 msgid_plural "%lld starred files to copy"
 msgstr[0] "%lld Datei mit Stern zu kopieren"
 msgstr[1] "%lld Dateien mit Stern zu kopieren"
 
-#: gui/main.c:14525 gui/main.c:14555
+#: gui/main.c:14562 gui/main.c:14592
 msgid "Up to date"
 msgstr "Aktuell"
 
-#: gui/main.c:14528
+#: gui/main.c:14565
 msgid "Found"
 msgstr "Gefunden"
 
-#: gui/main.c:14534
+#: gui/main.c:14571
 msgid "Health warning"
 msgstr "Zustandswarnung"
 
-#: gui/main.c:14539
+#: gui/main.c:14576
 #, c-format
 msgid "%lld bad copy"
 msgid_plural "%lld bad copies"
 msgstr[0] "%lld fehlerhafte Kopie"
 msgstr[1] "%lld fehlerhafte Kopien"
 
-#: gui/main.c:14549
+#: gui/main.c:14586
 #, c-format
 msgid "%lld file to back up"
 msgid_plural "%lld files to back up"
 msgstr[0] "%lld Datei zu sichern"
 msgstr[1] "%lld Dateien zu sichern"
 
-#: gui/main.c:14567
+#: gui/main.c:14604
 #, c-format
 msgid "Kept in: %ls"
 msgstr "Aufbewahrt: %ls"
 
-#: gui/main.c:14569
+#: gui/main.c:14606
 msgid "Marked broken: its copies do not count."
 msgstr "Als defekt gemeldet: Seine Kopien zählen nicht."
 
-#: gui/main.c:14570
+#: gui/main.c:14607
 msgid "Marked lost: its copies do not count."
 msgstr "Als verloren gemeldet: Seine Kopien zählen nicht."
 
-#: gui/main.c:14571
+#: gui/main.c:14608
 #, c-format
 msgid "Found at %ls"
 msgstr "Gefunden unter %ls"
 
-#: gui/main.c:14574
+#: gui/main.c:14611
 #, c-format
 msgid "Not found now. Last found %ls."
 msgstr "Derzeit nicht gefunden. Zuletzt gefunden: %ls."
 
-#: gui/main.c:14574
+#: gui/main.c:14611
 #, c-format
 msgid "Not plugged in. Last seen %ls."
 msgstr "Nicht angeschlossen. Zuletzt gesehen: %ls."
 
-#: gui/main.c:14582
+#: gui/main.c:14619
 #, c-format
 msgid "Copies on it: %ls"
 msgstr "Kopien darauf: %ls"
 
-#: gui/main.c:14586
+#: gui/main.c:14623
 #, c-format
 msgid "Last backup: %ls. Last check: %ls."
 msgstr "Letzte Sicherung: %ls. Letzte Prüfung: %ls."
 
-#: gui/main.c:14589
+#: gui/main.c:14626
 msgid ""
 "Click to see it on Starred files and extra places. Right-click for what you can do with it."
 msgstr ""
 "Klicken, um ihn unter „Dateien mit Stern und Zusatzorte“ zu sehen. Rechtsklick für alles, was Sie damit tun können."
 
-#: gui/main.c:14590
+#: gui/main.c:14627
 msgid ""
 "Click to see it on Local backups. Right-click for what you can do with it."
 msgstr ""
 "Klicken, um es unter „Lokale Sicherungen“ zu sehen. Rechtsklick für alles, was Sie damit tun können."
 
-#: gui/main.c:14682
+#: gui/main.c:14719
 msgid "No database is open"
 msgstr "Keine Datenbank ist geöffnet"
 
-#: gui/main.c:14684
+#: gui/main.c:14721
 msgid ""
 "Open your database, or create a new one. To start again from a backup drive, use File > Recover the database from a backup drive."
 msgstr ""
 "Öffnen Sie Ihre Datenbank oder erstellen Sie eine neue. Um von einem Sicherungslaufwerk neu zu beginnen, verwenden Sie Datei > Datenbank von einem Sicherungslaufwerk wiederherstellen."
 
-#: gui/main.c:14689
+#: gui/main.c:14726
 msgid "Reading where your files stand..."
 msgstr "Stand Ihrer Dateien wird gelesen..."
 
-#: gui/main.c:14693 gui/main.c:15070
+#: gui/main.c:14730 gui/main.c:15107
 msgid "Nothing to back up yet"
 msgstr "Noch nichts zu sichern"
 
-#: gui/main.c:14695
+#: gui/main.c:14732
 msgid ""
 "Add a folder to back up. BRODALF keeps a list of every file in it and copies them to your backup drives."
 msgstr ""
 "Fügen Sie einen Ordner zum Sichern hinzu. BRODALF führt eine Liste jeder Datei darin und kopiert sie auf Ihre Sicherungslaufwerke."
 
-#: gui/main.c:14696
+#: gui/main.c:14733
 msgid "Add a folder to back up..."
 msgstr "Ordner zum Sichern hinzufügen..."
 
-#: gui/main.c:14701
+#: gui/main.c:14738
 msgid "No backup drive yet"
 msgstr "Noch kein Sicherungslaufwerk"
 
-#: gui/main.c:14703
+#: gui/main.c:14740
 msgid ""
 "Your files have no copies yet. Set up a USB stick or another drive, and BRODALF copies every file to it."
 msgstr ""
 "Ihre Dateien haben noch keine Kopien. Richten Sie einen USB-Stick oder ein anderes Laufwerk ein, und BRODALF kopiert jede Datei darauf."
 
-#: gui/main.c:14709
+#: gui/main.c:14746
 msgid "BRODALF could not tell how many copies your files have"
 msgstr "BRODALF konnte nicht feststellen, wie viele Kopien Ihre Dateien haben"
 
-#: gui/main.c:14713
+#: gui/main.c:14750
 msgid "No files found yet"
 msgstr "Noch keine Dateien gefunden"
 
-#: gui/main.c:14714
+#: gui/main.c:14751
 msgid ""
 "The last scan found no files in your backup roots. Scan now looks again."
 msgstr ""
 "Der letzte Scan hat in Ihren Quellordnern keine Dateien gefunden. „Jetzt scannen“ sucht erneut."
 
-#: gui/main.c:14715
+#: gui/main.c:14752
 msgid "Scan now"
 msgstr "Jetzt scannen"
 
-#: gui/main.c:14721
+#: gui/main.c:14758
 #, c-format
 msgid "Every file has %d copies, in %d different places"
 msgstr "Jede Datei hat %d Kopien an %d getrennten Orten"
 
-#: gui/main.c:14723
+#: gui/main.c:14760
 #, c-format
 msgid "Every file has %d copy"
 msgid_plural "Every file has %d copies"
 msgstr[0] "Jede Datei hat %d Kopie"
 msgstr[1] "Jede Datei hat %d Kopien"
 
-#: gui/main.c:14727
+#: gui/main.c:14764
 #, c-format
 msgid "%lld file. Last backup %ls; last scan %ls."
 msgid_plural "%lld files. Last backup %ls; last scan %ls."
 msgstr[0] "%lld Datei. Letzte Sicherung %ls; letzter Scan %ls."
 msgstr[1] "%lld Dateien. Letzte Sicherung %ls; letzter Scan %ls."
 
-#: gui/main.c:14735
+#: gui/main.c:14772
 #, c-format
 msgid "%lld file has no copy yet"
 msgid_plural "%lld files have no copy yet"
 msgstr[0] "%lld Datei hat noch keine Kopie"
 msgstr[1] "%lld Dateien haben noch keine Kopie"
 
-#: gui/main.c:14737
+#: gui/main.c:14774
 #, c-format
 msgid "%lld file does not have %d copies yet"
 msgid_plural "%lld files do not have %d copies yet"
 msgstr[0] "%lld Datei hat noch keine %d Kopien"
 msgstr[1] "%lld Dateien haben noch keine %d Kopien"
 
-#: gui/main.c:14742
+#: gui/main.c:14779
 #, c-format
 msgid "A backup to %ls copies %lld file (%ls)."
 msgid_plural "A backup to %ls copies %lld files (%ls)."
 msgstr[0] "Eine Sicherung auf %ls kopiert %lld Datei (%ls)."
 msgstr[1] "Eine Sicherung auf %ls kopiert %lld Dateien (%ls)."
 
-#: gui/main.c:14750
+#: gui/main.c:14787
 msgid "Your backup drive is not plugged in. Plug it in to back up."
 msgid_plural "None of your backup drives are plugged in. Plug one in to back up."
 msgstr[0] ""
@@ -7170,521 +7175,521 @@ msgstr[0] ""
 msgstr[1] ""
 "Keines Ihrer Sicherungslaufwerke ist angeschlossen. Schließen Sie eines an, um zu sichern."
 
-#: gui/main.c:14754
+#: gui/main.c:14791
 msgid ""
 "The drives plugged in already have them. Plug in another drive to give them their next copy."
 msgstr ""
 "Die angeschlossenen Laufwerke haben sie bereits. Schließen Sie ein weiteres Laufwerk an, um ihnen die nächste Kopie zu geben."
 
-#: gui/main.c:14755
+#: gui/main.c:14792
 msgid "Which drive to plug in..."
 msgstr "Welches Laufwerk anschließen..."
 
-#: gui/main.c:14760
+#: gui/main.c:14797
 #, c-format
 msgid " %lld of them has no copy at all."
 msgid_plural " %lld of them have no copy at all."
 msgstr[0] " %lld davon hat überhaupt keine Kopie."
 msgstr[1] " %lld davon haben überhaupt keine Kopie."
 
-#: gui/main.c:14812
+#: gui/main.c:14849
 #, c-format
 msgid "Database: %ls"
 msgstr "Datenbank: %ls"
 
-#: gui/main.c:14813
+#: gui/main.c:14850
 #, c-format
 msgid "Goal: %d copies in %d places"
 msgstr "Ziel: %d Kopien an %d Orten"
 
-#: gui/main.c:14814
+#: gui/main.c:14851
 #, c-format
 msgid "Goal: %d copy"
 msgid_plural "Goal: %d copies"
 msgstr[0] "Ziel: %d Kopie"
 msgstr[1] "Ziel: %d Kopien"
 
-#: gui/main.c:14818
+#: gui/main.c:14855
 #, c-format
 msgid "Last scan %ls"
 msgstr "Letzter Scan %ls"
 
-#: gui/main.c:14820
+#: gui/main.c:14857
 msgid "Not scanned yet"
 msgstr "Noch nicht gescannt"
 
-#: gui/main.c:14822
+#: gui/main.c:14859
 msgid "No database open"
 msgstr "Keine Datenbank geöffnet"
 
-#: gui/main.c:14874
+#: gui/main.c:14911
 #, c-format
 msgid "Goal: %d copies of every file, in %d different places."
 msgstr "Ziel: %d Kopien jeder Datei an %d getrennten Orten."
 
-#: gui/main.c:14876
+#: gui/main.c:14913
 #, c-format
 msgid "Goal: %d copy of every file."
 msgid_plural "Goal: %d copies of every file."
 msgstr[0] "Ziel: %d Kopie jeder Datei."
 msgstr[1] "Ziel: %d Kopien jeder Datei."
 
-#: gui/main.c:14926 gui/main.c:15064
+#: gui/main.c:14963 gui/main.c:15101
 #, c-format
 msgid "Full copy %d of %d"
 msgstr "Vollständige Kopie %d von %d"
 
-#: gui/main.c:15054
+#: gui/main.c:15091
 msgid "Checking..."
 msgstr "Wird geprüft..."
 
-#: gui/main.c:15055
+#: gui/main.c:15092
 msgid "Compressing..."
 msgstr "Wird komprimiert..."
 
-#: gui/main.c:15057
+#: gui/main.c:15094
 msgid "In use..."
 msgstr "In Verwendung..."
 
-#: gui/main.c:15071
+#: gui/main.c:15108
 #, c-format
 msgid "Complete: %lld file (%ls)"
 msgid_plural "Complete: %lld files (%ls)"
 msgstr[0] "Vollständig: %lld Datei (%ls)"
 msgstr[1] "Vollständig: %lld Dateien (%ls)"
 
-#: gui/main.c:15072
+#: gui/main.c:15109
 #, c-format
 msgid "%lld of %lld files (%ls of %ls)"
 msgstr "%lld von %lld Dateien (%ls von %ls)"
 
-#: gui/main.c:15125
+#: gui/main.c:15162
 #, c-format
 msgid "+%d more"
 msgid_plural "+%d more"
 msgstr[0] "+%d weiterer"
 msgstr[1] "+%d weitere"
 
-#: gui/main.c:15133
+#: gui/main.c:15170
 msgid "See them all"
 msgstr "Alle ansehen"
 
-#: gui/main.c:15201
+#: gui/main.c:15238
 msgid "Change..."
 msgstr "Ändern..."
 
-#: gui/main.c:15518
+#: gui/main.c:15555
 msgid "Show fewer warnings"
 msgstr "Weniger Warnungen anzeigen"
 
-#: gui/main.c:15519
+#: gui/main.c:15556
 #, c-format
 msgid "%d more warning"
 msgid_plural "%d more warnings"
 msgstr[0] "%d weitere Warnung"
 msgstr[1] "%d weitere Warnungen"
 
-#: gui/main.c:15646
+#: gui/main.c:15683
 msgid "Looked for your drives"
 msgstr "Nach Ihren Laufwerken gesucht"
 
-#: gui/main.c:15646
+#: gui/main.c:15683
 msgid "Scan finished"
 msgstr "Scan abgeschlossen"
 
-#: gui/main.c:15646
+#: gui/main.c:15683
 msgid "Backup finished"
 msgstr "Sicherung abgeschlossen"
 
-#: gui/main.c:15647 gui/main.c:15647
+#: gui/main.c:15684 gui/main.c:15684
 msgid "Check finished"
 msgstr "Prüfung abgeschlossen"
 
-#: gui/main.c:15647
+#: gui/main.c:15684
 msgid "Restore finished"
 msgstr "Wiederherstellung abgeschlossen"
 
-#: gui/main.c:15648
+#: gui/main.c:15685
 msgid "Files in use read"
 msgstr "Verwendete Dateien gelesen"
 
-#: gui/main.c:15648
+#: gui/main.c:15685
 msgid "Compression changed"
 msgstr "Komprimierung geändert"
 
-#: gui/main.c:15648
+#: gui/main.c:15685
 msgid "Your changes are saved"
 msgstr "Ihre Änderungen sind gespeichert"
 
-#: gui/main.c:15649
+#: gui/main.c:15686
 msgid "Looking for drives stopped"
 msgstr "Laufwerkssuche abgebrochen"
 
-#: gui/main.c:15649
+#: gui/main.c:15686
 msgid "Scan stopped"
 msgstr "Scan abgebrochen"
 
-#: gui/main.c:15649
+#: gui/main.c:15686
 msgid "Backup stopped"
 msgstr "Sicherung abgebrochen"
 
-#: gui/main.c:15650 gui/main.c:15650
+#: gui/main.c:15687 gui/main.c:15687
 msgid "Check stopped"
 msgstr "Prüfung abgebrochen"
 
-#: gui/main.c:15650
+#: gui/main.c:15687
 msgid "Restore stopped"
 msgstr "Wiederherstellung abgebrochen"
 
-#: gui/main.c:15651
+#: gui/main.c:15688
 msgid "Reading files in use stopped"
 msgstr "Lesen verwendeter Dateien abgebrochen"
 
-#: gui/main.c:15651
+#: gui/main.c:15688
 msgid "Compressing stopped"
 msgstr "Komprimierung abgebrochen"
 
-#: gui/main.c:15651
+#: gui/main.c:15688
 msgid "Saving stopped"
 msgstr "Speichern abgebrochen"
 
-#: gui/main.c:15652
+#: gui/main.c:15689
 msgid "Looking for drives failed"
 msgstr "Laufwerkssuche fehlgeschlagen"
 
-#: gui/main.c:15652
+#: gui/main.c:15689
 msgid "Scan failed"
 msgstr "Scan fehlgeschlagen"
 
-#: gui/main.c:15652
+#: gui/main.c:15689
 msgid "Backup failed"
 msgstr "Sicherung fehlgeschlagen"
 
-#: gui/main.c:15653 gui/main.c:15653
+#: gui/main.c:15690 gui/main.c:15690
 msgid "Check failed"
 msgstr "Prüfung fehlgeschlagen"
 
-#: gui/main.c:15653
+#: gui/main.c:15690
 msgid "Restore failed"
 msgstr "Wiederherstellung fehlgeschlagen"
 
-#: gui/main.c:15654
+#: gui/main.c:15691
 msgid "Reading files in use failed"
 msgstr "Lesen verwendeter Dateien fehlgeschlagen"
 
-#: gui/main.c:15654
+#: gui/main.c:15691
 msgid "Compressing failed"
 msgstr "Komprimierung fehlgeschlagen"
 
-#: gui/main.c:15654
+#: gui/main.c:15691
 msgid "Saving failed"
 msgstr "Speichern fehlgeschlagen"
 
-#: gui/main.c:15734
+#: gui/main.c:15771
 msgid "Nothing is running."
 msgstr "Es läuft nichts."
 
-#: gui/main.c:15916
+#: gui/main.c:15953
 msgid "What was done until now is kept."
 msgstr "Was bisher erledigt war, bleibt erhalten."
 
-#: gui/main.c:15938
+#: gui/main.c:15975
 #, c-format
 msgid "%ls: %ls was unplugged or stopped answering"
 msgstr "%ls: %ls wurde getrennt oder antwortet nicht mehr"
 
-#: gui/main.c:15939
+#: gui/main.c:15976
 msgid ""
 "What was done until then is kept. Plug the drive in again and start it again."
 msgstr ""
 "Was bis dahin erledigt war, bleibt erhalten. Schließen Sie das Laufwerk wieder an und starten Sie erneut."
 
-#: gui/main.c:15947 gui/main.c:16022 gui/main.c:16094 gui/main.c:16134
+#: gui/main.c:15984 gui/main.c:16059 gui/main.c:16131 gui/main.c:16171
 msgid "Show the log"
 msgstr "Protokoll anzeigen"
 
-#: gui/main.c:15951
+#: gui/main.c:15988
 #, c-format
 msgid "Scan finished, but %ls does not hold its files"
 msgstr "Scan abgeschlossen, aber die Dateien von %ls sind nicht dort"
 
-#: gui/main.c:15952
+#: gui/main.c:15989
 #, c-format
 msgid "Scan finished, but %ls cannot be found"
 msgstr "Scan abgeschlossen, aber %ls wurde nicht gefunden"
 
-#: gui/main.c:15953
+#: gui/main.c:15990
 #, c-format
 msgid "Scan finished, but %d backup root cannot be found"
 msgid_plural "Scan finished, but %d backup roots cannot be found"
 msgstr[0] "Scan abgeschlossen, aber %d Quellordner wurde nicht gefunden"
 msgstr[1] "Scan abgeschlossen, aber %d Quellordner wurden nicht gefunden"
 
-#: gui/main.c:15967
+#: gui/main.c:16004
 msgid "Show the damaged files"
 msgstr "Beschädigte Dateien anzeigen"
 
-#: gui/main.c:15976
+#: gui/main.c:16013
 msgid "Open the folder"
 msgstr "Ordner öffnen"
 
-#: gui/main.c:15979
+#: gui/main.c:16016
 #, c-format
 msgid "Compare the %d left alone..."
 msgid_plural "Compare the %d left alone..."
 msgstr[0] "Die %d übersprungene Datei vergleichen..."
 msgstr[1] "Die %d übersprungenen Dateien vergleichen..."
 
-#: gui/main.c:16022 gui/main.c:16094 gui/main.c:16134
+#: gui/main.c:16059 gui/main.c:16131 gui/main.c:16171
 msgid "Hide the log"
 msgstr "Protokoll ausblenden"
 
-#: gui/main.c:16064
+#: gui/main.c:16101
 msgid "&Open a database..."
 msgstr "Datenbank ö&ffnen..."
 
-#: gui/main.c:16076
+#: gui/main.c:16113
 msgid "Sto&p"
 msgstr "S&topp"
 
-#: gui/main.c:16077
+#: gui/main.c:16114
 msgid "Check what was just &written"
 msgstr "Gerade Geschriebenes &prüfen"
 
-#: gui/main.c:16259
+#: gui/main.c:16296
 msgid "Almost empty"
 msgstr "Fast leer"
 
-#: gui/main.c:16260
+#: gui/main.c:16297
 msgid "Disk not plugged in"
 msgstr "Datenträger nicht angeschlossen"
 
-#: gui/main.c:16261
+#: gui/main.c:16298
 msgid "Cannot be found"
 msgstr "Nicht gefunden"
 
-#: gui/main.c:16262
+#: gui/main.c:16299
 msgid "No longer backed up"
 msgstr "Wird nicht mehr gesichert"
 
-#: gui/main.c:16265
+#: gui/main.c:16302
 msgid "Changed in the cloud"
 msgstr "In der Cloud geändert"
 
-#: gui/main.c:16266
+#: gui/main.c:16303
 msgid "Online-only"
 msgstr "Nur online"
 
-#: gui/main.c:16278 gui/main.c:16290
+#: gui/main.c:16315 gui/main.c:16327
 #, c-format
 msgid "On %ls"
 msgstr "Auf %ls"
 
-#: gui/main.c:16285
+#: gui/main.c:16322
 #, c-format
 msgid "%d may be damaged"
 msgid_plural "%d may be damaged"
 msgstr[0] "%d möglicherweise beschädigt"
 msgstr[1] "%d möglicherweise beschädigt"
 
-#: gui/main.c:16425
+#: gui/main.c:16462
 #, c-format
 msgid "older version on %ls"
 msgstr "ältere Version auf %ls"
 
-#: gui/main.c:16708 gui/main.c:16723
+#: gui/main.c:16745 gui/main.c:16760
 msgid "Blue"
 msgstr "Blau"
 
-#: gui/main.c:16709 gui/main.c:16723 gui/main.c:16723
+#: gui/main.c:16746 gui/main.c:16760 gui/main.c:16760
 msgid "Red"
 msgstr "Rot"
 
-#: gui/main.c:16727
+#: gui/main.c:16764
 msgid "Letter.docx"
 msgstr "Brief.docx"
 
-#: gui/main.c:16727
+#: gui/main.c:16764
 msgid "No state: a good copy is on a drive that is plugged in."
 msgstr ""
 "Kein Zustand: Eine intakte Kopie liegt auf einem angeschlossenen Laufwerk."
 
-#: gui/main.c:16728
+#: gui/main.c:16765
 msgid "Taxes 2025.pdf"
 msgstr "Steuern 2025.pdf"
 
-#: gui/main.c:16728
+#: gui/main.c:16765
 msgid ""
 "Its copy is on a drive that is not plugged in: in grey under Copies on."
 msgstr ""
 "Die Kopie liegt auf einem nicht angeschlossenen Laufwerk: grau unter „Kopien auf“."
 
-#: gui/main.c:16729
+#: gui/main.c:16766
 msgid "Thesis.docx"
 msgstr "Abschlussarbeit.docx"
 
-#: gui/main.c:16729
+#: gui/main.c:16766
 msgid "Faded: not on this PC, and no drive that is plugged in has it."
 msgstr ""
 "Verblasst: nicht auf diesem PC, und kein angeschlossenes Laufwerk hat es."
 
-#: gui/main.c:16730
+#: gui/main.c:16767
 msgid "Notes.txt"
 msgstr "Notizen.txt"
 
-#: gui/main.c:16730
+#: gui/main.c:16767
 msgid "It has no copy yet: the next backup copies it."
 msgstr "Es gibt noch keine Kopie: Die nächste Sicherung kopiert es."
 
-#: gui/main.c:16731
+#: gui/main.c:16768
 msgid "Budget.xlsx"
 msgstr "Budget.xlsx"
 
-#: gui/main.c:16731
+#: gui/main.c:16768
 msgid "Only an older version is backed up; the next backup copies it."
 msgstr ""
 "Nur eine ältere Version ist gesichert; die nächste Sicherung kopiert sie."
 
-#: gui/main.c:16732
+#: gui/main.c:16769
 msgid "Holiday.jpg"
 msgstr "Urlaub.jpg"
 
-#: gui/main.c:16732
+#: gui/main.c:16769
 msgid ""
 "Its copy on the plugged-in drive is missing or damaged; back up again to fix it."
 msgstr ""
 "Die Kopie auf dem angeschlossenen Laufwerk fehlt oder ist beschädigt; sichern Sie erneut, um das zu beheben."
 
-#: gui/main.c:16733
+#: gui/main.c:16770
 msgid "Old plan.docx"
 msgstr "Alter Plan.docx"
 
-#: gui/main.c:16733
+#: gui/main.c:16770
 msgid "Name struck through: gone from its folder; its copies are still kept."
 msgstr ""
 "Name durchgestrichen: aus dem Ordner verschwunden; die Kopien bleiben erhalten."
 
-#: gui/main.c:16734
+#: gui/main.c:16771
 msgid "Song.mp3"
 msgstr "Lied.mp3"
 
-#: gui/main.c:16734
+#: gui/main.c:16771
 msgid ""
 "A bit-rot scan found it changed while its size and time stayed the same."
 msgstr ""
 "Ein Bit-Rot-Scan fand sie verändert, obwohl Größe und Zeit gleich blieben."
 
-#: gui/main.c:16735
+#: gui/main.c:16772
 msgid "Photos"
 msgstr "Fotos"
 
-#: gui/main.c:16735
+#: gui/main.c:16772
 msgid ""
 "A folder: how many files in it have a good copy on a plugged-in drive."
 msgstr ""
 "Ein Ordner: wie viele Dateien darin eine intakte Kopie auf einem angeschlossenen Laufwerk haben."
 
-#: gui/main.c:16736
+#: gui/main.c:16773
 msgid "Passport.pdf"
 msgstr "Reisepass.pdf"
 
-#: gui/main.c:16736
+#: gui/main.c:16773
 msgid ""
 "Star: also copied to your extra places. Lock: encrypted wherever it is copied."
 msgstr ""
 "Stern: auch an Ihre Zusatzorte kopiert. Schloss: überall verschlüsselt, wohin es kopiert wird."
 
-#: gui/main.c:16763
+#: gui/main.c:16800
 msgid ""
 "Each file and folder shows its name, its state, the drives its copies are on (in grey when not plugged in), when it was changed, its type and its size. Point at a name for all of it in words; a file's versions are in its details."
 msgstr ""
 "Jede Datei und jeder Ordner zeigt den Namen, den Zustand, die Laufwerke mit den Kopien (grau, wenn nicht angeschlossen), das Änderungsdatum, den Typ und die Größe. Zeigen Sie auf einen Namen, um alles in Worten zu lesen; die Versionen einer Datei stehen in ihren Details."
 
-#: gui/main.c:16826
+#: gui/main.c:16863
 msgid "&Add backup root..."
 msgstr "&Quellordner hinzufügen..."
 
-#: gui/main.c:16827
+#: gui/main.c:16864
 msgid "&Scan now"
 msgstr "&Jetzt scannen"
 
-#: gui/main.c:16828
+#: gui/main.c:16865
 msgid "&Back up..."
 msgstr "&Sichern..."
 
-#: gui/main.c:16829
+#: gui/main.c:16866
 msgid "&Check drive..."
 msgstr "Laufwerk &prüfen..."
 
-#: gui/main.c:16830
+#: gui/main.c:16867
 msgid "&Restore..."
 msgstr "&Wiederherstellen..."
 
-#: gui/main.c:16831
+#: gui/main.c:16868
 msgid "&Drives..."
 msgstr "&Laufwerke..."
 
-#: gui/main.c:16832
+#: gui/main.c:16869
 msgid "Settin&gs..."
 msgstr "&Einstellungen..."
 
-#: gui/main.c:16857 gui/main.c:16889
+#: gui/main.c:16894 gui/main.c:16926
 msgid "Name"
 msgstr "Name"
 
-#: gui/main.c:16857
+#: gui/main.c:16894
 msgid "Status"
 msgstr "Status"
 
-#: gui/main.c:16857
+#: gui/main.c:16894
 msgid "Date modified"
 msgstr "Änderungsdatum"
 
-#: gui/main.c:16857
+#: gui/main.c:16894
 msgid "Type"
 msgstr "Typ"
 
-#: gui/main.c:16881
+#: gui/main.c:16918
 msgid "Search files and folders by name"
 msgstr "Dateien und Ordner nach Namen suchen"
 
-#: gui/main.c:16889
+#: gui/main.c:16926
 msgid "Where it is"
 msgstr "Speicherort"
 
-#: gui/main.c:16914
+#: gui/main.c:16951
 msgid "Where"
 msgstr "Wo"
 
-#: gui/main.c:16914
+#: gui/main.c:16951
 msgid "Path on drive"
 msgstr "Pfad auf Laufwerk"
 
-#: gui/main.c:17093
+#: gui/main.c:17130
 msgid "Stopping the job and saving the database..."
 msgstr "Der Vorgang wird abgebrochen und die Datenbank gespeichert..."
 
-#: gui/main.c:17132
+#: gui/main.c:17169
 #, c-format
 msgid ""
 "Windows shut down or signed out while BRODALF was busy (%ls). BRODALF stopped it and kept what was done until then; start it again to finish it."
 msgstr ""
 "Windows wurde heruntergefahren oder abgemeldet, während BRODALF beschäftigt war (%ls). BRODALF hat den Vorgang abgebrochen und behalten, was bis dahin erledigt war; starten Sie ihn erneut, um ihn abzuschließen."
 
-#: gui/main.c:17282
+#: gui/main.c:17319
 msgid "&Copy"
 msgstr "&Kopieren"
 
-#: gui/main.c:17416
+#: gui/main.c:17453
 msgid "Stop the running job (Esc). What was done until then is kept."
 msgstr ""
 "Den laufenden Vorgang abbrechen (Esc). Was bis dahin erledigt war, bleibt erhalten."
 
-#: gui/main.c:17592
+#: gui/main.c:17629
 msgid "Saved"
 msgstr "Gespeichert"
 
-#: gui/main.c:17654
+#: gui/main.c:17691
 msgid ""
 "The scan was stopped before it finished, so BRODALF may not know about every new or changed file yet. A backup now copies what the scans so far found.\n"
 "\n"
@@ -7694,49 +7699,49 @@ msgstr ""
 "\n"
 "Scannen Sie erneut, sobald es geht, damit Ihre Sicherungen so aktuell wie möglich sind."
 
-#: gui/main.c:17660
+#: gui/main.c:17697
 msgid ""
 "Some of what this needs is encrypted: an encrypted drive, or folders you chose to encrypt. Enter the passphrase to continue."
 msgstr ""
 "Ein Teil dessen, was hierfür nötig ist, ist verschlüsselt: ein verschlüsseltes Laufwerk oder Ordner, die Sie verschlüsseln lassen. Geben Sie die Passphrase ein, um fortzufahren."
 
-#: gui/main.c:17728
+#: gui/main.c:17765
 msgid "Closing once your changes are saved..."
 msgstr "Wird geschlossen, sobald Ihre Änderungen gespeichert sind..."
 
-#: gui/main.c:17732
+#: gui/main.c:17769
 msgid "Stop looking for drives and close?"
 msgstr "Laufwerkssuche abbrechen und schließen?"
 
-#: gui/main.c:17732
+#: gui/main.c:17769
 msgid "Stop the scan and close?"
 msgstr "Scan abbrechen und schließen?"
 
-#: gui/main.c:17733
+#: gui/main.c:17770
 msgid "Stop the backup and close?"
 msgstr "Sicherung abbrechen und schließen?"
 
-#: gui/main.c:17733
+#: gui/main.c:17770
 msgid "Stop the check and close?"
 msgstr "Prüfung abbrechen und schließen?"
 
-#: gui/main.c:17734
+#: gui/main.c:17771
 msgid "Stop the restore and close?"
 msgstr "Wiederherstellung abbrechen und schließen?"
 
-#: gui/main.c:17734
+#: gui/main.c:17771
 msgid "Stop checking the copies and close?"
 msgstr "Prüfung der Kopien abbrechen und schließen?"
 
-#: gui/main.c:17735
+#: gui/main.c:17772
 msgid "Stop reading the files in use and close?"
 msgstr "Lesen der verwendeten Dateien abbrechen und schließen?"
 
-#: gui/main.c:17736
+#: gui/main.c:17773
 msgid "Stop compressing the drive and close?"
 msgstr "Komprimieren des Laufwerks abbrechen und schließen?"
 
-#: gui/main.c:17739
+#: gui/main.c:17776
 #, c-format
 msgid ""
 "%ls\n"
@@ -7747,39 +7752,39 @@ msgstr ""
 "\n"
 "Was bis dahin erledigt wurde, bleibt erhalten. BRODALF wird geschlossen, sobald der Vorgang beendet ist."
 
-#: gui/main.c:17741
+#: gui/main.c:17778
 msgid "Stop and close"
 msgstr "Abbrechen und schließen"
 
-#: gui/main.c:17741
+#: gui/main.c:17778
 msgid "Keep it running"
 msgstr "Weiterlaufen lassen"
 
-#: gui/main.c:17750
+#: gui/main.c:17787
 msgid ""
 "BRODALF is still working. Close it when the status bar says the job is done."
 msgstr ""
 "BRODALF arbeitet noch. Schließen Sie es, wenn die Statusleiste meldet, dass der Vorgang abgeschlossen ist."
 
-#: gui/main.c:17804 gui/main.c:17827
+#: gui/main.c:17841 gui/main.c:17864
 msgid "BRODALF databases (*.brodalf)"
 msgstr "BRODALF-Datenbanken (*.brodalf)"
 
-#: gui/main.c:17809
+#: gui/main.c:17846
 msgid "Open a BRODALF database"
 msgstr "BRODALF-Datenbank öffnen"
 
-#: gui/main.c:17828
+#: gui/main.c:17865
 msgid "My backups.brodalf"
 msgstr "Meine Sicherungen.brodalf"
 
-#: gui/main.c:17836
+#: gui/main.c:17873
 msgid ""
 "A file with that name is already there. Choose another name, so nothing is overwritten."
 msgstr ""
 "Eine Datei mit diesem Namen gibt es dort schon. Wählen Sie einen anderen Namen, damit nichts überschrieben wird."
 
-#: gui/main.c:17848
+#: gui/main.c:17885
 msgid ""
 "Find it...\n"
 "Look for it in another folder or on another drive"
@@ -7787,7 +7792,7 @@ msgstr ""
 "Suchen...\n"
 "In einem anderen Ordner oder auf einem anderen Laufwerk danach suchen"
 
-#: gui/main.c:17851
+#: gui/main.c:17888
 #, c-format
 msgid ""
 "Open the last database\n"
@@ -7796,7 +7801,7 @@ msgstr ""
 "Letzte Datenbank öffnen\n"
 "%ls"
 
-#: gui/main.c:17856
+#: gui/main.c:17893
 msgid ""
 "Open a database...\n"
 "A .brodalf file you made before"
@@ -7804,7 +7809,7 @@ msgstr ""
 "Datenbank öffnen...\n"
 "Eine .brodalf-Datei, die Sie früher erstellt haben"
 
-#: gui/main.c:17858
+#: gui/main.c:17895
 msgid ""
 "Create a new database...\n"
 "Choose the folders to back up, then where to keep the database file"
@@ -7812,7 +7817,7 @@ msgstr ""
 "Neue Datenbank erstellen...\n"
 "Zuerst die zu sichernden Ordner wählen, dann den Speicherort der Datenbankdatei"
 
-#: gui/main.c:17860
+#: gui/main.c:17897
 msgid ""
 "Recover the database from a backup drive...\n"
 "When you do not have the database file here: start from the newest copy on your drives"
@@ -7820,76 +7825,76 @@ msgstr ""
 "Datenbank von einem Sicherungslaufwerk wiederherstellen...\n"
 "Wenn Sie die Datenbankdatei hier nicht haben: mit der neuesten Kopie auf Ihren Laufwerken beginnen"
 
-#: gui/main.c:17871
+#: gui/main.c:17908
 msgid "Which database do you want to use?"
 msgstr "Welche Datenbank möchten Sie verwenden?"
 
-#: gui/main.c:17872
+#: gui/main.c:17909
 msgid ""
 "A database records every file in your backup roots and which drives hold a copy of it. It never holds the files themselves."
 msgstr ""
 "Eine Datenbank verzeichnet jede Datei in Ihren Quellordnern und welche Laufwerke eine Kopie davon haben. Die Dateien selbst enthält sie nie."
 
-#: gui/main.c:17875
+#: gui/main.c:17912
 #, c-format
 msgid ""
 "%ls was moved, renamed or deleted, or the drive it is on is not connected."
 msgstr ""
 "%ls wurde verschoben, umbenannt oder gelöscht, oder das Laufwerk, auf dem sie liegt, ist nicht angeschlossen."
 
-#: gui/main.c:17877
+#: gui/main.c:17914
 msgid "Your last database cannot be found"
 msgstr "Ihre letzte Datenbank wurde nicht gefunden"
 
-#: gui/main.c:17908
+#: gui/main.c:17945
 msgid "This database is encrypted. Enter its passphrase to open it."
 msgstr ""
 "Diese Datenbank ist verschlüsselt. Geben Sie ihre Passphrase ein, um sie zu öffnen."
 
-#: gui/main.c:17976
+#: gui/main.c:18013
 #, c-format
 msgid "%ls - BRODALF"
 msgstr "%ls - BRODALF"
 
-#: gui/main.c:17990
+#: gui/main.c:18027
 msgid ""
 "Database recovered from a backup drive. Scanning your backup roots to see whether they are on this PC and what changed since that copy was saved."
 msgstr ""
 "Datenbank von einem Sicherungslaufwerk wiederhergestellt. Ihre Quellordner werden gescannt, um zu sehen, ob sie auf diesem PC vorhanden sind und was sich seit dem Speichern dieser Kopie geändert hat."
 
-#: gui/main.c:17993
+#: gui/main.c:18030
 msgid ""
 "New database. Scanning your backup roots for the first time. Nothing is backed up until you press Back up."
 msgstr ""
 "Neue Datenbank. Ihre Quellordner werden zum ersten Mal gescannt. Gesichert wird erst, wenn Sie auf „Sichern“ klicken."
 
-#: gui/main.c:17995
+#: gui/main.c:18032
 msgid ""
 "Database opened. Scanning your backup roots to find what changed since the last scan. Nothing is backed up until you press Back up."
 msgstr ""
 "Datenbank geöffnet. Ihre Quellordner werden gescannt, um Änderungen seit dem letzten Scan zu finden. Gesichert wird erst, wenn Sie auf „Sichern“ klicken."
 
-#: gui/main.c:18005
+#: gui/main.c:18042
 #, c-format
 msgid ""
 "This database is inside the backup root %ls. BRODALF leaves it out of that root's backups: every backup puts a copy of it on the drive instead."
 msgstr ""
 "Diese Datenbank liegt im Quellordner %ls. BRODALF lässt sie bei den Sicherungen dieses Quellordners aus: Stattdessen legt jede Sicherung eine Kopie davon auf dem Laufwerk ab."
 
-#: gui/main.c:18025
+#: gui/main.c:18062
 msgid ""
 "It has no backup roots yet: use Add backup root to choose what to back up."
 msgstr ""
 "Sie hat noch keine Quellordner: Wählen Sie mit „Quellordner hinzufügen“, was gesichert werden soll."
 
-#: gui/main.c:18038
+#: gui/main.c:18075
 #, c-format
 msgid ""
 "BRODALF cannot read %ls. Each of your backup drives keeps a copy of the database, and BRODALF can recover the newest one."
 msgstr ""
 "BRODALF kann %ls nicht lesen. Jedes Ihrer Sicherungslaufwerke hat eine Kopie der Datenbank, und BRODALF kann die neueste wiederherstellen."
 
-#: gui/main.c:18041
+#: gui/main.c:18078
 msgid ""
 "Recover it from a backup drive... (recommended)\n"
 "Start from the newest copy on your drives"
@@ -7897,23 +7902,23 @@ msgstr ""
 "Von einem Sicherungslaufwerk wiederherstellen... (empfohlen)\n"
 "Mit der neuesten Kopie auf Ihren Laufwerken beginnen"
 
-#: gui/main.c:18042
+#: gui/main.c:18079
 msgid "Open another database..."
 msgstr "Andere Datenbank öffnen..."
 
-#: gui/main.c:18053
+#: gui/main.c:18090
 msgid "This database file is damaged"
 msgstr "Diese Datenbankdatei ist beschädigt"
 
-#: gui/main.c:18056
+#: gui/main.c:18093
 msgid "Hide the details"
 msgstr "Details ausblenden"
 
-#: gui/main.c:18057
+#: gui/main.c:18094
 msgid "Show the details"
 msgstr "Details anzeigen"
 
-#: gui/main.c:18075
+#: gui/main.c:18112
 msgid ""
 "Recover this copy instead of opening it?\n"
 "\n"
@@ -7923,44 +7928,44 @@ msgstr ""
 "\n"
 "Sie ist eine Kopie einer Datenbank auf einem Sicherungslaufwerk. Beim Öffnen würden Ihre Änderungen darüber gespeichert, und BRODALF ändert nie, was auf einem Sicherungslaufwerk liegt. „Wiederherstellen“ kopiert sie auf diesen PC und öffnet diese Kopie; die auf dem Laufwerk bleibt, wie sie ist."
 
-#: gui/main.c:18078
+#: gui/main.c:18115
 msgid "Recover it"
 msgstr "Wiederherstellen"
 
-#: gui/main.c:18100
+#: gui/main.c:18137
 msgid "The database could not be opened."
 msgstr "Die Datenbank konnte nicht geöffnet werden."
 
-#: gui/main.c:18127
+#: gui/main.c:18164
 msgid "Choose a folder to back up (a backup root)."
 msgstr "Wählen Sie einen Ordner zum Sichern (einen Quellordner)."
 
-#: gui/main.c:18181
+#: gui/main.c:18218
 msgid "Choose where to keep the new database file"
 msgstr "Wählen Sie, wo die neue Datenbankdatei gespeichert wird"
 
-#: gui/main.c:18193
+#: gui/main.c:18230
 #, c-format
 msgid "%ls was not added: %ls"
 msgstr "%ls wurde nicht hinzugefügt: %ls"
 
-#: gui/main.c:18202
+#: gui/main.c:18239
 msgid "The database could not be created."
 msgstr "Die Datenbank konnte nicht erstellt werden."
 
-#: gui/main.c:18282
+#: gui/main.c:18319
 msgid "Look again"
 msgstr "Erneut suchen"
 
-#: gui/main.c:18283
+#: gui/main.c:18320
 msgid "Choose the folder..."
 msgstr "Ordner wählen..."
 
-#: gui/main.c:18293
+#: gui/main.c:18330
 msgid "No copy of a BRODALF database was found."
 msgstr "Es wurde keine Kopie einer BRODALF-Datenbank gefunden."
 
-#: gui/main.c:18294
+#: gui/main.c:18331
 msgid ""
 "BRODALF looked at the top of every drive plugged into this PC, and in the backup drives of the database that is open. Every backup puts the newest copy of the database in the BRODALF folder of its drive.\n"
 "\n"
@@ -7970,7 +7975,7 @@ msgstr ""
 "\n"
 "Schließen Sie eines Ihrer Sicherungslaufwerke an und klicken Sie auf „Erneut suchen“. Wenn Sie in einen Ordner statt auf ein ganzes Laufwerk sichern, klicken Sie auf „Ordner wählen...“ und wählen Sie ihn aus."
 
-#: gui/main.c:18298
+#: gui/main.c:18335
 msgid ""
 "BRODALF looked at the top of every drive plugged into this PC. Every backup puts the newest copy of the database in the BRODALF folder of its drive.\n"
 "\n"
@@ -7980,16 +7985,16 @@ msgstr ""
 "\n"
 "Schließen Sie eines Ihrer Sicherungslaufwerke an und klicken Sie auf „Erneut suchen“. Wenn Sie in einen Ordner statt auf ein ganzes Laufwerk sichern, klicken Sie auf „Ordner wählen...“ und wählen Sie ihn aus."
 
-#: gui/main.c:18324
+#: gui/main.c:18361
 #, c-format
 msgid "revision %lld"
 msgstr "Revision %lld"
 
-#: gui/main.c:18325
+#: gui/main.c:18362
 msgid "saved by BRODALF 0.6 or older"
 msgstr "gespeichert von BRODALF 0.6 oder älter"
 
-#: gui/main.c:18326
+#: gui/main.c:18363
 #, c-format
 msgid ""
 "Database saved %ls (%ls)\n"
@@ -7998,21 +8003,21 @@ msgstr ""
 "Datenbank gespeichert: %ls (%ls)\n"
 "%ls"
 
-#: gui/main.c:18339
+#: gui/main.c:18376
 msgid ""
 "Your drives hold copies of more than one database. Which one is yours?"
 msgstr ""
 "Ihre Laufwerke enthalten Kopien von mehr als einer Datenbank. Welche ist Ihre?"
 
-#: gui/main.c:18340
+#: gui/main.c:18377
 msgid "Each is the newest copy found of that database."
 msgstr "Jeweils die neueste gefundene Kopie dieser Datenbank."
 
-#: gui/main.c:18369
+#: gui/main.c:18406
 msgid "Choose where to keep your database on this PC"
 msgstr "Wählen Sie, wo Ihre Datenbank auf diesem PC gespeichert wird"
 
-#: gui/main.c:18423
+#: gui/main.c:18460
 #, c-format
 msgid ""
 "The newest copy of your database on the drive is damaged, so BRODALF opened the next older one: revision %lld, saved %ls.\n"
@@ -8031,7 +8036,7 @@ msgstr[1] ""
 "\n"
 "Was nach ihrem Speichern gesichert wurde, ist darin nicht enthalten. Der nächste Scan und die nächste Sicherung holen das nach."
 
-#: gui/main.c:18437
+#: gui/main.c:18474
 #, c-format
 msgid ""
 "%lld file in this database has a stored path that would lead outside the folder you restore to. A restore leaves it out and lists it as failed; the log names it."
@@ -8042,23 +8047,23 @@ msgstr[0] ""
 msgstr[1] ""
 "%lld Dateien in dieser Datenbank haben gespeicherte Pfade, die aus dem Ordner führen würden, in den Sie wiederherstellen. Eine Wiederherstellung lässt sie aus und führt sie als fehlgeschlagen; das Protokoll nennt die ersten 20."
 
-#: gui/main.c:18445
+#: gui/main.c:18482
 msgid ""
 "No copy of the database on the drive could be opened: each one BRODALF tried is damaged."
 msgstr ""
 "Keine Kopie der Datenbank auf dem Laufwerk ließ sich öffnen: Jede, die BRODALF versucht hat, ist beschädigt."
 
-#: gui/main.c:18446
+#: gui/main.c:18483
 msgid "The database could not be recovered."
 msgstr "Die Datenbank konnte nicht wiederhergestellt werden."
 
-#: gui/main.c:18467
+#: gui/main.c:18504
 msgid ""
 "Choose the backup drive, or the folder that holds the copy of your database."
 msgstr ""
 "Wählen Sie das Sicherungslaufwerk oder den Ordner, der die Kopie Ihrer Datenbank enthält."
 
-#: gui/main.c:18471
+#: gui/main.c:18508
 msgid "No copy of a BRODALF database was found there."
 msgstr "Dort wurde keine Kopie einer BRODALF-Datenbank gefunden."
 

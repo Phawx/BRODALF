@@ -218,11 +218,17 @@ void bd_catalog_cancel(bd_catalog *cat);
  * have. Together they are the primary dataset. */
 
 /* Add a backup root, or give the id of the one that is that folder already
- * (the same path, compared as the file system compares paths). A folder
- * inside a backup root, or holding one, is refused (BD_ERR_EXISTS, with a
- * message naming that root): its files would be backed up twice. Stopped
- * roots (bd_source_set_active 0) do not count. */
+ * (the same path, compared as the file system compares paths, or the same
+ * folder reached another way: through a link, or by a mapped network
+ * drive letter and its network path). A folder inside a backup root, or
+ * holding one, is refused (BD_ERR_EXISTS, with a message naming that
+ * root): its files would be backed up twice. Stopped roots
+ * (bd_source_set_active 0) do not count. A folder given from the current
+ * folder ("Documents", "../Photos") is kept as a full path. */
 bd_status bd_source_add(bd_catalog *cat, const char *folder, int64_t *out_source_id);
+/* The same; *is_new gets 1 when a new root was added, 0 when the folder
+ * was a root already. */
+bd_status bd_source_add_ex(bd_catalog *cat, const char *folder, int64_t *out_source_id, int *is_new);
 
 /* The active backup root that holds path (a file or folder), or NULL; free
  * it. A scan never backs up the open database or its side files, so a
@@ -233,7 +239,9 @@ char *bd_root_holding(bd_catalog *cat, const char *path);
  * or on another drive letter. The root keeps its name on the drives and
  * its files keep their versions and copies; the next scan finds them by
  * their path inside the root. new_path must be an existing folder that no
- * other backup root uses (BD_ERR_EXISTS). */
+ * other backup root is, reached any way, and for a root that is backed up
+ * not inside another or holding one (BD_ERR_EXISTS). It is kept as a full
+ * path, as bd_source_add keeps it. */
 bd_status bd_source_relocate(bd_catalog *cat, int64_t source_id, const char *new_path);
 
 /* Look for a backup root by its files: the folder the catalog has for it

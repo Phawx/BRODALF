@@ -9576,6 +9576,32 @@ static void cmd_relocate(void)
 
 /* ---- Commands ----------------------------------------------------------- */
 
+/* The line saying which backup root folder already is (the same folder,
+ * reached another way: by a link or a mapped drive letter). */
+typedef struct {
+    int64_t id;
+    wchar_t name[512];
+} root_name_ctx;
+
+static int root_name_cb(void *ctx, const bd_source_info *info)
+{
+    root_name_ctx *r = ctx;
+    if (info->source_id != r->id) return 0;
+    wchar_t *w = widen(info->name ? info->name : "");
+    swprintf(r->name, COUNT_OF(r->name), L"%ls", w ? w : L"");
+    free(w);
+    return 1;
+}
+
+static void already_root_line(int64_t id, const char *folder, wchar_t *line, size_t cap)
+{
+    root_name_ctx r = {id, L""};
+    bd_list_sources(g_cat, root_name_cb, &r);
+    wchar_t *w = widen(folder);
+    swprintf(line, cap, T(L"%ls is already backed up, as the backup root %ls."), w ? w : L"", r.name);
+    free(w);
+}
+
 static void cmd_add_folder(void)
 {
     char *folder = pick_folder(g_main, T(L"Choose a folder to back up. BRODALF will scan it and keep track of every file inside."));
@@ -9598,13 +9624,19 @@ static void cmd_add_folder(void)
         folder = target;
     }
     int64_t id;
-    if (bd_source_add(g_cat, folder, &id) != BD_OK) {
+    int is_new = 0;
+    wchar_t line[MAX_PATH * 8 + 600];
+    if (bd_source_add_ex(g_cat, folder, &id, &is_new) != BD_OK) {
         wchar_t *e = widen(bd_catalog_error(g_cat));
         MessageBoxW(g_main, e, APP_NAME, MB_ICONWARNING);
         free(e);
+    } else if (!is_new) {
+        already_root_line(id, folder, line, COUNT_OF(line));
+        log_append(line);
+        MessageBoxW(g_main, line, APP_NAME, MB_ICONINFORMATION);
     } else {
-        wchar_t *w = widen(folder), line[1024];
-        swprintf(line, 1024, T(L"New backup root: %ls"), w);
+        wchar_t *w = widen(folder);
+        swprintf(line, COUNT_OF(line), T(L"New backup root: %ls"), w ? w : L"");
         log_append(line);
         free(w);
         rebuild_tree();
@@ -11400,10 +11432,15 @@ static void ask_links(void)
         for (int i = 0; i < listed; i++) {
             int64_t id;
             if (!a.targets[i]) continue;
-            wchar_t *w = widen(a.targets[i]), line[MAX_PATH * 4 + 200];
-            if (bd_source_add(g_cat, a.targets[i], &id) == BD_OK) {
-                swprintf(line, COUNT_OF(line), T(L"New backup root: %ls"), w ? w : L"");
-                added++;
+            wchar_t *w = widen(a.targets[i]), line[MAX_PATH * 8 + 600];
+            int is_new = 0;
+            if (bd_source_add_ex(g_cat, a.targets[i], &id, &is_new) == BD_OK) {
+                if (is_new) {
+                    swprintf(line, COUNT_OF(line), T(L"New backup root: %ls"), w ? w : L"");
+                    added++;
+                } else {
+                    already_root_line(id, a.targets[i], line, COUNT_OF(line));
+                }
             } else {
                 wchar_t *e = widen(bd_catalog_error(g_cat));
                 swprintf(line, COUNT_OF(line), L"%ls", e ? e : L"");

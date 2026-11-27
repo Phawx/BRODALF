@@ -342,6 +342,12 @@ extern int bd_test_fold_case;
 /* 1 if path is another backup root than except_id (stopped or not), is
  * inside an active one or holds one. */
 int bd_root_overlaps(bd_catalog *cat, const char *path, int64_t except_id);
+/* The same with a message (BD_ERR_EXISTS naming the root in the way), as
+ * bd_source_add, bd_source_relocate and bd_source_set_active check; with
+ * nesting 0 (a stopped root) only another root that is this folder counts.
+ * *same gets the id of a root that is this very folder, reached any way,
+ * or 0. */
+bd_status bd_root_check(bd_catalog *cat, const char *path, int64_t except_id, int nesting, int64_t *same);
 
 /* The places a backup root at path may be now, besides path itself: the
  * same folder under the home folder home ("C:\Users\Sam", "/home/sam")

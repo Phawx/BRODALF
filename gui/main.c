@@ -2652,6 +2652,16 @@ static int offline_root_cb(void *ctx, const bd_media_info *info)
 
 typedef struct { int64_t ids[64]; int n; } id_list;
 
+/* Drives not plugged in whose place is a folder, not a whole drive (on a
+ * NAS or share, say): they may be found elsewhere. */
+static int offline_folder_cb(void *ctx, const bd_media_info *m)
+{
+    id_list *l = ctx;
+    if (!m->connected && !m->lost_ms && strcmp(m->kind, "drive") == 0 && m->last_root && strlen(m->last_root) > 3 && l->n < 64)
+        l->ids[l->n++] = m->media_id;
+    return 0;
+}
+
 static int connected_drive_cb(void *ctx, const bd_media_info *m)
 {
     id_list *l = ctx;
@@ -2703,6 +2713,23 @@ static void run_drives(job *j)
         int64_t id;
         if (l.roots[i] && is_brodalf_drive(l.roots[i]) && try_connect(j, l.roots[i], &id)) found++;
         free(l.roots[i]);
+    }
+    /* A folder the user chose (Find it elsewhere...). */
+    if (j->root && is_brodalf_drive(j->root)) {
+        int64_t id;
+        if (try_connect(j, j->root, &id)) found++;
+    }
+    /* A folder not where it was last, such as on a NAS whose drive letter
+     * changed: the same folder on the other letters. */
+    {
+        id_list away = {{0}, 0};
+        bd_list_media(g_cat, offline_folder_cb, &away);
+        for (int i = 0; i < away.n; i++) {
+            char *at = bd_media_find_elsewhere(g_cat, away.ids[i], job_log, j);
+            int64_t id;
+            if (at && is_brodalf_drive(at) && try_connect(j, at, &id)) found++;
+            free(at);
+        }
     }
     bd_list_media(g_cat, connected_drive_cb, &after);
     for (int i = 0; i < after.n && j->n_new < 16; i++)
@@ -3382,7 +3409,7 @@ static void enqueue(job *j)
             if (q->kind == JOB_REFRESH) q->skip_figures = 1;
     }
     /* Don't stack up drive scans; one pending is enough. */
-    if (j->kind == JOB_DRIVES)
+    if (j->kind == JOB_DRIVES && !j->root)
         for (job *q = g_queue; q; q = q->next)
             if (q->kind == JOB_DRIVES) {
                 q->plugged_in |= j->plugged_in;
@@ -11039,6 +11066,7 @@ static int fill_menu_cb(void *ctx, const bd_media_info *m)
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 1, T(L"Check copies not checked lately"));
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 6, T(L"Open in Explorer"));
     AppendMenuW(sub, MF_STRING | (m->connected ? 0 : MF_GRAYED), base + 4, T(L"Compress the copies on it..."));
+    if (!m->connected && !lost) AppendMenuW(sub, MF_STRING, base + 7, T(L"It is in another folder now: find it..."));
     AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
     AppendMenuW(sub, MF_STRING, base + 3, T(L"Where it stands, name, where it is kept, hardware details..."));
     AppendMenuW(sub, MF_STRING, base + 5, lost ? T(L"Found it: count its copies again") : T(L"Mark it lost or broken..."));
@@ -11524,6 +11552,32 @@ static void compress_drive_ui(int64_t id)
     enqueue(j);
 }
 
+/* The user says a drive not plugged in is in another folder now (a NAS
+ * share mapped to another letter, a folder moved): it is looked for there
+ * by its ID file, as when drives are looked for. */
+static void find_drive_elsewhere(const drive_snap *d)
+{
+    wchar_t name[600], prompt[900];
+    drive_name(d->label, d->location, name, 600);
+    swprintf(prompt, 900, T(L"Choose the folder %ls is in now: the one that holds its BRODALF folder."), name);
+    char *root = pick_folder(g_main, prompt);
+    if (!root) return;
+    if (!is_brodalf_drive(root)) {
+        wchar_t msg[1400], *w = widen(root);
+        swprintf(msg, 1400, T(L"%ls holds no BRODALF folder of this database, so %ls is not there. Choose the folder that holds the "
+                              L"BRODALF folder, not the BRODALF folder itself."),
+                 w ? w : L"", name);
+        free(w);
+        MessageBoxW(g_main, msg, APP_NAME, MB_ICONINFORMATION);
+        free(root);
+        return;
+    }
+    job *j = new_job(JOB_DRIVES);
+    if (!j) { free(root); return; }
+    j->root = root;
+    enqueue(j);
+}
+
 static void drive_action(int64_t id, int action)
 {
     drive_list dl = load_drives();
@@ -11555,6 +11609,8 @@ static void drive_action(int64_t id, int action)
         wchar_t *root = widen(d->root);
         if (root) open_in_explorer(root);
         free(root);
+    } else if (action == 7 && !d->connected) {
+        find_drive_elsewhere(d);
     }
     free(dl.items);
 }

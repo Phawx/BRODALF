@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 int bd_media_file_read(const char *path, bd_media_file *mf)
 {
@@ -757,6 +760,66 @@ static int holds_media_id(bd_catalog *cat, const char *root, const char *uuid)
               strcmp(mf.catalog_uuid, cat->uuid) == 0 && strcmp(mf.media_uuid, uuid) == 0;
     free(path);
     return yes;
+}
+
+/* This user's home folder, as recover.c's home_folder reads it. */
+static char *home_now(void)
+{
+#ifdef _WIN32
+    wchar_t buf[1024];
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, 1024);
+    if (n == 0 || n >= 1024) return NULL;
+    char out[3072];
+    if (WideCharToMultiByte(CP_UTF8, 0, buf, -1, out, sizeof(out), NULL, NULL) <= 0) return NULL;
+    return bd_strdup(out);
+#else
+    const char *v = getenv("HOME");
+    return v && *v ? bd_strdup(v) : NULL;
+#endif
+}
+
+char *bd_media_find_elsewhere(bd_catalog *cat, int64_t media_id, bd_log_fn log, void *log_ctx)
+{
+    sqlite3_stmt *q;
+    char uuid[64] = "", label[256] = "", *last = NULL;
+    if (sqlite3_prepare_v2(cat->db, "SELECT uuid, label, last_root FROM media WHERE id=? AND kind='drive' AND retired_ms IS NULL", -1, &q,
+                           NULL) != SQLITE_OK)
+        return NULL;
+    sqlite3_bind_int64(q, 1, media_id);
+    if (sqlite3_step(q) == SQLITE_ROW && sqlite3_column_text(q, 2)) {
+        snprintf(uuid, sizeof(uuid), "%s", (const char *)sqlite3_column_text(q, 0));
+        snprintf(label, sizeof(label), "%s", (const char *)sqlite3_column_text(q, 1));
+        last = bd_strdup((const char *)sqlite3_column_text(q, 2));
+    }
+    sqlite3_finalize(q);
+    if (!last || !*last) {
+        free(last);
+        return NULL;
+    }
+    char *home = home_now(), *found = NULL;
+#ifdef _WIN32
+    /* Network drive letters too (bd_drive_letters leaves them out). */
+    DWORD all = GetLogicalDrives();
+    unsigned letters = 0;
+    for (int i = 2; i < 26; i++) {
+        wchar_t r[4] = {(wchar_t)(L'A' + i), L':', L'\\', 0};
+        UINT t = (all & (1u << i)) ? GetDriveTypeW(r) : DRIVE_NO_ROOT_DIR;
+        if (t == DRIVE_FIXED || t == DRIVE_REMOVABLE || t == DRIVE_REMOTE || t == DRIVE_RAMDISK) letters |= 1u << i;
+    }
+    char **cand = bd_root_candidates(last, home, letters, 1);
+#else
+    char **cand = bd_root_candidates(last, home, 0, 0);
+#endif
+    for (size_t i = 0; cand && cand[i]; i++) {
+        if (!found && !same_root(cand[i], last) && holds_media_id(cat, cand[i], uuid)) found = bd_strdup(cand[i]);
+        free(cand[i]);
+    }
+    free(cand);
+    free(home);
+    if (found)
+        bd_logf(log, log_ctx, "\"%s\" is not at %s, where it was last, but at %s", label, last, found);
+    free(last);
+    return found;
 }
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx)

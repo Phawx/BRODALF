@@ -525,6 +525,12 @@ typedef struct {
 } bd_check_stats;
 
 bd_status bd_media_connect(bd_catalog *cat, const char *root, int64_t *out_media_id, bd_log_fn log, void *log_ctx);
+/* A drive not found where it was last, such as a folder on a NAS whose
+ * drive letter changed: the same folder on the other drive letters, and
+ * under this user's home folder when it was under another's. The first
+ * that holds the drive's ID file (connect it with bd_media_connect), or
+ * NULL; says where in log. Changes nothing. */
+char *bd_media_find_elsewhere(bd_catalog *cat, int64_t media_id, bd_log_fn log, void *log_ctx);
 void bd_media_disconnect(bd_catalog *cat, int64_t media_id);
 
 /* Where a drive is kept, or what is written on it ("Box A", "top shelf").

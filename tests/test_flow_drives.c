@@ -872,6 +872,61 @@ static void test_long_paths_counted(void)
     bd_catalog_close(cat);
 }
 
+/* ---- C10: a drive found somewhere else than where it was last ------------- */
+
+static void set_home(const char *dir)
+{
+#ifdef _WIN32
+    SetEnvironmentVariableA("USERPROFILE", dir);
+#else
+    if (dir) setenv("HOME", dir, 1);
+    else unsetenv("HOME");
+#endif
+}
+
+static void test_drive_found_elsewhere(void)
+{
+#ifdef _WIN32
+    char *was = getenv("USERPROFILE") ? bd_strdup(getenv("USERPROFILE")) : NULL;
+#else
+    char *was = getenv("HOME") ? bd_strdup(getenv("HOME")) : NULL;
+#endif
+    bd_catalog *cat;
+    bd_mkdirs(at("c10/users/alice/NAS"));
+    bd_mkdirs(at("c10/users/bob"));
+    REQUIRE_OK(bd_catalog_create(at("c10/db.brodalf"), &cat), NULL);
+    int64_t nas, id = 0;
+    REQUIRE_OK(bd_media_init(cat, at("c10/users/alice/NAS"), "NAS", 0, &nas), cat);
+    bd_media_disconnect(cat, nas);
+    set_home(at("c10/users/bob"));
+    /* Where it was last: nothing elsewhere to say. */
+    CHECK(bd_media_find_elsewhere(cat, nas, quiet, NULL) == NULL);
+    /* The folder is now under this user's home folder, not another's. */
+    CHECK(rename(at("c10/users/alice/NAS"), at("c10/users/bob/NAS")) == 0);
+    log_count lc = {"where it was last", 0};
+    char *found = bd_media_find_elsewhere(cat, nas, count_log, &lc);
+    CHECK(found && strstr(found, "bob") && strstr(found, "NAS"));
+    CHECK(lc.n == 1);
+    if (found) {
+        REQUIRE_OK(bd_media_connect(cat, found, &id, quiet, NULL), cat);
+        CHECK(id == nas);
+    }
+    free(found);
+    /* A drive marked lost is not looked for. */
+    bd_media_disconnect(cat, nas);
+    CHECK(rename(at("c10/users/bob/NAS"), at("c10/users/alice/NAS")) == 0);
+    set_home(at("c10/users/alice"));
+    REQUIRE_OK(bd_media_mark_lost(cat, nas, "lost"), cat);
+    CHECK(bd_media_find_elsewhere(cat, nas, quiet, NULL) == NULL);
+    REQUIRE_OK(bd_media_found(cat, nas), cat);
+    found = bd_media_find_elsewhere(cat, nas, quiet, NULL);
+    CHECK(found && strstr(found, "alice"));
+    free(found);
+    set_home(was);
+    free(was);
+    bd_catalog_close(cat);
+}
+
 int main(void)
 {
     char tmp[512], id[37];
@@ -892,6 +947,7 @@ int main(void)
     test_lost_drive_takes_old_versions();
     test_wiped_drive_set_up_again();
     test_long_paths_counted();
+    test_drive_found_elsewhere();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
